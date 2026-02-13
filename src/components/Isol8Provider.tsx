@@ -1,12 +1,9 @@
-/**
- * Isol8 API client - replaces Convex client.
- * Manages WebSocket connection for real-time state + REST for mutations.
- */
+import { ReactNode, createContext, useEffect, useMemo } from 'react';
 
 export interface Isol8ClientConfig {
-  apiUrl: string; // e.g., "http://localhost:8000/api/v1"
-  wsUrl: string; // e.g., "ws://localhost:8000/api/v1/town/stream"
-  getToken: () => Promise<string | null>; // Clerk JWT
+  apiUrl: string;
+  wsUrl: string;
+  getToken: () => Promise<string | null>;
 }
 
 type Listener = (data: any) => void;
@@ -38,7 +35,6 @@ export class Isol8Client {
 
     this.ws.onclose = () => {
       this.ws = null;
-      // Reconnect after 2 seconds
       this.reconnectTimer = setTimeout(() => this.connect(), 2000);
     };
 
@@ -59,7 +55,6 @@ export class Isol8Client {
     }
     this.listeners.get(key)!.add(listener);
 
-    // Immediately call with latest state if available
     const latest = this.latestState.get(key);
     if (latest) listener(latest);
 
@@ -101,4 +96,23 @@ export class Isol8Client {
     }
     return response.json();
   }
+}
+
+export const Isol8Context = createContext<Isol8Client | null>(null);
+
+export default function Isol8Provider({
+  config,
+  children,
+}: {
+  config: Isol8ClientConfig;
+  children: ReactNode;
+}) {
+  const client = useMemo(() => new Isol8Client(config), [config]);
+
+  useEffect(() => {
+    client.connect();
+    return () => client.disconnect();
+  }, [client]);
+
+  return <Isol8Context.Provider value={client}>{children}</Isol8Context.Provider>;
 }

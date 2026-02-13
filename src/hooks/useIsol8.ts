@@ -1,14 +1,9 @@
-/**
- * React hooks that replace Convex's useQuery/useMutation.
- * These provide the same API surface so PixiJS components need minimal changes.
- */
-
 import { useCallback, useContext, useEffect, useState } from 'react';
-import { Isol8Context } from './provider';
+import { Isol8Context } from '../components/Isol8Provider';
 
 /**
  * Subscribe to real-time state updates via WebSocket.
- * Replaces Convex's useQuery for world state.
+ * Replaces Convex's useQuery for live world state.
  */
 export function useTownState<T = any>(key: string = 'state_update'): T | undefined {
   const client = useContext(Isol8Context);
