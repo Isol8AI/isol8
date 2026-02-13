@@ -338,7 +338,7 @@ export function unpackSampleRecord(fields: FieldConfig, buffer: ArrayBuffer) {
       throw new Error(`Invalid sample record: ${timestamps.length} + 1 !== ${values.length}`);
     }
     const initialValue = values[0];
-    const samples = [];
+    const samples: Array<{ value: number; time: number }> = [];
     for (let i = 0; i < timestamps.length; i++) {
       const time = timestamps[i];
       const value = values[i + 1];

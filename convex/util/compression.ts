@@ -10,7 +10,7 @@ export function unquantize(quantized: number[], precision: number) {
 
 export function deltaEncode(values: number[], initialValue = 0) {
   let prev = initialValue;
-  const deltas = [];
+  const deltas: number[] = [];
   for (const value of values) {
     deltas.push(value - prev);
     prev = value;
@@ -20,7 +20,7 @@ export function deltaEncode(values: number[], initialValue = 0) {
 
 export function deltaDecode(deltas: number[], initialValue = 0) {
   let prev = initialValue;
-  const values = [];
+  const values: number[] = [];
   for (const delta of deltas) {
     const value = prev + delta;
     values.push(value);
@@ -33,7 +33,7 @@ export function runLengthEncode(values: number[]) {
   let hasPrevious = false;
   let previous = 0;
   let count = 0;
-  const encoded = [];
+  const encoded: number[] = [];
   for (const value of values) {
     if (!hasPrevious) {
       previous = value;
@@ -59,7 +59,7 @@ export function runLengthDecode(encoded: number[]) {
   if (encoded.length % 2 !== 0) {
     throw new Error(`Invalid RLE encoded length: ${encoded.length}`);
   }
-  const values = [];
+  const values: number[] = [];
   for (let i = 0; i < encoded.length; i += 2) {
     const value = encoded[i];
     const count = encoded[i + 1];

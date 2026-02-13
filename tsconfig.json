@@ -5,6 +5,7 @@
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
+    "noImplicitAny": false,
     "forceConsistentCasingInFileNames": true,
     "noEmit": true,
     "esModuleInterop": true,
@@ -21,7 +22,11 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "convex/react": ["./convex/isol8/react"],
+      "convex/values": ["./convex/isol8/values"],
+      "convex/server": ["./convex/isol8/server"],
+      "convex/react-clerk": ["./convex/isol8/react"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx", "**/*.js", "postcss.config.js"],

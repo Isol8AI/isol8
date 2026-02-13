@@ -109,7 +109,7 @@ export function computeHowManyIntegers(input: ArrayBuffer) {
 // It is assumed that they were compressed using the compress function, the caller
 // is responsible for ensuring that it is the case.
 export function uncompress(input: ArrayBuffer) {
-  var array = []; // The size of the output is not yet known.
+  var array: number[] = []; // The size of the output is not yet known.
   var inbyte = new Int8Array(input);
   var end = inbyte.length;
   var pos = 0;
@@ -184,7 +184,7 @@ export function compressSigned(input: number[]) {
 // It is assumed that they were compressed using the compressSigned function, the caller
 // is responsible for ensuring that it is the case.
 export function uncompressSigned(input: ArrayBuffer) {
-  var array = []; // The size of the output is not yet known.
+  var array: number[] = []; // The size of the output is not yet known.
   var inbyte = new Int8Array(input);
   var end = inbyte.length;
   var pos = 0;
