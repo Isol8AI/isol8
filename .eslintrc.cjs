@@ -2,13 +2,11 @@ module.exports = {
   parser: '@typescript-eslint/parser', // Specifies the ESLint parser
   plugins: ['@typescript-eslint'],
   extends: [
-    'plugin:@typescript-eslint/recommended', // Uses the recommended rules from the @typescript-eslint/eslint-plugin
-    'plugin:@typescript-eslint/recommended-type-checked',
+    'plugin:@typescript-eslint/recommended',
   ],
   parserOptions: {
-    project: './tsconfig.json',
-    ecmaVersion: 2018, // Allows for the parsing of modern ECMAScript features
-    sourceType: 'module', // Allows for the use of imports
+    ecmaVersion: 2018,
+    sourceType: 'module',
   },
   rules: {
     '@typescript-eslint/no-explicit-any': 'off',
@@ -18,11 +16,7 @@ module.exports = {
       { varsIgnorePattern: '^_', argsIgnorePattern: '^_' },
     ],
     '@typescript-eslint/no-non-null-assertion': 'off',
-    '@typescript-eslint/no-unsafe-member-access': 'off',
-    '@typescript-eslint/no-unsafe-assignment': 'off',
-    '@typescript-eslint/no-unsafe-call': 'off',
-    '@typescript-eslint/no-unsafe-argument': 'off',
-    '@typescript-eslint/no-unsafe-return': 'off',
+    'prefer-const': 'warn',
   },
 };
 
