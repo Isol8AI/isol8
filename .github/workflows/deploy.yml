@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: dev
-      url: https://town-dev.isol8.co
+      url: https://dev.town.isol8.co
     steps:
       - uses: actions/checkout@v4
 
@@ -91,8 +91,8 @@ jobs:
           url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
           echo "url=$url" >> $GITHUB_OUTPUT
 
-      - name: Alias to town-dev.isol8.co
-        run: vercel alias ${{ steps.deploy.outputs.url }} town-dev.isol8.co --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Alias to dev.town.isol8.co
+        run: vercel alias ${{ steps.deploy.outputs.url }} dev.town.isol8.co --token=${{ secrets.VERCEL_TOKEN }}
 
   # ===========================================================================
   # Deploy to Staging (automatic after dev)
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: https://town-staging.isol8.co
+      url: https://staging.town.isol8.co
     steps:
       - uses: actions/checkout@v4
 
@@ -130,8 +130,8 @@ jobs:
           url=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
           echo "url=$url" >> $GITHUB_OUTPUT
 
-      - name: Alias to town-staging.isol8.co
-        run: vercel alias ${{ steps.deploy.outputs.url }} town-staging.isol8.co --token=${{ secrets.VERCEL_TOKEN }}
+      - name: Alias to staging.town.isol8.co
+        run: vercel alias ${{ steps.deploy.outputs.url }} staging.town.isol8.co --token=${{ secrets.VERCEL_TOKEN }}
 
   # ===========================================================================
   # Deploy to Production (requires manual approval)
