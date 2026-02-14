@@ -1,4 +1,4 @@
-export default {
+module.exports = {
   parser: '@typescript-eslint/parser', // Specifies the ESLint parser
   plugins: ['@typescript-eslint'],
   extends: [
@@ -20,3 +20,4 @@ export default {
     '@typescript-eslint/no-non-null-assertion': 'off',
   },
 };
+
