@@ -17,6 +17,7 @@ module.exports = {
     ],
     '@typescript-eslint/no-non-null-assertion': 'off',
     'prefer-const': 'warn',
+    'no-var': 'off',
   },
 };
 

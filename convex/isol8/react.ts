@@ -191,7 +191,6 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
     const id = setInterval(fetchData, 1000);
 
     return () => { cancelled = true; clearInterval(id); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, ref?.endpoint, argsKey]);
 
   return data;
@@ -213,7 +212,6 @@ export function useMutation(ref: FunctionRef): (args?: Record<string, any>) => P
       if (!clientRef.current) throw new Error('useMutation: no ConvexProvider');
       return clientRef.current.mutation(ref, args);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [ref?.endpoint],
   );
 }
