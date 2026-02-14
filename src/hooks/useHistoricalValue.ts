@@ -53,7 +53,7 @@ class HistoryManager {
       if (histories.length == 0) {
         continue;
       }
-      let foundIndex = null;
+      let foundIndex: number | null = null;
       let currentValue = histories[0].initialValue;
       for (let i = 0; i < histories.length; i++) {
         const history = histories[i];

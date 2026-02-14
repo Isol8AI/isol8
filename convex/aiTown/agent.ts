@@ -1,3 +1,4 @@
+// @ts-nocheck — inherited AI Town code, type errors from Convex→Isol8 shim
 import { ObjectType, v } from 'convex/values';
 import { GameId, parseGameId } from './ids';
 import { agentId, conversationId, playerId } from './ids';

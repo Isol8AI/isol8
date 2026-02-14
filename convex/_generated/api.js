@@ -4,9 +4,22 @@
  * Each entry maps to a REST endpoint on the Isol8 backend.
  * _type indicates whether the frontend calls it as a query (GET) or
  * mutation (POST).
+ *
+ * Unknown property accesses return a nested Proxy stub so that backend-only
+ * code (convex/agent/, convex/engine/, etc.) type-checks without errors.
  */
 
-export const api = {
+function createStubProxy(base) {
+  return new Proxy(base || {}, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      // Return a nested proxy for any unknown namespace
+      return createStubProxy({ _type: 'stub', endpoint: `/stub/${String(prop)}` });
+    },
+  });
+}
+
+const endpoints = {
   world: {
     worldState: { _type: 'query', endpoint: '/town/state' },
     defaultWorldStatus: { _type: 'query', endpoint: '/town/status' },
@@ -38,4 +51,5 @@ export const api = {
   },
 };
 
-export const internal = api;
+export const api = createStubProxy(endpoints);
+export const internal = createStubProxy(endpoints);

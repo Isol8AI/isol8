@@ -31,7 +31,7 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
       scaleMode: PIXI.SCALE_MODES.NEAREST,
     });
 
-    const tiles = [];
+    const tiles: PIXI.Texture[] = [];
     for (let x = 0; x < numxtiles; x++) {
       for (let y = 0; y < numytiles; y++) {
         tiles[x + y * numxtiles] = new PIXI.Texture(

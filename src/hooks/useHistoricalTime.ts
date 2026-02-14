@@ -84,7 +84,7 @@ export class HistoricalTimeManager {
       lastServerTs - MAX_SERVER_BUFFER_AGE,
     );
 
-    let chosen = null;
+    let chosen: number | null = null;
     for (let i = 0; i < this.intervals.length; i++) {
       const snapshot = this.intervals[i];
       // We're past this snapshot, continue to the next one.

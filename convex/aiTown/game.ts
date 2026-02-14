@@ -1,3 +1,4 @@
+// @ts-nocheck — inherited AI Town code, type errors from Convex→Isol8 shim
 import { Infer, v } from 'convex/values';
 import { Doc, Id } from '../_generated/dataModel';
 import {

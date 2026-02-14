@@ -94,7 +94,7 @@ export function DebugTimeManager(props: {
               timeManager.prevServerTs &&
               interval.startTs < timeManager.prevServerTs &&
               timeManager.prevServerTs <= interval.endTs;
-            let serverTs = null;
+            let serverTs: string | null = null;
             if (containsServerTs) {
               serverTs = ` (server: ${toSeconds((timeManager.prevServerTs ?? base) - base)})`;
             }
