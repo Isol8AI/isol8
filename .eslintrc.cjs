@@ -1,5 +1,5 @@
 module.exports = {
-  parser: '@typescript-eslint/parser', // Specifies the ESLint parser
+  parser: '@typescript-eslint/parser',
   plugins: ['@typescript-eslint'],
   extends: [
     'plugin:@typescript-eslint/recommended',
@@ -8,6 +8,7 @@ module.exports = {
     ecmaVersion: 2018,
     sourceType: 'module',
   },
+  ignorePatterns: ['src/editor/**'],
   rules: {
     '@typescript-eslint/no-explicit-any': 'off',
     '@typescript-eslint/explicit-function-return-type': 'off',
