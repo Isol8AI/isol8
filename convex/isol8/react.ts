@@ -40,6 +40,7 @@ interface FunctionRef {
  */
 export class ConvexReactClient {
   private _apiUrl: string;
+  private _getToken: (() => Promise<string | null>) | null = null;
 
   constructor(_ignoredUrl?: string, _ignoredOpts?: Record<string, any>) {
     this._apiUrl =
@@ -53,13 +54,35 @@ export class ConvexReactClient {
     return `${this._apiUrl}${endpoint}`;
   }
 
+  private async _authHeaders(): Promise<Record<string, string>> {
+    if (!this._getToken) return {};
+    try {
+      const token = await this._getToken();
+      if (token) return { Authorization: `Bearer ${token}` };
+    } catch {
+      // Token fetch failed — continue without auth.
+    }
+    return {};
+  }
+
+  /** Set the token-getter callback. Called by ConvexProviderWithClerk. */
+  setAuth(getToken: () => Promise<string | null>) {
+    this._getToken = getToken;
+  }
+
+  /** Clear auth state. */
+  clearAuth() {
+    this._getToken = null;
+  }
+
   // -- public API ----------------------------------------------------------
 
   /** POST to the Isol8 backend. */
   async mutation(ref: FunctionRef, args?: Record<string, any>): Promise<any> {
+    const authHeaders = await this._authHeaders();
     const res = await fetch(this._url(ref.endpoint), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders },
       body: JSON.stringify(args ?? {}),
     });
     if (!res.ok) {
@@ -79,7 +102,8 @@ export class ConvexReactClient {
       }
       url += `?${params.toString()}`;
     }
-    const res = await fetch(url, { method: 'GET' });
+    const authHeaders = await this._authHeaders();
+    const res = await fetch(url, { method: 'GET', headers: authHeaders });
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`Query ${ref.endpoint} failed (${res.status}): ${text}`);
@@ -127,12 +151,18 @@ export class ConvexReactClient {
 }
 
 // ---------------------------------------------------------------------------
-// React context
+// React contexts
 // ---------------------------------------------------------------------------
 
 const ClientContext = createContext<ConvexReactClient | null>(null);
 
-/** Wraps children with the Isol8 client context. */
+interface AuthState {
+  isAuthenticated: boolean;
+  isLoading: boolean;
+}
+const AuthStateContext = createContext<AuthState>({ isAuthenticated: false, isLoading: true });
+
+/** Wraps children with the Isol8 client context (no auth). */
 export function ConvexProvider({
   client,
   children,
@@ -141,6 +171,44 @@ export function ConvexProvider({
   children: ReactNode;
 }) {
   return createElement(ClientContext.Provider, { value: client }, children);
+}
+
+/**
+ * Wraps children with the Isol8 client context AND Clerk auth.
+ *
+ * Accepts `useAuth` (the Clerk useAuth hook) and wires it into the client
+ * so that all fetch calls include the Authorization header.
+ */
+export function ConvexProviderWithClerk({
+  client,
+  useAuth: useAuthHook,
+  children,
+}: {
+  client: ConvexReactClient;
+  useAuth: () => {
+    getToken: (opts?: any) => Promise<string | null>;
+    isSignedIn: boolean | undefined;
+    isLoaded: boolean | undefined;
+  };
+  children: ReactNode;
+}) {
+  const auth = useAuthHook();
+
+  useEffect(() => {
+    client.setAuth(() => auth.getToken());
+    return () => client.clearAuth();
+  }, [client, auth.getToken]);
+
+  const authState: AuthState = {
+    isAuthenticated: !!auth.isSignedIn,
+    isLoading: !auth.isLoaded,
+  };
+
+  return createElement(
+    AuthStateContext.Provider,
+    { value: authState },
+    createElement(ClientContext.Provider, { value: client }, children),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +222,11 @@ export function useConvex(): ConvexReactClient {
     throw new Error('useConvex must be used within a <ConvexProvider>');
   }
   return client;
+}
+
+/** Get auth state. Mirrors the original convex/react useConvexAuth(). */
+export function useConvexAuth(): AuthState {
+  return useContext(AuthStateContext);
 }
 
 /**
@@ -215,9 +288,3 @@ export function useMutation(ref: FunctionRef): (args?: Record<string, any>) => P
     [ref?.endpoint],
   );
 }
-
-// ---------------------------------------------------------------------------
-// Alias so the convex/react-clerk path also resolves here
-// ---------------------------------------------------------------------------
-
-export { ConvexProvider as ConvexProviderWithClerk };
