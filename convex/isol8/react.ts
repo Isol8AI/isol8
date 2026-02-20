@@ -1,9 +1,16 @@
 /**
- * Isol8 REST client — replaces the convex/react npm package entirely.
+ * Isol8 Convex-compatible client — replaces the convex/react npm package.
  *
- * All network calls go to the Isol8 backend (VITE_BACKEND_URL). There is
- * no connection to Convex — the class/hook names are kept only so that
- * existing component imports work without changes.
+ * Game state queries (/town/state, /town/descriptions) are delivered via the
+ * shared API Gateway WebSocket (same one used for chat).  The client sends
+ * {"type":"town_subscribe"} on connect and receives {"type":"town_state",…}
+ * messages whenever state changes.  Both queries update from the same message,
+ * giving us the same atomic update guarantee that Convex subscriptions provide.
+ *
+ * Non-game queries (user-status, input-status) fall back to REST polling.
+ *
+ * When VITE_WS_URL is not set (local dev), the WebSocket path is skipped and
+ * all queries use REST polling.
  */
 
 import {
@@ -26,26 +33,35 @@ interface FunctionRef {
   endpoint: string;
 }
 
+// Map from WebSocket message keys to the endpoint they serve
+const WS_KEY_FOR_ENDPOINT: Record<string, string> = {
+  '/town/state': 'worldState',
+  '/town/descriptions': 'gameDescriptions',
+};
+
 // ---------------------------------------------------------------------------
-// Client — talks to the Isol8 REST backend
+// Client
 // ---------------------------------------------------------------------------
 
-/**
- * Exported as `ConvexReactClient` so existing imports keep working.
- * Internally this is just an HTTP client pointed at the Isol8 backend.
- *
- * The constructor signature matches the old Convex one (url string + opts)
- * so ConvexClientProvider.tsx doesn't need changes. Both arguments are
- * ignored — the real URL comes from VITE_BACKEND_URL.
- */
 export class ConvexReactClient {
   private _apiUrl: string;
+  private _wsUrl: string | null;
   private _getToken: (() => Promise<string | null>) | null = null;
+
+  // WebSocket state
+  private _ws: WebSocket | null = null;
+  private _wsCache: Record<string, any> = {};
+  private _wsListeners: Set<() => void> = new Set();
+  private _reconnectDelay = 1000;
+  private _connectAttempt = 0; // Guards against duplicate connections
 
   constructor(_ignoredUrl?: string, _ignoredOpts?: Record<string, any>) {
     this._apiUrl =
       (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ??
       'http://localhost:8000/api/v1';
+    this._wsUrl =
+      (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_WS_URL) ?? null;
+    // Don't connect WS here — wait for setAuth() so we have a token
   }
 
   // -- helpers -------------------------------------------------------------
@@ -59,25 +75,127 @@ export class ConvexReactClient {
     try {
       const token = await this._getToken();
       if (token) return { Authorization: `Bearer ${token}` };
-    } catch {
-      // Token fetch failed — continue without auth.
-    }
+    } catch { /* continue without auth */ }
     return {};
   }
 
-  /** Set the token-getter callback. Called by ConvexProviderWithClerk. */
   setAuth(getToken: () => Promise<string | null>) {
     this._getToken = getToken;
+    // (Re)connect the WebSocket now that we have auth
+    if (this._wsUrl) {
+      this._closeWs();
+      void this._connectWs();
+    }
   }
 
-  /** Clear auth state. */
   clearAuth() {
     this._getToken = null;
+    this._closeWs();
   }
 
-  // -- public API ----------------------------------------------------------
+  // -- WebSocket (API Gateway) ---------------------------------------------
 
-  /** POST to the Isol8 backend. */
+  private _closeWs() {
+    if (this._ws) {
+      // Detach handlers to prevent the onclose reconnect loop
+      const ws = this._ws;
+      ws.onclose = null;
+      ws.onerror = null;
+      ws.onmessage = null;
+      ws.close();
+      this._ws = null;
+    }
+    // Invalidate any pending reconnect
+    this._connectAttempt++;
+  }
+
+  private async _connectWs() {
+    if (!this._wsUrl || !this._getToken) return;
+
+    const attempt = ++this._connectAttempt;
+
+    // Get a fresh Clerk token for the API Gateway Lambda authorizer
+    let token: string | null = null;
+    try {
+      token = await this._getToken();
+    } catch { /* no token yet */ }
+
+    // Bail if superseded by a newer attempt (setAuth called again, clearAuth, etc.)
+    if (attempt !== this._connectAttempt) return;
+
+    if (!token) {
+      // Auth not ready yet — retry shortly
+      setTimeout(() => {
+        if (attempt === this._connectAttempt) void this._connectWs();
+      }, this._reconnectDelay);
+      return;
+    }
+
+    const wsUrl = `${this._wsUrl}?token=${token}`;
+    try {
+      const ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        if (attempt !== this._connectAttempt) { ws.close(); return; }
+        this._ws = ws;
+        this._reconnectDelay = 1000;
+        // Subscribe to town state updates on the shared WebSocket
+        ws.send(JSON.stringify({ type: 'town_subscribe' }));
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg.type === 'town_state') {
+            // Server sends: { type:"town_state", worldState:{…}, gameDescriptions:{…} }
+            // Update cache then notify all listeners (React batches setState)
+            if (msg.worldState) this._wsCache['/town/state'] = msg.worldState;
+            if (msg.gameDescriptions) this._wsCache['/town/descriptions'] = msg.gameDescriptions;
+            for (const cb of this._wsListeners) {
+              try { cb(); } catch { /* swallow */ }
+            }
+          }
+          // Ignore other message types (chat, pong, etc.)
+        } catch { /* malformed message */ }
+      };
+
+      ws.onclose = () => {
+        if (attempt !== this._connectAttempt) return;
+        this._ws = null;
+        // Reconnect with backoff (gets a fresh token each time)
+        setTimeout(() => {
+          if (attempt === this._connectAttempt) void this._connectWs();
+        }, this._reconnectDelay);
+        this._reconnectDelay = Math.min(this._reconnectDelay * 1.5, 10000);
+      };
+
+      ws.onerror = () => { /* onclose fires after onerror */ };
+    } catch {
+      setTimeout(() => {
+        if (attempt === this._connectAttempt) void this._connectWs();
+      }, this._reconnectDelay);
+      this._reconnectDelay = Math.min(this._reconnectDelay * 1.5, 10000);
+    }
+  }
+
+  /** Read the latest cached value for a WebSocket-delivered endpoint. */
+  getWsCached(endpoint: string): any {
+    return this._wsCache[endpoint];
+  }
+
+  /** Listen for any WebSocket data change. Returns unsubscribe function. */
+  onWsUpdate(cb: () => void): () => void {
+    this._wsListeners.add(cb);
+    return () => { this._wsListeners.delete(cb); };
+  }
+
+  /** Whether the API Gateway WebSocket path is available (VITE_WS_URL set). */
+  get wsEnabled(): boolean {
+    return this._wsUrl !== null;
+  }
+
+  // -- REST ----------------------------------------------------------------
+
   async mutation(ref: FunctionRef, args?: Record<string, any>): Promise<any> {
     const authHeaders = await this._authHeaders();
     const res = await fetch(this._url(ref.endpoint), {
@@ -92,7 +210,6 @@ export class ConvexReactClient {
     return res.json();
   }
 
-  /** GET from the Isol8 backend. Args become query-string params. */
   async query(ref: FunctionRef, args?: Record<string, any>): Promise<any> {
     let url = this._url(ref.endpoint);
     if (args && Object.keys(args).length > 0) {
@@ -111,10 +228,6 @@ export class ConvexReactClient {
     return res.json();
   }
 
-  /**
-   * Poll a query for changes. Returns an object with localQueryResult()
-   * and onUpdate(callback) — the interface used by sendInput.ts.
-   */
   watchQuery(ref: FunctionRef, args?: Record<string, any>) {
     let latestResult: any = undefined;
     let listeners: Array<() => void> = [];
@@ -122,29 +235,17 @@ export class ConvexReactClient {
 
     const poll = async () => {
       if (disposed) return;
-      try {
-        latestResult = await this.query(ref, args);
-      } catch {
-        // Retry silently on next tick.
-      }
-      for (const cb of listeners) {
-        try { cb(); } catch { /* swallow */ }
-      }
-      if (!disposed) {
-        setTimeout(poll, 500);
-      }
+      try { latestResult = await this.query(ref, args); } catch { /* retry */ }
+      for (const cb of listeners) { try { cb(); } catch { /* swallow */ } }
+      if (!disposed) setTimeout(poll, 500);
     };
-
     void poll();
 
     return {
       localQueryResult: () => latestResult,
       onUpdate: (cb: () => void): (() => void) => {
         listeners.push(cb);
-        return () => {
-          disposed = true;
-          listeners = [];
-        };
+        return () => { disposed = true; listeners = []; };
       },
     };
   }
@@ -156,84 +257,45 @@ export class ConvexReactClient {
 
 const ClientContext = createContext<ConvexReactClient | null>(null);
 
-interface AuthState {
-  isAuthenticated: boolean;
-  isLoading: boolean;
-}
+interface AuthState { isAuthenticated: boolean; isLoading: boolean; }
 const AuthStateContext = createContext<AuthState>({ isAuthenticated: false, isLoading: true });
 
-/** Wraps children with the Isol8 client context (no auth). */
-export function ConvexProvider({
-  client,
-  children,
-}: {
-  client: ConvexReactClient;
-  children: ReactNode;
-}) {
+export function ConvexProvider({ client, children }: { client: ConvexReactClient; children: ReactNode }) {
   return createElement(ClientContext.Provider, { value: client }, children);
 }
 
-/**
- * Wraps children with the Isol8 client context AND Clerk auth.
- *
- * Accepts `useAuth` (the Clerk useAuth hook) and wires it into the client
- * so that all fetch calls include the Authorization header.
- */
 export function ConvexProviderWithClerk({
-  client,
-  useAuth: useAuthHook,
-  children,
+  client, useAuth: useAuthHook, children,
 }: {
   client: ConvexReactClient;
-  useAuth: () => {
-    getToken: (opts?: any) => Promise<string | null>;
-    isSignedIn: boolean | undefined;
-    isLoaded: boolean | undefined;
-  };
+  useAuth: () => { getToken: (opts?: any) => Promise<string | null>; isSignedIn: boolean | undefined; isLoaded: boolean | undefined };
   children: ReactNode;
 }) {
   const auth = useAuthHook();
-
-  useEffect(() => {
-    client.setAuth(() => auth.getToken());
-    return () => client.clearAuth();
-  }, [client, auth.getToken]);
-
-  const authState: AuthState = {
-    isAuthenticated: !!auth.isSignedIn,
-    isLoading: !auth.isLoaded,
-  };
-
-  return createElement(
-    AuthStateContext.Provider,
-    { value: authState },
-    createElement(ClientContext.Provider, { value: client }, children),
-  );
+  useEffect(() => { client.setAuth(() => auth.getToken()); return () => client.clearAuth(); }, [client, auth.getToken]);
+  const authState: AuthState = { isAuthenticated: !!auth.isSignedIn, isLoading: !auth.isLoaded };
+  return createElement(AuthStateContext.Provider, { value: authState }, createElement(ClientContext.Provider, { value: client }, children));
 }
 
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
 
-/** Get the client from context. */
 export function useConvex(): ConvexReactClient {
   const client = useContext(ClientContext);
-  if (!client) {
-    throw new Error('useConvex must be used within a <ConvexProvider>');
-  }
+  if (!client) throw new Error('useConvex must be used within a <ConvexProvider>');
   return client;
 }
 
-/** Get auth state. Mirrors the original convex/react useConvexAuth(). */
 export function useConvexAuth(): AuthState {
   return useContext(AuthStateContext);
 }
 
 /**
- * Poll an Isol8 REST endpoint. Returns undefined while loading or skipped.
+ * Subscribe to a query. Game-state endpoints use the API Gateway WebSocket
+ * (atomic updates); everything else falls back to REST polling.
  *
- *   useQuery(api.world.worldState, { worldId })
- *   useQuery(api.world.worldState, worldId ? { worldId } : 'skip')
+ * When VITE_WS_URL is not set (local dev), ALL queries use REST polling.
  */
 export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'): any {
   const client = useContext(ClientContext);
@@ -241,16 +303,28 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
   const argsKey = args === 'skip' ? 'skip' : JSON.stringify(args ?? {});
 
   useEffect(() => {
-    if (!client || args === 'skip') {
-      setData(undefined);
-      return;
+    if (!client || args === 'skip') { setData(undefined); return; }
+
+    const resolved = (typeof args === 'object' && args !== null ? args : undefined) as
+      | Record<string, any> | undefined;
+
+    // WebSocket path — /town/state and /town/descriptions are pushed by server
+    if (client.wsEnabled && ref.endpoint in WS_KEY_FOR_ENDPOINT) {
+      // Read cached value immediately (may already have data from WS)
+      const cached = client.getWsCached(ref.endpoint);
+      if (cached !== undefined) setData(cached);
+
+      // Listen for updates — React batches setState calls from the same
+      // WS message, so both /town/state and /town/descriptions update
+      // in one render pass. This matches Convex's atomic subscription model.
+      return client.onWsUpdate(() => {
+        const val = client.getWsCached(ref.endpoint);
+        if (val !== undefined) setData(val);
+      });
     }
 
+    // REST polling fallback
     let cancelled = false;
-    const resolved = (typeof args === 'object' && args !== null ? args : undefined) as
-      | Record<string, any>
-      | undefined;
-
     const fetchData = async () => {
       try {
         const result = await client.query(ref, resolved);
@@ -259,27 +333,18 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
         console.warn(`useQuery(${ref.endpoint}) error:`, err);
       }
     };
-
     void fetchData();
     const id = setInterval(fetchData, 1000);
-
     return () => { cancelled = true; clearInterval(id); };
   }, [client, ref?.endpoint, argsKey]);
 
   return data;
 }
 
-/**
- * Returns a stable callback that POSTs to the Isol8 backend.
- *
- *   const heartbeat = useMutation(api.world.heartbeatWorld);
- *   await heartbeat({ worldId });
- */
 export function useMutation(ref: FunctionRef): (args?: Record<string, any>) => Promise<any> {
   const client = useContext(ClientContext);
   const clientRef = useRef(client);
   clientRef.current = client;
-
   return useCallback(
     async (args?: Record<string, any>) => {
       if (!clientRef.current) throw new Error('useMutation: no ConvexProvider');

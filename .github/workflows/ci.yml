@@ -41,5 +41,6 @@ jobs:
       - name: Build
         env:
           VITE_BACKEND_URL: https://api-dev.isol8.co/api/v1
+          VITE_WS_URL: wss://ws-dev.isol8.co
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
         run: npm run build

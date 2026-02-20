@@ -54,6 +54,7 @@ jobs:
         run: npm run build
         env:
           VITE_BACKEND_URL: https://api-dev.isol8.co/api/v1
+          VITE_WS_URL: wss://ws-dev.isol8.co
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
 
   # ===========================================================================
@@ -85,6 +86,7 @@ jobs:
         run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VITE_BACKEND_URL: https://api-dev.isol8.co/api/v1
+          VITE_WS_URL: wss://ws-dev.isol8.co
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
 
       - name: Deploy to Dev
@@ -125,6 +127,7 @@ jobs:
         run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VITE_BACKEND_URL: https://api-staging.isol8.co/api/v1
+          VITE_WS_URL: wss://ws-staging.isol8.co
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
 
       - name: Deploy to Staging
@@ -165,6 +168,7 @@ jobs:
         run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
         env:
           VITE_BACKEND_URL: https://api.isol8.co/api/v1
+          VITE_WS_URL: wss://ws.isol8.co
           VITE_CLERK_PUBLISHABLE_KEY: ${{ secrets.VITE_CLERK_PUBLISHABLE_KEY }}
 
       - name: Deploy to Production
