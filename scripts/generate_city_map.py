@@ -91,20 +91,21 @@ GRASS_F = 2050  # (r41,c0) rgb(149,193,73) medium green, 1012/1024
 
 GRASS_TILES = [GRASS_A, GRASS_B, GRASS_C, GRASS_D, GRASS_E, GRASS_F]
 
-# --- Stone / path (RPG tileset, verified gray fills) ---
-STONE_A = 760   # (r15,c10) rgb(154,161,163) light gray, 1024/1024
-STONE_B = 761   # (r15,c11) rgb(160,165,166) lighter gray, 1024/1024
-STONE_C = 762   # (r15,c12) rgb(155,162,164) light gray, 1024/1024
-STONE_D = 764   # (r15,c14) rgb(171,178,175) lightest gray, 1024/1024
-STONE_E = 1501  # (r30,c1)  rgb(154,166,165) gray stone, 1024/1024
+# --- Stone / path (magecity rows 10-11 = warm gray cobblestone) ---
+# These are from the magecity tileset (combined indices via mc())
+STONE_A = mc(80)  # 3000 (r10,c0) rgb(154,139,126) warm gray, var=2977
+STONE_B = mc(81)  # 3001 (r10,c1) rgb(160,145,131) warm gray, var=3044
+STONE_C = mc(82)  # 3002 (r10,c2) rgb(154,139,126) warm gray, var=2892
+STONE_D = mc(83)  # 3003 (r10,c3) rgb(158,144,130) warm gray, var=3062
+STONE_E = mc(84)  # 3004 (r10,c4) rgb(158,144,130) warm gray, var=3039
 
 STONE_TILES = [STONE_A, STONE_B, STONE_C, STONE_D, STONE_E]
 
-# --- Cobblestone / plaza (darker gray) ---
-COBBLE_A = 806  # (r16,c6)  rgb(141,143,147) darker gray, 1024/1024
-COBBLE_B = 807  # (r16,c7)  rgb(137,139,143) darker gray, 1024/1024
-COBBLE_C = 1500 # (r30,c0)  rgb(121,126,137) dark gray, 992/1024
-COBBLE_D = 1503 # (r30,c3)  rgb(142,150,153) gray, 1024/1024
+# --- Plaza cobblestone (magecity rows 9 = slightly different warm stone) ---
+COBBLE_A = mc(72)  # 2950 (r9,c0) rgb(149,133,121) warm stone, var=2642
+COBBLE_B = mc(73)  # 2951 (r9,c1) rgb(152,137,124) warm stone, var=2891
+COBBLE_C = mc(74)  # 2952 (r9,c2) rgb(148,132,120) warm stone, var=2557
+COBBLE_D = mc(75)  # 2953 (r9,c3) rgb(158,143,129) lighter stone, var=3108
 
 # --- Water (RPG tileset, verified solid blue fills) ---
 WATER_A = 201   # (r4,c1)   rgb(121,155,255) solid blue, 1024/1024
@@ -122,22 +123,21 @@ TREE_BR = 1303  # (r26,c3) rgb(61,88,71)
 # Single-tile tree/bush
 BUSH = 1200     # (r24,c0) rgb(85,132,70) dark green, 880/1024
 
-# --- Building tiles (RPG tileset yellow roofs + brown walls) ---
-# VERIFIED: solid yellow/gold fills for roofs
-ROOF_TL  = 74   # (r1,c24)  rgb(226,197,83) bright gold, 1024/1024
-ROOF_TC  = 76   # (r1,c26)  rgb(227,198,84) bright gold, 1024/1024
-ROOF_TR  = 77   # (r1,c27)  rgb(190,156,70) darker gold, 1024/1024
-ROOF_ML  = 126  # (r2,c26)  rgb(204,172,75) gold, 1024/1024
-ROOF_MC  = 133  # (r2,c33)  rgb(224,194,83) bright gold, 1024/1024
-ROOF_MR  = 137  # (r2,c37)  rgb(196,163,72) gold, 1024/1024
-ROOF_BL  = 226  # (r4,c26)  rgb(198,166,73) gold, 1024/1024
-ROOF_BC  = 229  # (r4,c29)  rgb(225,209,99) light gold, 1024/1024
-ROOF_BR  = 231  # (r4,c31)  rgb(221,205,98) light gold, 1024/1024
-# Brown wall tiles
-WALL_FILL = 1511 # (r30,c11) rgb(83,67,52) dark brown, 1024/1024
-WALL_ALT  = 1510 # (r30,c10) rgb(94,91,80) dark olive, 996/1024
-# Door
-DOOR_TILE = 27   # (r0,c27)  rgb(195,161,72) gold (door-like), 1024/1024
+# --- Building tiles (magecity beige brick + dark slate roof) ---
+# Beige brick walls (magecity row 4) - building body from top-down
+BRICK_A   = mc(32)  # 2700 (r4,c0) rgb(175,145,95)  beige brick, var=5956
+BRICK_B   = mc(34)  # 2702 (r4,c2) rgb(176,147,97)  beige brick, var=6254
+BRICK_C   = mc(36)  # 2704 (r4,c4) rgb(171,138,92)  beige brick, var=5506
+BRICK_D   = mc(37)  # 2705 (r4,c5) rgb(162,130,83)  beige brick, var=5731
+# Dark slate roof (magecity row 7) - building roof edge
+SLATE_A   = mc(56)  # 2850 (r7,c0) rgb(43,55,77)    dark slate, var=1032
+SLATE_B   = mc(57)  # 2851 (r7,c1) rgb(40,51,74)    dark slate, var=0 (flat!)
+SLATE_C   = mc(58)  # 2852 (r7,c2) rgb(42,54,76)    dark slate, var=796
+# Door tile (flat brown from RPG tileset)
+DOOR_TILE = 78      # (r1,c28)  rgb(154,114,57) flat brown, var=0
+# Aliases used by place_building
+ROOF_FILL = SLATE_B
+WALL_FILL = BRICK_A
 
 EMPTY = -1  # transparent / no tile
 
@@ -219,40 +219,26 @@ def place_2x2_tree(layer, x, y):
 
 
 def place_building(obj_layer, detail_layer, x1, y1, x2, y2):
-    """Place a building footprint: roof on detail, solid collision on obj."""
-    w = x2 - x1 + 1
-    h = y2 - y1 + 1
+    """Place a building footprint: brick body with slate roof border on detail,
+    solid collision on obj layer."""
+    # Object layer: entire building is solid (blocks walking)
+    fill_rect(obj_layer, x1, y1, x2, y2, BRICK_A)
 
-    # Object layer: entire building is solid
-    fill_rect(obj_layer, x1, y1, x2, y2, WALL_FILL)
+    # Detail layer: slate border with beige brick interior
+    # Border (1 tile) = dark slate roof edge
+    fill_rect(detail_layer, x1, y1, x2, y2, SLATE_B)
 
-    # Detail layer: roof pattern
-    if w >= 3 and h >= 3:
-        # Top row
-        detail_layer[x1][y1] = ROOF_TL
-        detail_layer[x2][y1] = ROOF_TR
+    # Interior (inset 1 tile) = beige brick body
+    if x2 - x1 >= 2 and y2 - y1 >= 2:
+        # Alternate brick variants for visual interest
         for x in range(x1 + 1, x2):
-            detail_layer[x][y1] = ROOF_TC
-
-        # Middle rows
-        for y in range(y1 + 1, y2):
-            detail_layer[x1][y] = ROOF_ML
-            detail_layer[x2][y] = ROOF_MR
-            for x in range(x1 + 1, x2):
-                detail_layer[x][y] = ROOF_MC
-
-        # Bottom row
-        detail_layer[x1][y2] = ROOF_BL
-        detail_layer[x2][y2] = ROOF_BR
-        for x in range(x1 + 1, x2):
-            detail_layer[x][y2] = ROOF_BC
+            for y in range(y1 + 1, y2):
+                brick = [BRICK_A, BRICK_B, BRICK_C, BRICK_D]
+                detail_layer[x][y] = brick[(x + y) % len(brick)]
 
         # Door in bottom-center
         door_x = (x1 + x2) // 2
         detail_layer[door_x][y2] = DOOR_TILE
-    else:
-        # Small building - just fill with wall
-        fill_rect(detail_layer, x1, y1, x2, y2, WALL_FILL)
 
 
 # ===========================================================================
