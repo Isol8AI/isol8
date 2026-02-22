@@ -111,7 +111,7 @@ class GatewayHttpClient:
             # execution), we yield a None sentinel so downstream layers
             # can emit keepalive events and prevent socket timeouts.
             _HEARTBEAT_INTERVAL = 15  # seconds
-            underlying_sock = getattr(getattr(getattr(resp, 'fp', None), 'raw', None), '_sock', None)
+            underlying_sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
             if underlying_sock is not None:
                 underlying_sock.settimeout(_HEARTBEAT_INTERVAL)
 
