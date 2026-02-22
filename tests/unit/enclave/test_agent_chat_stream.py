@@ -107,6 +107,12 @@ def _make_server() -> BedrockServer:
     server.bedrock = MagicMock()
     server.bedrock.has_credentials.return_value = True
     server.region = "us-east-1"
+    # Gateway fields (added for gateway runtime support)
+    server._agent_runtime = "subprocess"
+    server._gateway = None
+    server._http_client = None
+    server._lock = MagicMock()
+    server._gateway_started = False
     return server
 
 

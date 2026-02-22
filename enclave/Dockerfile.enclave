@@ -116,6 +116,10 @@ COPY enclave/run_agent.mjs .
 COPY enclave/proxy_bootstrap.cjs .
 COPY enclave/vsock_tcp_bridge.py .
 
+# OpenClaw gateway manager (persistent gateway + HTTP client)
+COPY enclave/gateway_manager.py .
+COPY enclave/gateway_http_client.py .
+
 # Entrypoint script (brings up loopback, drops to enclave user)
 COPY enclave/entrypoint.sh .
 RUN chmod +x /app/entrypoint.sh
