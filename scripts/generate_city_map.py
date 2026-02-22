@@ -81,71 +81,63 @@ def mc(mage_index: int) -> int:
 # ---------------------------------------------------------------------------
 
 # --- Grass / ground (RPG tileset) ---
-GRASS_A = 51    # row 1, col 1  - bright green grass (100,209,76)
-GRASS_B = 52    # row 1, col 2  - bright green grass
-GRASS_C = 53    # row 1, col 3  - bright green grass
-GRASS_D = 54    # row 1, col 4  - bright green grass
-GRASS_E = 501   # row 10, col 1 - lighter green variant (158,212,72)
-GRASS_F = 502   # row 10, col 2 - lighter green
-GRASS_EDGE = 50 # row 1, col 0  - grass edge (105,192,79)
+# VERIFIED: all 100% opaque solid green fills via pixel analysis
+GRASS_A = 51    # (r1,c1)  rgb(105,210,78) bright green, 1024/1024
+GRASS_B = 501   # (r10,c1) rgb(162,212,74) lighter green, 1024/1024
+GRASS_C = 2100  # (r42,c0) rgb(149,196,73) medium green, 1024/1024
+GRASS_D = 2101  # (r42,c1) rgb(160,211,73) lighter green, 1024/1024
+GRASS_E = 2102  # (r42,c2) rgb(146,187,74) medium green, 1024/1024
+GRASS_F = 2050  # (r41,c0) rgb(149,193,73) medium green, 1012/1024
 
 GRASS_TILES = [GRASS_A, GRASS_B, GRASS_C, GRASS_D, GRASS_E, GRASS_F]
 
-# --- Stone / path (RPG tileset rows 30-31, gray stone) ---
-STONE_A = 1500  # row 30, col 0  - gray stone (125,129,136)
-STONE_B = 1501  # row 30, col 1  - lighter gray (148,162,163)
-STONE_C = 1503  # row 30, col 3  - gray
-STONE_D = 1550  # row 31, col 0  - gray
-STONE_E = 1551  # row 31, col 1  - gray
+# --- Stone / path (RPG tileset, verified gray fills) ---
+STONE_A = 760   # (r15,c10) rgb(154,161,163) light gray, 1024/1024
+STONE_B = 761   # (r15,c11) rgb(160,165,166) lighter gray, 1024/1024
+STONE_C = 762   # (r15,c12) rgb(155,162,164) light gray, 1024/1024
+STONE_D = 764   # (r15,c14) rgb(171,178,175) lightest gray, 1024/1024
+STONE_E = 1501  # (r30,c1)  rgb(154,166,165) gray stone, 1024/1024
 
 STONE_TILES = [STONE_A, STONE_B, STONE_C, STONE_D, STONE_E]
 
-# --- Cobblestone / brown stone (RPG tileset rows 30-31, cols 10-13) ---
-COBBLE_A = 1510  # row 30, col 10 - tan/brown stone (136,132,111)
-COBBLE_B = 1511  # row 30, col 11 - darker brown (84,68,52)
-COBBLE_C = 1560  # row 31, col 10
-COBBLE_D = 1561  # row 31, col 11
+# --- Cobblestone / plaza (darker gray) ---
+COBBLE_A = 806  # (r16,c6)  rgb(141,143,147) darker gray, 1024/1024
+COBBLE_B = 807  # (r16,c7)  rgb(137,139,143) darker gray, 1024/1024
+COBBLE_C = 1500 # (r30,c0)  rgb(121,126,137) dark gray, 992/1024
+COBBLE_D = 1503 # (r30,c3)  rgb(142,150,153) gray, 1024/1024
 
-# --- Water (RPG tileset, blue tiles) ---
-WATER_A = 58   # row 1, col 8  - blue water (121,154,255)
-WATER_B = 59   # row 1, col 9  - blue water
-WATER_C = 8    # row 0, col 8  - blue water
-WATER_D = 9    # row 0, col 9  - blue water
+# --- Water (RPG tileset, verified solid blue fills) ---
+WATER_A = 201   # (r4,c1)   rgb(121,155,255) solid blue, 1024/1024
+WATER_B = 206   # (r4,c6)   rgb(121,155,255) solid blue, 1024/1024
+WATER_C = 351   # (r7,c1)   rgb(121,155,255) solid blue, 1024/1024
+WATER_D = 356   # (r7,c6)   rgb(121,155,255) solid blue, 1024/1024
 
-# --- Trees (RPG tileset, rows 24-26, dark green) ---
-# Trees are 2x2 blocks:
-#   TOP_LEFT   TOP_RIGHT
-#   BOT_LEFT   BOT_RIGHT
-TREE_TL = 1252  # row 25, col 2 - dark green (85,141,68)
-TREE_TR = 1253  # row 25, col 3 - dark green
-TREE_BL = 1302  # row 26, col 2 - darker green (61,108,67)
-TREE_BR = 1303  # row 26, col 3 - darker (54,74,76)
+# --- Trees (RPG tileset, rows 25-26) ---
+# VERIFIED: dark green fills
+TREE_TL = 1252  # (r25,c2) rgb(118,169,71) green, 1024/1024
+TREE_TR = 1253  # (r25,c3) rgb(77,119,70) darker, 780/1024
+TREE_BL = 1302  # (r26,c2) rgb(61,88,71) dark green, 1024/1024
+TREE_BR = 1303  # (r26,c3) rgb(61,88,71)
 
-# Single-tile tree/bush (smaller)
-BUSH = 1200     # row 24, col 0 - dark green (85,141,68)
+# Single-tile tree/bush
+BUSH = 1200     # (r24,c0) rgb(85,132,70) dark green, 880/1024
 
-# --- Building tiles (magecity) ---
-# Walls / roofs from magecity tileset
-MC_GROUND   = mc(1)    # base ground
-MC_WALL_L   = mc(193)  # left wall
-MC_WALL_C   = mc(194)  # center wall / fill (most common ground in mage3)
-MC_WALL_R   = mc(195)  # right wall
-MC_ROOF_TL  = mc(72)   # roof top-left
-MC_ROOF_TC  = mc(80)   # roof top-center
-MC_ROOF_TR  = mc(88)   # roof top-right
-MC_ROOF_ML  = mc(73)   # roof mid-left
-MC_ROOF_MC  = mc(81)   # roof mid-center
-MC_ROOF_MR  = mc(89)   # roof mid-right
-MC_ROOF_BL  = mc(74)   # roof bottom-left
-MC_ROOF_BC  = mc(82)   # roof bottom-center
-MC_ROOF_BR  = mc(90)   # roof bottom-right
-MC_DOOR     = mc(9)    # door/entrance
-MC_WINDOW   = mc(346)  # window decoration
-MC_EDGE_L   = mc(236)  # edge left
-MC_EDGE_R   = mc(238)  # edge right
-MC_FENCE_T  = mc(211)  # fence/decoration top
-MC_FLOOR_A  = mc(0)    # interior floor
-MC_FLOOR_B  = mc(227)  # floor variant
+# --- Building tiles (RPG tileset yellow roofs + brown walls) ---
+# VERIFIED: solid yellow/gold fills for roofs
+ROOF_TL  = 74   # (r1,c24)  rgb(226,197,83) bright gold, 1024/1024
+ROOF_TC  = 76   # (r1,c26)  rgb(227,198,84) bright gold, 1024/1024
+ROOF_TR  = 77   # (r1,c27)  rgb(190,156,70) darker gold, 1024/1024
+ROOF_ML  = 126  # (r2,c26)  rgb(204,172,75) gold, 1024/1024
+ROOF_MC  = 133  # (r2,c33)  rgb(224,194,83) bright gold, 1024/1024
+ROOF_MR  = 137  # (r2,c37)  rgb(196,163,72) gold, 1024/1024
+ROOF_BL  = 226  # (r4,c26)  rgb(198,166,73) gold, 1024/1024
+ROOF_BC  = 229  # (r4,c29)  rgb(225,209,99) light gold, 1024/1024
+ROOF_BR  = 231  # (r4,c31)  rgb(221,205,98) light gold, 1024/1024
+# Brown wall tiles
+WALL_FILL = 1511 # (r30,c11) rgb(83,67,52) dark brown, 1024/1024
+WALL_ALT  = 1510 # (r30,c10) rgb(94,91,80) dark olive, 996/1024
+# Door
+DOOR_TILE = 27   # (r0,c27)  rgb(195,161,72) gold (door-like), 1024/1024
 
 EMPTY = -1  # transparent / no tile
 
@@ -232,35 +224,35 @@ def place_building(obj_layer, detail_layer, x1, y1, x2, y2):
     h = y2 - y1 + 1
 
     # Object layer: entire building is solid
-    fill_rect(obj_layer, x1, y1, x2, y2, MC_WALL_C)
+    fill_rect(obj_layer, x1, y1, x2, y2, WALL_FILL)
 
     # Detail layer: roof pattern
     if w >= 3 and h >= 3:
         # Top row
-        detail_layer[x1][y1] = MC_ROOF_TL
-        detail_layer[x2][y1] = MC_ROOF_TR
+        detail_layer[x1][y1] = ROOF_TL
+        detail_layer[x2][y1] = ROOF_TR
         for x in range(x1 + 1, x2):
-            detail_layer[x][y1] = MC_ROOF_TC
+            detail_layer[x][y1] = ROOF_TC
 
         # Middle rows
         for y in range(y1 + 1, y2):
-            detail_layer[x1][y] = MC_ROOF_ML
-            detail_layer[x2][y] = MC_ROOF_MR
+            detail_layer[x1][y] = ROOF_ML
+            detail_layer[x2][y] = ROOF_MR
             for x in range(x1 + 1, x2):
-                detail_layer[x][y] = MC_ROOF_MC
+                detail_layer[x][y] = ROOF_MC
 
         # Bottom row
-        detail_layer[x1][y2] = MC_ROOF_BL
-        detail_layer[x2][y2] = MC_ROOF_BR
+        detail_layer[x1][y2] = ROOF_BL
+        detail_layer[x2][y2] = ROOF_BR
         for x in range(x1 + 1, x2):
-            detail_layer[x][y2] = MC_ROOF_BC
+            detail_layer[x][y2] = ROOF_BC
 
         # Door in bottom-center
         door_x = (x1 + x2) // 2
-        detail_layer[door_x][y2] = MC_DOOR
+        detail_layer[door_x][y2] = DOOR_TILE
     else:
         # Small building - just fill with wall
-        fill_rect(detail_layer, x1, y1, x2, y2, MC_WALL_C)
+        fill_rect(detail_layer, x1, y1, x2, y2, WALL_FILL)
 
 
 # ===========================================================================
