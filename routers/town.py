@@ -55,9 +55,9 @@ def _load_map_data() -> dict:
     if _map_data is not None:
         return _map_data
 
-    map_path = Path(__file__).parent.parent / "data" / "gentle_map.json"
+    map_path = Path(__file__).parent.parent / "data" / "city_map.json"
     if not map_path.exists():
-        logger.warning("gentle_map.json not found, using empty map")
+        logger.warning("city_map.json not found, using empty map")
         _map_data = {
             "width": 64,
             "height": 48,
