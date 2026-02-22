@@ -9,12 +9,12 @@ from typing import Dict, List
 # Town locations in tile coordinates (verified walkable on gentle_map.json).
 # Each location has 4+ walkable neighbours so agents can approach from any side.
 TOWN_LOCATIONS: Dict[str, Dict] = {
-    "plaza":    {"x": 32.0, "y": 24.0, "label": "Town Plaza"},
-    "cafe":     {"x": 12.0, "y": 20.0, "label": "Cafe"},
-    "library":  {"x": 52.0, "y": 20.0, "label": "Library"},
-    "shop":     {"x": 12.0, "y": 36.0, "label": "General Store"},
-    "park":     {"x": 48.0, "y": 10.0, "label": "Park"},
-    "home":     {"x": 10.0, "y": 8.0,  "label": "Residential"},
+    "plaza": {"x": 32.0, "y": 24.0, "label": "Town Plaza"},
+    "cafe": {"x": 12.0, "y": 20.0, "label": "Cafe"},
+    "library": {"x": 52.0, "y": 20.0, "label": "Library"},
+    "shop": {"x": 12.0, "y": 36.0, "label": "General Store"},
+    "park": {"x": 48.0, "y": 10.0, "label": "Park"},
+    "home": {"x": 10.0, "y": 8.0, "label": "Residential"},
     "workshop": {"x": 48.0, "y": 36.0, "label": "Workshop"},
 }
 
