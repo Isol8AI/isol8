@@ -102,6 +102,18 @@ class GatewayManager:
             # Ensure AWS SDK finds credentials file
             proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
+            # Set proxy env vars for enclave networking.
+            # Inside the enclave, vsock_tcp_bridge.py listens on 127.0.0.1:3128
+            # and tunnels CONNECT requests through vsock to the parent's proxy.
+            # The gateway's Node.js process needs these to reach Bedrock APIs.
+            bridge_port = os.environ.get("VSOCK_BRIDGE_PORT", "3128")
+            if int(bridge_port) > 0:
+                proxy_url = f"http://127.0.0.1:{bridge_port}"
+                proc_env["HTTP_PROXY"] = proxy_url
+                proc_env["HTTPS_PROXY"] = proxy_url
+                proc_env["http_proxy"] = proxy_url
+                proc_env["https_proxy"] = proxy_url
+
             # Start gateway process
             cmd = [
                 "openclaw",
