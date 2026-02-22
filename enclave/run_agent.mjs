@@ -114,8 +114,14 @@ try {
 
 // Enclave safety overrides:
 //   - exec/bash: ENABLED (tmpfs sandbox, files persist in tarball)
-//   - web search: ENABLED when BRAVE_API_KEY is set (vsock allowlist permits api.search.brave.com)
-//   - web fetch/media/browser: DISABLED (unnecessary attack surface)
+//   - web search: ENABLED when BRAVE_API_KEY is set (vsock proxy allowlist)
+//   - web fetch: ENABLED (reads URLs, useful for following search results)
+//   - media understanding: DISABLED (image/audio/video analysis not needed)
+//   - browser: top-level key, disabled separately below
+//
+// IMPORTANT: All schemas use Zod .strict() — only recognized keys are allowed.
+// "browser" is a TOP-LEVEL config key, NOT under tools.
+// "media" under tools does NOT have an "enabled" field — disable via sub-fields.
 const braveKey = process.env.BRAVE_API_KEY || "";
 config.tools = {
   ...(config.tools || {}),
@@ -124,11 +130,16 @@ config.tools = {
       enabled: !!braveKey,
       provider: "brave",
     },
-    fetch: { enabled: false },
+    fetch: { enabled: true },
   },
-  media: { enabled: false },
-  browser: { enabled: false },
+  media: {
+    image: { enabled: false },
+    audio: { enabled: false },
+    video: { enabled: false },
+  },
 };
+// Browser is a top-level config key, not under tools
+config.browser = { enabled: false };
 
 // Configure Bedrock provider if not already set
 if (!config.models) {
@@ -190,6 +201,16 @@ if (!config.agents.defaults.memorySearch) {
       hybrid: { enabled: true, vectorWeight: 0.7, textWeight: 0.3 },
     },
   };
+}
+
+// Write the modified config back to disk so that OpenClaw's internal
+// loadConfig() calls (which re-read from disk with Zod .strict() validation)
+// get the correct config including memorySearch, tools, and models.
+try {
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  process.stderr.write(`[Bridge] Wrote validated config to ${configPath}\n`);
+} catch (writeErr) {
+  process.stderr.write(`[Bridge] WARNING: Failed to write config: ${writeErr.message}\n`);
 }
 
 // ---------------------------------------------------------------------------

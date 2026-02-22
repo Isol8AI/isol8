@@ -575,11 +575,13 @@ You are {agent_name}, a personal AI companion.
 """
 
         # Create openclaw.json config
-        config = {
-            "version": "1.0",
-            "agents": {agent_name: {"model": model}},
-            "defaults": {"model": model, "agent": agent_name},
-        }
+        # IMPORTANT: OpenClaw validates this file with Zod .strict() mode.
+        # Only recognized top-level keys are allowed (agents, models, tools, etc.).
+        # The "agents" key must contain "defaults" and/or "list" — NOT agent names.
+        # Invalid keys cause the ENTIRE config to be rejected, which prevents
+        # memorySearch (embeddings) from activating.
+        # We keep this minimal; run_agent.mjs adds models, tools, and memorySearch.
+        config = {}
         config_file = agent_dir / "openclaw.json"
         config_file.write_text(json.dumps(config, indent=2))
 
