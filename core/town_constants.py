@@ -9,12 +9,13 @@ from typing import Dict, List
 # Town locations in tile coordinates (verified walkable on gentle_map.json).
 # Each location has 4+ walkable neighbours so agents can approach from any side.
 TOWN_LOCATIONS: Dict[str, Dict] = {
-    "cafe": {"x": 6.0, "y": 6.0, "label": "Cafe"},
-    "plaza": {"x": 12.0, "y": 20.0, "label": "Town Plaza"},
-    "library": {"x": 31.0, "y": 7.0, "label": "Library"},
-    "park": {"x": 32.0, "y": 21.0, "label": "Park"},
-    "shop": {"x": 17.0, "y": 10.0, "label": "General Store"},
-    "home": {"x": 10.0, "y": 14.0, "label": "Home"},
+    "plaza":    {"x": 32.0, "y": 24.0, "label": "Town Plaza"},
+    "cafe":     {"x": 12.0, "y": 20.0, "label": "Cafe"},
+    "library":  {"x": 52.0, "y": 20.0, "label": "Library"},
+    "shop":     {"x": 12.0, "y": 36.0, "label": "General Store"},
+    "park":     {"x": 48.0, "y": 10.0, "label": "Park"},
+    "home":     {"x": 10.0, "y": 8.0,  "label": "Residential"},
+    "workshop": {"x": 48.0, "y": 36.0, "label": "Workshop"},
 }
 
 # Default characters for the town (same data used by both simulation and router)
@@ -29,7 +30,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "through the galaxy on whatever ship will take him."
         ),
         "plan": "You want to hear all the gossip.",
-        "spawn": {"x": 8.0, "y": 6.0},
+        "spawn": {"x": 14.0, "y": 20.0},
         "home": "cafe",
     },
     {
@@ -42,7 +43,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "out of the conversation as quickly as possible."
         ),
         "plan": "You want to avoid people as much as possible.",
-        "spawn": {"x": 18.0, "y": 5.0},
+        "spawn": {"x": 14.0, "y": 36.0},
         "home": "shop",
     },
     {
@@ -54,7 +55,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "She's incredibly charming and not afraid to use her charm."
         ),
         "plan": "You want to take advantage of others as much as possible.",
-        "spawn": {"x": 12.0, "y": 13.0},
+        "spawn": {"x": 12.0, "y": 8.0},
         "home": "home",
     },
     {
@@ -66,7 +67,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "has discovered mysteries of the universe no one else can understand."
         ),
         "plan": "You want to figure out how the world works.",
-        "spawn": {"x": 31.0, "y": 5.0},
+        "spawn": {"x": 54.0, "y": 20.0},
         "home": "library",
     },
     {
@@ -79,7 +80,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "up his deep faith."
         ),
         "plan": "You want to convert everyone to your religion.",
-        "spawn": {"x": 10.0, "y": 17.0},
+        "spawn": {"x": 34.0, "y": 24.0},
         "home": "plaza",
     },
 ]
