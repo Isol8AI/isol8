@@ -100,9 +100,7 @@ class GatewayManager:
             proc_env["OPENCLAW_STATE_DIR"] = str(self._workspace)
             proc_env["OPENCLAW_HOME"] = str(self._workspace)
             # Ensure AWS SDK finds credentials file
-            proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(
-                self._workspace / ".aws" / "credentials"
-            )
+            proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
             # Start gateway process
             cmd = [
@@ -146,8 +144,7 @@ class GatewayManager:
                 if self._check_health():
                     self._started = True
                     print(
-                        f"[Gateway] Started on port {self._port} "
-                        f"(took {time.monotonic() - start_time:.1f}s)",
+                        f"[Gateway] Started on port {self._port} (took {time.monotonic() - start_time:.1f}s)",
                         flush=True,
                     )
                     return
@@ -155,9 +152,7 @@ class GatewayManager:
 
             # Timeout — kill the process
             self._kill_process()
-            raise GatewayUnavailableError(
-                f"Gateway failed to become healthy within {_STARTUP_TIMEOUT}s"
-            )
+            raise GatewayUnavailableError(f"Gateway failed to become healthy within {_STARTUP_TIMEOUT}s")
 
     def stop(self) -> None:
         """Stop the gateway process gracefully."""
@@ -257,9 +252,7 @@ class GatewayManager:
                 except GatewayUnavailableError:
                     print(f"[Gateway] Restart attempt {attempt} failed", flush=True)
 
-            raise GatewayUnavailableError(
-                f"Gateway failed to recover after {_MAX_RESTART_ATTEMPTS} attempts"
-            )
+            raise GatewayUnavailableError(f"Gateway failed to recover after {_MAX_RESTART_ATTEMPTS} attempts")
 
     def _start_internal(self, env: dict) -> None:
         """Internal start (caller must hold self._lock or be in start())."""
@@ -275,9 +268,7 @@ class GatewayManager:
         proc_env.update(env)
         proc_env["OPENCLAW_STATE_DIR"] = str(self._workspace)
         proc_env["OPENCLAW_HOME"] = str(self._workspace)
-        proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(
-            self._workspace / ".aws" / "credentials"
-        )
+        proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
         cmd = [
             "openclaw",
@@ -309,14 +300,11 @@ class GatewayManager:
         start_time = time.monotonic()
         while time.monotonic() - start_time < _STARTUP_TIMEOUT:
             if self._process.poll() is not None:
-                raise GatewayUnavailableError(
-                    f"Gateway exited with code {self._process.returncode}"
-                )
+                raise GatewayUnavailableError(f"Gateway exited with code {self._process.returncode}")
             if self._check_health():
                 self._started = True
                 print(
-                    f"[Gateway] Restarted on port {self._port} "
-                    f"(took {time.monotonic() - start_time:.1f}s)",
+                    f"[Gateway] Restarted on port {self._port} (took {time.monotonic() - start_time:.1f}s)",
                     flush=True,
                 )
                 return
@@ -338,9 +326,7 @@ class GatewayManager:
             self._write_credentials(credentials)
             print("[Gateway] Credentials updated", flush=True)
 
-    def prepare_workspace(
-        self, tarball_bytes: bytes, agent_name: str
-    ) -> Tuple[str, str]:
+    def prepare_workspace(self, tarball_bytes: bytes, agent_name: str) -> Tuple[str, str]:
         """
         Unpack an agent tarball into the gateway workspace.
 
@@ -392,8 +378,7 @@ class GatewayManager:
                 pass  # Gateway config takes precedence
 
             print(
-                f"[Gateway] Prepared workspace: agents/{request_id}/ "
-                f"(from {agent_name})",
+                f"[Gateway] Prepared workspace: agents/{request_id}/ (from {agent_name})",
                 flush=True,
             )
             return request_id, str(self._workspace)
@@ -418,9 +403,7 @@ class GatewayManager:
         request_dir = self._workspace / "agents" / request_id
 
         if not request_dir.exists():
-            raise FileNotFoundError(
-                f"Workspace directory not found: agents/{request_id}/"
-            )
+            raise FileNotFoundError(f"Workspace directory not found: agents/{request_id}/")
 
         # Create temp dir with correct structure: agents/{agent_name}/
         tmp_dir = Path(tempfile.mkdtemp(dir=str(self._workspace), prefix="pack_"))
@@ -436,8 +419,7 @@ class GatewayManager:
             tarball_bytes = self._pack_directory(tmp_dir)
 
             print(
-                f"[Gateway] Collected workspace: agents/{request_id}/ → "
-                f"{len(tarball_bytes)} bytes (as {agent_name})",
+                f"[Gateway] Collected workspace: agents/{request_id}/ → {len(tarball_bytes)} bytes (as {agent_name})",
                 flush=True,
             )
             return tarball_bytes
@@ -538,11 +520,7 @@ class GatewayManager:
         creds_dir.mkdir(parents=True, exist_ok=True)
 
         # Write credentials file
-        creds_content = (
-            "[default]\n"
-            f"aws_access_key_id = {access_key}\n"
-            f"aws_secret_access_key = {secret_key}\n"
-        )
+        creds_content = f"[default]\naws_access_key_id = {access_key}\naws_secret_access_key = {secret_key}\n"
         if session_token:
             creds_content += f"aws_session_token = {session_token}\n"
 

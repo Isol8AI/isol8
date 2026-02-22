@@ -81,9 +81,7 @@ class BedrockServer:
         if self._agent_runtime == "gateway":
             gateway_port = int(os.environ.get("GATEWAY_PORT", "18789"))
             self._gateway = GatewayManager(port=gateway_port)
-            self._http_client = GatewayHttpClient(
-                base_url=f"http://127.0.0.1:{gateway_port}"
-            )
+            self._http_client = GatewayHttpClient(base_url=f"http://127.0.0.1:{gateway_port}")
             print(f"[Enclave] Agent runtime: gateway (port {gateway_port})", flush=True)
         else:
             print("[Enclave] Agent runtime: subprocess", flush=True)
@@ -1334,9 +1332,7 @@ You are {agent_name}, a personal AI companion.
         fallback_text = last_block_text or done_result_text
         if chunk_count == 0 and fallback_text:
             source = "block" if last_block_text else "done_result"
-            print(
-                f"[Enclave] No partials streamed, using {source} fallback ({len(fallback_text)} chars)", flush=True
-            )
+            print(f"[Enclave] No partials streamed, using {source} fallback ({len(fallback_text)} chars)", flush=True)
             encrypted_chunk = encrypt_to_public_key(
                 client_public_key,
                 fallback_text.encode("utf-8"),
