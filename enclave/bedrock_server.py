@@ -1151,6 +1151,11 @@ You are {agent_name}, a personal AI companion.
                 message=user_content,
                 agent_id=request_id,
             ):
+                if chunk_text is None:
+                    # Heartbeat: keep vsock alive during tool execution silence
+                    self._send_event(conn, {"heartbeat": True})
+                    continue
+
                 if chunk_text:
                     chunk_count += 1
                     encrypted_chunk = encrypt_to_public_key(

@@ -12,6 +12,7 @@ Supports:
 """
 
 import json
+import socket as _socket
 import urllib.request
 import urllib.error
 from typing import Generator, Optional
@@ -20,6 +21,10 @@ from uuid import uuid4
 
 # Default timeout for non-streaming requests
 _DEFAULT_TIMEOUT = 90
+
+# Timeout for streaming requests — tool execution (web search, memory search)
+# can cause long pauses between SSE events, so this must be generous.
+_STREAM_TIMEOUT = 300
 
 # Default timeout for establishing SSE connection
 _STREAM_CONNECT_TIMEOUT = 30
@@ -44,8 +49,8 @@ class GatewayHttpClient:
         message: str,
         agent_id: str,
         session_key: Optional[str] = None,
-        timeout: int = _DEFAULT_TIMEOUT,
-    ) -> Generator[str, None, None]:
+        timeout: int = _STREAM_TIMEOUT,
+    ) -> Generator[Optional[str], None, None]:
         """
         Send a message and stream the response via SSE.
 
@@ -57,7 +62,9 @@ class GatewayHttpClient:
             timeout: Request timeout in seconds.
 
         Yields:
-            Text chunks from the assistant's response.
+            Text chunks (str) from the assistant's response, or None as a
+            heartbeat sentinel when the SSE stream is silent (e.g. during
+            tool execution).
 
         Raises:
             GatewayRequestError: If the gateway returns an error.
@@ -99,9 +106,28 @@ class GatewayHttpClient:
             raise GatewayRequestError(f"Gateway connection failed: {e.reason}")
 
         try:
-            # Parse SSE stream
+            # Set a short per-read timeout for heartbeat detection.
+            # If no SSE data arrives within this window (e.g. during tool
+            # execution), we yield a None sentinel so downstream layers
+            # can emit keepalive events and prevent socket timeouts.
+            _HEARTBEAT_INTERVAL = 15  # seconds
+            underlying_sock = getattr(getattr(getattr(resp, 'fp', None), 'raw', None), '_sock', None)
+            if underlying_sock is not None:
+                underlying_sock.settimeout(_HEARTBEAT_INTERVAL)
+
+            # Parse SSE stream using readline() so we can catch per-read timeouts
             buffer = ""
-            for raw_line in resp:
+            while True:
+                try:
+                    raw_line = resp.readline()
+                except _socket.timeout:
+                    # No data within heartbeat interval — yield sentinel
+                    yield None
+                    continue
+
+                if not raw_line:
+                    break
+
                 line = raw_line.decode("utf-8", errors="replace")
                 buffer += line
 

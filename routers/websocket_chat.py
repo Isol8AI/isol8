@@ -606,6 +606,13 @@ async def _process_agent_chat_background(
         # Stream response chunks
         chunk_count = 0
         async for chunk in handler.process_message_streaming(request):
+            if chunk.heartbeat:
+                management_api.send_message(
+                    connection_id,
+                    {"type": "heartbeat"},
+                )
+                continue
+
             if chunk.error:
                 management_api.send_message(
                     connection_id,

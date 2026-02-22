@@ -721,7 +721,9 @@ class NitroEnclaveClient(EnclaveInterface):
         def stream_in_thread():
             """Run sync generator in thread, put events in async queue."""
             try:
-                for event in self._send_command_stream(command):
+                # Use 300s timeout for agent streaming — tools (web search,
+                # memory search) can cause long pauses between SSE events.
+                for event in self._send_command_stream(command, timeout=300.0):
                     loop.call_soon_threadsafe(event_queue.put_nowait, ("event", event))
                 loop.call_soon_threadsafe(event_queue.put_nowait, ("done", None))
             except Exception as e:
@@ -745,6 +747,11 @@ class NitroEnclaveClient(EnclaveInterface):
 
                 # Skip diagnostic info from enclave (not yielded to caller)
                 if event.get("diagnostic"):
+                    continue
+
+                # Heartbeat: keepalive signal during tool execution silence
+                if event.get("heartbeat"):
+                    yield AgentStreamChunk(heartbeat=True)
                     continue
 
                 if event.get("error"):
