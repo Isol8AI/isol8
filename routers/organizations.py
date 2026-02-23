@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import selectinload
 
-from core.auth import AuthContext, get_current_user, require_org_admin, require_org_context
+from core.auth import AuthContext, get_current_user
 from core.database import get_db, get_session_factory
 from core.services.org_key_service import (
     OrgKeyService,
@@ -19,7 +19,6 @@ from core.services.org_key_service import (
     MemberNotReadyError,
     NotAdminError,
 )
-from models.context_store import ContextStore
 from models.organization import Organization
 from models.organization_membership import MemberRole, OrganizationMembership
 from schemas.encryption import EncryptedPayloadSchema
@@ -82,18 +81,6 @@ class ListOrgsResponse(BaseModel):
     """Response for listing user's organizations."""
 
     organizations: list[OrgListItem]
-
-
-class OrgContextRequest(BaseModel):
-    """Request body for updating organization context."""
-
-    context_data: dict
-
-
-class OrgContextResponse(BaseModel):
-    """Response for organization context."""
-
-    context_data: dict | None
 
 
 @router.post(
@@ -234,68 +221,6 @@ async def list_organizations(
         ]
 
         return ListOrgsResponse(organizations=organizations)
-
-
-@router.get(
-    "/context",
-    response_model=OrgContextResponse,
-    summary="Get organization context",
-    description="Get shared organization context data used for RAG or shared settings.",
-    operation_id="get_org_context",
-    responses={
-        401: {"description": "Missing or invalid Clerk JWT token"},
-        403: {"description": "Organization context required"},
-    },
-)
-async def get_org_context(
-    auth: AuthContext = Depends(require_org_context),
-    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
-) -> OrgContextResponse:
-    async with session_factory() as session:
-        result = await session.execute(
-            select(ContextStore).where(ContextStore.owner_type == "org", ContextStore.owner_id == auth.org_id)
-        )
-        context_store = result.scalar_one_or_none()
-
-        return OrgContextResponse(context_data=context_store.context_data if context_store else None)
-
-
-@router.put(
-    "/context",
-    response_model=OrgContextResponse,
-    summary="Update organization context",
-    description="Update shared organization context. Only organization admins can update the shared context.",
-    operation_id="update_org_context",
-    responses={
-        401: {"description": "Missing or invalid Clerk JWT token"},
-        403: {"description": "Admin access required"},
-    },
-)
-async def update_org_context(
-    request: OrgContextRequest,
-    auth: AuthContext = Depends(require_org_admin),
-    session_factory: async_sessionmaker[AsyncSession] = Depends(get_session_factory),
-) -> OrgContextResponse:
-    async with session_factory() as session:
-        result = await session.execute(
-            select(ContextStore).where(ContextStore.owner_type == "org", ContextStore.owner_id == auth.org_id)
-        )
-        context_store = result.scalar_one_or_none()
-
-        if context_store is None:
-            # Create new context store
-            context_store = ContextStore(
-                id=f"ctx_org_{auth.org_id}", owner_type="org", owner_id=auth.org_id, context_data=request.context_data
-            )
-            session.add(context_store)
-        else:
-            # Update existing context
-            context_store.context_data = request.context_data
-
-        await session.commit()
-        await session.refresh(context_store)
-
-        return OrgContextResponse(context_data=context_store.context_data)
 
 
 # =============================================================================

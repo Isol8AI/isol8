@@ -16,14 +16,13 @@ from sqlalchemy import text
 
 from core.config import settings
 from core.auth import get_current_user
-from core.database import get_db, close_memory_pool
+from core.database import get_db
 from core.enclave import startup_enclave, shutdown_enclave
 from core.services.town_simulation import TownSimulation
 from routers import (
     users,
     chat,
     organizations,
-    context,
     webhooks,
     debug_encryption,
     websocket_chat,
@@ -65,7 +64,6 @@ async def lifespan(app: FastAPI):
     if _town_simulation:
         await _town_simulation.stop()
 
-    await close_memory_pool()
     await shutdown_enclave()
 
 
@@ -85,10 +83,6 @@ openapi_tags = [
     {
         "name": "agents",
         "description": "OpenClaw agent CRUD, encrypted agent messaging, and state management.",
-    },
-    {
-        "name": "context",
-        "description": "Context and fact storage for conversation memory.",
     },
     {
         "name": "webhooks",
@@ -180,7 +174,6 @@ app.openapi = custom_openapi
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
 app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
-app.include_router(context.router, prefix="/api/v1", tags=["context"])
 app.include_router(webhooks.router, prefix="/api/v1", tags=["webhooks"])
 
 # Debug routes - DEVELOPMENT ONLY

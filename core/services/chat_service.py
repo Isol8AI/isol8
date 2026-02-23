@@ -520,7 +520,6 @@ class ChatService:
         org_id: Optional[str],
         encrypted_message: EncryptedPayload,
         encrypted_history: list[EncryptedPayload],
-        facts_context: Optional[str],
         model: str,
         client_transport_public_key: str,
         user_metadata: Optional[dict] = None,
@@ -543,7 +542,6 @@ class ChatService:
             org_id: Organization context (if any)
             encrypted_message: User's message encrypted to enclave
             encrypted_history: Previous messages re-encrypted to enclave
-            facts_context: Client-side formatted facts context (already decrypted, plaintext)
             model: LLM model to use
             client_transport_public_key: Client's ephemeral key for response encryption
             user_metadata: User's Clerk privateMetadata (for AWS credentials)
@@ -570,7 +568,6 @@ class ChatService:
         async for chunk in enclave.process_message_streaming(
             encrypted_message=encrypted_message,
             encrypted_history=encrypted_history,
-            facts_context=facts_context,
             storage_public_key=storage_key,
             client_public_key=client_key,
             session_id=session_id,

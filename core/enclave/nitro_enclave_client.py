@@ -297,7 +297,6 @@ class NitroEnclaveClient(EnclaveInterface):
         self,
         encrypted_message: EncryptedPayload,
         encrypted_history: List[EncryptedPayload],
-        facts_context: Optional[str],
         storage_public_key: bytes,
         client_public_key: bytes,
         session_id: str,

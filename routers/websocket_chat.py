@@ -252,7 +252,6 @@ def _validate_and_process_chat(
             model=body.get("model", ""),
             encrypted_message=EncryptedPayloadSchema(**body["encrypted_message"]),
             encrypted_history=[EncryptedPayloadSchema(**h) for h in body.get("encrypted_history", [])] or None,
-            facts_context=body.get("facts_context"),
             client_transport_public_key=body["client_transport_public_key"],
         )
     except (KeyError, ValidationError) as e:
@@ -378,7 +377,6 @@ async def _process_chat_message_background(
                 org_id=org_id,
                 encrypted_message=encrypted_msg,
                 encrypted_history=encrypted_history,
-                facts_context=request.facts_context,
                 model=request.model,
                 client_transport_public_key=request.client_transport_public_key,
                 user_metadata=user_metadata,

@@ -216,9 +216,6 @@ class SendEncryptedMessageRequest(BaseModel):
     encrypted_history: Optional[list[EncryptedPayloadSchema]] = Field(
         None, description="Previous messages re-encrypted to enclave for context"
     )
-    facts_context: Optional[str] = Field(
-        None, description="Client-side formatted facts context string (already decrypted by client)"
-    )
     client_transport_public_key: str = Field(
         ...,
         min_length=64,

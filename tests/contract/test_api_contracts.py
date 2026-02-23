@@ -72,12 +72,10 @@ def _make_app():
 # so schemathesis can create its internal ASGI client without lifespan errors.
 _startup_patch = patch("main.startup_enclave", new_callable=AsyncMock)
 _shutdown_patch = patch("main.shutdown_enclave", new_callable=AsyncMock)
-_close_pool_patch = patch("main.close_memory_pool", new_callable=AsyncMock)
 _town_sim_patch = patch("main.TownSimulation")
 
 _startup_patch.start()
 _shutdown_patch.start()
-_close_pool_patch.start()
 _mock_town = _town_sim_patch.start()
 _mock_town.return_value.start = AsyncMock()
 _mock_town.return_value.stop = AsyncMock()

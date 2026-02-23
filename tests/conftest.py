@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from core.auth import AuthContext
 from models.base import Base
-from models.context_store import ContextStore
 from models.message import Message
 from models.organization import Organization
 from models.organization_membership import OrganizationMembership, MemberRole
@@ -83,7 +82,6 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(AgentState.__table__.delete())
         await cleanup_session.execute(Message.__table__.delete())
         await cleanup_session.execute(Session.__table__.delete())
-        await cleanup_session.execute(ContextStore.__table__.delete())
         await cleanup_session.execute(OrganizationMembership.__table__.delete())
         await cleanup_session.execute(Organization.__table__.delete())
         await cleanup_session.execute(User.__table__.delete())
