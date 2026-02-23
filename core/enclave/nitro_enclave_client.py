@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import socket
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from typing import AsyncGenerator, Dict, List, Optional
@@ -75,6 +76,38 @@ class NitroEnclaveClient(EnclaveInterface):
         logger.info("NitroEnclaveClient initialized successfully")
 
     # =========================================================================
+    # CID Re-discovery
+    # =========================================================================
+
+    def _rediscover_cid(self) -> bool:
+        """Re-discover enclave CID via nitro-cli. Returns True if CID changed."""
+        try:
+            result = subprocess.run(
+                ["nitro-cli", "describe-enclaves"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            enclaves = json.loads(result.stdout)
+            if enclaves:
+                new_cid = enclaves[0].get("EnclaveCID")
+                if new_cid and new_cid != self._cid:
+                    old_cid = self._cid
+                    self._cid = new_cid
+                    logger.warning(f"Enclave CID changed: {old_cid} -> {new_cid}")
+                    return True
+        except Exception as e:
+            logger.warning(f"CID rediscovery failed: {e}")
+        return False
+
+    def _reinitialize_after_cid_change(self) -> None:
+        """Re-fetch public key and push credentials after CID change."""
+        logger.info(f"Re-initializing for new enclave (CID={self._cid})")
+        self._refresh_public_key()
+        self._push_credentials_sync()
+        logger.info("Enclave re-initialized successfully")
+
+    # =========================================================================
     # vsock Communication
     # =========================================================================
 
@@ -84,7 +117,19 @@ class NitroEnclaveClient(EnclaveInterface):
         sock.settimeout(timeout)
 
         try:
-            sock.connect((self._cid, self._port))
+            try:
+                sock.connect((self._cid, self._port))
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                # Connection failed — enclave may have restarted with new CID
+                sock.close()
+                if self._rediscover_cid():
+                    self._reinitialize_after_cid_change()
+                    sock = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
+                    sock.settimeout(timeout)
+                    sock.connect((self._cid, self._port))
+                else:
+                    raise  # Re-raise original error
+
             sock.sendall(json.dumps(command).encode("utf-8"))
             response = sock.recv(1048576)  # 1MB buffer
             return json.loads(response.decode("utf-8"))
@@ -113,7 +158,19 @@ class NitroEnclaveClient(EnclaveInterface):
         sock.settimeout(timeout)
 
         try:
-            sock.connect((self._cid, self._port))
+            try:
+                sock.connect((self._cid, self._port))
+            except (socket.timeout, ConnectionRefusedError, OSError):
+                # Connection failed — enclave may have restarted with new CID
+                sock.close()
+                if self._rediscover_cid():
+                    self._reinitialize_after_cid_change()
+                    sock = socket.socket(AF_VSOCK, socket.SOCK_STREAM)
+                    sock.settimeout(timeout)
+                    sock.connect((self._cid, self._port))
+                else:
+                    raise  # Re-raise original error
+
             sock.sendall(json.dumps(command).encode("utf-8"))
 
             # Read streaming JSON events (newline-delimited)
@@ -448,7 +505,7 @@ class NitroEnclaveClient(EnclaveInterface):
             logger.info("Stopped credential refresh task")
 
     async def _credential_refresh_loop(self) -> None:
-        """Refresh credentials periodically."""
+        """Refresh credentials periodically, with CID rediscovery on failure."""
         while True:
             try:
                 await asyncio.sleep(settings.ENCLAVE_CREDENTIAL_REFRESH_SECONDS)
@@ -458,6 +515,16 @@ class NitroEnclaveClient(EnclaveInterface):
                 break
             except Exception as e:
                 logger.error(f"Credential refresh failed: {e}")
+                # Try re-discovering CID — enclave may have restarted
+                loop = asyncio.get_event_loop()
+                cid_changed = await loop.run_in_executor(None, self._rediscover_cid)
+                if cid_changed:
+                    try:
+                        await loop.run_in_executor(None, self._reinitialize_after_cid_change)
+                        logger.info("Recovered from enclave restart during credential refresh")
+                        continue  # Skip retry sleep, credentials are fresh
+                    except Exception as reinit_err:
+                        logger.error(f"Re-initialization failed: {reinit_err}")
                 # Retry sooner on failure
                 await asyncio.sleep(60)
 

@@ -6,6 +6,7 @@ This package provides enclave implementations:
 - NitroEnclaveClient: Real Nitro Enclave via vsock (ENCLAVE_MODE=nitro)
 """
 
+import asyncio
 import logging
 import subprocess
 import json
@@ -98,10 +99,14 @@ def get_enclave() -> EnclaveInterface:
         from core.config import settings
         from .nitro_enclave_client import NitroEnclaveClient
 
-        # Discover enclave CID if not configured
-        cid = settings.ENCLAVE_CID
-        if cid == 0:
+        # Always auto-discover CID (ignore hardcoded .env values)
+        try:
             cid = _discover_enclave_cid()
+        except RuntimeError:
+            # Fall back to configured CID if discovery fails (e.g. nitro-cli not found)
+            cid = settings.ENCLAVE_CID
+            if cid == 0:
+                raise
 
         _enclave_instance = NitroEnclaveClient(
             enclave_cid=cid,
@@ -126,11 +131,26 @@ async def startup_enclave() -> None:
     """
     Initialize enclave on application startup.
 
-    For NitroEnclaveClient, starts the credential refresh background task.
+    Retries up to 5 times with 10s delays if the enclave isn't reachable
+    (e.g. enclave still booting after a restart). For NitroEnclaveClient,
+    starts the credential refresh background task.
     """
     from core.config import settings
 
-    enclave = get_enclave()
+    max_attempts = 5
+    enclave = None
+    for attempt in range(max_attempts):
+        try:
+            enclave = get_enclave()
+            break
+        except (RuntimeError, Exception) as e:
+            logger.warning(f"Enclave not ready (attempt {attempt + 1}/{max_attempts}): {e}")
+            reset_enclave()  # Clear failed singleton
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(10)
+
+    if enclave is None:
+        raise RuntimeError(f"Enclave not available after {max_attempts} attempts")
 
     if settings.ENCLAVE_MODE == "nitro":
         from .nitro_enclave_client import NitroEnclaveClient
