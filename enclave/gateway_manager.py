@@ -227,7 +227,12 @@ class GatewayManager:
 
     def ensure_running(self, env: dict) -> None:
         """
-        Ensure the gateway is running and healthy. Restart if needed.
+        Ensure the gateway is running. Restart only if the process has exited.
+
+        A slow or busy gateway (health-check timeout) is NOT treated as dead —
+        only a process that has actually exited triggers a restart.  This avoids
+        the failure mode where we SIGTERM a busy-but-healthy gateway, then race
+        against its shutdown to rebind the port.
 
         Thread-safe: acquires self._lock.
 
@@ -237,18 +242,22 @@ class GatewayManager:
         Raises:
             GatewayUnavailableError: If gateway cannot be recovered after retries.
         """
-        # Fast path: already healthy (no lock needed for read)
+        # Fast path: process alive → assume healthy (no lock needed for read)
         if self._started and self._process and self._process.poll() is None:
-            if self._check_health():
-                return
+            return
 
         with self._lock:
-            # Re-check under lock
+            # Re-check under lock: process still alive → nothing to do
             if self._started and self._process and self._process.poll() is None:
-                if self._check_health():
-                    return
+                return
 
-            # Need to restart
+            # Process has exited (or was never started) — restart
+            if self._process and self._process.poll() is not None:
+                print(
+                    f"[Gateway] Process exited with code {self._process.returncode}, restarting",
+                    flush=True,
+                )
+
             for attempt in range(1, _MAX_RESTART_ATTEMPTS + 1):
                 print(
                     f"[Gateway] Restart attempt {attempt}/{_MAX_RESTART_ATTEMPTS}",
@@ -256,8 +265,6 @@ class GatewayManager:
                 )
                 self._stop_internal()
                 try:
-                    # Release lock temporarily for start (which acquires it)
-                    # But we're already inside the lock, so call internal start
                     self._start_internal(env)
                     return
                 except GatewayUnavailableError:
@@ -589,12 +596,18 @@ class GatewayManager:
                     raise ValueError(f"Unsafe path in tarball: {member.name}")
             tar.extractall(target_dir)
 
+    # File patterns to exclude from packed tarballs.  These are runtime
+    # artifacts created by the gateway process and must NOT be persisted
+    # across requests — otherwise the next unpack produces stale locks /
+    # sockets that block OpenClaw.
+    _PACK_EXCLUDE_SUFFIXES = (".lock", ".sock", ".pid")
+
     def _pack_directory(self, directory: Path) -> bytes:
-        """Pack a directory into a gzip tarball."""
+        """Pack a directory into a gzip tarball, excluding runtime artifacts."""
         buffer = io.BytesIO()
         with tarfile.open(fileobj=buffer, mode="w:gz") as tar:
             for item in directory.rglob("*"):
-                if item.is_file():
+                if item.is_file() and not any(item.name.endswith(s) for s in self._PACK_EXCLUDE_SUFFIXES):
                     arcname = item.relative_to(directory)
                     tar.add(item, arcname=str(arcname))
         buffer.seek(0)
