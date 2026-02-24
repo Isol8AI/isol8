@@ -8,7 +8,7 @@ and memory search (vector embeddings).
 
 Thread safety:
   - start/stop/ensure_running/update_credentials: protected by self._lock
-  - prepare_workspace/collect_workspace: lock-free (per-request UUID dirs)
+  - prepare_workspace/collect_workspace: lock-free (per-agent_name dirs)
 """
 
 import io
@@ -23,7 +23,6 @@ import threading
 import time
 from pathlib import Path
 from typing import Optional, Tuple
-from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 
@@ -349,86 +348,100 @@ class GatewayManager:
         """
         Unpack an agent tarball into the gateway workspace.
 
-        Thread-safe WITHOUT lock: each request gets a unique UUID directory.
+        Uses the actual agent_name as the directory key (not a random UUID) so
+        OpenClaw can resolve paths correctly across requests.  A symlink
+        ``workspace-{agent_name}`` → ``agents/{agent_name}`` is created so that
+        OpenClaw's workspace dir (exec/write cwd, SOUL.md lookup) points to the
+        same directory where we unpack state.
+
+        Thread-safe for different agent_names (each gets its own directory).
+        NOT safe for concurrent requests to the same agent_name — the backend
+        must serialize per-agent.
 
         Args:
             tarball_bytes: Gzip tarball of agent state.
             agent_name: Original agent name in the tarball.
 
         Returns:
-            Tuple of (request_id, workspace_path).
+            Tuple of (agent_name, workspace_path).
         """
-        request_id = uuid4().hex[:16]
+        agent_dir = self._workspace / "agents" / agent_name
+        workspace_link = self._workspace / f"workspace-{agent_name}"
+
+        # Clean up previous state for this agent (stale files from last request)
+        if agent_dir.exists():
+            shutil.rmtree(str(agent_dir), ignore_errors=True)
+        if workspace_link.exists() or workspace_link.is_symlink():
+            workspace_link.unlink()
 
         # Unpack tarball to a temporary directory first
         tmp_dir = Path(tempfile.mkdtemp(dir=str(self._workspace), prefix="unpack_"))
         try:
             self._unpack_tarball(tarball_bytes, tmp_dir)
 
-            # Move agents/{agent_name}/ → workspace/agents/{request_id}/
+            # Move agents/{agent_name}/ → workspace/agents/{agent_name}/
             source = tmp_dir / "agents" / agent_name
-            target = self._workspace / "agents" / request_id
-
             if source.exists() and source.is_dir():
-                shutil.move(str(source), str(target))
+                shutil.move(str(source), str(agent_dir))
             else:
                 # Tarball might have a flat structure — move everything
-                target.mkdir(parents=True, exist_ok=True)
+                agent_dir.mkdir(parents=True, exist_ok=True)
                 for item in tmp_dir.iterdir():
                     if item.name == "agents":
-                        # Check for any agent dir inside
-                        for agent_dir in item.iterdir():
-                            shutil.move(str(agent_dir), str(target))
+                        for sub in item.iterdir():
+                            shutil.move(str(sub), str(agent_dir))
                         break
                 else:
-                    # Flat structure: copy all to target
                     for item in tmp_dir.iterdir():
-                        dest = target / item.name
+                        dest = agent_dir / item.name
                         if item.is_dir():
                             shutil.copytree(str(item), str(dest))
                         else:
                             shutil.copy2(str(item), str(dest))
 
-            # Copy openclaw.json from tarball if present (agent-specific config)
-            tarball_config = tmp_dir / "openclaw.json"
-            if tarball_config.exists():
-                # Merge agent-specific settings (like SOUL.md path) but keep
-                # gateway-level config (models, tools, memorySearch)
-                pass  # Gateway config takes precedence
+            # Create symlink: workspace-{agent_name} → agents/{agent_name}
+            # OpenClaw resolves workspace dir to workspace-{agentId}/ for
+            # non-default agents.  This symlink makes SOUL.md, MEMORY.md,
+            # and exec/write cwd all resolve to our unpacked agent directory.
+            workspace_link.symlink_to(agent_dir)
 
             print(
-                f"[Gateway] Prepared workspace: agents/{request_id}/ (from {agent_name})",
+                f"[Gateway] Prepared workspace: agents/{agent_name}/ + workspace-{agent_name} symlink",
                 flush=True,
             )
-            return request_id, str(self._workspace)
+            return agent_name, str(self._workspace)
 
         finally:
             # Clean up temp unpack directory
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
 
-    def collect_workspace(self, request_id: str, agent_name: str) -> bytes:
+    def collect_workspace(self, agent_name: str) -> bytes:
         """
-        Pack the request workspace back into a tarball and clean up.
+        Pack the agent workspace back into a tarball and clean up.
 
-        Thread-safe WITHOUT lock: operates on unique request_id directory.
+        Thread-safe for different agent_names.
 
         Args:
-            request_id: The UUID assigned during prepare_workspace().
-            agent_name: The original agent name to restore in the tarball.
+            agent_name: The agent name used in prepare_workspace().
 
         Returns:
             Gzip tarball bytes of the updated agent state.
         """
-        request_dir = self._workspace / "agents" / request_id
+        agent_dir = self._workspace / "agents" / agent_name
+        workspace_link = self._workspace / f"workspace-{agent_name}"
 
-        if not request_dir.exists():
-            raise FileNotFoundError(f"Workspace directory not found: agents/{request_id}/")
+        if not agent_dir.exists():
+            raise FileNotFoundError(f"Workspace directory not found: agents/{agent_name}/")
 
-        # Create temp dir with correct structure: agents/{agent_name}/
+        # Remove symlink before packing (don't include it in tarball)
+        if workspace_link.exists() or workspace_link.is_symlink():
+            workspace_link.unlink()
+
+        # Create temp dir with correct tarball structure: agents/{agent_name}/
         tmp_dir = Path(tempfile.mkdtemp(dir=str(self._workspace), prefix="pack_"))
         try:
             target = tmp_dir / "agents" / agent_name
-            shutil.move(str(request_dir), str(target))
+            shutil.move(str(agent_dir), str(target))
 
             # Copy gateway openclaw.json into tarball (minimal, for compatibility)
             gateway_config = self._workspace / "openclaw.json"
@@ -438,17 +451,16 @@ class GatewayManager:
             tarball_bytes = self._pack_directory(tmp_dir)
 
             print(
-                f"[Gateway] Collected workspace: agents/{request_id}/ → {len(tarball_bytes)} bytes (as {agent_name})",
+                f"[Gateway] Collected workspace: agents/{agent_name}/ → {len(tarball_bytes)} bytes",
                 flush=True,
             )
             return tarball_bytes
 
         finally:
-            # Clean up
             shutil.rmtree(str(tmp_dir), ignore_errors=True)
-            # Also ensure request dir is gone (may have been moved)
-            if request_dir.exists():
-                shutil.rmtree(str(request_dir), ignore_errors=True)
+            # Ensure agent dir is gone (may have been moved)
+            if agent_dir.exists():
+                shutil.rmtree(str(agent_dir), ignore_errors=True)
 
     def _write_config(self, env: dict) -> None:
         """Write openclaw.json config for the gateway."""

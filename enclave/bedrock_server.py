@@ -427,20 +427,22 @@ class BedrockServer:
 
             # Run via persistent OpenClaw gateway
             self._gateway.ensure_running(self._get_aws_env())
-            request_id, _ = self._gateway.prepare_workspace(
+            self._gateway.prepare_workspace(
                 self._pack_directory(tmpfs_path),
                 agent_name,
             )
             try:
+                session_key = f"agent:{agent_name}:enclave:main"
                 response_text = self._http_client.chat(
                     message=message,
-                    agent_id=request_id,
+                    agent_id=agent_name,
+                    session_key=session_key,
                 )
-                tarball_bytes = self._gateway.collect_workspace(request_id, agent_name)
+                tarball_bytes = self._gateway.collect_workspace(agent_name)
             except (GatewayRequestError, Exception) as e:
                 # Clean up gateway workspace on error
                 try:
-                    self._gateway.collect_workspace(request_id, agent_name)
+                    self._gateway.collect_workspace(agent_name)
                 except Exception:
                     pass
                 raise RuntimeError(f"Gateway request failed: {e}") from e
@@ -924,19 +926,24 @@ You are {agent_name}, a personal AI companion.
         Returns (tarball_bytes, input_tokens, output_tokens) on success, None on failure.
         On failure, does NOT send error to client (caller falls back to subprocess).
         """
-        request_id = None
+        workspace_prepared = False
         try:
             # Prepare workspace: pack the already-unpacked tmpfs_path and move to gateway workspace
             workspace_tarball = self._pack_directory(tmpfs_path)
-            request_id, _ = self._gateway.prepare_workspace(workspace_tarball, agent_name)
+            self._gateway.prepare_workspace(workspace_tarball, agent_name)
+            workspace_prepared = True
 
-            print(f"[Enclave] Gateway streaming: request_id={request_id}", flush=True)
+            print(f"[Enclave] Gateway streaming: agent={agent_name}", flush=True)
+
+            # Use stable session key so OpenClaw maintains conversation continuity
+            session_key = f"agent:{agent_name}:enclave:main"
 
             # Stream from gateway HTTP SSE → encrypt → forward via vsock
             chunk_count = 0
             for chunk_text in self._http_client.chat_stream(
                 message=user_content,
-                agent_id=request_id,
+                agent_id=agent_name,
+                session_key=session_key,
             ):
                 if chunk_text is None:
                     # Heartbeat: keep vsock alive during tool execution silence
@@ -955,8 +962,8 @@ You are {agent_name}, a personal AI companion.
             print(f"[Enclave] Gateway stream complete: {chunk_count} chunks", flush=True)
 
             # Collect updated workspace back to tarball
-            tarball_bytes = self._gateway.collect_workspace(request_id, agent_name)
-            request_id = None  # Workspace collected, don't clean up again
+            tarball_bytes = self._gateway.collect_workspace(agent_name)
+            workspace_prepared = False  # Workspace collected, don't clean up again
 
             # Gateway doesn't provide token counts (OpenAI API doesn't include them in SSE chunks)
             return (tarball_bytes, 0, 0)
@@ -964,9 +971,9 @@ You are {agent_name}, a personal AI companion.
         except (GatewayRequestError, Exception) as e:
             print(f"[Enclave] Gateway streaming failed: {e}", flush=True)
             # Clean up workspace if it was prepared
-            if request_id is not None:
+            if workspace_prepared:
                 try:
-                    self._gateway.collect_workspace(request_id, agent_name)
+                    self._gateway.collect_workspace(agent_name)
                 except Exception:
                     pass
             return None
