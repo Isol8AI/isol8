@@ -53,7 +53,6 @@ from crypto_primitives import (
 )
 from bedrock_client import BedrockClient, BedrockResponse, build_converse_messages, ConverseTurn
 from kms_encryption import encrypt_with_kms, decrypt_with_kms, set_kms_credentials
-from agent_bridge import run_agent_streaming, collect_response_text
 from gateway_manager import GatewayManager, GatewayUnavailableError
 from gateway_http_client import GatewayHttpClient, GatewayRequestError
 
@@ -71,20 +70,13 @@ class BedrockServer:
         self.bedrock = BedrockClient(region=region)
         self.region = region
 
-        # Gateway mode: "gateway" or "subprocess" (default)
-        self._agent_runtime = os.environ.get("AGENT_RUNTIME", "subprocess")
-        self._gateway: GatewayManager | None = None
-        self._http_client: GatewayHttpClient | None = None
+        # Persistent OpenClaw gateway for agent execution
+        gateway_port = int(os.environ.get("GATEWAY_PORT", "18789"))
+        self._gateway = GatewayManager(port=gateway_port)
+        self._http_client = GatewayHttpClient(base_url=f"http://127.0.0.1:{gateway_port}")
         self._lock = threading.Lock()
         self._gateway_started = False
-
-        if self._agent_runtime == "gateway":
-            gateway_port = int(os.environ.get("GATEWAY_PORT", "18789"))
-            self._gateway = GatewayManager(port=gateway_port)
-            self._http_client = GatewayHttpClient(base_url=f"http://127.0.0.1:{gateway_port}")
-            print(f"[Enclave] Agent runtime: gateway (port {gateway_port})", flush=True)
-        else:
-            print("[Enclave] Agent runtime: subprocess", flush=True)
+        print(f"[Enclave] Agent runtime: gateway (port {gateway_port})", flush=True)
 
         print("[Enclave] Generated transport keypair", flush=True)
         print(f"[Enclave] Public key: {bytes_to_hex(self.keypair.public_key)}", flush=True)
@@ -137,19 +129,17 @@ class BedrockServer:
             if credentials.get("expiration"):
                 print(f"[Enclave] Credentials expire: {credentials['expiration']}", flush=True)
 
-            # Forward credentials to gateway (if running)
-            if self._gateway is not None:
-                aws_env = self._get_aws_env()
-                if not self._gateway_started:
-                    # First credentials received — start the gateway
-                    try:
-                        self._gateway.start(aws_env)
-                        self._gateway_started = True
-                    except GatewayUnavailableError as e:
-                        print(f"[Enclave] Gateway failed to start: {e}", flush=True)
-                        print("[Enclave] Will fall back to subprocess for agents", flush=True)
-                else:
-                    self._gateway.update_credentials(aws_env)
+            # Forward credentials to gateway
+            aws_env = self._get_aws_env()
+            if not self._gateway_started:
+                # First credentials received — start the gateway
+                try:
+                    self._gateway.start(aws_env)
+                    self._gateway_started = True
+                except GatewayUnavailableError as e:
+                    print(f"[Enclave] Gateway failed to start: {e}", flush=True)
+            else:
+                self._gateway.update_credentials(aws_env)
 
             return {
                 "status": "success",
@@ -194,27 +184,6 @@ class BedrockServer:
         env["AWS_REGION"] = self.region
         env["AWS_DEFAULT_REGION"] = self.region
         return env
-
-    def _use_gateway(self) -> bool:
-        """Check if the gateway runtime should be used for this request."""
-        if self._agent_runtime != "gateway":
-            return False
-        if self._gateway is None or self._http_client is None:
-            return False
-        if not self._gateway_started:
-            return False
-        return True
-
-    def _ensure_gateway(self) -> bool:
-        """Ensure gateway is healthy, return True if usable."""
-        if not self._use_gateway():
-            return False
-        try:
-            self._gateway.ensure_running(self._get_aws_env())
-            return True
-        except GatewayUnavailableError as e:
-            print(f"[Enclave] Gateway unavailable, falling back to subprocess: {e}", flush=True)
-            return False
 
     def handle_chat(self, data: dict) -> dict:
         """
@@ -456,56 +425,25 @@ class BedrockServer:
             message = message_bytes.decode("utf-8")
             print(f"[Enclave] Decrypted message: {message[:50]}...", flush=True)
 
-            # Choose runtime: gateway (persistent process) or subprocess
-            if self._ensure_gateway():
-                # Gateway path: pack tmpfs (already has unpacked state or fresh agent),
-                # move to gateway workspace, HTTP call, repack
-                request_id, _ = self._gateway.prepare_workspace(
-                    self._pack_directory(tmpfs_path),
-                    agent_name,
+            # Run via persistent OpenClaw gateway
+            self._gateway.ensure_running(self._get_aws_env())
+            request_id, _ = self._gateway.prepare_workspace(
+                self._pack_directory(tmpfs_path),
+                agent_name,
+            )
+            try:
+                response_text = self._http_client.chat(
+                    message=message,
+                    agent_id=request_id,
                 )
+                tarball_bytes = self._gateway.collect_workspace(request_id, agent_name)
+            except (GatewayRequestError, Exception) as e:
+                # Clean up gateway workspace on error
                 try:
-                    response_text = self._http_client.chat(
-                        message=message,
-                        agent_id=request_id,
-                    )
-                    # Collect updated workspace back to tarball
-                    tarball_bytes = self._gateway.collect_workspace(request_id, agent_name)
-                except (GatewayRequestError, Exception) as e:
-                    print(f"[Enclave] Gateway request failed, falling back to subprocess: {e}", flush=True)
-                    # Clean up gateway workspace on error
-                    try:
-                        self._gateway.collect_workspace(request_id, agent_name)
-                    except Exception:
-                        pass
-                    # Fall through to subprocess
-                    response_text = None
-                    tarball_bytes = None
-
-                if response_text is None:
-                    # Subprocess fallback
-                    response_text = collect_response_text(
-                        run_agent_streaming(
-                            state_dir=str(tmpfs_path),
-                            agent_name=agent_name,
-                            message=message,
-                            provider="amazon-bedrock",
-                            env=self._get_aws_env(),
-                        )
-                    )
-                    tarball_bytes = self._pack_directory(tmpfs_path)
-            else:
-                # Subprocess path (original behavior)
-                response_text = collect_response_text(
-                    run_agent_streaming(
-                        state_dir=str(tmpfs_path),
-                        agent_name=agent_name,
-                        message=message,
-                        provider="amazon-bedrock",
-                        env=self._get_aws_env(),
-                    )
-                )
-                tarball_bytes = self._pack_directory(tmpfs_path)
+                    self._gateway.collect_workspace(request_id, agent_name)
+                except Exception:
+                    pass
+                raise RuntimeError(f"Gateway request failed: {e}") from e
 
             if not response_text:
                 return {
@@ -704,139 +642,6 @@ You are {agent_name}, a personal AI companion.
                 file_count += 1
                 total_size += size
         print(f"[Enclave] Tarball total: {file_count} files, {total_size} bytes", flush=True)
-
-    def _read_agent_state(self, agent_dir: Path, agent_name: str) -> dict:
-        """
-        Read OpenClaw agent state files.
-
-        Returns:
-            {
-                "model": str,
-                "system_prompt": str,       # SOUL.md + MEMORY.md + daily memories
-                "history": List[ConverseTurn],
-                "session_file": Path,       # file to append new messages to
-            }
-        """
-        from datetime import datetime, timedelta
-
-        agent_subdir = agent_dir / "agents" / agent_name
-
-        # --- Model resolution ---
-        model = "us.anthropic.claude-opus-4-5-20251101-v1:0"
-        config_file = agent_dir / "openclaw.json"
-        if config_file.exists():
-            try:
-                config = json.loads(config_file.read_text())
-                agent_config = config.get("agents", {}).get(agent_name, {})
-                model = agent_config.get("model") or config.get("defaults", {}).get("model") or model
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # --- System prompt composition ---
-        # 1. SOUL.md
-        soul_content = ""
-        soul_file = agent_subdir / "SOUL.md"
-        if soul_file.exists():
-            soul_content = soul_file.read_text().strip()
-
-        # 2. MEMORY.md (long-term memories)
-        memory_content = ""
-        memory_file = agent_subdir / "memory" / "MEMORY.md"
-        if memory_file.exists():
-            memory_content = memory_file.read_text().strip()
-
-        # 3. Daily memories (today + yesterday)
-        daily_memories = ""
-        memory_dir = agent_subdir / "memory"
-        if memory_dir.exists():
-            today = datetime.now()
-            yesterday = today - timedelta(days=1)
-            for day in [yesterday, today]:
-                daily_file = memory_dir / f"{day.strftime('%Y-%m-%d')}.md"
-                if daily_file.exists():
-                    content = daily_file.read_text().strip()
-                    if content:
-                        daily_memories += f"\n### {day.strftime('%Y-%m-%d')}\n{content}\n"
-
-        # Combine system prompt
-        system_parts = []
-        if soul_content:
-            system_parts.append(soul_content)
-        if memory_content:
-            system_parts.append(f"## Memories\n{memory_content}")
-        if daily_memories:
-            system_parts.append(f"## Recent Notes{daily_memories}")
-
-        system_prompt = "\n\n".join(system_parts) if system_parts else f"You are {agent_name}, a helpful AI assistant."
-
-        # --- Session history parsing ---
-        history: List[ConverseTurn] = []
-        sessions_dir = agent_subdir / "sessions"
-        session_file = None
-
-        if sessions_dir.exists():
-            # Find session files, sorted by name (timestamp-based)
-            session_files = sorted(sessions_dir.glob("*.jsonl"))
-            if session_files:
-                # Use most recent session file
-                latest_session = session_files[-1]
-                session_file = latest_session
-
-                try:
-                    for line in latest_session.read_text().strip().split("\n"):
-                        if not line.strip():
-                            continue
-                        try:
-                            record = json.loads(line)
-                            if record.get("type") == "message":
-                                msg = record.get("message", {})
-                                role = msg.get("role", "")
-                                content_blocks = msg.get("content", [])
-                                text = ""
-                                for block in content_blocks:
-                                    if isinstance(block, dict) and block.get("type") == "text":
-                                        text += block.get("text", "")
-                                    elif isinstance(block, str):
-                                        text += block
-                                if role in ("user", "assistant") and text:
-                                    history.append(ConverseTurn(role=role, content=text))
-                        except json.JSONDecodeError:
-                            continue
-                except Exception as e:
-                    print(f"[Enclave] Error reading session file: {e}", flush=True)
-
-        # If no session file, create one
-        if session_file is None:
-            sessions_dir.mkdir(parents=True, exist_ok=True)
-            from datetime import datetime as dt
-
-            timestamp = dt.now().strftime("%Y%m%d_%H%M%S")
-            session_file = sessions_dir / f"{timestamp}.jsonl"
-            # Write session header
-            header = json.dumps({"type": "session", "timestamp": timestamp, "agent": agent_name})
-            session_file.write_text(header + "\n")
-
-        return {
-            "model": model,
-            "system_prompt": system_prompt,
-            "history": history,
-            "session_file": session_file,
-        }
-
-    def _append_to_session(self, session_file: Path, role: str, content: str) -> None:
-        """Append a message to a session JSONL file in OpenClaw format."""
-        from datetime import datetime as dt
-
-        record = {
-            "type": "message",
-            "timestamp": dt.now().isoformat(),
-            "message": {
-                "role": role,
-                "content": [{"type": "text", "text": content}],
-            },
-        }
-        with open(session_file, "a") as f:
-            f.write(json.dumps(record) + "\n")
 
     def handle_extract_agent_files(self, data: dict) -> dict:
         """
@@ -1049,36 +854,18 @@ You are {agent_name}, a personal AI companion.
             user_content = message_bytes.decode("utf-8")
             print(f"[Enclave] Decrypted message: {user_content[:50]}...", flush=True)
 
-            # Choose runtime: gateway (persistent process) or subprocess
-            # Helper methods return (tarball_bytes, input_tokens, output_tokens) or None on error
-            use_gateway = self._ensure_gateway()
-            result = None
-
-            if use_gateway:
-                # Gateway path: stream from persistent OpenClaw gateway via HTTP SSE
-                result = self._agent_chat_stream_gateway(
-                    conn=conn,
-                    tmpfs_path=tmpfs_path,
-                    agent_name=agent_name,
-                    user_content=user_content,
-                    client_public_key=client_public_key,
-                    user_public_key=user_public_key,
-                    encryption_mode=encryption_mode,
-                    encrypted_state_dict=encrypted_state_dict,
-                )
-                if result is None:
-                    # Gateway failed — fall through to subprocess
-                    use_gateway = False
-
-            if not use_gateway:
-                # Subprocess path (original behavior)
-                result = self._agent_chat_stream_subprocess(
-                    conn=conn,
-                    tmpfs_path=tmpfs_path,
-                    agent_name=agent_name,
-                    user_content=user_content,
-                    client_public_key=client_public_key,
-                )
+            # Stream via persistent OpenClaw gateway
+            self._gateway.ensure_running(self._get_aws_env())
+            result = self._agent_chat_stream_gateway(
+                conn=conn,
+                tmpfs_path=tmpfs_path,
+                agent_name=agent_name,
+                user_content=user_content,
+                client_public_key=client_public_key,
+                user_public_key=user_public_key,
+                encryption_mode=encryption_mode,
+                encrypted_state_dict=encrypted_state_dict,
+            )
 
             if result is None:
                 return  # Error already sent to client
@@ -1183,174 +970,6 @@ You are {agent_name}, a personal AI companion.
                 except Exception:
                     pass
             return None
-
-    def _agent_chat_stream_subprocess(
-        self,
-        conn: socket.socket,
-        tmpfs_path: Path,
-        agent_name: str,
-        user_content: str,
-        client_public_key: bytes,
-    ) -> tuple | None:
-        """
-        Stream agent response via subprocess (original behavior).
-
-        Returns (tarball_bytes, input_tokens, output_tokens) on success, None on failure.
-        On failure, sends error event to client via conn.
-        """
-        chunk_count = 0
-        input_tokens = 0
-        output_tokens = 0
-        agent_error = None
-        event_types_seen = []
-        last_block_text = ""
-        done_meta_raw = {}
-        done_result_text = ""
-        agent_events_data = []
-        bridge_stderr = ""
-
-        print("[Enclave] Starting OpenClaw agent bridge (subprocess)...", flush=True)
-
-        try:
-            for event in run_agent_streaming(
-                state_dir=str(tmpfs_path),
-                agent_name=agent_name,
-                message=user_content,
-                provider="amazon-bedrock",
-                env=self._get_aws_env(),
-            ):
-                event_type = event.get("type")
-                event_types_seen.append(event_type)
-
-                if event_type == "partial":
-                    chunk_text = event.get("text", "")
-                    if chunk_text:
-                        chunk_count += 1
-                        encrypted_chunk = encrypt_to_public_key(
-                            client_public_key,
-                            chunk_text.encode("utf-8"),
-                            "enclave-to-client-transport",
-                        )
-                        self._send_event(conn, {"encrypted_content": encrypted_chunk.to_dict()})
-
-                elif event_type == "block":
-                    block_text = event.get("text", "")
-                    if block_text:
-                        last_block_text = block_text
-                        print(f"[Enclave] Block event: {len(block_text)} chars", flush=True)
-
-                elif event_type == "tool_result":
-                    tool_text = event.get("text", "")
-                    if tool_text:
-                        encrypted_chunk = encrypt_to_public_key(
-                            client_public_key,
-                            tool_text.encode("utf-8"),
-                            "enclave-to-client-transport",
-                        )
-                        self._send_event(
-                            conn, {"encrypted_content": encrypted_chunk.to_dict(), "event_type": "tool_result"}
-                        )
-
-                elif event_type == "error":
-                    agent_error = event.get("message", "Unknown agent error")
-                    print(f"[Enclave] Agent error: {agent_error}", flush=True)
-
-                elif event_type == "done":
-                    meta = event.get("meta", {})
-                    duration_ms = meta.get("durationMs", 0)
-                    stop_reason = meta.get("stopReason", "unknown")
-                    agent_meta = meta.get("agentMeta") or {}
-                    usage = agent_meta.get("usage") or {}
-                    input_tokens = usage.get("input", 0) or 0
-                    output_tokens = usage.get("output", 0) or 0
-                    meta_error = meta.get("error")
-                    if meta_error:
-                        if isinstance(meta_error, dict):
-                            agent_error = meta_error.get("message", str(meta_error))
-                        else:
-                            agent_error = str(meta_error)
-                    done_meta_raw = {
-                        "durationMs": duration_ms,
-                        "stopReason": stop_reason,
-                        "error": str(meta_error) if meta_error else None,
-                        "inputTokens": input_tokens,
-                        "outputTokens": output_tokens,
-                        "agentMetaKeys": list((agent_meta or {}).keys()),
-                    }
-                    done_result_text = event.get("resultText", "")
-                    result_keys = event.get("resultKeys", [])
-                    print(
-                        f"[Enclave] Agent done: {duration_ms}ms, stop={stop_reason}, tokens={input_tokens}/{output_tokens}, resultText_len={len(done_result_text)}, resultKeys={result_keys}",
-                        flush=True,
-                    )
-
-                elif event_type == "agent_event":
-                    agent_events_data.append(
-                        {"stream": event.get("stream"), "data_keys": list((event.get("data") or {}).keys())}
-                    )
-
-                elif event_type == "bridge_stderr":
-                    bridge_stderr = event.get("text", "")
-                    print(f"[Enclave] Bridge stderr: {bridge_stderr[:5000]}", flush=True)
-
-        except (RuntimeError, FileNotFoundError) as e:
-            print(f"[Enclave] Bridge error: {e}", flush=True)
-            if bridge_stderr:
-                self._send_event(
-                    conn,
-                    {
-                        "diagnostic": {
-                            "bridge_stderr": bridge_stderr[:5000],
-                            "error": str(e),
-                        }
-                    },
-                )
-            self._send_event(conn, {"error": str(e), "is_final": True})
-            return None
-
-        if agent_error:
-            self._send_event(conn, {"error": agent_error, "is_final": True})
-            return None
-
-        # Send diagnostic info
-        from collections import Counter
-
-        evt_counts = dict(Counter(event_types_seen))
-        self._send_event(
-            conn,
-            {
-                "diagnostic": {
-                    "chunk_count": chunk_count,
-                    "event_types": evt_counts,
-                    "has_block_fallback": chunk_count == 0 and bool(last_block_text),
-                    "block_text_len": len(last_block_text),
-                    "done_meta": done_meta_raw,
-                    "done_result_text_len": len(done_result_text),
-                    "done_result_text_preview": done_result_text[:200] if done_result_text else "",
-                    "agent_events": agent_events_data,
-                    "bridge_stderr": bridge_stderr[:4000] if bridge_stderr else "",
-                }
-            },
-        )
-
-        # Fallback chain
-        fallback_text = last_block_text or done_result_text
-        if chunk_count == 0 and fallback_text:
-            source = "block" if last_block_text else "done_result"
-            print(f"[Enclave] No partials streamed, using {source} fallback ({len(fallback_text)} chars)", flush=True)
-            encrypted_chunk = encrypt_to_public_key(
-                client_public_key,
-                fallback_text.encode("utf-8"),
-                "enclave-to-client-transport",
-            )
-            self._send_event(conn, {"encrypted_content": encrypted_chunk.to_dict()})
-            chunk_count = 1
-
-        print(f"[Enclave] Stream complete: {chunk_count} chunks", flush=True)
-
-        # Pack updated state
-        tarball_bytes = self._pack_directory(tmpfs_path)
-        return (tarball_bytes, input_tokens, output_tokens)
 
     def _send_event(self, conn: socket.socket, event: dict) -> None:
         """Send newline-delimited JSON event."""
@@ -1631,7 +1250,6 @@ def _start_vsock_tcp_bridge():
 
 def main():
     region = os.environ.get("AWS_REGION", "us-east-1")
-    agent_runtime = os.environ.get("AGENT_RUNTIME", "subprocess")
     max_workers = int(os.environ.get("MAX_CONCURRENT_AGENTS", "8"))
 
     print("=" * 60, flush=True)
@@ -1639,7 +1257,6 @@ def main():
     print("=" * 60, flush=True)
     print(f"Python version: {sys.version}", flush=True)
     print(f"AWS region: {region}", flush=True)
-    print(f"Agent runtime: {agent_runtime}", flush=True)
     print(f"Max concurrent agents: {max_workers}", flush=True)
 
     # Start TCP-to-vsock bridge for Node.js (OpenClaw) networking

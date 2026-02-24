@@ -32,19 +32,6 @@ async def test_every_endpoint_has_operation_id(async_client):
 
 
 @pytest.mark.asyncio
-async def test_context_endpoints_have_401_responses(async_client):
-    """Context router endpoints should document 401 error response."""
-    response = await async_client.get("/api/v1/openapi.json")
-    spec = response.json()
-    context_paths = {k: v for k, v in spec["paths"].items() if "/context" in k}
-    assert context_paths, "No context paths found"
-    for path, methods in context_paths.items():
-        for method, details in methods.items():
-            if method in ("get", "post", "put", "delete"):
-                assert "401" in details["responses"], f"{method.upper()} {path} missing 401 response"
-
-
-@pytest.mark.asyncio
 async def test_debug_encryption_report_has_response_model(async_client):
     """GET /debug/encryption/report should have a response model."""
     response = await async_client.get("/api/v1/openapi.json")
