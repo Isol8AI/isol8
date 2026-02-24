@@ -533,6 +533,7 @@ class GatewayManager:
                 },
             },
             "browser": {"enabled": False},
+            "update": {"checkOnStart": False},
         }
 
         config_path = self._workspace / "openclaw.json"

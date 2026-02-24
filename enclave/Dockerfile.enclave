@@ -5,8 +5,8 @@
 #
 # Requires: git submodule update --init (agent/ must be populated)
 #
-# Uses multi-stage build to keep the final image small enough for EIF conversion.
-# The OpenClaw monorepo is ~4GB with all deps; we only need the built CLI + prod deps.
+# Uses multi-stage build: stage 1 builds OpenClaw with devDeps, stage 2 copies
+# the full tree with prod deps only into the final enclave image.
 
 # =============================================================================
 # Stage 1: Build OpenClaw (thrown away after build)
@@ -28,8 +28,7 @@ COPY agent/ ./
 ENV CI=true
 RUN pnpm install --frozen-lockfile && \
     pnpm build && \
-    pnpm prune --prod && \
-    rm -rf src/ ui/ vendor/ apps/ docs/ test/ Swabble/ .pnpm-store/ /root/.local/share/pnpm/store/
+    pnpm prune --prod
 
 # =============================================================================
 # Stage 2: Final enclave image (slim)
@@ -70,19 +69,13 @@ RUN python3 -m pip install --no-cache-dir \
 RUN useradd -r -s /bin/false enclave
 
 # =============================================================================
-# OpenClaw Agent (built artifacts only, from stage 1)
+# OpenClaw Agent (full tree with prod deps, from stage 1)
 # =============================================================================
 WORKDIR /opt/openclaw
 
-# Copy only the built output + production node_modules from builder
-COPY --from=openclaw-builder /build/openclaw.mjs ./
-COPY --from=openclaw-builder /build/package.json ./
-COPY --from=openclaw-builder /build/dist/ ./dist/
-COPY --from=openclaw-builder /build/node_modules/ ./node_modules/
-COPY --from=openclaw-builder /build/skills/ ./skills/
-COPY --from=openclaw-builder /build/assets/ ./assets/
-COPY --from=openclaw-builder /build/patches/ ./patches/
-COPY --from=openclaw-builder /build/extensions/ ./extensions/
+# Copy the full built OpenClaw tree (prod deps only after prune).
+# Keeping everything avoids missing-file issues (e.g. docs/reference/templates).
+COPY --from=openclaw-builder /build/ ./
 
 # Link globally so 'openclaw' CLI is available (skip postinstall, scripts/ not in final image)
 RUN npm link --ignore-scripts
