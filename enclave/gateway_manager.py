@@ -115,6 +115,8 @@ class GatewayManager:
                 proc_env["https_proxy"] = proxy_url
 
             # Start gateway process
+            # NOTE: --auth flag only accepts "token" or "password" on CLI.
+            # Auth mode "none" is set in openclaw.json gateway config instead.
             cmd = [
                 "openclaw",
                 "gateway",
@@ -123,8 +125,6 @@ class GatewayManager:
                 str(self._port),
                 "--bind",
                 "loopback",
-                "--auth",
-                "none",
                 "--allow-unconfigured",
             ]
 
@@ -282,6 +282,15 @@ class GatewayManager:
         proc_env["OPENCLAW_HOME"] = str(self._workspace)
         proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
+        # Set proxy env vars for enclave networking (same as start())
+        bridge_port = os.environ.get("VSOCK_BRIDGE_PORT", "3128")
+        if int(bridge_port) > 0:
+            proxy_url = f"http://127.0.0.1:{bridge_port}"
+            proc_env["HTTP_PROXY"] = proxy_url
+            proc_env["HTTPS_PROXY"] = proxy_url
+            proc_env["http_proxy"] = proxy_url
+            proc_env["https_proxy"] = proxy_url
+
         cmd = [
             "openclaw",
             "gateway",
@@ -290,8 +299,6 @@ class GatewayManager:
             str(self._port),
             "--bind",
             "loopback",
-            "--auth",
-            "none",
             "--allow-unconfigured",
         ]
 
@@ -449,7 +456,7 @@ class GatewayManager:
         brave_key = env.get("BRAVE_API_KEY", os.environ.get("BRAVE_API_KEY", ""))
 
         config = {
-            "gateway": {"mode": "local"},
+            "gateway": {"mode": "local", "auth": {"mode": "none"}},
             "models": {
                 "providers": {
                     "amazon-bedrock": {
@@ -479,11 +486,17 @@ class GatewayManager:
             "agents": {
                 "defaults": {
                     "memorySearch": {
+                        "enabled": True,
                         "provider": "bedrock",
                         "model": "amazon.nova-2-multimodal-embeddings-v1:0",
+                        "sources": ["memory", "sessions"],
+                        "store": {
+                            "driver": "sqlite",
+                            "path": str(self._workspace / "agents" / "{agentId}" / "memory" / "index.sqlite"),
+                        },
                         "sync": {
                             "watch": False,
-                            "onSessionStart": False,
+                            "onSessionStart": True,
                             "onSearch": True,
                         },
                         "query": {
