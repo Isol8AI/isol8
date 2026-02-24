@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import signal
 import shutil
 import subprocess
 import tarfile
@@ -35,8 +36,10 @@ DEFAULT_WORKSPACE = "/tmp/openclaw/gateway-workspace"
 # Health check polling interval during startup
 _HEALTH_POLL_INTERVAL = 0.5
 
-# Maximum time to wait for gateway to become healthy on startup
-_STARTUP_TIMEOUT = 30.0
+# Maximum time to wait for gateway to become healthy on startup.
+# Cold Node.js startup in the enclave takes ~35s (module loading, JIT).
+# 90s gives generous headroom for slow boots.
+_STARTUP_TIMEOUT = 90.0
 
 # Maximum restart attempts in ensure_running()
 _MAX_RESTART_ATTEMPTS = 3
@@ -101,6 +104,16 @@ class GatewayManager:
             # Ensure AWS SDK finds credentials file
             proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
+            # Prevent OpenClaw from self-respawning.  By default, entry.ts
+            # spawns a child process to add --disable-warning flags, causing
+            # self._process to track the *wrapper* while the real gateway
+            # runs as an untracked grandchild.  When we SIGKILL the wrapper,
+            # the grandchild survives (reparented to init) and becomes an
+            # orphan we can never stop.  OPENCLAW_NO_RESPAWN=1 prevents both
+            # the entry.ts respawn and SIGUSR1-triggered restarts.
+            proc_env["OPENCLAW_NO_RESPAWN"] = "1"
+            proc_env["OPENCLAW_NODE_OPTIONS_READY"] = "1"
+
             # Set proxy env vars for enclave networking.
             # Inside the enclave, vsock_tcp_bridge.py listens on 127.0.0.1:3128
             # and tunnels CONNECT requests through vsock to the parent's proxy.
@@ -125,6 +138,7 @@ class GatewayManager:
                 "--bind",
                 "loopback",
                 "--allow-unconfigured",
+                "--verbose",
             ]
 
             print(f"[Gateway] Starting: {' '.join(cmd)}", flush=True)
@@ -136,6 +150,7 @@ class GatewayManager:
                 stderr=subprocess.STDOUT,
                 env=proc_env,
                 cwd=str(self._workspace),
+                start_new_session=True,
             )
 
             # Start log drain thread
@@ -177,13 +192,15 @@ class GatewayManager:
 
         print("[Gateway] Stopping...", flush=True)
 
-        # SIGTERM first
+        # SIGTERM the process group first for graceful shutdown
         try:
-            self._process.terminate()
+            os.killpg(self._process.pid, signal.SIGTERM)
             self._process.wait(timeout=5)
             print("[Gateway] Stopped gracefully", flush=True)
+        except (ProcessLookupError, PermissionError):
+            print("[Gateway] Process group already gone", flush=True)
         except subprocess.TimeoutExpired:
-            # Force kill
+            # Force kill entire process group
             self._kill_process()
             print("[Gateway] Force killed", flush=True)
 
@@ -191,10 +208,18 @@ class GatewayManager:
         self._started = False
 
     def _kill_process(self) -> None:
-        """Force kill the gateway process."""
+        """Force kill the gateway process and all its children.
+
+        Uses os.killpg() to kill the entire process group (created by
+        start_new_session=True in Popen) so no orphan children survive.
+        """
         if self._process:
             try:
-                self._process.kill()
+                os.killpg(self._process.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                # Process group already gone
+                pass
+            try:
                 self._process.wait(timeout=2)
             except Exception:
                 pass
@@ -287,6 +312,8 @@ class GatewayManager:
         proc_env["OPENCLAW_STATE_DIR"] = str(self._workspace)
         proc_env["OPENCLAW_HOME"] = str(self._workspace)
         proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
+        proc_env["OPENCLAW_NO_RESPAWN"] = "1"
+        proc_env["OPENCLAW_NODE_OPTIONS_READY"] = "1"
 
         # Set proxy env vars for enclave networking (same as start())
         bridge_port = os.environ.get("VSOCK_BRIDGE_PORT", "3128")
@@ -306,6 +333,7 @@ class GatewayManager:
             "--bind",
             "loopback",
             "--allow-unconfigured",
+            "--verbose",
         ]
 
         self._process = subprocess.Popen(
@@ -314,6 +342,7 @@ class GatewayManager:
             stderr=subprocess.STDOUT,
             env=proc_env,
             cwd=str(self._workspace),
+            start_new_session=True,
         )
 
         threading.Thread(
