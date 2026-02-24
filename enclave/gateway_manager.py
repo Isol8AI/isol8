@@ -456,7 +456,15 @@ class GatewayManager:
         brave_key = env.get("BRAVE_API_KEY", os.environ.get("BRAVE_API_KEY", ""))
 
         config = {
-            "gateway": {"mode": "local", "auth": {"mode": "none"}},
+            "gateway": {
+                "mode": "local",
+                "auth": {"mode": "none"},
+                "http": {
+                    "endpoints": {
+                        "chatCompletions": {"enabled": True},
+                    },
+                },
+            },
             "models": {
                 "providers": {
                     "amazon-bedrock": {
