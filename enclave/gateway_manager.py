@@ -101,7 +101,16 @@ class GatewayManager:
             proc_env.update(env)
             proc_env["OPENCLAW_STATE_DIR"] = str(self._workspace)
             proc_env["OPENCLAW_HOME"] = str(self._workspace)
-            # Ensure AWS SDK finds credentials file
+
+            # Remove AWS credential env vars so the SDK's fromEnv() provider
+            # fails and falls through to fromIni(), which reads the credentials
+            # file we keep fresh via update_credentials() every 45 minutes.
+            # Without this, fromEnv() uses stale credentials baked in at process
+            # start and never checks the file (see defaultProvider.js chain).
+            for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+                proc_env.pop(key, None)
+
+            # Point AWS SDK at the credentials file we maintain
             proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
             # Prevent OpenClaw from self-respawning.  By default, entry.ts
@@ -311,6 +320,12 @@ class GatewayManager:
         proc_env.update(env)
         proc_env["OPENCLAW_STATE_DIR"] = str(self._workspace)
         proc_env["OPENCLAW_HOME"] = str(self._workspace)
+
+        # Remove AWS credential env vars — same rationale as start().
+        # Forces SDK to use fromIni() which reads the refreshable credentials file.
+        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
+            proc_env.pop(key, None)
+
         proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
         proc_env["OPENCLAW_NO_RESPAWN"] = "1"
         proc_env["OPENCLAW_NODE_OPTIONS_READY"] = "1"
