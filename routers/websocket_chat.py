@@ -596,6 +596,7 @@ async def _process_agent_chat_background(
             encrypted_state=encrypted_state_for_enclave,
             client_public_key=client_pub_key,
             user_public_key=user_pub_key,
+            agent_id=str(agent_state.id),
             encrypted_soul_content=encrypted_soul,
             encryption_mode=encryption_mode,
             kms_envelope=kms_envelope,

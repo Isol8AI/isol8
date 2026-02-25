@@ -397,22 +397,38 @@ class BedrockServer:
             model = data["model"]
             encrypted_state_dict = data.get("encrypted_state")
             encryption_mode = data.get("encryption_mode", "zero_trust")
+            # Use agent_id (UUID) for workspace directories; fallback to agent_name
+            agent_id = data.get("agent_id") or agent_name
 
-            print(f"[Enclave] RUN_AGENT: agent={agent_name}, model={model}, mode={encryption_mode}", flush=True)
+            print(
+                f"[Enclave] RUN_AGENT: agent={agent_name}, id={agent_id}, model={model}, mode={encryption_mode}",
+                flush=True,
+            )
 
             # Create tmpfs directory for this request
             tmpfs_base = os.environ.get("OPENCLAW_TMPFS", "/tmp/openclaw")
-            tmpfs_path = Path(tempfile.mkdtemp(dir=tmpfs_base, prefix=f"agent_{agent_name}_"))
+            tmpfs_path = Path(tempfile.mkdtemp(dir=tmpfs_base, prefix=f"agent_{agent_id}_"))
 
             # Decrypt and extract existing state, or create fresh agent
             if encrypted_state_dict:
                 state_bytes = self._decrypt_state(encrypted_state_dict, encryption_mode)
                 self._unpack_tarball(state_bytes, tmpfs_path)
                 print(f"[Enclave] Extracted existing state ({len(state_bytes)} bytes)", flush=True)
+
+                # Migrate old tarballs: rename agents/{old_name}/ → agents/{agent_id}/
+                agents_root = tmpfs_path / "agents"
+                expected_dir = agents_root / agent_id
+                if agents_root.is_dir() and not expected_dir.exists():
+                    subdirs = [d for d in agents_root.iterdir() if d.is_dir()]
+                    if len(subdirs) == 1:
+                        old_dir = subdirs[0]
+                        print(f"[Enclave] Migrating agent dir: {old_dir.name} → {agent_id}", flush=True)
+                        old_dir.rename(expected_dir)
+
                 self._log_tarball_contents(tmpfs_path)
             else:
-                self._create_fresh_agent(tmpfs_path, agent_name, model)
-                print("[Enclave] Created fresh agent directory", flush=True)
+                self._create_fresh_agent(tmpfs_path, agent_id, model, display_name=agent_name)
+                print(f"[Enclave] Created fresh agent directory: agents/{agent_id}/", flush=True)
                 self._log_tarball_contents(tmpfs_path)
 
             # Decrypt user message
@@ -429,20 +445,20 @@ class BedrockServer:
             self._gateway.ensure_running(self._get_aws_env())
             self._gateway.prepare_workspace(
                 self._pack_directory(tmpfs_path),
-                agent_name,
+                agent_id,
             )
             try:
-                session_key = f"agent:{agent_name}:enclave:main"
+                session_key = f"agent:{agent_id}:enclave:main"
                 response_text = self._http_client.chat(
                     message=message,
-                    agent_id=agent_name,
+                    agent_id=agent_id,
                     session_key=session_key,
                 )
-                tarball_bytes = self._gateway.collect_workspace(agent_name)
+                tarball_bytes = self._gateway.collect_workspace(agent_id)
             except (GatewayRequestError, Exception) as e:
                 # Clean up gateway workspace on error
                 try:
-                    self._gateway.collect_workspace(agent_name)
+                    self._gateway.collect_workspace(agent_id)
                 except Exception:
                     pass
                 raise RuntimeError(f"Gateway request failed: {e}") from e
@@ -584,15 +600,28 @@ class BedrockServer:
         buffer.seek(0)
         return buffer.read()
 
-    def _create_fresh_agent(self, agent_dir: Path, agent_name: str, model: str, soul_content: str = None) -> None:
-        """Create a fresh OpenClaw agent directory structure."""
+    def _create_fresh_agent(
+        self, agent_dir: Path, agent_name: str, model: str, soul_content: str = None, display_name: str = None
+    ) -> None:
+        """Create a fresh OpenClaw agent directory structure.
+
+        Args:
+            agent_dir: Root directory for the agent state.
+            agent_name: Directory key (typically UUID) used for agents/{agent_name}/.
+            model: Model ID for the agent config.
+            soul_content: Optional SOUL.md content. If None, a default is generated.
+            display_name: Human-readable name for SOUL.md content. Falls back to agent_name.
+        """
         agent_dir.mkdir(parents=True, exist_ok=True)
+
+        # Use display_name for user-facing text, agent_name for directory structure
+        name_for_display = display_name or agent_name
 
         # Use provided soul content or default
         if not soul_content:
-            soul_content = f"""# {agent_name}
+            soul_content = f"""# {name_for_display}
 
-You are {agent_name}, a personal AI companion.
+You are {name_for_display}, a personal AI companion.
 
 ## Personality
 - Friendly and helpful
@@ -814,19 +843,33 @@ You are {agent_name}, a personal AI companion.
             agent_name = data["agent_name"]
             encrypted_soul_dict = data.get("encrypted_soul_content")
             encryption_mode = data.get("encryption_mode", "zero_trust")  # Default to zero_trust
+            # Use agent_id (UUID) for workspace directories to avoid case sensitivity issues.
+            # Fallback to agent_name for backwards compatibility with older clients.
+            agent_id = data.get("agent_id") or agent_name
 
-            print(f"[Enclave] AGENT_CHAT_STREAM: agent={agent_name}, mode={encryption_mode}", flush=True)
+            print(f"[Enclave] AGENT_CHAT_STREAM: agent={agent_name}, id={agent_id}, mode={encryption_mode}", flush=True)
 
             # Create tmpfs directory
             tmpfs_base = os.environ.get("OPENCLAW_TMPFS", "/tmp/openclaw")
             os.makedirs(tmpfs_base, exist_ok=True)
-            tmpfs_path = Path(tempfile.mkdtemp(dir=tmpfs_base, prefix=f"agent_{agent_name}_"))
+            tmpfs_path = Path(tempfile.mkdtemp(dir=tmpfs_base, prefix=f"agent_{agent_id}_"))
 
             # Decrypt and extract existing state, or create fresh agent
             if encrypted_state_dict:
                 state_bytes = self._decrypt_state(encrypted_state_dict, encryption_mode)
                 self._unpack_tarball(state_bytes, tmpfs_path)
                 print(f"[Enclave] Extracted existing state ({len(state_bytes)} bytes)", flush=True)
+
+                # Migrate old tarballs: rename agents/{old_name}/ → agents/{agent_id}/
+                agents_root = tmpfs_path / "agents"
+                expected_dir = agents_root / agent_id
+                if agents_root.is_dir() and not expected_dir.exists():
+                    subdirs = [d for d in agents_root.iterdir() if d.is_dir()]
+                    if len(subdirs) == 1:
+                        old_dir = subdirs[0]
+                        print(f"[Enclave] Migrating agent dir: {old_dir.name} → {agent_id}", flush=True)
+                        old_dir.rename(expected_dir)
+
                 self._log_tarball_contents(tmpfs_path)
             else:
                 # Decrypt soul content if provided (encrypted by client to enclave key)
@@ -842,8 +885,8 @@ You are {agent_name}, a personal AI companion.
                     print(f"[Enclave] Decrypted soul content ({len(soul_content)} chars)", flush=True)
 
                 default_model = "us.anthropic.claude-opus-4-5-20251101-v1:0"
-                self._create_fresh_agent(tmpfs_path, agent_name, default_model, soul_content)
-                print("[Enclave] Created fresh agent directory", flush=True)
+                self._create_fresh_agent(tmpfs_path, agent_id, default_model, soul_content, display_name=agent_name)
+                print(f"[Enclave] Created fresh agent directory: agents/{agent_id}/", flush=True)
                 self._log_tarball_contents(tmpfs_path)
 
             # Decrypt user message
@@ -862,6 +905,7 @@ You are {agent_name}, a personal AI companion.
                 conn=conn,
                 tmpfs_path=tmpfs_path,
                 agent_name=agent_name,
+                agent_id=agent_id,
                 user_content=user_content,
                 client_public_key=client_public_key,
                 user_public_key=user_public_key,
@@ -917,6 +961,7 @@ You are {agent_name}, a personal AI companion.
         agent_name: str,
         user_content: str,
         client_public_key: bytes,
+        agent_id: str = None,
         user_public_key: bytes = None,
         encryption_mode: str = None,
         encrypted_state_dict: dict = None,
@@ -927,23 +972,25 @@ You are {agent_name}, a personal AI companion.
         Returns (tarball_bytes, input_tokens, output_tokens) on success, None on failure.
         On failure, does NOT send error to client (caller falls back to subprocess).
         """
+        # Use agent_id (UUID) for workspace directories; fallback to agent_name
+        workspace_key = agent_id or agent_name
         workspace_prepared = False
         try:
             # Prepare workspace: pack the already-unpacked tmpfs_path and move to gateway workspace
             workspace_tarball = self._pack_directory(tmpfs_path)
-            self._gateway.prepare_workspace(workspace_tarball, agent_name)
+            self._gateway.prepare_workspace(workspace_tarball, workspace_key)
             workspace_prepared = True
 
-            print(f"[Enclave] Gateway streaming: agent={agent_name}", flush=True)
+            print(f"[Enclave] Gateway streaming: agent={agent_name} (workspace={workspace_key})", flush=True)
 
             # Use stable session key so OpenClaw maintains conversation continuity
-            session_key = f"agent:{agent_name}:enclave:main"
+            session_key = f"agent:{workspace_key}:enclave:main"
 
             # Stream from gateway HTTP SSE → encrypt → forward via vsock
             chunk_count = 0
             for chunk_text in self._http_client.chat_stream(
                 message=user_content,
-                agent_id=agent_name,
+                agent_id=workspace_key,
                 session_key=session_key,
             ):
                 if chunk_text is None:
@@ -963,7 +1010,7 @@ You are {agent_name}, a personal AI companion.
             print(f"[Enclave] Gateway stream complete: {chunk_count} chunks", flush=True)
 
             # Collect updated workspace back to tarball
-            tarball_bytes = self._gateway.collect_workspace(agent_name)
+            tarball_bytes = self._gateway.collect_workspace(workspace_key)
             workspace_prepared = False  # Workspace collected, don't clean up again
 
             # Gateway doesn't provide token counts (OpenAI API doesn't include them in SSE chunks)
@@ -974,7 +1021,7 @@ You are {agent_name}, a personal AI companion.
             # Clean up workspace if it was prepared
             if workspace_prepared:
                 try:
-                    self._gateway.collect_workspace(agent_name)
+                    self._gateway.collect_workspace(workspace_key)
                 except Exception:
                     pass
             return None

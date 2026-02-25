@@ -453,6 +453,7 @@ async def send_agent_message(
         encrypted_state=encrypted_state,
         user_public_key=user_public_key,
         model=request.model,
+        agent_id=str(existing_state.id) if existing_state else None,
         encryption_mode=encryption_mode,
         kms_envelope=kms_envelope,
     )

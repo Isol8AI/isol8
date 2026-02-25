@@ -561,6 +561,7 @@ class NitroEnclaveClient(EnclaveInterface):
         user_public_key: bytes,
         agent_name: str,
         model: str,
+        agent_id: Optional[str] = None,
         encryption_mode: str = "zero_trust",
         kms_envelope: Optional[dict] = None,
     ) -> AgentRunResponse:
@@ -603,6 +604,7 @@ class NitroEnclaveClient(EnclaveInterface):
             "encrypted_state": encrypted_state_dict,
             "user_public_key": user_public_key.hex(),
             "agent_name": agent_name,
+            "agent_id": agent_id,
             "model": model,
             "encryption_mode": encryption_mode,
         }
@@ -736,6 +738,7 @@ class NitroEnclaveClient(EnclaveInterface):
         client_public_key: bytes,
         user_public_key: bytes,
         agent_name: str,
+        agent_id: Optional[str] = None,
         encrypted_soul_content: Optional[EncryptedPayload] = None,
         encryption_mode: str = "zero_trust",
         kms_envelope: Optional[Dict[str, bytes]] = None,
@@ -774,6 +777,7 @@ class NitroEnclaveClient(EnclaveInterface):
             "client_public_key": client_public_key.hex(),
             "user_public_key": user_public_key.hex(),
             "agent_name": agent_name,
+            "agent_id": agent_id,
             "encrypted_soul_content": encrypted_soul_content.to_dict() if encrypted_soul_content else None,
             "encryption_mode": encryption_mode,
         }

@@ -30,6 +30,7 @@ class AgentStreamRequest:
     encrypted_state: Optional[EncryptedPayload]
     client_public_key: bytes
     user_public_key: bytes
+    agent_id: Optional[str] = None  # Database UUID, used as workspace directory key
     encrypted_soul_content: Optional[EncryptedPayload] = None
     encryption_mode: str = "zero_trust"  # "zero_trust" or "background"
     kms_envelope: Optional[Dict[str, bytes]] = None  # KMS envelope for background mode
@@ -45,6 +46,7 @@ class AgentMessageRequest:
     encrypted_state: Optional[EncryptedPayload]  # None for new users
     user_public_key: bytes
     model: str
+    agent_id: Optional[str] = None  # Database UUID, used as workspace directory key
     encryption_mode: str = "zero_trust"  # "zero_trust" or "background"
     kms_envelope: Optional[Dict[str, bytes]] = None  # KMS envelope for background mode (bytes)
 
@@ -117,6 +119,7 @@ class AgentHandler:
                 encrypted_state=request.encrypted_state,
                 user_public_key=request.user_public_key,
                 agent_name=request.agent_name,
+                agent_id=request.agent_id,
                 model=request.model,
                 encryption_mode=request.encryption_mode,
                 kms_envelope=request.kms_envelope,
@@ -167,6 +170,7 @@ class AgentHandler:
                 client_public_key=request.client_public_key,
                 user_public_key=request.user_public_key,
                 agent_name=request.agent_name,
+                agent_id=request.agent_id,
                 encrypted_soul_content=request.encrypted_soul_content,
                 encryption_mode=request.encryption_mode,
                 kms_envelope=request.kms_envelope,

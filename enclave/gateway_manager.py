@@ -401,8 +401,13 @@ class GatewayManager:
         # Clean up previous state for this agent (stale files from last request)
         if agent_dir.exists():
             shutil.rmtree(str(agent_dir), ignore_errors=True)
-        if workspace_link.exists() or workspace_link.is_symlink():
+        # workspace_link may be a symlink (expected) or a real directory
+        # (created by OpenClaw when it normalizes agent IDs to lowercase).
+        # unlink() fails on directories with [Errno 21], so use rmtree for those.
+        if workspace_link.is_symlink():
             workspace_link.unlink()
+        elif workspace_link.exists():
+            shutil.rmtree(str(workspace_link))
 
         # Unpack tarball to a temporary directory first
         tmp_dir = Path(tempfile.mkdtemp(dir=str(self._workspace), prefix="unpack_"))
@@ -463,9 +468,11 @@ class GatewayManager:
         if not agent_dir.exists():
             raise FileNotFoundError(f"Workspace directory not found: agents/{agent_name}/")
 
-        # Remove symlink before packing (don't include it in tarball)
-        if workspace_link.exists() or workspace_link.is_symlink():
+        # Remove symlink/directory before packing (don't include it in tarball)
+        if workspace_link.is_symlink():
             workspace_link.unlink()
+        elif workspace_link.exists():
+            shutil.rmtree(str(workspace_link))
 
         # Create temp dir with correct tarball structure: agents/{agent_name}/
         tmp_dir = Path(tempfile.mkdtemp(dir=str(self._workspace), prefix="pack_"))
