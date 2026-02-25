@@ -15,7 +15,6 @@ import io
 import json
 import logging
 import os
-import signal
 import shutil
 import subprocess
 import tarfile
@@ -113,16 +112,6 @@ class GatewayManager:
             # Point AWS SDK at the credentials file we maintain
             proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
-            # Prevent OpenClaw from self-respawning.  By default, entry.ts
-            # spawns a child process to add --disable-warning flags, causing
-            # self._process to track the *wrapper* while the real gateway
-            # runs as an untracked grandchild.  When we SIGKILL the wrapper,
-            # the grandchild survives (reparented to init) and becomes an
-            # orphan we can never stop.  OPENCLAW_NO_RESPAWN=1 prevents both
-            # the entry.ts respawn and SIGUSR1-triggered restarts.
-            proc_env["OPENCLAW_NO_RESPAWN"] = "1"
-            proc_env["OPENCLAW_NODE_OPTIONS_READY"] = "1"
-
             # Set proxy env vars for enclave networking.
             # Inside the enclave, vsock_tcp_bridge.py listens on 127.0.0.1:3128
             # and tunnels CONNECT requests through vsock to the parent's proxy.
@@ -159,7 +148,6 @@ class GatewayManager:
                 stderr=subprocess.STDOUT,
                 env=proc_env,
                 cwd=str(self._workspace),
-                start_new_session=True,
             )
 
             # Start log drain thread
@@ -201,15 +189,13 @@ class GatewayManager:
 
         print("[Gateway] Stopping...", flush=True)
 
-        # SIGTERM the process group first for graceful shutdown
         try:
-            os.killpg(self._process.pid, signal.SIGTERM)
+            self._process.terminate()
             self._process.wait(timeout=5)
             print("[Gateway] Stopped gracefully", flush=True)
         except (ProcessLookupError, PermissionError):
-            print("[Gateway] Process group already gone", flush=True)
+            print("[Gateway] Process already gone", flush=True)
         except subprocess.TimeoutExpired:
-            # Force kill entire process group
             self._kill_process()
             print("[Gateway] Force killed", flush=True)
 
@@ -217,16 +203,11 @@ class GatewayManager:
         self._started = False
 
     def _kill_process(self) -> None:
-        """Force kill the gateway process and all its children.
-
-        Uses os.killpg() to kill the entire process group (created by
-        start_new_session=True in Popen) so no orphan children survive.
-        """
+        """Force kill the gateway process."""
         if self._process:
             try:
-                os.killpg(self._process.pid, signal.SIGKILL)
+                self._process.kill()
             except (ProcessLookupError, PermissionError):
-                # Process group already gone
                 pass
             try:
                 self._process.wait(timeout=2)
@@ -261,12 +242,8 @@ class GatewayManager:
 
     def ensure_running(self, env: dict) -> None:
         """
-        Ensure the gateway is running. Restart only if the process has exited.
-
-        A slow or busy gateway (health-check timeout) is NOT treated as dead —
-        only a process that has actually exited triggers a restart.  This avoids
-        the failure mode where we SIGTERM a busy-but-healthy gateway, then race
-        against its shutdown to rebind the port.
+        Ensure the gateway is running and healthy. Restart if the process has
+        exited or if it is alive but not responding to health checks.
 
         Thread-safe: acquires self._lock.
 
@@ -276,16 +253,21 @@ class GatewayManager:
         Raises:
             GatewayUnavailableError: If gateway cannot be recovered after retries.
         """
-        # Fast path: process alive → assume healthy (no lock needed for read)
+        # Fast path: process alive and healthy (no lock needed for read)
         if self._started and self._process and self._process.poll() is None:
-            return
+            if self._check_health():
+                return
+            # Health check failed but process alive — log and try restart under lock
+            print("[Gateway] Health check failed but process alive", flush=True)
 
         with self._lock:
-            # Re-check under lock: process still alive → nothing to do
+            # Re-check under lock: process alive and healthy → nothing to do
             if self._started and self._process and self._process.poll() is None:
-                return
+                if self._check_health():
+                    return
+                print("[Gateway] Process alive but unhealthy, restarting", flush=True)
 
-            # Process has exited (or was never started) — restart
+            # Process has exited, is unhealthy, or was never started — restart
             if self._process and self._process.poll() is not None:
                 print(
                     f"[Gateway] Process exited with code {self._process.returncode}, restarting",
@@ -327,8 +309,6 @@ class GatewayManager:
             proc_env.pop(key, None)
 
         proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
-        proc_env["OPENCLAW_NO_RESPAWN"] = "1"
-        proc_env["OPENCLAW_NODE_OPTIONS_READY"] = "1"
 
         # Set proxy env vars for enclave networking (same as start())
         bridge_port = os.environ.get("VSOCK_BRIDGE_PORT", "3128")
@@ -357,7 +337,6 @@ class GatewayManager:
             stderr=subprocess.STDOUT,
             env=proc_env,
             cwd=str(self._workspace),
-            start_new_session=True,
         )
 
         threading.Thread(

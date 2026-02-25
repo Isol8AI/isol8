@@ -870,7 +870,8 @@ You are {agent_name}, a personal AI companion.
             )
 
             if result is None:
-                return  # Error already sent to client
+                self._send_event(conn, {"error": "Gateway processing failed", "is_final": True})
+                return
 
             tarball_bytes, input_tokens, output_tokens = result
             print(f"[Enclave] Packed state: {len(tarball_bytes)} bytes", flush=True)
