@@ -119,6 +119,12 @@ class GatewayManager:
             # Point AWS SDK at the credentials file we maintain
             proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
 
+            # Set AWS_PROFILE so OpenClaw's embeddings-bedrock.ts validateCredentials()
+            # recognises that credentials are available.  Without this, the pre-check
+            # sees no env-var credentials and silently falls back to FTS-only mode
+            # (even though the SDK's fromIni() would find the credentials file fine).
+            proc_env["AWS_PROFILE"] = "default"
+
             # Set proxy env vars for enclave networking.
             # Inside the enclave, vsock_tcp_bridge.py listens on 127.0.0.1:3128
             # and tunnels CONNECT requests through vsock to the parent's proxy.
@@ -321,6 +327,10 @@ class GatewayManager:
             proc_env.pop(key, None)
 
         proc_env["AWS_SHARED_CREDENTIALS_FILE"] = str(self._workspace / ".aws" / "credentials")
+
+        # Set AWS_PROFILE so OpenClaw's embeddings-bedrock.ts validateCredentials()
+        # passes (same rationale as start()).
+        proc_env["AWS_PROFILE"] = "default"
 
         # Set proxy env vars for enclave networking (same as start())
         bridge_port = os.environ.get("VSOCK_BRIDGE_PORT", "3128")

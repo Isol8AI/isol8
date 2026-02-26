@@ -74,10 +74,28 @@ class AgentChatWSRequest(BaseModel):
     # Encrypted to enclave's public key so server cannot read it
     encrypted_soul_content: Optional[EncryptedPayloadSchema] = None
     # For zero_trust mode: client provides decrypted state re-encrypted to enclave
+    # Can be sent inline (small states) or via state_ref (large states that exceed
+    # API Gateway's 32KB WebSocket frame limit)
     encrypted_state: Optional[EncryptedPayloadSchema] = Field(
         default=None,
         description="Agent state encrypted to enclave transport key (zero_trust mode only)",
     )
+    state_ref: Optional[str] = Field(
+        default=None,
+        description="Reference UUID for state uploaded via REST (used when state exceeds WebSocket frame limit)",
+    )
+
+
+class UploadStateRequest(BaseModel):
+    """Request to upload re-encrypted agent state for zero_trust mode."""
+
+    encrypted_state: EncryptedPayloadSchema
+
+
+class UploadStateResponse(BaseModel):
+    """Response with reference UUID for uploaded state."""
+
+    state_ref: str
 
 
 class UpdateAgentStateRequest(BaseModel):

@@ -19,6 +19,7 @@ from core.enclave.agent_handler import AgentHandler, AgentMessageRequest
 from core.crypto import EncryptedPayload
 from core.services.agent_service import AgentService
 from models.user import User
+from core.state_store import store_state
 from schemas.agent import (
     CreateAgentRequest,
     AgentResponse,
@@ -29,6 +30,8 @@ from schemas.agent import (
     ExtractAgentFilesRequest,
     ExtractAgentFilesResponse,
     PackAgentFilesRequest,
+    UploadStateRequest,
+    UploadStateResponse,
 )
 from schemas.encryption import EncryptedPayloadSchema
 
@@ -226,6 +229,29 @@ async def get_agent_state(
         "encrypted_state": api_payload,
         "encryption_mode": state.encryption_mode,
     }
+
+
+@router.post(
+    "/upload-state",
+    response_model=UploadStateResponse,
+    summary="Upload re-encrypted agent state",
+    description=(
+        "Upload agent state re-encrypted to the enclave transport key. "
+        "Returns a reference UUID to include in the WebSocket message instead of "
+        "the full encrypted state. This avoids API Gateway's 32KB WebSocket frame limit."
+    ),
+    operation_id="upload_agent_state",
+    responses={
+        401: {"description": "Missing or invalid Clerk JWT token"},
+    },
+)
+async def upload_agent_state(
+    request: UploadStateRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    payload = request.encrypted_state.model_dump()
+    ref = await store_state(payload)
+    return UploadStateResponse(state_ref=ref)
 
 
 @router.put(

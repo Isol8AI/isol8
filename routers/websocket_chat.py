@@ -32,6 +32,7 @@ from core.services.management_api_client import ManagementApiClient, ManagementA
 from core.services.usage_service import UsageService
 from core.enclave import get_enclave, AgentHandler, AgentStreamRequest
 from core.services.agent_service import AgentService
+from core.state_store import retrieve_state
 from schemas.agent import AgentChatWSRequest
 from schemas.encryption import EncryptedPayloadSchema, SendEncryptedMessageRequest
 
@@ -203,7 +204,7 @@ async def ws_message(
 
     if msg_type == "agent_chat":
         try:
-            _validate_and_process_agent_chat(
+            await _validate_and_process_agent_chat(
                 connection_id=x_connection_id,
                 user_id=user_id,
                 body=body,
@@ -473,7 +474,7 @@ async def _process_chat_message_background(
 # =============================================================================
 
 
-def _validate_and_process_agent_chat(
+async def _validate_and_process_agent_chat(
     connection_id: str,
     user_id: str,
     body: Dict[str, Any],
@@ -492,7 +493,15 @@ def _validate_and_process_agent_chat(
 
         encrypted_state_from_client = None
         if body.get("encrypted_state"):
+            # Inline state (small payloads that fit in WebSocket frame)
             encrypted_state_from_client = EncryptedPayloadSchema(**body["encrypted_state"])
+        elif body.get("state_ref"):
+            # State uploaded via REST to avoid 32KB WebSocket frame limit
+            stored = await retrieve_state(body["state_ref"])
+            if stored:
+                encrypted_state_from_client = EncryptedPayloadSchema(**stored)
+            else:
+                logger.warning("state_ref %s not found or expired", body["state_ref"])
 
         request = AgentChatWSRequest(
             agent_name=body["agent_name"],
