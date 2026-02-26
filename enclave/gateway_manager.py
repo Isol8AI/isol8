@@ -43,6 +43,11 @@ _STARTUP_TIMEOUT = 90.0
 # Maximum restart attempts in ensure_running()
 _MAX_RESTART_ATTEMPTS = 3
 
+# Watchdog interval — how often to check if the gateway process is alive.
+# If the process has exited, the watchdog restarts it proactively so the
+# next request doesn't have to wait for a cold restart.
+_WATCHDOG_INTERVAL = 30.0
+
 
 class GatewayUnavailableError(Exception):
     """Raised when the gateway cannot be started or recovered."""
@@ -61,6 +66,8 @@ class GatewayManager:
         self._lock = threading.Lock()
         self._process: Optional[subprocess.Popen] = None
         self._started = False
+        self._env: Optional[dict] = None  # Cached env for watchdog restarts
+        self._watchdog: Optional[threading.Thread] = None
 
     @property
     def port(self) -> int:
@@ -166,10 +173,12 @@ class GatewayManager:
                     )
                 if self._check_health():
                     self._started = True
+                    self._env = env  # Cache for watchdog restarts
                     print(
                         f"[Gateway] Started on port {self._port} (took {time.monotonic() - start_time:.1f}s)",
                         flush=True,
                     )
+                    self._start_watchdog()
                     return
                 time.sleep(_HEALTH_POLL_INTERVAL)
 
@@ -253,6 +262,8 @@ class GatewayManager:
         Raises:
             GatewayUnavailableError: If gateway cannot be recovered after retries.
         """
+        self._env = env  # Cache for watchdog restarts
+
         # Fast path: process alive and healthy (no lock needed for read)
         if self._started and self._process and self._process.poll() is None:
             if self._check_health():
@@ -282,6 +293,7 @@ class GatewayManager:
                 self._stop_internal()
                 try:
                     self._start_internal(env)
+                    self._start_watchdog()
                     return
                 except GatewayUnavailableError:
                     print(f"[Gateway] Restart attempt {attempt} failed", flush=True)
@@ -642,6 +654,57 @@ class GatewayManager:
                     tar.add(item, arcname=str(arcname))
         buffer.seek(0)
         return buffer.read()
+
+    def _start_watchdog(self) -> None:
+        """Start the watchdog thread if not already running."""
+        if self._watchdog and self._watchdog.is_alive():
+            return
+        self._watchdog = threading.Thread(target=self._watchdog_loop, daemon=True)
+        self._watchdog.start()
+        print("[Gateway] Watchdog started", flush=True)
+
+    def _watchdog_loop(self) -> None:
+        """Periodically check gateway health and restart if dead."""
+        while True:
+            time.sleep(_WATCHDOG_INTERVAL)
+            try:
+                if not self._started:
+                    continue
+                if self._process is None:
+                    continue
+
+                process_alive = self._process.poll() is None
+                healthy = process_alive and self._check_health()
+
+                if healthy:
+                    continue
+
+                if not process_alive:
+                    print(
+                        f"[Gateway] Watchdog: process exited (code {self._process.returncode}), restarting",
+                        flush=True,
+                    )
+                else:
+                    print("[Gateway] Watchdog: process alive but unhealthy, restarting", flush=True)
+
+                env = self._env
+                if not env:
+                    print("[Gateway] Watchdog: no cached env, cannot restart", flush=True)
+                    continue
+
+                with self._lock:
+                    # Re-check under lock — another thread may have restarted already
+                    if self._process and self._process.poll() is None and self._check_health():
+                        continue
+                    self._stop_internal()
+                    try:
+                        self._start_internal(env)
+                        print("[Gateway] Watchdog: restart successful", flush=True)
+                    except GatewayUnavailableError as e:
+                        print(f"[Gateway] Watchdog: restart failed: {e}", flush=True)
+
+            except Exception as e:
+                print(f"[Gateway] Watchdog: unexpected error: {e}", flush=True)
 
     @staticmethod
     def _drain_output(pipe) -> None:

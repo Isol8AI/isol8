@@ -532,7 +532,7 @@ class NitroEnclaveClient(EnclaveInterface):
     # =========================================================================
 
     def health_check(self) -> dict:
-        """Check enclave health."""
+        """Check enclave health including gateway status."""
         try:
             response = self._send_command({"command": "HEALTH"}, timeout=5.0)
             return {
@@ -541,6 +541,7 @@ class NitroEnclaveClient(EnclaveInterface):
                 "enclave_cid": self._cid,
                 "has_credentials": response.get("has_credentials", False),
                 "region": response.get("region"),
+                "gateway": response.get("gateway"),
             }
         except Exception as e:
             return {
@@ -549,6 +550,14 @@ class NitroEnclaveClient(EnclaveInterface):
                 "enclave_cid": self._cid,
                 "error": str(e),
             }
+
+    def gateway_status(self) -> dict:
+        """Get detailed gateway status from enclave."""
+        try:
+            response = self._send_command({"command": "GATEWAY_STATUS"}, timeout=5.0)
+            return response
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
 
     # =========================================================================
     # Agent Execution

@@ -161,7 +161,8 @@ class BedrockServer:
             }
 
     def handle_health(self) -> dict:
-        """Check enclave health and Bedrock connectivity."""
+        """Check enclave health, Bedrock connectivity, and gateway status."""
+        gateway_status = self._get_gateway_status()
         return {
             "status": "success",
             "command": "HEALTH",
@@ -169,7 +170,34 @@ class BedrockServer:
             "has_credentials": self.bedrock.has_credentials(),
             "region": self.region,
             "public_key": bytes_to_hex(self.keypair.public_key),
+            "gateway": gateway_status,
         }
+
+    def handle_gateway_status(self) -> dict:
+        """Return detailed gateway status for remote diagnostics."""
+        gateway_status = self._get_gateway_status()
+        return {
+            "status": "success",
+            "command": "GATEWAY_STATUS",
+            **gateway_status,
+        }
+
+    def _get_gateway_status(self) -> dict:
+        """Collect gateway process and health information."""
+        gw = self._gateway
+        result = {
+            "started": gw._started,
+            "process_alive": gw._process is not None and gw._process.poll() is None,
+            "process_pid": gw._process.pid if gw._process else None,
+            "process_returncode": gw._process.returncode if gw._process and gw._process.poll() is not None else None,
+            "port": gw._port,
+            "healthy": False,
+        }
+        try:
+            result["healthy"] = gw.is_healthy()
+        except Exception as e:
+            result["health_error"] = str(e)
+        return result
 
     def _get_aws_env(self) -> dict:
         """
@@ -1201,6 +1229,7 @@ You are {name_for_display}, a personal AI companion.
             "GET_PUBLIC_KEY": self.handle_get_public_key,
             "SET_CREDENTIALS": lambda: self.handle_set_credentials(request),
             "HEALTH": self.handle_health,
+            "GATEWAY_STATUS": self.handle_gateway_status,
             "CHAT": lambda: self.handle_chat(request),
             "RUN_TESTS": self.handle_run_tests,
             "RUN_AGENT": lambda: self.handle_run_agent(request),
