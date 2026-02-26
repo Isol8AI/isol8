@@ -108,6 +108,9 @@ schema = (
     .exclude(
         operation_id="send_agent_message",
     )
+    .exclude(
+        operation_id="upload_agent_state",
+    )
 )
 
 
