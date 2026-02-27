@@ -151,9 +151,7 @@ class TestAuditLogPersistence:
         await db_session.flush()
 
         result = await db_session.execute(
-            select(AuditLog)
-            .where(AuditLog.actor_user_id == test_user.id)
-            .order_by(AuditLog.created_at)
+            select(AuditLog).where(AuditLog.actor_user_id == test_user.id).order_by(AuditLog.created_at)
         )
         logs = result.scalars().all()
 

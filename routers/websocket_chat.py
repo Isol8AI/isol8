@@ -20,7 +20,6 @@ from core.gateway import get_gateway_client, get_gateway_manager, GatewayRequest
 from core.services.agent_service import AgentService
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
-from core.services.usage_service import UsageService
 
 logger = logging.getLogger(__name__)
 

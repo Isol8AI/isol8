@@ -12,7 +12,6 @@ class TestTownOptIn:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -50,7 +49,6 @@ class TestTownOptOut:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -113,7 +111,6 @@ class TestTownState:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -155,7 +152,6 @@ class TestTownDescriptions:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-
         )
         db_session.add(agent_state)
         await db_session.flush()

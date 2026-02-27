@@ -52,9 +52,7 @@ class AgentService:
     async def list_agents(self, user_id: str) -> List[AgentState]:
         """List all agents for a user."""
         result = await self.db.execute(
-            select(AgentState)
-            .where(AgentState.user_id == user_id)
-            .order_by(AgentState.created_at.desc())
+            select(AgentState).where(AgentState.user_id == user_id).order_by(AgentState.created_at.desc())
         )
         return list(result.scalars().all())
 
@@ -72,9 +70,7 @@ class AgentService:
             logger.info("Deleted agent for user=%s, agent=%s", user_id, agent_name)
         return deleted
 
-    async def update_soul_content(
-        self, user_id: str, agent_name: str, soul_content: str
-    ) -> Optional[AgentState]:
+    async def update_soul_content(self, user_id: str, agent_name: str, soul_content: str) -> Optional[AgentState]:
         """Update an agent's soul content."""
         agent = await self.get_agent(user_id, agent_name)
         if agent is None:

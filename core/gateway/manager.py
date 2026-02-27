@@ -219,9 +219,7 @@ class GatewayManager:
         start_time = time.monotonic()
         while time.monotonic() - start_time < _STARTUP_TIMEOUT:
             if self._process.poll() is not None:
-                raise GatewayUnavailableError(
-                    f"Gateway exited with code {self._process.returncode}"
-                )
+                raise GatewayUnavailableError(f"Gateway exited with code {self._process.returncode}")
             if self._check_health():
                 self._started = True
                 self._env = env
