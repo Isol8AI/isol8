@@ -5,6 +5,7 @@ from .user import User
 from .agent_state import AgentState
 from .audit_log import AuditLog, AuditEventType
 from .billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
+from .container import Container
 from .town import TownAgent, TownState, TownConversation, TownRelationship
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "BillingAccount",
     "UsageEvent",
     "UsageDaily",
+    "Container",
     "TownAgent",
     "TownState",
     "TownConversation",

@@ -21,6 +21,7 @@ from models.user import User
 from models.agent_state import AgentState
 from models.audit_log import AuditLog
 from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
+from models.container import Container
 from models.town import TownAgent, TownState, TownConversation, TownRelationship
 
 # Check TEST_DATABASE_URL first (explicit), then DATABASE_URL (CI sets this), then fallback to remote
@@ -79,6 +80,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(TownState.__table__.delete())
         await cleanup_session.execute(TownAgent.__table__.delete())
         await cleanup_session.execute(AuditLog.__table__.delete())
+        await cleanup_session.execute(Container.__table__.delete())
         await cleanup_session.execute(AgentState.__table__.delete())
         await cleanup_session.execute(User.__table__.delete())
         await cleanup_session.commit()

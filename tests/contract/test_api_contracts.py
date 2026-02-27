@@ -68,14 +68,10 @@ def _make_app():
     return app
 
 
-# Patch gateway startup/shutdown and TownSimulation before loading schema
+# Patch TownSimulation before loading schema
 # so schemathesis can create its internal ASGI client without lifespan errors.
-_startup_patch = patch("main.startup_gateway", new_callable=AsyncMock)
-_shutdown_patch = patch("main.shutdown_gateway", new_callable=AsyncMock)
 _town_sim_patch = patch("main.TownSimulation")
 
-_startup_patch.start()
-_shutdown_patch.start()
 _mock_town = _town_sim_patch.start()
 _mock_town.return_value.start = AsyncMock()
 _mock_town.return_value.stop = AsyncMock()

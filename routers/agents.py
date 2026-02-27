@@ -1,17 +1,20 @@
 """
 Agent CRUD API endpoints.
 
-All agent data is stored as plain files on disk. No encryption.
+Container-aware: routes to user's dedicated container when available.
 """
 
 import logging
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import get_current_user
+from core.containers import get_container_manager
 from core.database import get_db
-from core.gateway import get_gateway_manager
 from core.services.agent_service import AgentService
 from schemas.agent import AgentListResponse, AgentResponse, CreateAgentRequest
 
@@ -82,12 +85,30 @@ async def create_agent(
     )
     await db.commit()
 
-    # Create workspace on disk
-    gateway_manager = get_gateway_manager()
-    gateway_manager.create_agent_workspace(
-        agent_id=str(agent.id),
-        soul_content=request.soul_content,
-    )
+    # Create workspace: in user's container if they have one, else shared gateway
+    container_manager = get_container_manager()
+    container_port = container_manager.get_container_port(auth.user_id)
+
+    if container_port:
+        # User has a dedicated container — exec inside it
+        try:
+            container_manager.exec_command(
+                auth.user_id,
+                ["openclaw", "agent", "create", "--name", request.agent_name],
+            )
+            if request.soul_content:
+                container_manager.exec_command(
+                    auth.user_id,
+                    [
+                        "sh",
+                        "-c",
+                        f"echo '{request.soul_content}' > /home/node/.openclaw/agents/{request.agent_name}/SOUL.md",
+                    ],
+                )
+        except Exception as e:
+            logger.warning("Failed to create agent in container: %s", e)
+    else:
+        logger.info("No container for user=%s, agent=%s saved to DB only", auth.user_id, request.agent_name)
 
     return AgentResponse(
         agent_name=agent.agent_name,
@@ -128,6 +149,60 @@ async def get_agent(
     )
 
 
+class UpdateAgentRequest(BaseModel):
+    """Request to update an agent."""
+
+    soul_content: Optional[str] = Field(None, max_length=10000)
+
+
+@router.put(
+    "/{agent_name}",
+    response_model=AgentResponse,
+    summary="Update agent",
+    description="Update an agent's SOUL.md content.",
+    operation_id="update_agent",
+    responses={
+        401: {"description": "Missing or invalid Clerk JWT token"},
+        404: {"description": "Agent not found"},
+    },
+)
+async def update_agent(
+    agent_name: str,
+    request: UpdateAgentRequest,
+    auth=Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    service = AgentService(db)
+    agent = await service.update_soul_content(auth.user_id, agent_name, request.soul_content)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
+
+    await db.commit()
+
+    # Update workspace: in user's container if they have one, else shared gateway
+    container_manager = get_container_manager()
+    container_port = container_manager.get_container_port(auth.user_id)
+
+    if container_port:
+        try:
+            container_manager.exec_command(
+                auth.user_id,
+                ["sh", "-c", f"echo '{request.soul_content}' > /home/node/.openclaw/agents/{agent_name}/SOUL.md"],
+            )
+        except Exception as e:
+            logger.warning("Failed to update agent in container: %s", e)
+    else:
+        logger.info("No container for user=%s, soul_content saved to DB only for agent=%s", auth.user_id, agent_name)
+
+    return AgentResponse(
+        agent_name=agent.agent_name,
+        user_id=agent.user_id,
+        created_at=agent.created_at,
+        updated_at=agent.updated_at,
+        soul_content=agent.soul_content,
+    )
+
+
 @router.delete(
     "/{agent_name}",
     status_code=204,
@@ -151,12 +226,21 @@ async def delete_agent(
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
-    agent_id = str(agent.id)
-
     # Delete from DB
     await service.delete_agent(auth.user_id, agent_name)
     await db.commit()
 
-    # Delete workspace from disk
-    gateway_manager = get_gateway_manager()
-    gateway_manager.delete_agent_workspace(agent_id)
+    # Delete workspace: from user's container if they have one, else shared gateway
+    container_manager = get_container_manager()
+    container_port = container_manager.get_container_port(auth.user_id)
+
+    if container_port:
+        try:
+            container_manager.exec_command(
+                auth.user_id,
+                ["openclaw", "agent", "delete", "--name", agent_name],
+            )
+        except Exception as e:
+            logger.warning("Failed to delete agent from container: %s", e)
+    else:
+        logger.info("No container for user=%s, skipping workspace cleanup for agent=%s", auth.user_id, agent_name)

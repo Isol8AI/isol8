@@ -38,9 +38,11 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
-    # OpenClaw Gateway Configuration
-    GATEWAY_PORT: int = int(os.getenv("GATEWAY_PORT", "18789"))
-    GATEWAY_WORKSPACE: str = os.getenv("GATEWAY_WORKSPACE", "/var/lib/isol8/gateway-workspace")
+    # Per-user container configuration
+    CONTAINERS_ROOT: str = os.getenv("CONTAINERS_ROOT", "/var/lib/isol8/containers")
+    OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
+    CONTAINER_PORT_START: int = int(os.getenv("CONTAINER_PORT_START", "19000"))
+    CONTAINER_PORT_END: int = int(os.getenv("CONTAINER_PORT_END", "19999"))
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")

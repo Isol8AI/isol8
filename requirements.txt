@@ -21,6 +21,8 @@ passlib[bcrypt]==1.7.4
 svix==1.21.0
 # Billing
 stripe>=8.0.0
+# Docker SDK for per-user container management
+docker>=7.0.0
 
 # Testing
 pytest==8.0.2

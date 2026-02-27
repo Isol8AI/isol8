@@ -1,4 +1,4 @@
-"""Billing API endpoints."""
+"""Billing API endpoints with container provisioning integration."""
 
 import logging
 from datetime import date
@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
+from core.containers import get_container_manager
+from core.containers.manager import ContainerError
 from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
@@ -213,6 +215,15 @@ async def handle_stripe_webhook(
         if account:
             await billing_service.update_subscription(account, subscription_id, tier)
 
+            # Provision container for paid tiers
+            if tier not in ("free",):
+                container_manager = get_container_manager()
+                try:
+                    container_manager.provision_container(account.clerk_user_id)
+                    logger.info("Container provisioned for user %s (tier=%s)", account.clerk_user_id, tier)
+                except ContainerError as e:
+                    logger.error("Failed to provision container for user %s: %s", account.clerk_user_id, e)
+
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
@@ -229,6 +240,14 @@ async def handle_stripe_webhook(
         account = result.scalar_one_or_none()
         if account:
             await billing_service.cancel_subscription(account)
+
+            # Stop container (volume preserved for 30-day grace period)
+            container_manager = get_container_manager()
+            try:
+                container_manager.stop_container(account.clerk_user_id)
+                logger.info("Container stopped for user %s (subscription cancelled)", account.clerk_user_id)
+            except ContainerError as e:
+                logger.error("Failed to stop container for user %s: %s", account.clerk_user_id, e)
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))

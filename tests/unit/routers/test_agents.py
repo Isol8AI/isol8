@@ -16,11 +16,12 @@ class TestAgentEndpoints:
         assert data["agents"] == []
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_gateway_manager")
-    async def test_create_agent(self, mock_get_gw, async_client, test_user):
+    @patch("routers.agents.get_container_manager")
+    async def test_create_agent(self, mock_get_cm, async_client, test_user):
         """Test creating a new agent."""
-        mock_manager = MagicMock()
-        mock_get_gw.return_value = mock_manager
+        mock_cm = MagicMock()
+        mock_cm.get_container_port.return_value = None
+        mock_get_cm.return_value = mock_cm
 
         response = await async_client.post(
             "/api/v1/agents",
@@ -34,14 +35,14 @@ class TestAgentEndpoints:
         assert data["agent_name"] == "luna"
         assert data["user_id"] == test_user.id
         assert data["soul_content"] == "# Luna\nA friendly companion."
-        mock_manager.create_agent_workspace.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_gateway_manager")
-    async def test_create_duplicate_agent(self, mock_get_gw, async_client, test_user):
+    @patch("routers.agents.get_container_manager")
+    async def test_create_duplicate_agent(self, mock_get_cm, async_client, test_user):
         """Test creating duplicate agent fails."""
-        mock_manager = MagicMock()
-        mock_get_gw.return_value = mock_manager
+        mock_cm = MagicMock()
+        mock_cm.get_container_port.return_value = None
+        mock_get_cm.return_value = mock_cm
 
         # Create first
         await async_client.post(
@@ -57,11 +58,12 @@ class TestAgentEndpoints:
         assert response.status_code == 409
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_gateway_manager")
-    async def test_get_agent(self, mock_get_gw, async_client, test_user):
+    @patch("routers.agents.get_container_manager")
+    async def test_get_agent(self, mock_get_cm, async_client, test_user):
         """Test getting agent details."""
-        mock_manager = MagicMock()
-        mock_get_gw.return_value = mock_manager
+        mock_cm = MagicMock()
+        mock_cm.get_container_port.return_value = None
+        mock_get_cm.return_value = mock_cm
 
         # Create first
         await async_client.post(
@@ -82,11 +84,12 @@ class TestAgentEndpoints:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_gateway_manager")
-    async def test_delete_agent(self, mock_get_gw, async_client, test_user):
+    @patch("routers.agents.get_container_manager")
+    async def test_delete_agent(self, mock_get_cm, async_client, test_user):
         """Test deleting an agent."""
-        mock_manager = MagicMock()
-        mock_get_gw.return_value = mock_manager
+        mock_cm = MagicMock()
+        mock_cm.get_container_port.return_value = None
+        mock_get_cm.return_value = mock_cm
 
         # Create first
         await async_client.post(
@@ -97,18 +100,18 @@ class TestAgentEndpoints:
         # Delete
         response = await async_client.delete("/api/v1/agents/luna")
         assert response.status_code == 204
-        mock_manager.delete_agent_workspace.assert_called_once()
 
         # Verify gone
         response = await async_client.get("/api/v1/agents/luna")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_gateway_manager")
-    async def test_list_agents(self, mock_get_gw, async_client, test_user):
+    @patch("routers.agents.get_container_manager")
+    async def test_list_agents(self, mock_get_cm, async_client, test_user):
         """Test listing all user's agents."""
-        mock_manager = MagicMock()
-        mock_get_gw.return_value = mock_manager
+        mock_cm = MagicMock()
+        mock_cm.get_container_port.return_value = None
+        mock_get_cm.return_value = mock_cm
 
         # Create multiple
         await async_client.post("/api/v1/agents", json={"agent_name": "luna"})

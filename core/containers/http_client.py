@@ -1,8 +1,8 @@
 """
-HTTP client for the OpenClaw gateway's OpenAI-compatible endpoint.
+HTTP client for OpenClaw gateway instances in per-user Docker containers.
 
 Uses stdlib urllib.request (no extra dependencies) to communicate with
-the persistent OpenClaw gateway running on EC2.
+OpenClaw gateway containers mapped to per-user ports.
 
 Supports:
   - Streaming (SSE) responses via chat_stream()

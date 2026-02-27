@@ -15,8 +15,9 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from core.containers import get_container_manager, GatewayRequestError
+from core.containers.http_client import GatewayHttpClient
 from core.database import get_session_factory as db_get_session_factory
-from core.gateway import get_gateway_client, get_gateway_manager, GatewayRequestError
 from core.services.agent_service import AgentService
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
@@ -211,8 +212,8 @@ async def _process_agent_chat_background(
     """
     Process agent chat message in background task with streaming.
 
-    Sends plaintext message to OpenClaw gateway, streams response
-    chunks back to client via Management API.
+    Routes to the user's dedicated container. Users without a container
+    receive an error message.
     """
     logger.debug(
         "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
@@ -239,16 +240,24 @@ async def _process_agent_chat_background(
 
         agent_id = str(agent_state.id)
 
-        # Ensure workspace exists on disk
-        gateway_manager = get_gateway_manager()
-        if not gateway_manager.agent_workspace_exists(agent_id):
-            gateway_manager.create_agent_workspace(
-                agent_id=agent_id,
-                soul_content=agent_state.soul_content,
-            )
+        # Route to user's container
+        container_manager = get_container_manager()
+        container_port = container_manager.get_container_port(user_id)
 
-        # Stream response from OpenClaw gateway
-        gateway_client = get_gateway_client()
+        if not container_port:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "message": "No container provisioned for this user. Agent chat requires an active container.",
+                },
+            )
+            return
+
+        gateway_client = GatewayHttpClient(base_url=f"http://127.0.0.1:{container_port}")
+        logger.debug("Routing to user container on port %d", container_port)
+
+        # Stream response from gateway
         chunk_count = 0
 
         for chunk in gateway_client.chat_stream(
