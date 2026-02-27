@@ -87,27 +87,21 @@ class TestClerkWebhookEndpoint:
                 assert response.json()["status"] == "processed"
 
     @pytest.mark.asyncio
-    async def test_processes_organization_created_event(self):
-        """Processes organization.created webhook event."""
+    async def test_ignores_organization_events(self):
+        """Organization events are ignored (orgs removed)."""
         from main import app
 
-        payload = {
-            "type": "organization.created",
-            "data": {"id": "org_123", "name": "Test Org"},
-        }
+        for event_type in ["organization.created", "organizationMembership.created", "organizationMembership.deleted"]:
+            payload = {
+                "type": event_type,
+                "data": {"id": "org_123"},
+            }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify:
-            mock_verify.return_value = payload
+            with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify:
+                mock_verify.return_value = payload
 
-            with patch("routers.webhooks.ClerkSyncService") as MockService:
-                mock_service = MagicMock()
-                mock_service.create_organization = AsyncMock()
-                MockService.return_value = mock_service
-
-                with patch("routers.webhooks.BillingService") as MockBilling:
-                    mock_billing = MagicMock()
-                    mock_billing.create_customer_for_org = AsyncMock()
-                    MockBilling.return_value = mock_billing
+                with patch("routers.webhooks.ClerkSyncService") as MockService:
+                    MockService.return_value = MagicMock()
 
                     transport = ASGITransport(app=app)
                     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -122,82 +116,7 @@ class TestClerkWebhookEndpoint:
                         )
 
                     assert response.status_code == 200
-                    assert response.json()["status"] == "processed"
-
-    @pytest.mark.asyncio
-    async def test_processes_membership_created_event(self):
-        """Processes organizationMembership.created webhook event."""
-        from main import app
-
-        payload = {
-            "type": "organizationMembership.created",
-            "data": {
-                "id": "mem_123",
-                "public_user_data": {"user_id": "user_123"},
-                "organization": {"id": "org_456"},
-                "role": "org:member",
-            },
-        }
-
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify:
-            mock_verify.return_value = payload
-
-            with patch("routers.webhooks.ClerkSyncService") as MockService:
-                mock_service = MagicMock()
-                mock_service.create_membership = AsyncMock()
-                MockService.return_value = mock_service
-
-                transport = ASGITransport(app=app)
-                async with AsyncClient(transport=transport, base_url="http://test") as client:
-                    response = await client.post(
-                        "/api/v1/webhooks/clerk",
-                        json=payload,
-                        headers={
-                            "svix-id": "test",
-                            "svix-timestamp": "123",
-                            "svix-signature": "test",
-                        },
-                    )
-
-                assert response.status_code == 200
-                assert response.json()["status"] == "processed"
-
-    @pytest.mark.asyncio
-    async def test_processes_membership_deleted_event(self):
-        """Processes organizationMembership.deleted webhook event (key revocation)."""
-        from main import app
-
-        payload = {
-            "type": "organizationMembership.deleted",
-            "data": {
-                "id": "mem_123",
-                "public_user_data": {"user_id": "user_123"},
-                "organization": {"id": "org_456"},
-            },
-        }
-
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify:
-            mock_verify.return_value = payload
-
-            with patch("routers.webhooks.ClerkSyncService") as MockService:
-                mock_service = MagicMock()
-                mock_service.delete_membership = AsyncMock()
-                MockService.return_value = mock_service
-
-                transport = ASGITransport(app=app)
-                async with AsyncClient(transport=transport, base_url="http://test") as client:
-                    response = await client.post(
-                        "/api/v1/webhooks/clerk",
-                        json=payload,
-                        headers={
-                            "svix-id": "test",
-                            "svix-timestamp": "123",
-                            "svix-signature": "test",
-                        },
-                    )
-
-                assert response.status_code == 200
-                assert response.json()["status"] == "processed"
+                    assert response.json()["status"] == "ignored", f"Expected 'ignored' for {event_type}"
 
     @pytest.mark.asyncio
     async def test_ignores_unhandled_events(self):
@@ -343,47 +262,6 @@ class TestBillingAccountCreationOnWebhook:
                     mock_billing.create_customer_for_user.assert_called_once_with(
                         clerk_user_id="user_billing_new",
                         email="new@test.com",
-                    )
-
-    @pytest.mark.asyncio
-    async def test_org_created_creates_billing_account(self):
-        """organization.created webhook should call BillingService.create_customer_for_org."""
-        from main import app
-
-        payload = {
-            "type": "organization.created",
-            "data": {"id": "org_billing_new", "name": "New Org"},
-        }
-
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify:
-            mock_verify.return_value = payload
-
-            with patch("routers.webhooks.ClerkSyncService") as MockService:
-                mock_service = MagicMock()
-                mock_service.create_organization = AsyncMock()
-                MockService.return_value = mock_service
-
-                with patch("routers.webhooks.BillingService") as MockBilling:
-                    mock_billing = MagicMock()
-                    mock_billing.create_customer_for_org = AsyncMock()
-                    MockBilling.return_value = mock_billing
-
-                    transport = ASGITransport(app=app)
-                    async with AsyncClient(transport=transport, base_url="http://test") as client:
-                        response = await client.post(
-                            "/api/v1/webhooks/clerk",
-                            json=payload,
-                            headers={
-                                "svix-id": "test",
-                                "svix-timestamp": "123",
-                                "svix-signature": "test",
-                            },
-                        )
-
-                    assert response.status_code == 200
-                    mock_billing.create_customer_for_org.assert_called_once_with(
-                        clerk_org_id="org_billing_new",
-                        org_name="New Org",
                     )
 
     @pytest.mark.asyncio

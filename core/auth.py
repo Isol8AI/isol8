@@ -92,54 +92,58 @@ def _find_rsa_key(jwks: dict, kid: str) -> dict | None:
     return None
 
 
+async def _decode_token(token: str) -> dict:
+    """Fetch JWKS, find the matching RSA key, and decode the JWT.
+
+    Raises jwt/httpx exceptions on failure -- callers handle error mapping.
+    """
+    jwks_url = f"{settings.CLERK_ISSUER}/.well-known/jwks.json"
+    jwks = await _get_cached_jwks(jwks_url)
+
+    unverified_header = jwt.get_unverified_header(token)
+    rsa_key = _find_rsa_key(jwks, unverified_header["kid"])
+    if not rsa_key:
+        raise HTTPException(status_code=401, detail="Invalid token headers")
+
+    return jwt.decode(
+        token,
+        rsa_key,
+        algorithms=["RS256"],
+        audience=settings.CLERK_AUDIENCE,
+        issuer=settings.CLERK_ISSUER,
+    )
+
+
+def _extract_org_claims(payload: dict) -> dict:
+    """Extract Clerk v2 organization claims from JWT payload."""
+    org_claims = payload.get("o", {})
+    org_id = org_claims.get("id")
+    org_role_raw = org_claims.get("rol")
+    org_slug = org_claims.get("slg")
+    org_perms_raw = org_claims.get("per", "")
+
+    return {
+        "org_id": org_id,
+        "org_role": f"org:{org_role_raw}" if org_role_raw else None,
+        "org_slug": org_slug,
+        "org_permissions": [p for p in org_perms_raw.split(",") if p] if org_perms_raw else [],
+    }
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(security),
 ) -> AuthContext:
     """Validate JWT and return AuthContext with user and org claims."""
-    token = credentials.credentials
-    jwks_url = f"{settings.CLERK_ISSUER}/.well-known/jwks.json"
-
     try:
-        # Fetch JWKS with caching
-        jwks = await _get_cached_jwks(jwks_url)
-
-        # Find RSA key matching the token's key ID
-        unverified_header = jwt.get_unverified_header(token)
-        rsa_key = _find_rsa_key(jwks, unverified_header["kid"])
-
-        if not rsa_key:
-            raise HTTPException(status_code=401, detail="Invalid token headers")
-
-        # Verify the token
-        payload = jwt.decode(
-            token,
-            rsa_key,
-            algorithms=["RS256"],
-            audience=settings.CLERK_AUDIENCE,
-            issuer=settings.CLERK_ISSUER,
-        )
-
-        # Clerk v2 uses compact 'o' object for organization claims
-        org_claims = payload.get("o", {})
-
-        # Extract v2 org claims
-        org_id = org_claims.get("id")
-        org_role_raw = org_claims.get("rol")
-        org_slug = org_claims.get("slg")
-        org_perms_raw = org_claims.get("per", "")
-
-        # Add 'org:' prefix to role (v2 omits it)
-        org_role = f"org:{org_role_raw}" if org_role_raw else None
-
-        # Split comma-separated permissions
-        org_permissions = [p for p in org_perms_raw.split(",") if p] if org_perms_raw else []
+        payload = await _decode_token(credentials.credentials)
+        org = _extract_org_claims(payload)
 
         return AuthContext(
             user_id=payload["sub"],
-            org_id=org_id,
-            org_role=org_role,
-            org_slug=org_slug,
-            org_permissions=org_permissions,
+            org_id=org["org_id"],
+            org_role=org["org_role"],
+            org_slug=org["org_slug"],
+            org_permissions=org["org_permissions"],
         )
 
     except jwt.ExpiredSignatureError:
@@ -180,24 +184,8 @@ async def get_optional_user(
     if credentials is None:
         return None
 
-    token = credentials.credentials
-    jwks_url = f"{settings.CLERK_ISSUER}/.well-known/jwks.json"
-
     try:
-        jwks = await _get_cached_jwks(jwks_url)
-        unverified_header = jwt.get_unverified_header(token)
-        rsa_key = _find_rsa_key(jwks, unverified_header["kid"])
-        if not rsa_key:
-            return None
-
-        payload = jwt.decode(
-            token,
-            rsa_key,
-            algorithms=["RS256"],
-            audience=settings.CLERK_AUDIENCE,
-            issuer=settings.CLERK_ISSUER,
-        )
-
+        payload = await _decode_token(credentials.credentials)
         return AuthContext(user_id=payload["sub"])
     except Exception:
         return None

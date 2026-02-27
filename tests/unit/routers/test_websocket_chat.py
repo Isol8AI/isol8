@@ -15,8 +15,7 @@ from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from core.config import FALLBACK_MODELS
-from routers.websocket_chat import router, _get_valid_model_ids
+from routers.websocket_chat import router
 
 
 @pytest.fixture
@@ -275,28 +274,9 @@ class TestMessageEndpoint:
         # Pong is a client ack - no response needed
         mock_management_api.send_message.assert_not_called()
 
-
-class TestChatMessageProcessing:
-    """Tests for chat message processing."""
-
-    @pytest.fixture
-    def valid_chat_message(self):
-        """Create a valid chat message payload."""
-        return {
-            "encrypted_message": {
-                "ephemeral_public_key": "a" * 64,
-                "iv": "b" * 32,
-                "ciphertext": "c" * 64,
-                "auth_tag": "d" * 32,
-                "hkdf_salt": "e" * 64,
-            },
-            "client_transport_public_key": "f" * 64,
-            "model": FALLBACK_MODELS[0]["id"],
-        }
-
     @pytest.mark.asyncio
-    async def test_chat_message_validates_format(self, test_app, mock_connection_service, mock_management_api):
-        """Invalid chat message format should send error via Management API."""
+    async def test_unknown_message_type_sends_error(self, test_app, mock_connection_service, mock_management_api):
+        """Unknown message type should send error via Management API."""
         mock_connection_service.get_connection.return_value = {
             "user_id": "test-user-456",
             "org_id": None,
@@ -308,185 +288,12 @@ class TestChatMessageProcessing:
                 headers={
                     "x-connection-id": "test-conn-123",
                 },
-                json={"invalid": "message"},
+                json={"type": "invalid_type"},
             )
 
-        # HTTP returns 200 (message received), error sent via Management API
         assert response.status_code == 200
-
-        # Should have sent error via Management API
-        mock_management_api.send_message.assert_called()
+        mock_management_api.send_message.assert_called_once()
         call_args = mock_management_api.send_message.call_args
         assert call_args[0][0] == "test-conn-123"
         assert call_args[0][1]["type"] == "error"
-
-    @pytest.mark.asyncio
-    async def test_chat_message_validates_model(
-        self, test_app, mock_connection_service, mock_management_api, valid_chat_message
-    ):
-        """Invalid model ID should send error via Management API."""
-        mock_connection_service.get_connection.return_value = {
-            "user_id": "test-user-456",
-            "org_id": None,
-        }
-        valid_chat_message["model"] = "invalid-model"
-
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/message",
-                headers={
-                    "x-connection-id": "test-conn-123",
-                },
-                json=valid_chat_message,
-            )
-
-        assert response.status_code == 200
-
-        # Should have sent error via Management API
-        mock_management_api.send_message.assert_called()
-        call_args = mock_management_api.send_message.call_args
-        assert call_args[0][1]["type"] == "error"
-        assert "invalid model" in call_args[0][1]["message"].lower()
-
-    @pytest.mark.asyncio
-    async def test_chat_message_uses_org_from_message(
-        self, test_app, mock_connection_service, mock_management_api, valid_chat_message
-    ):
-        """Org ID from message should override connection org."""
-        mock_connection_service.get_connection.return_value = {
-            "user_id": "test-user-456",
-            "org_id": "conn-org-id",
-        }
-        valid_chat_message["org_id"] = "message-org-id"
-
-        # We can't easily test background task internals, but we can verify
-        # the message was accepted for processing
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/message",
-                headers={
-                    "x-connection-id": "test-conn-123",
-                },
-                json=valid_chat_message,
-            )
-
-        assert response.status_code == 200
-
-
-class TestValidModelIds:
-    """Tests for model validation."""
-
-    def test_valid_model_ids_populated(self):
-        """_get_valid_model_ids() should contain all fallback model IDs when discovery returns fallbacks."""
-        from unittest.mock import patch
-
-        with patch("routers.websocket_chat.get_available_models", return_value=FALLBACK_MODELS):
-            valid_ids = _get_valid_model_ids()
-            for model in FALLBACK_MODELS:
-                assert model["id"] in valid_ids
-
-    def test_valid_model_ids_is_set(self):
-        """_get_valid_model_ids() should return a set for O(1) lookup."""
-        assert isinstance(_get_valid_model_ids(), set)
-
-
-class TestEncryptedPayloadValidation:
-    """Tests for encrypted payload schema validation."""
-
-    def test_valid_payload_accepted(self):
-        """Valid encrypted payload should be accepted."""
-        from schemas.encryption import EncryptedPayloadSchema
-
-        payload = EncryptedPayloadSchema(
-            ephemeral_public_key="a" * 64,
-            iv="b" * 32,
-            ciphertext="c" * 64,
-            auth_tag="d" * 32,
-            hkdf_salt="e" * 64,
-        )
-        assert payload.ephemeral_public_key == "a" * 64
-
-    def test_invalid_hex_rejected(self):
-        """Invalid hex characters should be rejected."""
-        from pydantic import ValidationError
-        from schemas.encryption import EncryptedPayloadSchema
-
-        with pytest.raises(ValidationError):
-            EncryptedPayloadSchema(
-                ephemeral_public_key="g" * 64,  # 'g' is not valid hex
-                iv="b" * 32,
-                ciphertext="c" * 64,
-                auth_tag="d" * 32,
-                hkdf_salt="e" * 64,
-            )
-
-    def test_wrong_length_rejected(self):
-        """Fields with wrong length should be rejected."""
-        from pydantic import ValidationError
-        from schemas.encryption import EncryptedPayloadSchema
-
-        with pytest.raises(ValidationError):
-            EncryptedPayloadSchema(
-                ephemeral_public_key="a" * 32,  # Should be 64 hex chars
-                iv="b" * 32,
-                ciphertext="c" * 64,
-                auth_tag="d" * 32,
-                hkdf_salt="e" * 64,
-            )
-
-
-class TestSendEncryptedMessageRequestValidation:
-    """Tests for SendEncryptedMessageRequest schema validation."""
-
-    def test_valid_request_accepted(self):
-        """Valid request should be accepted."""
-        from schemas.encryption import EncryptedPayloadSchema, SendEncryptedMessageRequest
-
-        request = SendEncryptedMessageRequest(
-            model=FALLBACK_MODELS[0]["id"],
-            encrypted_message=EncryptedPayloadSchema(
-                ephemeral_public_key="a" * 64,
-                iv="b" * 32,
-                ciphertext="c" * 64,
-                auth_tag="d" * 32,
-                hkdf_salt="e" * 64,
-            ),
-            client_transport_public_key="f" * 64,
-        )
-        assert request.model == FALLBACK_MODELS[0]["id"]
-
-    def test_optional_session_id_accepted(self):
-        """Request with optional session_id should be accepted."""
-        from schemas.encryption import EncryptedPayloadSchema, SendEncryptedMessageRequest
-
-        request = SendEncryptedMessageRequest(
-            session_id="test-session-id",
-            model=FALLBACK_MODELS[0]["id"],
-            encrypted_message=EncryptedPayloadSchema(
-                ephemeral_public_key="a" * 64,
-                iv="b" * 32,
-                ciphertext="c" * 64,
-                auth_tag="d" * 32,
-                hkdf_salt="e" * 64,
-            ),
-            client_transport_public_key="f" * 64,
-        )
-        assert request.session_id == "test-session-id"
-
-    def test_invalid_client_transport_key_rejected(self):
-        """Invalid client_transport_public_key should be rejected."""
-        from pydantic import ValidationError
-        from schemas.encryption import EncryptedPayloadSchema, SendEncryptedMessageRequest
-
-        with pytest.raises(ValidationError):
-            SendEncryptedMessageRequest(
-                model=FALLBACK_MODELS[0]["id"],
-                encrypted_message=EncryptedPayloadSchema(
-                    ephemeral_public_key="a" * 64,
-                    iv="b" * 32,
-                    ciphertext="c" * 64,
-                    auth_tag="d" * 32,
-                    hkdf_salt="e" * 64,
-                ),
-                client_transport_public_key="g" * 64,  # Invalid hex
-            )
+        assert "unknown message type" in call_args[0][1]["message"].lower()

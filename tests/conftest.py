@@ -7,7 +7,6 @@ Run `docker-compose up -d` before running tests to start the database.
 
 import json
 import os
-import uuid
 from typing import AsyncGenerator, Generator
 from unittest.mock import patch
 
@@ -18,12 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from core.auth import AuthContext
 from models.base import Base
-from models.message import Message
-from models.organization import Organization
-from models.organization_membership import OrganizationMembership, MemberRole
-from models.session import Session
 from models.user import User
 from models.agent_state import AgentState
+from models.audit_log import AuditLog
 from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
 from models.town import TownAgent, TownState, TownConversation, TownRelationship
 
@@ -53,9 +49,12 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 
     engine = create_async_engine(TEST_DATABASE_URL, echo=False, pool_pre_ping=True)
 
-    # Create test schema and set search_path
+    # Drop and recreate test schema to ensure tables match current models.
+    # CASCADE is needed because old tables (from before schema changes) may
+    # still exist with FK references that Base.metadata doesn't know about.
     async with engine.begin() as conn:
-        await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {TEST_SCHEMA}"))
+        await conn.execute(text(f"DROP SCHEMA IF EXISTS {TEST_SCHEMA} CASCADE"))
+        await conn.execute(text(f"CREATE SCHEMA {TEST_SCHEMA}"))
         await conn.execute(text(f"SET search_path TO {TEST_SCHEMA}"))
         await conn.run_sync(Base.metadata.create_all)
 
@@ -68,7 +67,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
         await session.rollback()
 
-    # Cleanup: delete all test data
+    # Cleanup: delete all test data (order matters due to FK constraints)
     async with session_factory() as cleanup_session:
         await cleanup_session.execute(text(f"SET search_path TO {TEST_SCHEMA}"))
         await cleanup_session.execute(UsageEvent.__table__.delete())
@@ -79,11 +78,8 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(TownConversation.__table__.delete())
         await cleanup_session.execute(TownState.__table__.delete())
         await cleanup_session.execute(TownAgent.__table__.delete())
+        await cleanup_session.execute(AuditLog.__table__.delete())
         await cleanup_session.execute(AgentState.__table__.delete())
-        await cleanup_session.execute(Message.__table__.delete())
-        await cleanup_session.execute(Session.__table__.delete())
-        await cleanup_session.execute(OrganizationMembership.__table__.delete())
-        await cleanup_session.execute(Organization.__table__.delete())
         await cleanup_session.execute(User.__table__.delete())
         await cleanup_session.commit()
 
@@ -146,51 +142,11 @@ def mock_auth_context() -> AuthContext:
 
 
 @pytest.fixture
-def mock_org_auth_context() -> AuthContext:
-    """Mock auth context for organization mode."""
-    return AuthContext(
-        user_id="user_test_123", org_id="org_test_123", org_role="org:member", org_slug="test-org", org_permissions=[]
-    )
-
-
-@pytest.fixture
-def mock_org_admin_auth_context() -> AuthContext:
-    """Mock auth context for organization admin mode."""
-    return AuthContext(
-        user_id="user_test_123",
-        org_id="org_test_123",
-        org_role="org:admin",
-        org_slug="test-org",
-        org_permissions=["org:read", "org:write"],
-    )
-
-
-@pytest.fixture
 def mock_current_user(mock_auth_context):
     """Dependency override for get_current_user with mock AuthContext (personal mode)."""
 
     async def _mock_get_current_user():
         return mock_auth_context
-
-    return _mock_get_current_user
-
-
-@pytest.fixture
-def mock_current_user_org(mock_org_auth_context):
-    """Dependency override for get_current_user with org context (member)."""
-
-    async def _mock_get_current_user():
-        return mock_org_auth_context
-
-    return _mock_get_current_user
-
-
-@pytest.fixture
-def mock_current_user_org_admin(mock_org_admin_auth_context):
-    """Dependency override for get_current_user with org context (admin)."""
-
-    async def _mock_get_current_user():
-        return mock_org_admin_auth_context
 
     return _mock_get_current_user
 
@@ -260,24 +216,6 @@ async def async_client(app, override_get_db, override_get_session_factory, mock_
 
 
 @pytest.fixture
-async def async_client_org(app, override_get_db, override_get_session_factory, mock_current_user_org) -> AsyncGenerator:
-    """Async test client with org member context."""
-    async for client in _create_async_client(app, override_get_db, override_get_session_factory, mock_current_user_org):
-        yield client
-
-
-@pytest.fixture
-async def async_client_org_admin(
-    app, override_get_db, override_get_session_factory, mock_current_user_org_admin
-) -> AsyncGenerator:
-    """Async test client with org admin context."""
-    async for client in _create_async_client(
-        app, override_get_db, override_get_session_factory, mock_current_user_org_admin
-    ):
-        yield client
-
-
-@pytest.fixture
 def unauthenticated_client(app, override_get_db) -> Generator:
     """Synchronous test client without auth mocking (for auth failure tests)."""
     from core.database import get_db
@@ -305,185 +243,12 @@ async def test_user(db_session) -> User:
 
 
 @pytest.fixture
-async def test_user_with_keys(db_session) -> User:
-    """Create a test user with encryption keys set up."""
-    user = User(id="user_test_encrypted_123")
-    user.set_encryption_keys(
-        public_key="aa" * 32,  # 64 hex chars
-        encrypted_private_key="bb" * 48,  # Variable length
-        iv="cc" * 16,  # 32 hex chars
-        tag="dd" * 16,  # 32 hex chars
-        salt="ee" * 32,  # 64 hex chars
-        recovery_encrypted_private_key="ff" * 48,
-        recovery_iv="11" * 16,
-        recovery_tag="22" * 16,
-        recovery_salt="33" * 32,
-    )
-    db_session.add(user)
-    await db_session.flush()
-    return user
-
-
-@pytest.fixture
 async def other_user(db_session) -> User:
     """Create another user for authorization tests."""
     user = User(id="user_other_456")
     db_session.add(user)
     await db_session.flush()
     return user
-
-
-@pytest.fixture
-async def test_organization(db_session) -> Organization:
-    """Create a test organization."""
-    org = Organization(id="org_test_123", name="Test Organization", slug="test-org")
-    db_session.add(org)
-    await db_session.flush()
-    return org
-
-
-@pytest.fixture
-async def other_organization(db_session) -> Organization:
-    """Create another organization for authorization tests."""
-    org = Organization(id="org_other_456", name="Other Organization", slug="other-org")
-    db_session.add(org)
-    await db_session.flush()
-    return org
-
-
-@pytest.fixture
-async def test_membership(db_session, test_user, test_organization) -> OrganizationMembership:
-    """Create a membership for test user in test organization."""
-    membership = OrganizationMembership(
-        id=f"mem_{test_user.id}_{test_organization.id}",
-        user_id=test_user.id,
-        org_id=test_organization.id,
-        role=MemberRole.MEMBER,
-    )
-    db_session.add(membership)
-    await db_session.flush()
-    return membership
-
-
-@pytest.fixture
-async def test_admin_membership(db_session, test_user, test_organization) -> OrganizationMembership:
-    """Create an admin membership for test user in test organization."""
-    membership = OrganizationMembership(
-        id=f"mem_admin_{test_user.id}_{test_organization.id}",
-        user_id=test_user.id,
-        org_id=test_organization.id,
-        role=MemberRole.ADMIN,
-    )
-    db_session.add(membership)
-    await db_session.flush()
-    return membership
-
-
-@pytest.fixture
-async def test_session(db_session, test_user) -> Session:
-    """Create a chat session for the test user."""
-    session = Session(id=str(uuid.uuid4()), user_id=test_user.id, name="Test Session")
-    db_session.add(session)
-    await db_session.flush()
-    return session
-
-
-@pytest.fixture
-async def other_user_session(db_session, other_user) -> Session:
-    """Create a session belonging to another user for authorization tests."""
-    session = Session(id=str(uuid.uuid4()), user_id=other_user.id, name="Other User's Session")
-    db_session.add(session)
-    await db_session.flush()
-    return session
-
-
-@pytest.fixture
-async def test_org_session(db_session, test_user, test_organization) -> Session:
-    """Create a session for test user within an organization."""
-    session = Session(id=str(uuid.uuid4()), user_id=test_user.id, org_id=test_organization.id, name="Org Session")
-    db_session.add(session)
-    await db_session.flush()
-    return session
-
-
-@pytest.fixture
-async def other_user_org_session(db_session, other_user, test_organization) -> Session:
-    """Create a session for another user within the same organization."""
-    session = Session(
-        id=str(uuid.uuid4()), user_id=other_user.id, org_id=test_organization.id, name="Other User's Org Session"
-    )
-    db_session.add(session)
-    await db_session.flush()
-    return session
-
-
-@pytest.fixture
-async def test_message(db_session, test_session) -> Message:
-    """Create a single encrypted user message in the test session."""
-    from tests.factories.message_factory import generate_encrypted_payload
-
-    payload = generate_encrypted_payload("Hello, this is a test message")
-    message = Message(
-        id=str(uuid.uuid4()),
-        session_id=test_session.id,
-        role="user",
-        ephemeral_public_key=payload["ephemeral_public_key"],
-        iv=payload["iv"],
-        ciphertext=payload["ciphertext"],
-        auth_tag=payload["auth_tag"],
-        hkdf_salt=payload["hkdf_salt"],
-    )
-    db_session.add(message)
-    await db_session.flush()
-    return message
-
-
-@pytest.fixture
-async def test_conversation(db_session, test_session) -> list[Message]:
-    """Create a multi-message encrypted conversation in the test session."""
-    from tests.factories.message_factory import generate_encrypted_payload
-
-    payload1 = generate_encrypted_payload("Hello!")
-    payload2 = generate_encrypted_payload("Hi there! How can I help you today?")
-    payload3 = generate_encrypted_payload("What's the weather like?")
-
-    messages = [
-        Message(
-            id=str(uuid.uuid4()),
-            session_id=test_session.id,
-            role="user",
-            ephemeral_public_key=payload1["ephemeral_public_key"],
-            iv=payload1["iv"],
-            ciphertext=payload1["ciphertext"],
-            auth_tag=payload1["auth_tag"],
-            hkdf_salt=payload1["hkdf_salt"],
-        ),
-        Message(
-            id=str(uuid.uuid4()),
-            session_id=test_session.id,
-            role="assistant",
-            ephemeral_public_key=payload2["ephemeral_public_key"],
-            iv=payload2["iv"],
-            ciphertext=payload2["ciphertext"],
-            auth_tag=payload2["auth_tag"],
-            hkdf_salt=payload2["hkdf_salt"],
-            model_used="Qwen/Qwen2.5-72B-Instruct",
-        ),
-        Message(
-            id=str(uuid.uuid4()),
-            session_id=test_session.id,
-            role="user",
-            ephemeral_public_key=payload3["ephemeral_public_key"],
-            iv=payload3["iv"],
-            ciphertext=payload3["ciphertext"],
-            auth_tag=payload3["auth_tag"],
-            hkdf_salt=payload3["hkdf_salt"],
-        ),
-    ]
-    for msg in messages:
-        db_session.add(msg)
-    await db_session.flush()
-    return messages
 
 
 @pytest.fixture

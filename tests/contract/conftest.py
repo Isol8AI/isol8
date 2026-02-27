@@ -1,8 +1,8 @@
 """
 Contract test fixtures.
 
-Uses httpx AsyncClient with ASGITransport and mocked auth/enclave dependencies.
-No real database, enclave, or Clerk needed.
+Uses httpx AsyncClient with ASGITransport and mocked auth/database dependencies.
+No real database, gateway, or Clerk needed.
 """
 
 import pytest

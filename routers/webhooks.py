@@ -105,48 +105,6 @@ async def handle_clerk_webhook(
             elif event_type == "user.deleted":
                 await service.delete_user(data)
 
-            # Organization events
-            elif event_type == "organization.created":
-                await service.create_organization(data)
-                # Create billing account (non-blocking)
-                try:
-                    billing = BillingService(db)
-                    await billing.create_customer_for_org(
-                        clerk_org_id=data.get("id", ""),
-                        org_name=data.get("name", ""),
-                    )
-                except Exception as e:
-                    logger.warning("Failed to create billing account for org %s: %s", data.get("id"), e)
-            elif event_type == "organization.updated":
-                await service.update_organization(data)
-            elif event_type == "organization.deleted":
-                await service.delete_organization(data)
-
-            # Membership events
-            elif event_type == "organizationMembership.created":
-                await service.create_membership(data)
-            elif event_type == "organizationMembership.updated":
-                await service.update_membership(data)
-            elif event_type == "organizationMembership.deleted":
-                # CRITICAL: This triggers org key revocation
-                try:
-                    await service.delete_membership(data)
-                except Exception:
-                    # Security-critical: Revoked member may still have org key access
-                    logger.critical(
-                        "SECURITY_ALERT: Membership deletion failed - revoked member may retain org key access",
-                        extra={
-                            "event_type": event_type,
-                            "webhook_id": svix_id,
-                            "membership_id": data.get("id"),
-                            "user_id": data.get("public_user_data", {}).get("user_id"),
-                            "org_id": data.get("organization", {}).get("id"),
-                            "alert": True,
-                        },
-                        exc_info=True,
-                    )
-                    raise  # Re-raise to be caught by outer handler
-
             else:
                 logger.debug("Ignoring webhook event: %s", event_type)
                 return {"status": "ignored", "event": event_type}

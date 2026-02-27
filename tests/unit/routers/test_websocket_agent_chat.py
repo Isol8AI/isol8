@@ -1,10 +1,9 @@
 """
 Unit tests for WebSocket agent_chat message type routing and validation.
 
-Tests the agent_chat message type added to POST /ws/message:
+Tests the agent_chat message type in POST /ws/message:
 - Routing: agent_chat messages are accepted and background task is queued
-- Validation: invalid messages send errors via Management API
-- Schema: AgentChatWSRequest Pydantic model validation
+- Validation: missing fields send errors via Management API
 
 Uses the same pattern as test_websocket_chat.py:
 - httpx AsyncClient with ASGITransport for HTTP endpoint testing
@@ -48,19 +47,11 @@ def mock_management_api():
 
 @pytest.fixture
 def valid_agent_chat_message():
-    """Create a valid agent_chat message payload."""
+    """Create a valid agent_chat message payload (plaintext)."""
     return {
         "type": "agent_chat",
         "agent_name": "my-agent",
-        "encrypted_message": {
-            "ephemeral_public_key": "a" * 64,
-            "iv": "b" * 32,
-            "ciphertext": "c" * 64,
-            "auth_tag": "d" * 32,
-            "hkdf_salt": "e" * 64,
-        },
-        "client_transport_public_key": "f" * 64,
-        "user_public_key": "f" * 64,
+        "message": "Hello, agent!",
     }
 
 
@@ -85,8 +76,6 @@ class TestAgentChatMessageRouting:
 
         A valid agent_chat message should be accepted and return 200.
         The background task is queued but not awaited in the HTTP handler.
-        We mock the background processor to prevent it from running (it needs
-        a real database); this test only verifies routing and validation.
         """
         with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:
             async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
@@ -103,31 +92,6 @@ class TestAgentChatMessageRouting:
         mock_bg.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_agent_chat_invalid_format_sends_error(
-        self, test_app, mock_connection_service, mock_management_api, connected_user
-    ):
-        """Send agent_chat with missing fields, verify error sent via Management API."""
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/message",
-                headers={"x-connection-id": "test-conn-123"},
-                json={
-                    "type": "agent_chat",
-                    # All required fields missing
-                },
-            )
-
-        # HTTP always returns 200 for accepted messages
-        assert response.status_code == 200
-
-        # Error should be sent via Management API
-        mock_management_api.send_message.assert_called_once()
-        call_args = mock_management_api.send_message.call_args
-        assert call_args[0][0] == "test-conn-123"
-        assert call_args[0][1]["type"] == "error"
-        assert "invalid message format" in call_args[0][1]["message"].lower()
-
-    @pytest.mark.asyncio
     async def test_agent_chat_missing_agent_name_sends_error(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
@@ -138,31 +102,22 @@ class TestAgentChatMessageRouting:
                 headers={"x-connection-id": "test-conn-123"},
                 json={
                     "type": "agent_chat",
+                    "message": "Hello!",
                     # agent_name missing
-                    "encrypted_message": {
-                        "ephemeral_public_key": "a" * 64,
-                        "iv": "b" * 32,
-                        "ciphertext": "c" * 64,
-                        "auth_tag": "d" * 32,
-                        "hkdf_salt": "e" * 64,
-                    },
-                    "client_transport_public_key": "f" * 64,
-                    "user_public_key": "f" * 64,
                 },
             )
 
         assert response.status_code == 200
-
         mock_management_api.send_message.assert_called_once()
         call_args = mock_management_api.send_message.call_args
         assert call_args[0][0] == "test-conn-123"
         assert call_args[0][1]["type"] == "error"
 
     @pytest.mark.asyncio
-    async def test_agent_chat_missing_encrypted_message_sends_error(
+    async def test_agent_chat_missing_message_sends_error(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
-        """Missing encrypted_message field should send error via Management API."""
+        """Missing message field should send error via Management API."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/message",
@@ -170,115 +125,61 @@ class TestAgentChatMessageRouting:
                 json={
                     "type": "agent_chat",
                     "agent_name": "my-agent",
-                    # encrypted_message missing
-                    "client_transport_public_key": "f" * 64,
-                    "user_public_key": "f" * 64,
+                    # message missing
                 },
             )
 
         assert response.status_code == 200
-
         mock_management_api.send_message.assert_called_once()
         call_args = mock_management_api.send_message.call_args
         assert call_args[0][0] == "test-conn-123"
         assert call_args[0][1]["type"] == "error"
 
     @pytest.mark.asyncio
-    async def test_agent_chat_missing_transport_key_sends_error(
+    async def test_agent_chat_empty_fields_sends_error(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
-        """Missing client_transport_public_key field should send error via Management API."""
+        """Empty agent_name and message should send error via Management API."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/message",
                 headers={"x-connection-id": "test-conn-123"},
                 json={
                     "type": "agent_chat",
-                    "agent_name": "my-agent",
-                    "encrypted_message": {
-                        "ephemeral_public_key": "a" * 64,
-                        "iv": "b" * 32,
-                        "ciphertext": "c" * 64,
-                        "auth_tag": "d" * 32,
-                        "hkdf_salt": "e" * 64,
-                    },
-                    # client_transport_public_key missing
-                    "user_public_key": "f" * 64,
+                    "agent_name": "",
+                    "message": "",
                 },
             )
 
         assert response.status_code == 200
-
         mock_management_api.send_message.assert_called_once()
         call_args = mock_management_api.send_message.call_args
-        assert call_args[0][0] == "test-conn-123"
         assert call_args[0][1]["type"] == "error"
 
 
-class TestAgentChatWSRequestValidation:
-    """Tests for the AgentChatWSRequest Pydantic schema."""
+class TestAgentChatBackgroundTask:
+    """Tests for the _process_agent_chat_background function arguments."""
 
-    def test_valid_request(self):
-        """All fields present and valid should create a valid request."""
-        from schemas.agent import AgentChatWSRequest
-        from schemas.encryption import EncryptedPayloadSchema
+    @pytest.mark.asyncio
+    async def test_background_task_receives_correct_args(
+        self, test_app, mock_connection_service, mock_management_api, connected_user
+    ):
+        """Background task should receive connection_id, user_id, agent_name, message."""
+        with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "test-conn-123"},
+                    json={
+                        "type": "agent_chat",
+                        "agent_name": "luna",
+                        "message": "Tell me a story",
+                    },
+                )
 
-        request = AgentChatWSRequest(
-            agent_name="my-agent",
-            encrypted_message=EncryptedPayloadSchema(
-                ephemeral_public_key="a" * 64,
-                iv="b" * 32,
-                ciphertext="c" * 64,
-                auth_tag="d" * 32,
-                hkdf_salt="e" * 64,
-            ),
-            client_transport_public_key="f" * 64,
-            user_public_key="f" * 64,
+        mock_bg.assert_called_once_with(
+            connection_id="test-conn-123",
+            user_id="test-user-456",
+            agent_name="luna",
+            message="Tell me a story",
         )
-        assert request.agent_name == "my-agent"
-        assert request.client_transport_public_key == "f" * 64
-        assert request.user_public_key == "f" * 64
-
-    def test_agent_name_too_long(self):
-        """agent_name > 50 chars should be rejected."""
-        from pydantic import ValidationError
-        from schemas.agent import AgentChatWSRequest
-        from schemas.encryption import EncryptedPayloadSchema
-
-        with pytest.raises(ValidationError) as exc_info:
-            AgentChatWSRequest(
-                agent_name="a" * 51,
-                encrypted_message=EncryptedPayloadSchema(
-                    ephemeral_public_key="a" * 64,
-                    iv="b" * 32,
-                    ciphertext="c" * 64,
-                    auth_tag="d" * 32,
-                    hkdf_salt="e" * 64,
-                ),
-                client_transport_public_key="f" * 64,
-                user_public_key="f" * 64,
-            )
-        errors = exc_info.value.errors()
-        assert any(e["loc"] == ("agent_name",) for e in errors)
-
-    def test_agent_name_empty(self):
-        """Empty agent_name should be rejected."""
-        from pydantic import ValidationError
-        from schemas.agent import AgentChatWSRequest
-        from schemas.encryption import EncryptedPayloadSchema
-
-        with pytest.raises(ValidationError) as exc_info:
-            AgentChatWSRequest(
-                agent_name="",
-                encrypted_message=EncryptedPayloadSchema(
-                    ephemeral_public_key="a" * 64,
-                    iv="b" * 32,
-                    ciphertext="c" * 64,
-                    auth_tag="d" * 32,
-                    hkdf_salt="e" * 64,
-                ),
-                client_transport_public_key="f" * 64,
-                user_public_key="f" * 64,
-            )
-        errors = exc_info.value.errors()
-        assert any(e["loc"] == ("agent_name",) for e in errors)

@@ -4,7 +4,7 @@ Tests for OpenAPI configuration on the FastAPI app.
 Validates that the generated OpenAPI spec includes:
 - Correct title, version, and description
 - Server list with all environments
-- Tag descriptions for all 9 route groups
+- Tag descriptions for all 7 route groups
 - BearerAuth (JWT) security scheme
 """
 
@@ -15,13 +15,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 EXPECTED_TAGS = [
     "users",
-    "chat",
-    "organizations",
     "agents",
     "webhooks",
     "websocket",
-    "debug",
     "town",
+    "billing",
+    "health",
 ]
 
 
@@ -58,20 +57,20 @@ class TestOpenAPIMetadata:
 
     @pytest.mark.asyncio
     async def test_title(self, openapi_spec):
-        """Spec title should be 'Isol8 Chat API'."""
-        assert openapi_spec["info"]["title"] == "Isol8 Chat API"
+        """Spec title should be 'Isol8 API'."""
+        assert openapi_spec["info"]["title"] == "Isol8 API"
 
     @pytest.mark.asyncio
     async def test_version(self, openapi_spec):
-        """Spec version should be '1.0.0'."""
-        assert openapi_spec["info"]["version"] == "1.0.0"
+        """Spec version should be '2.0.0'."""
+        assert openapi_spec["info"]["version"] == "2.0.0"
 
     @pytest.mark.asyncio
     async def test_description(self, openapi_spec):
-        """Spec should have a non-empty description mentioning zero-trust."""
+        """Spec should have a non-empty description mentioning agents."""
         description = openapi_spec["info"]["description"]
         assert len(description) > 0
-        assert "zero-trust" in description.lower() or "Zero-trust" in description
+        assert "agent" in description.lower()
 
 
 class TestOpenAPIServers:
@@ -103,7 +102,7 @@ class TestOpenAPITags:
 
     @pytest.mark.asyncio
     async def test_all_tags_present(self, openapi_spec):
-        """Spec should include tag entries for all 8 route groups."""
+        """Spec should include tag entries for all 7 route groups."""
         tag_names = [t["name"] for t in openapi_spec["tags"]]
         for expected in EXPECTED_TAGS:
             assert expected in tag_names, f"Missing tag: {expected}"

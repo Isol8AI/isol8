@@ -4,41 +4,33 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
-from typing import Optional
+from contextlib import asynccontextmanager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
-from core.config import settings
 from core.auth import get_current_user
+from core.config import settings
 from core.database import get_db
-from core.enclave import startup_enclave, shutdown_enclave
+from core.gateway import startup_gateway, shutdown_gateway
 from core.services.town_simulation import TownSimulation
 from routers import (
-    users,
-    chat,
-    organizations,
-    webhooks,
-    debug_encryption,
-    websocket_chat,
     agents,
-    town,
     billing,
+    town,
+    users,
+    webhooks,
+    websocket_chat,
 )
 
 logger = logging.getLogger(__name__)
 
-_town_simulation: Optional[TownSimulation] = None
-
-
-def get_town_simulation() -> Optional[TownSimulation]:
-    """Get the global TownSimulation instance."""
-    return _town_simulation
+_town_simulation: TownSimulation | None = None
 
 
 @asynccontextmanager
@@ -48,7 +40,7 @@ async def lifespan(app: FastAPI):
 
     # Startup
     logger.info("Starting application...")
-    await startup_enclave()
+    await startup_gateway()
 
     # Start GooseTown simulation
     from core.database import get_session_factory
@@ -64,37 +56,25 @@ async def lifespan(app: FastAPI):
     if _town_simulation:
         await _town_simulation.stop()
 
-    await shutdown_enclave()
+    await shutdown_gateway()
 
 
 openapi_tags = [
     {
         "name": "users",
-        "description": "User registration, sync, and encryption key management.",
-    },
-    {
-        "name": "chat",
-        "description": "Chat sessions, messages, model listing, and SSE streaming.",
-    },
-    {
-        "name": "organizations",
-        "description": "Organization encryption setup, key distribution, and membership.",
+        "description": "User registration and sync.",
     },
     {
         "name": "agents",
-        "description": "OpenClaw agent CRUD, encrypted agent messaging, and state management.",
+        "description": "OpenClaw agent CRUD and messaging.",
     },
     {
         "name": "webhooks",
-        "description": "Clerk webhook handlers for user and organization sync events.",
+        "description": "Clerk webhook handlers for user sync events.",
     },
     {
         "name": "websocket",
         "description": "WebSocket connect, disconnect, and message endpoints (API Gateway integration).",
-    },
-    {
-        "name": "debug",
-        "description": "Debug and diagnostic endpoints for encryption testing. Disabled in production.",
     },
     {
         "name": "town",
@@ -111,13 +91,12 @@ openapi_tags = [
 ]
 
 app = FastAPI(
-    title="Isol8 Chat API",
+    title="Isol8 API",
     description=(
-        "Zero-trust encrypted chat platform powered by AWS Nitro Enclaves. "
-        "All messages are end-to-end encrypted: the server never sees plaintext. "
-        "Supports personal and organization-level encryption with streaming LLM inference."
+        "AI agent platform powered by OpenClaw. "
+        "Personal agents with persistent memory and streaming LLM inference."
     ),
-    version="1.0.0",
+    version="2.0.0",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=None if settings.ENVIRONMENT == "prod" else "/docs",
     redoc_url=None if settings.ENVIRONMENT == "prod" else "/redoc",
@@ -132,8 +111,6 @@ app = FastAPI(
 )
 
 # CORS Middleware
-# Required because API Gateway HTTP_PROXY integration passes OPTIONS requests to backend.
-# API Gateway adds CORS headers but doesn't intercept preflight - backend must return 2xx.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
@@ -170,14 +147,9 @@ def custom_openapi():
 
 app.openapi = custom_openapi
 
-# Public routes
+# Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
-app.include_router(chat.router, prefix="/api/v1/chat", tags=["chat"])
-app.include_router(organizations.router, prefix="/api/v1", tags=["organizations"])
 app.include_router(webhooks.router, prefix="/api/v1", tags=["webhooks"])
-
-# Debug routes - DEVELOPMENT ONLY
-app.include_router(debug_encryption.router, prefix="/api/v1", tags=["debug"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
@@ -200,7 +172,7 @@ app.include_router(town.router, prefix="/api/v1/town", tags=["town"])
     tags=["health"],
 )
 async def root():
-    return {"message": "Welcome to Isol8 Chat API"}
+    return {"message": "Welcome to Isol8 API"}
 
 
 @app.get(
@@ -217,8 +189,6 @@ async def root():
     },
 )
 async def health_check(db=Depends(get_db)):
-    from fastapi.responses import JSONResponse
-
     try:
         await db.execute(text("SELECT 1"))
         return {"status": "healthy", "database": "connected"}

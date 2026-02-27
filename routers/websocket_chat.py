@@ -7,42 +7,24 @@ API Gateway WebSocket converts WebSocket frames into HTTP POST requests:
 - $default (messages) -> POST /ws/message
 
 Responses are pushed via Management API, not returned in HTTP response body.
-The HTTP response only indicates whether the request was accepted (200) or rejected (4xx).
-
-Security Note:
-- Server acts as BLIND RELAY - cannot read message content
-- All messages encrypted to enclave (transport) or user/org (storage)
-- Management API delivers encrypted chunks to client
 """
 
-import json
 import logging
 from typing import Any, Dict, Optional
 
-from clerk_backend_api import Clerk
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
-from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core.config import get_available_models, settings
 from core.database import get_session_factory as db_get_session_factory
-from core.services.chat_service import ChatService
+from core.gateway import get_gateway_client, get_gateway_manager, GatewayRequestError
+from core.services.agent_service import AgentService
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
 from core.services.usage_service import UsageService
-from core.enclave import get_enclave, AgentHandler, AgentStreamRequest
-from core.services.agent_service import AgentService
-from core.state_store import retrieve_state
-from schemas.agent import AgentChatWSRequest
-from schemas.encryption import EncryptedPayloadSchema, SendEncryptedMessageRequest
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["websocket"])
-
-
-def _get_valid_model_ids() -> set[str]:
-    return {model["id"] for model in get_available_models()}
 
 
 # Singleton instances (created lazily)
@@ -75,11 +57,11 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     "/connect",
     status_code=200,
     summary="Handle WebSocket connect",
-    description="Handle WebSocket $connect event from API Gateway. Stores connection in DynamoDB. Lambda authorizer validates JWT.",
+    description="Called by API Gateway on $connect. Stores connection state in DynamoDB.",
     operation_id="ws_connect",
     responses={
         400: {"description": "Missing x-connection-id header"},
-        401: {"description": "Missing x-user-id header (unauthorized)"},
+        401: {"description": "Missing x-user-id header"},
     },
 )
 async def ws_connect(
@@ -89,16 +71,10 @@ async def ws_connect(
 ) -> Response:
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
-
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing x-user-id header")
 
-    logger.info(
-        "WebSocket connect: connection_id=%s, user_id=%s, org_id=%s",
-        x_connection_id,
-        x_user_id,
-        x_org_id or "personal",
-    )
+    logger.info("WebSocket connect: connection_id=%s, user_id=%s", x_connection_id, x_user_id)
 
     connection_service = get_connection_service()
     connection_service.store_connection(
@@ -107,7 +83,6 @@ async def ws_connect(
         org_id=x_org_id,
     )
 
-    # Return empty body - actual communication happens via Management API
     return Response(status_code=200)
 
 
@@ -115,14 +90,13 @@ async def ws_connect(
     "/disconnect",
     status_code=200,
     summary="Handle WebSocket disconnect",
-    description="Handle WebSocket $disconnect event from API Gateway. Best-effort cleanup of connection state in DynamoDB.",
+    description="Called by API Gateway on $disconnect. Removes connection state from DynamoDB.",
     operation_id="ws_disconnect",
 )
 async def ws_disconnect(
     x_connection_id: Optional[str] = Header(None, alias="x-connection-id"),
 ) -> Response:
     if not x_connection_id:
-        logger.debug("Disconnect without connection_id, ignoring")
         return Response(status_code=200)
 
     logger.info("WebSocket disconnect: connection_id=%s", x_connection_id)
@@ -133,18 +107,16 @@ async def ws_disconnect(
 
         remove_town_viewer(x_connection_id)
     except Exception:
-        pass  # Best effort
+        pass
 
     try:
         connection_service = get_connection_service()
         connection_service.delete_connection(x_connection_id)
     except ConnectionServiceError as e:
-        # Log but don't fail - best effort cleanup
         logger.warning("Failed to delete connection %s: %s", x_connection_id, e)
     except Exception as e:
         logger.exception("Unexpected error deleting connection %s: %s", x_connection_id, e)
 
-    # Return empty body - actual communication happens via Management API
     return Response(status_code=200)
 
 
@@ -152,11 +124,11 @@ async def ws_disconnect(
     "/message",
     status_code=200,
     summary="Handle WebSocket message",
-    description="Handle WebSocket $default (message) event from API Gateway. Routes by type: ping, pong, chat, agent_chat_stream.",
+    description="Called by API Gateway on $default. Processes agent chat messages and pushes responses via Management API.",
     operation_id="ws_message",
     responses={
-        400: {"description": "Missing connection ID or invalid message"},
-        401: {"description": "Connection not found"},
+        400: {"description": "Missing x-connection-id header"},
+        401: {"description": "Unknown connection (not in DynamoDB)"},
     },
 )
 async def ws_message(
@@ -167,7 +139,6 @@ async def ws_message(
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
 
-    # Look up connection to get user context
     connection_service = get_connection_service()
     connection = connection_service.get_connection(x_connection_id)
 
@@ -175,19 +146,14 @@ async def ws_message(
         raise HTTPException(status_code=401, detail="Unknown connection")
 
     user_id = connection["user_id"]
-    conn_org_id = connection["org_id"]
-
-    # Handle message types
     msg_type = body.get("type")
 
     if msg_type == "ping":
-        # Respond with pong via Management API
         management_api = get_management_api_client()
         management_api.send_message(x_connection_id, {"type": "pong"})
         return Response(status_code=200)
 
     if msg_type == "pong":
-        # Client acknowledged our ping - no action needed
         return Response(status_code=200)
 
     if msg_type == "town_subscribe":
@@ -203,346 +169,51 @@ async def ws_message(
         return Response(status_code=200)
 
     if msg_type == "agent_chat":
-        try:
-            await _validate_and_process_agent_chat(
-                connection_id=x_connection_id,
-                user_id=user_id,
-                body=body,
-                background_tasks=background_tasks,
-            )
-        except ValueError as e:
-            management_api = get_management_api_client()
-            management_api.send_message(x_connection_id, {"type": "error", "message": str(e)})
-        return Response(status_code=200)
+        agent_name = body.get("agent_name")
+        message = body.get("message")
 
-    # Assume it's a chat message - validate and process
-    try:
-        _validate_and_process_chat(
+        if not agent_name or not message:
+            management_api = get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {"type": "error", "message": "Missing agent_name or message"},
+            )
+            return Response(status_code=200)
+
+        background_tasks.add_task(
+            _process_agent_chat_background,
             connection_id=x_connection_id,
             user_id=user_id,
-            conn_org_id=conn_org_id,
-            body=body,
-            background_tasks=background_tasks,
+            agent_name=agent_name,
+            message=message,
         )
-    except ValueError as e:
-        # Validation failed - send error via Management API
-        management_api = get_management_api_client()
-        management_api.send_message(x_connection_id, {"type": "error", "message": str(e)})
+        return Response(status_code=200)
 
-    # Return empty body - actual response comes via Management API
+    # Unknown message type
+    management_api = get_management_api_client()
+    management_api.send_message(
+        x_connection_id,
+        {"type": "error", "message": f"Unknown message type: {msg_type}"},
+    )
     return Response(status_code=200)
 
 
-def _validate_and_process_chat(
-    connection_id: str,
-    user_id: str,
-    conn_org_id: Optional[str],
-    body: Dict[str, Any],
-    background_tasks: BackgroundTasks,
-) -> None:
-    """
-    Validate chat message and queue for background processing.
-
-    Raises:
-        ValueError: If message format is invalid or model is not supported
-    """
-    # Parse and validate request using Pydantic
-    try:
-        request = SendEncryptedMessageRequest(
-            session_id=body.get("session_id"),
-            model=body.get("model", ""),
-            encrypted_message=EncryptedPayloadSchema(**body["encrypted_message"]),
-            encrypted_history=[EncryptedPayloadSchema(**h) for h in body.get("encrypted_history", [])] or None,
-            client_transport_public_key=body["client_transport_public_key"],
-        )
-    except (KeyError, ValidationError) as e:
-        logger.error("Invalid message format: %s", e)
-        raise ValueError(f"Invalid message format: {e}")
-
-    # Validate model
-    if request.model not in _get_valid_model_ids():
-        raise ValueError(f"Invalid model. Available models: {list(_get_valid_model_ids())}")
-
-    # Allow org_id from message to override connection org
-    msg_org_id = body.get("org_id") or conn_org_id
-
-    # Queue chat processing as background task
-    background_tasks.add_task(
-        _process_chat_message_background,
-        connection_id=connection_id,
-        user_id=user_id,
-        org_id=msg_org_id,
-        request=request,
-    )
-
-
-async def _process_chat_message_background(
-    connection_id: str,
-    user_id: str,
-    org_id: Optional[str],
-    request: SendEncryptedMessageRequest,
-) -> None:
-    """
-    Process chat message in background task.
-
-    Streams response chunks via Management API.
-    """
-    logger.debug(
-        "Processing chat - connection_id=%s, user_id=%s, org_id=%s, model=%s, session_id=%s",
-        connection_id,
-        user_id,
-        org_id or "personal",
-        request.model,
-        request.session_id or "new",
-    )
-
-    management_api = get_management_api_client()
-    session_factory = get_session_factory()
-
-    try:
-        # Get or create session
-        async with session_factory() as service_db:
-            service = ChatService(service_db)
-
-            # Verify user can send encrypted messages
-            can_send, error_msg = await service.verify_can_send_encrypted(
-                user_id=user_id,
-                org_id=org_id,
-            )
-            if not can_send:
-                management_api.send_message(connection_id, {"type": "error", "message": error_msg})
-                return
-
-            session_id = request.session_id
-            is_new_session = False
-            if session_id:
-                session = await service.get_session(
-                    session_id=session_id,
-                    user_id=user_id,
-                    org_id=org_id,
-                )
-                if not session:
-                    management_api.send_message(
-                        connection_id,
-                        {"type": "error", "message": "Session not found or access denied"},
-                    )
-                    return
-            else:
-                # Create and commit session immediately.
-                # The streaming phase uses a separate DB session, so the
-                # session must already be persisted for foreign key refs.
-                session = await service.create_session(
-                    user_id=user_id,
-                    name="New Chat",
-                    org_id=org_id,
-                )
-                session_id = session.id
-                is_new_session = True
-
-        # Send session ID first
-        management_api.send_message(connection_id, {"type": "session", "session_id": session_id})
-
-        # Convert hex-encoded API payloads to bytes-based crypto payloads
-        encrypted_msg = request.encrypted_message.to_crypto()
-
-        encrypted_history = []
-        if request.encrypted_history:
-            for h in request.encrypted_history:
-                encrypted_history.append(h.to_crypto())
-
-        # Fetch user/org metadata from Clerk for AWS credential resolution
-        user_metadata = None
-        org_metadata = None
-        if settings.CLERK_SECRET_KEY:
-            try:
-                clerk = Clerk(bearer_auth=settings.CLERK_SECRET_KEY)
-                user = clerk.users.get(user_id=user_id)
-                user_metadata = user.private_metadata
-
-                if org_id:
-                    org = clerk.organizations.get(organization_id=org_id)
-                    org_metadata = org.private_metadata
-            except Exception as e:
-                logger.warning("Could not fetch Clerk metadata: %s", e)
-                # Continue without custom credentials - will use IAM role
-
-        # Stream response
-        chunk_count = 0
-
-        async with session_factory() as stream_db:
-            stream_service = ChatService(stream_db)
-
-            async for chunk in stream_service.process_encrypted_message_stream(
-                session_id=session_id,
-                user_id=user_id,
-                org_id=org_id,
-                encrypted_message=encrypted_msg,
-                encrypted_history=encrypted_history,
-                model=request.model,
-                client_transport_public_key=request.client_transport_public_key,
-                user_metadata=user_metadata,
-                org_metadata=org_metadata,
-                is_new_session=is_new_session,
-            ):
-                if chunk.error:
-                    logger.debug("Enclave error for session_id=%s: %s", session_id, chunk.error)
-                    management_api.send_message(
-                        connection_id,
-                        {"type": "error", "message": chunk.error},
-                    )
-                    return
-
-                if chunk.encrypted_content:
-                    chunk_count += 1
-                    # Convert bytes-based crypto payload to hex-encoded API payload
-                    api_payload = EncryptedPayloadSchema.from_crypto(chunk.encrypted_content)
-                    if not management_api.send_message(
-                        connection_id,
-                        {"type": "encrypted_chunk", "encrypted_content": api_payload.model_dump()},
-                    ):
-                        # Connection gone - stop streaming
-                        logger.warning("Connection %s gone during streaming", connection_id)
-                        return
-
-                if chunk.encrypted_thinking:
-                    # Send thinking chunk
-                    api_payload = EncryptedPayloadSchema.from_crypto(chunk.encrypted_thinking)
-                    management_api.send_message(
-                        connection_id,
-                        {"type": "thinking", "encrypted_content": api_payload.model_dump()},
-                    )
-
-                if chunk.is_final and chunk.stored_user_message and chunk.stored_assistant_message:
-                    # Send stored message info
-                    logger.debug("Messages stored for session_id=%s", session_id)
-                    management_api.send_message(
-                        connection_id,
-                        {
-                            "type": "stored",
-                            "model_used": chunk.model_used,
-                            "input_tokens": chunk.input_tokens,
-                            "output_tokens": chunk.output_tokens,
-                        },
-                    )
-
-                    # Record usage (non-blocking — failures logged, never block chat)
-                    if chunk.input_tokens or chunk.output_tokens:
-                        try:
-                            async with session_factory() as usage_db:
-                                usage_service = UsageService(usage_db)
-                                if org_id:
-                                    account = await usage_service.get_billing_account_for_org(org_id)
-                                else:
-                                    account = await usage_service.get_billing_account_for_user(user_id)
-                                if account:
-                                    await usage_service.record_usage(
-                                        billing_account_id=account.id,
-                                        clerk_user_id=user_id,
-                                        model_id=chunk.model_used or request.model,
-                                        input_tokens=chunk.input_tokens,
-                                        output_tokens=chunk.output_tokens,
-                                        source="chat",
-                                        session_id=session_id,
-                                    )
-                        except Exception as e:
-                            logger.warning("Failed to record chat usage: %s", e)
-
-        logger.debug(
-            "Stream complete for connection_id=%s, session_id=%s, chunks=%d",
-            connection_id,
-            session_id,
-            chunk_count,
-        )
-        management_api.send_message(connection_id, {"type": "done"})
-
-    except ManagementApiClientError as e:
-        logger.error("Management API error for connection %s: %s", connection_id, e)
-        # Can't send error to client - Management API failed
-    except Exception as e:
-        logger.exception("Unexpected error processing chat for connection %s: %s", connection_id, e)
-        try:
-            management_api.send_message(
-                connection_id,
-                {"type": "error", "message": "Internal error during processing"},
-            )
-        except Exception:
-            pass  # Best effort
-
-
 # =============================================================================
-# Agent Chat (Streaming)
+# Agent Chat (Streaming, Plaintext)
 # =============================================================================
-
-
-async def _validate_and_process_agent_chat(
-    connection_id: str,
-    user_id: str,
-    body: Dict[str, Any],
-    background_tasks: BackgroundTasks,
-) -> None:
-    """
-    Validate agent chat message and queue for background processing.
-
-    Raises:
-        ValueError: If message format is invalid
-    """
-    try:
-        encrypted_soul = None
-        if body.get("encrypted_soul_content"):
-            encrypted_soul = EncryptedPayloadSchema(**body["encrypted_soul_content"])
-
-        encrypted_state_from_client = None
-        if body.get("encrypted_state"):
-            # Inline state (small payloads that fit in WebSocket frame)
-            encrypted_state_from_client = EncryptedPayloadSchema(**body["encrypted_state"])
-        elif body.get("state_ref"):
-            # State uploaded via REST to avoid 32KB WebSocket frame limit
-            stored = await retrieve_state(body["state_ref"])
-            if stored:
-                encrypted_state_from_client = EncryptedPayloadSchema(**stored)
-            else:
-                logger.warning("state_ref %s not found or expired", body["state_ref"])
-
-        request = AgentChatWSRequest(
-            agent_name=body["agent_name"],
-            encrypted_message=EncryptedPayloadSchema(**body["encrypted_message"]),
-            client_transport_public_key=body["client_transport_public_key"],
-            user_public_key=body["user_public_key"],
-            encrypted_soul_content=encrypted_soul,
-            encrypted_state=encrypted_state_from_client,
-        )
-    except (KeyError, ValidationError) as e:
-        logger.error("Invalid agent chat message format: %s", e)
-        raise ValueError(f"Invalid message format: {e}")
-
-    background_tasks.add_task(
-        _process_agent_chat_background,
-        connection_id=connection_id,
-        user_id=user_id,
-        agent_name=request.agent_name,
-        encrypted_message=request.encrypted_message,
-        client_transport_public_key=request.client_transport_public_key,
-        user_public_key=request.user_public_key,
-        encrypted_soul_content=request.encrypted_soul_content,
-        encrypted_state_from_client=request.encrypted_state,
-    )
 
 
 async def _process_agent_chat_background(
     connection_id: str,
     user_id: str,
     agent_name: str,
-    encrypted_message: EncryptedPayloadSchema,
-    client_transport_public_key: str,
-    user_public_key: str,
-    encrypted_soul_content: Optional[EncryptedPayloadSchema] = None,
-    encrypted_state_from_client: Optional[EncryptedPayloadSchema] = None,
+    message: str,
 ) -> None:
     """
     Process agent chat message in background task with streaming.
 
-    For zero_trust mode: client provides encrypted_state_from_client (re-encrypted to enclave)
-    For background mode: server loads KMS envelope from DB
+    Sends plaintext message to OpenClaw gateway, streams response
+    chunks back to client via Management API.
     """
     logger.debug(
         "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
@@ -555,10 +226,10 @@ async def _process_agent_chat_background(
     session_factory = get_session_factory()
 
     try:
-        # Look up agent to determine encryption mode
+        # Look up agent in DB to get UUID
         async with session_factory() as db:
             service = AgentService(db)
-            agent_state = await service.get_agent_state(user_id, agent_name)
+            agent_state = await service.get_agent(user_id, agent_name)
 
         if not agent_state:
             management_api.send_message(
@@ -567,119 +238,52 @@ async def _process_agent_chat_background(
             )
             return
 
-        encryption_mode = agent_state.encryption_mode
+        agent_id = str(agent_state.id)
 
-        # Prepare state based on encryption mode
-        encrypted_state_for_enclave = None
-        kms_envelope = None
+        # Ensure workspace exists on disk
+        gateway_manager = get_gateway_manager()
+        if not gateway_manager.agent_workspace_exists(agent_id):
+            gateway_manager.create_agent_workspace(
+                agent_id=agent_id,
+                soul_content=agent_state.soul_content,
+            )
 
-        if encryption_mode == "zero_trust":
-            # Client provides re-encrypted state in the request
-            if encrypted_state_from_client:
-                encrypted_state_for_enclave = encrypted_state_from_client.to_crypto()
-        elif encryption_mode == "background":
-            # Server loads KMS envelope from DB and passes to enclave
-            # encrypted_tarball stores JSON: {encrypted_dek, iv, ciphertext, auth_tag} (hex strings)
-            if agent_state.encrypted_tarball:
-                kms_dict = json.loads(agent_state.encrypted_tarball)
-                kms_envelope = {k: bytes.fromhex(v) for k, v in kms_dict.items()}
-            # else: no state yet (new agent, first message)
-
-        # Convert API encrypted_message to crypto payload
-        encrypted_msg = encrypted_message.to_crypto()
-        client_pub_key = bytes.fromhex(client_transport_public_key)
-        user_pub_key = bytes.fromhex(user_public_key)
-
-        # Convert encrypted_soul_content if provided
-        encrypted_soul = None
-        if encrypted_soul_content:
-            encrypted_soul = encrypted_soul_content.to_crypto()
-
-        # Create stream request
-        enclave = get_enclave()
-        handler = AgentHandler(enclave=enclave)
-        request = AgentStreamRequest(
-            user_id=user_id,
-            agent_name=agent_name,
-            encrypted_message=encrypted_msg,
-            encrypted_state=encrypted_state_for_enclave,
-            client_public_key=client_pub_key,
-            user_public_key=user_pub_key,
-            agent_id=str(agent_state.id),
-            encrypted_soul_content=encrypted_soul,
-            encryption_mode=encryption_mode,
-            kms_envelope=kms_envelope,
-        )
-
-        # Stream response chunks
+        # Stream response from OpenClaw gateway
+        gateway_client = get_gateway_client()
         chunk_count = 0
-        async for chunk in handler.process_message_streaming(request):
-            if chunk.heartbeat:
-                management_api.send_message(
-                    connection_id,
-                    {"type": "heartbeat"},
-                )
+
+        for chunk in gateway_client.chat_stream(
+            message=message,
+            agent_id=agent_id,
+        ):
+            if chunk is None:
+                # Heartbeat — gateway is alive but processing (tool execution)
+                management_api.send_message(connection_id, {"type": "heartbeat"})
                 continue
 
-            if chunk.error:
-                management_api.send_message(
-                    connection_id,
-                    {"type": "error", "message": chunk.error},
-                )
+            chunk_count += 1
+            push_ok = management_api.send_message(
+                connection_id,
+                {"type": "chunk", "content": chunk},
+            )
+            if not push_ok:
+                logger.warning("Connection %s gone during agent streaming", connection_id)
                 return
 
-            if chunk.encrypted_content:
-                chunk_count += 1
-                api_payload = EncryptedPayloadSchema.from_crypto(chunk.encrypted_content)
-                push_ok = management_api.send_message(
-                    connection_id,
-                    {"type": "encrypted_chunk", "encrypted_content": api_payload.model_dump()},
-                )
-                if not push_ok:
-                    logger.warning("Connection %s gone during agent streaming", connection_id)
-                    return
-
-            if chunk.is_final:
-                async with session_factory() as db:
-                    service = AgentService(db)
-
-                    if encryption_mode == "zero_trust" and chunk.encrypted_state:
-                        # Zero trust: store encrypted state as JSON blob
-                        state_dict = chunk.encrypted_state.to_dict()
-                        state_json = json.dumps(state_dict).encode("utf-8")
-                        await service.update_agent_state(user_id, agent_name, state_json)
-
-                    elif encryption_mode == "background" and chunk.kms_envelope:
-                        # Background: kms_envelope is a dict with hex strings
-                        # Store entire envelope as JSON in encrypted_tarball
-                        kms_json = json.dumps(chunk.kms_envelope).encode("utf-8")
-                        await service.update_agent_state(user_id, agent_name, kms_json)
-
-                    await db.commit()
-
-                logger.debug("Agent state updated for %s/%s (mode=%s)", user_id, agent_name, encryption_mode)
-
-                # Record agent usage (non-blocking)
-                if chunk.input_tokens or chunk.output_tokens:
-                    try:
-                        async with session_factory() as usage_db:
-                            usage_service = UsageService(usage_db)
-                            account = await usage_service.get_billing_account_for_user(user_id)
-                            if account:
-                                await usage_service.record_usage(
-                                    billing_account_id=account.id,
-                                    clerk_user_id=user_id,
-                                    model_id=chunk.model_used or "",
-                                    input_tokens=chunk.input_tokens,
-                                    output_tokens=chunk.output_tokens,
-                                    source="agent",
-                                    agent_name=agent_name,
-                                )
-                    except Exception as e:
-                        logger.warning("Failed to record agent usage: %s", e)
-
+        logger.debug(
+            "Agent stream complete: connection_id=%s, agent=%s, chunks=%d",
+            connection_id,
+            agent_name,
+            chunk_count,
+        )
         management_api.send_message(connection_id, {"type": "done"})
 
+    except GatewayRequestError as e:
+        logger.error("Gateway error for agent %s: %s", agent_name, e)
+        management_api.send_message(
+            connection_id,
+            {"type": "error", "message": f"Agent processing error: {e}"},
+        )
     except ManagementApiClientError as e:
         logger.error("Management API error for connection %s: %s", connection_id, e)
     except Exception as e:

@@ -18,7 +18,6 @@ class TestTownServiceOptIn:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -36,23 +35,6 @@ class TestTownServiceOptIn:
         assert town_agent.is_active is True
 
     @pytest.mark.asyncio
-    async def test_opt_in_requires_background_mode(self, service, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-            encryption_mode="zero_trust",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
-        with pytest.raises(ValueError, match="background"):
-            await service.opt_in(
-                user_id=test_user.id,
-                agent_name="luna",
-                display_name="Luna",
-            )
-
-    @pytest.mark.asyncio
     async def test_opt_in_fails_if_agent_not_found(self, service, test_user):
         with pytest.raises(ValueError, match="not found"):
             await service.opt_in(
@@ -66,7 +48,7 @@ class TestTownServiceOptIn:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -102,7 +84,7 @@ class TestTownServiceState:
             agent_state = AgentState(
                 user_id=user.id,
                 agent_name=name,
-                encryption_mode="background",
+    
             )
             db_session.add(agent_state)
             await db_session.flush()
@@ -121,7 +103,7 @@ class TestTownServiceState:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -139,7 +121,7 @@ class TestTownServiceState:
 
 
 class TestTownServiceSeedAgent:
-    """Test seed_agent for default agents (bypasses encryption check)."""
+    """Test seed_agent for default agents (bypasses AgentState check)."""
 
     @pytest.fixture
     def service(self, db_session):
@@ -236,7 +218,7 @@ class TestTownServiceRelationships:
             agent_state = AgentState(
                 user_id=user.id,
                 agent_name=name,
-                encryption_mode="background",
+    
             )
             db_session.add(agent_state)
             await db_session.flush()
@@ -258,7 +240,7 @@ class TestTownServiceRelationships:
             agent_state = AgentState(
                 user_id=user.id,
                 agent_name=name,
-                encryption_mode="background",
+    
             )
             db_session.add(agent_state)
             await db_session.flush()

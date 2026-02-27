@@ -2,7 +2,7 @@
 HTTP client for the OpenClaw gateway's OpenAI-compatible endpoint.
 
 Uses stdlib urllib.request (no extra dependencies) to communicate with
-the persistent OpenClaw gateway running inside the enclave.
+the persistent OpenClaw gateway running on EC2.
 
 Supports:
   - Streaming (SSE) responses via chat_stream()
@@ -12,12 +12,14 @@ Supports:
 """
 
 import json
+import logging
 import socket as _socket
 import urllib.request
 import urllib.error
 from typing import Generator, Optional
 from uuid import uuid4
 
+logger = logging.getLogger(__name__)
 
 # Default timeout for non-streaming requests
 _DEFAULT_TIMEOUT = 90
@@ -54,23 +56,12 @@ class GatewayHttpClient:
         """
         Send a message and stream the response via SSE.
 
-        Args:
-            message: User message text.
-            agent_id: Agent identifier (used as x-openclaw-agent-id header).
-            session_key: Session key for conversation continuity.
-                         If None, a unique key is generated.
-            timeout: Request timeout in seconds.
-
         Yields:
             Text chunks (str) from the assistant's response, or None as a
-            heartbeat sentinel when the SSE stream is silent (e.g. during
-            tool execution).
-
-        Raises:
-            GatewayRequestError: If the gateway returns an error.
+            heartbeat sentinel when the SSE stream is silent.
         """
         if session_key is None:
-            session_key = f"agent:{agent_id}:enclave:{uuid4().hex[:12]}"
+            session_key = f"agent:{agent_id}:session:{uuid4().hex[:12]}"
 
         url = f"{self._base_url}/v1/chat/completions"
 
@@ -106,22 +97,17 @@ class GatewayHttpClient:
             raise GatewayRequestError(f"Gateway connection failed: {e.reason}")
 
         try:
-            # Set a short per-read timeout for heartbeat detection.
-            # If no SSE data arrives within this window (e.g. during tool
-            # execution), we yield a None sentinel so downstream layers
-            # can emit keepalive events and prevent socket timeouts.
+            # Set a short per-read timeout for heartbeat detection
             _HEARTBEAT_INTERVAL = 15  # seconds
             underlying_sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
             if underlying_sock is not None:
                 underlying_sock.settimeout(_HEARTBEAT_INTERVAL)
 
-            # Parse SSE stream using readline() so we can catch per-read timeouts
             buffer = ""
             while True:
                 try:
                     raw_line = resp.readline()
                 except _socket.timeout:
-                    # No data within heartbeat interval — yield sentinel
                     yield None
                     continue
 
@@ -131,7 +117,6 @@ class GatewayHttpClient:
                 line = raw_line.decode("utf-8", errors="replace")
                 buffer += line
 
-                # SSE events are separated by double newlines
                 while "\n\n" in buffer:
                     event_str, buffer = buffer.split("\n\n", 1)
                     event_str = event_str.strip()
@@ -139,7 +124,6 @@ class GatewayHttpClient:
                     if not event_str:
                         continue
 
-                    # Extract data lines
                     for event_line in event_str.split("\n"):
                         event_line = event_line.strip()
 
@@ -147,10 +131,9 @@ class GatewayHttpClient:
                             return
 
                         if event_line.startswith("data: "):
-                            data_str = event_line[6:]  # Strip "data: " prefix
+                            data_str = event_line[6:]
                             try:
                                 data = json.loads(data_str)
-                                # Extract text from OpenAI chat completion chunk
                                 choices = data.get("choices", [])
                                 if choices:
                                     delta = choices[0].get("delta", {})
@@ -158,12 +141,10 @@ class GatewayHttpClient:
                                     if content:
                                         yield content
 
-                                    # Check for finish_reason
                                     finish = choices[0].get("finish_reason")
                                     if finish is not None:
                                         return
                             except json.JSONDecodeError:
-                                # Skip malformed SSE data
                                 continue
 
             # Process any remaining buffer
@@ -196,20 +177,11 @@ class GatewayHttpClient:
         """
         Send a message and return the full response (non-streaming).
 
-        Args:
-            message: User message text.
-            agent_id: Agent identifier.
-            session_key: Session key for conversation continuity.
-            timeout: Request timeout in seconds.
-
         Returns:
             The assistant's response text.
-
-        Raises:
-            GatewayRequestError: If the gateway returns an error.
         """
         if session_key is None:
-            session_key = f"agent:{agent_id}:enclave:{uuid4().hex[:12]}"
+            session_key = f"agent:{agent_id}:session:{uuid4().hex[:12]}"
 
         url = f"{self._base_url}/v1/chat/completions"
 

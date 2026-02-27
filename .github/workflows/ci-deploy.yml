@@ -30,10 +30,9 @@ on:
         default: false
 
 env:
-  PYTHON_VERSION: "3.11"
+  PYTHON_VERSION: "3.12"
   AWS_REGION: us-east-1
   ECR_REPOSITORY: isol8-backend
-  ENCLAVE_BUCKET: isol8-enclave-artifacts-877352799272
 
 # Required for OIDC authentication
 permissions:
@@ -160,113 +159,20 @@ jobs:
         run: echo "image_tag=${{ github.sha }}" >> $GITHUB_OUTPUT
 
   # ===========================================================================
-  # Build Enclave: Build EIF and upload to S3
-  # ===========================================================================
-  build-enclave:
-    name: Build Enclave EIF
-    runs-on: ubuntu-latest
-    needs: test
-    if: |
-      always() &&
-      (needs.test.result == 'success' || needs.test.result == 'skipped') &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      !(github.event_name == 'workflow_dispatch' && github.event.inputs.fast_deploy == 'true')
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-        with:
-          submodules: true
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/isol8-dev-github-actions
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Install Nitro CLI
-        run: |
-          # nitro-cli requires Nitro Enclaves kernel driver which is only available
-          # on Nitro-enabled EC2 instances. GitHub Actions runners don't have this.
-          # EIF will be built on EC2 instance during deployment.
-          echo "nitro-cli requires Nitro-enabled EC2 instance - skipping installation"
-          echo "EIF will be built on EC2 during instance startup"
-
-      - name: Login to Amazon ECR
-        id: login-ecr-enclave
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build enclave Docker image
-        run: |
-          # Build context is repo root so we can access agent/ submodule
-          docker build -t isol8-enclave:latest -f enclave/Dockerfile.enclave .
-
-      - name: Push enclave Docker image to ECR
-        run: |
-          REGISTRY="${{ steps.login-ecr-enclave.outputs.registry }}"
-          docker tag isol8-enclave:latest $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-latest
-          docker tag isol8-enclave:latest $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-${{ github.sha }}
-          docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-latest
-          docker push $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-${{ github.sha }}
-          echo "Pushed enclave image: $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-latest"
-          echo "Pushed enclave image: $REGISTRY/${{ env.ECR_REPOSITORY }}:enclave-${{ github.sha }}"
-
-      - name: Build EIF (or skip if nitro-cli unavailable)
-        id: build-eif
-        run: |
-          if command -v nitro-cli &> /dev/null; then
-            echo "Building EIF with nitro-cli..."
-            nitro-cli build-enclave \
-              --docker-uri isol8-enclave:latest \
-              --output-file enclave/enclave.eif
-            echo "eif_built=true" >> $GITHUB_OUTPUT
-          else
-            echo "nitro-cli not available, EIF will be built on EC2"
-            echo "eif_built=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload EIF to S3
-        if: steps.build-eif.outputs.eif_built == 'true'
-        run: |
-          aws s3 cp enclave/enclave.eif "s3://${{ env.ENCLAVE_BUCKET }}/dev/enclave.eif"
-          echo "EIF uploaded to s3://${{ env.ENCLAVE_BUCKET }}/dev/enclave.eif"
-
-      - name: Upload enclave source to S3 (fallback for EC2 build)
-        if: steps.build-eif.outputs.eif_built != 'true'
-        run: |
-          # If we can't build EIF in CI, upload the source files for EC2 to build
-          # Upload enclave directory
-          aws s3 sync enclave/ "s3://${{ env.ENCLAVE_BUCKET }}/dev/source/enclave/" --exclude "*.eif"
-          # Upload agent submodule (required by Dockerfile.enclave)
-          aws s3 sync agent/ "s3://${{ env.ENCLAVE_BUCKET }}/dev/source/agent/" \
-            --exclude "node_modules/*" --exclude ".git/*" --no-follow-symlinks
-          echo "Enclave source + agent submodule uploaded for EC2 build"
-
-          # Delete any pre-built EIF so EC2 rebuilds from the new source.
-          # Without this, EC2 downloads the stale EIF and skips the build,
-          # causing the enclave to run outdated code.
-          aws s3 rm "s3://${{ env.ENCLAVE_BUCKET }}/dev/enclave.eif" || true
-          echo "Deleted old EIF from S3 - EC2 will rebuild from latest source"
-
-  # ===========================================================================
   # Deploy to Dev (automatic via ASG Instance Refresh)
   # ===========================================================================
   # Uses ASG instance refresh for zero-downtime rolling deployments.
   # New instances boot with user_data.sh which:
   #   1. Pulls latest Docker image from ECR
-  #   2. Downloads enclave EIF from S3
-  #   3. Starts vsock-proxy and Nitro Enclave
-  #   4. Sets ENCLAVE_MODE=nitro if EIF exists
-  #   5. Starts the backend container
+  #   2. Starts the backend container
   # ===========================================================================
   deploy-dev:
     name: Deploy to Dev
     runs-on: ubuntu-latest
-    needs: [build, build-enclave]
+    needs: [build]
     if: |
       always() &&
       needs.build.result == 'success' &&
-      (needs.build-enclave.result == 'success' || needs.build-enclave.result == 'skipped') &&
       (
         (github.event_name == 'push') ||
         (github.event_name == 'workflow_dispatch' && (github.event.inputs.environment == 'all' || github.event.inputs.environment == 'dev'))
@@ -288,9 +194,6 @@ jobs:
 
       # =====================================================================
       # Fast Deploy: SSM pull + restart (skips ASG refresh, ~2 min)
-      # WARNING: Fast deploy only restarts the parent container. It does NOT
-      # rebuild or restart the Nitro Enclave. If enclave source changed,
-      # use a normal deploy (ASG instance refresh) instead.
       # =====================================================================
       - name: "[Fast] SSM Deploy - pull image and restart container"
         if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.fast_deploy == 'true' }}
@@ -360,14 +263,6 @@ jobs:
       # =====================================================================
       # Normal Deploy: ASG Instance Refresh (full replacement, ~15 min)
       # =====================================================================
-      - name: Upload Enclave EIF to S3
-        if: ${{ !(github.event_name == 'workflow_dispatch' && (github.event.inputs.fast_deploy == 'true')) }}
-        run: |
-          echo "Checking if EIF exists in S3..."
-          aws s3 ls "s3://${{ env.ENCLAVE_BUCKET }}/dev/enclave.eif" && \
-            echo "EIF already in S3" || \
-            echo "EIF not in S3 - instances will build from source"
-
       - name: Reset Database Schema
         if: ${{ !(github.event_name == 'workflow_dispatch' && (github.event.inputs.fast_deploy == 'true')) }}
         run: |
@@ -428,8 +323,6 @@ jobs:
           echo "Triggering instance refresh for $ASG_NAME..."
           echo "New instances will boot with:"
           echo "  - Latest Docker image: ${{ env.ECR_REPOSITORY }}:latest"
-          echo "  - Enclave EIF from S3"
-          echo "  - ENCLAVE_MODE=nitro (if EIF exists)"
 
           REFRESH_ID=$(aws autoscaling start-instance-refresh \
             --auto-scaling-group-name $ASG_NAME \
@@ -484,37 +377,6 @@ jobs:
 
           echo "Timeout waiting for instance refresh"
           exit 1
-
-      - name: Verify Enclave Mode
-        if: ${{ !(github.event_name == 'workflow_dispatch' && (github.event.inputs.fast_deploy == 'true')) }}
-        run: |
-          ASG_NAME="isol8-dev-asg"
-
-          INSTANCE_ID=$(aws autoscaling describe-auto-scaling-groups \
-            --auto-scaling-group-names $ASG_NAME \
-            --query 'AutoScalingGroups[0].Instances[0].InstanceId' \
-            --output text)
-
-          echo "Checking enclave mode on $INSTANCE_ID..."
-
-          COMMAND_ID=$(aws ssm send-command \
-            --instance-ids "$INSTANCE_ID" \
-            --document-name "AWS-RunShellScript" \
-            --parameters 'commands=[
-              "grep ENCLAVE_MODE /home/ec2-user/.env",
-              "nitro-cli describe-enclaves | jq .",
-              "systemctl status nitro-enclave --no-pager || echo nitro-enclave service not running",
-              "systemctl status vsock-proxy --no-pager || echo vsock-proxy service not running",
-              "docker logs isol8 --tail 20 2>&1 || echo No container logs"
-            ]' \
-            --query 'Command.CommandId' \
-            --output text)
-
-          aws ssm wait command-executed --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" || true
-
-          echo "=== Instance Status ==="
-          aws ssm get-command-invocation --command-id "$COMMAND_ID" --instance-id "$INSTANCE_ID" \
-            --query 'StandardOutputContent' --output text
 
       - name: Health check
         run: |

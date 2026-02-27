@@ -12,7 +12,7 @@ class TestTownOptIn:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -33,24 +33,6 @@ class TestTownOptIn:
         assert data["is_active"] is True
 
     @pytest.mark.asyncio
-    async def test_opt_in_requires_background_mode(self, async_client, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-            encryption_mode="zero_trust",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
-        response = await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agent_name": "luna", "display_name": "Luna"},
-        )
-
-        assert response.status_code == 400
-        assert "background" in response.json()["detail"].lower()
-
-    @pytest.mark.asyncio
     async def test_opt_in_agent_not_found(self, async_client, test_user):
         response = await async_client.post(
             "/api/v1/town/opt-in",
@@ -68,7 +50,7 @@ class TestTownOptOut:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -131,7 +113,7 @@ class TestTownState:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()
@@ -173,7 +155,7 @@ class TestTownDescriptions:
         agent_state = AgentState(
             user_id=test_user.id,
             agent_name="luna",
-            encryption_mode="background",
+
         )
         db_session.add(agent_state)
         await db_session.flush()

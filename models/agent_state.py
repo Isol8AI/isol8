@@ -1,21 +1,17 @@
 """
-AgentState model for storing encrypted OpenClaw agent state.
+AgentState model for storing OpenClaw agent metadata.
 
-Each user's agent state is stored as an encrypted tarball containing
-the complete ~/.openclaw directory structure (config, SOUL.md, memory,
-sessions). The server cannot read this data - only the enclave can
-decrypt it.
+Agent state lives as plain files on disk at the gateway workspace.
+The database stores metadata only (name, soul content, timestamps).
 """
 
 from datetime import datetime, timezone
-import enum
 import uuid
 
 from sqlalchemy import (
     Column,
     String,
-    LargeBinary,
-    Integer,
+    Text,
     DateTime,
     UniqueConstraint,
     Index,
@@ -25,37 +21,20 @@ from sqlalchemy.dialects.postgresql import UUID
 from models.base import Base
 
 
-class EncryptionMode(str, enum.Enum):
-    """Agent state encryption mode.
-
-    ZERO_TRUST: State encrypted to user's key. Only the user can decrypt.
-                Requires user to be online to process messages.
-
-    BACKGROUND: State encrypted with KMS. Enables scheduled tasks and
-                channel bridges (iMessage, WhatsApp, Telegram).
-                Opt-in mode for users who need always-on agents.
-    """
-
-    ZERO_TRUST = "zero_trust"  # Default: encrypted to user's key
-    BACKGROUND = "background"  # Opt-in: encrypted with KMS
-
-
 class AgentState(Base):
     """
-    Encrypted agent state storage.
+    Agent metadata storage.
 
-    Stores the complete OpenClaw agent directory as an encrypted tarball.
-    The tarball is encrypted to the enclave's public key so only the
-    enclave can decrypt and process it.
+    Agent files (sessions, memory) live on disk at the gateway workspace.
+    The database tracks ownership and optional SOUL.md content.
 
     Attributes:
-        id: Unique identifier (UUID) - primary key
+        id: Unique identifier (UUID) - primary key, used as workspace dir name
         user_id: Clerk user ID who owns this agent
         agent_name: User-chosen name for the agent (e.g., "luna", "rex")
-        encrypted_tarball: Encrypted tarball of ~/.openclaw directory
-        tarball_size_bytes: Size for monitoring/quotas
+        soul_content: Optional SOUL.md content (plaintext)
         created_at: When the agent was first created
-        updated_at: When the agent state was last updated
+        updated_at: When the agent was last updated
     """
 
     __tablename__ = "agent_states"
@@ -68,29 +47,8 @@ class AgentState(Base):
     user_id = Column(String, nullable=False, index=True)
     agent_name = Column(String, nullable=False)
 
-    # Encrypted tarball containing the agent's ~/.openclaw directory
-    # Nullable: tarball is None until first message (enclave creates fresh state)
-    encrypted_tarball = Column(LargeBinary, nullable=True)
-
-    # Metadata (not encrypted - needed for queries and quotas)
-    tarball_size_bytes = Column(Integer, nullable=True)
-
-    # Encryption mode for this agent's state
-    # ZERO_TRUST: encrypted to user's key (default, user must be online)
-    # BACKGROUND: encrypted with KMS (opt-in, enables scheduled tasks)
-    # Uses String instead of SQLAlchemy Enum to avoid asyncpg type OID
-    # introspection issues with Supabase PgBouncer in transaction mode
-    encryption_mode = Column(
-        String(20),
-        default=EncryptionMode.ZERO_TRUST.value,
-        nullable=False,
-        server_default="zero_trust",
-    )
-
-    # KMS-encrypted data encryption key (only used in BACKGROUND mode)
-    # Contains the symmetric key encrypted with KMS, allowing the enclave
-    # to decrypt state without user involvement
-    encrypted_dek = Column(LargeBinary, nullable=True)
+    # Optional SOUL.md content (personality/instructions)
+    soul_content = Column(Text, nullable=True)
 
     created_at = Column(
         DateTime(timezone=True),
@@ -108,16 +66,6 @@ class AgentState(Base):
         UniqueConstraint("user_id", "agent_name", name="uq_agent_states_user_agent"),
         Index("idx_agent_states_user", "user_id"),
     )
-
-    def __init__(self, **kwargs):
-        """Initialize AgentState with encryption_mode default."""
-        # Set encryption_mode default at Python object creation time
-        if "encryption_mode" not in kwargs:
-            kwargs["encryption_mode"] = EncryptionMode.ZERO_TRUST.value
-        elif isinstance(kwargs["encryption_mode"], EncryptionMode):
-            # Convert enum to string value for storage
-            kwargs["encryption_mode"] = kwargs["encryption_mode"].value
-        super().__init__(**kwargs)
 
     def __repr__(self) -> str:
         return f"<AgentState(id={self.id}, user_id={self.user_id}, agent_name={self.agent_name})>"

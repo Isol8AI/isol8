@@ -9,4 +9,4 @@ exclude = ["agent/"]
 ignore = ["E501"]
 
 # Allow module-level imports after path manipulation or load_dotenv
-per-file-ignores = { "scripts/*" = ["E402"], "main.py" = ["E402"], "core/enclave/__init__.py" = ["E402"] }
+per-file-ignores = { "scripts/*" = ["E402"], "main.py" = ["E402"] }

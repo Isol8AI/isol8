@@ -5,7 +5,7 @@ Auto-validates all API endpoints against the OpenAPI specification.
 Uses ASGI transport so no running server is needed.
 
 With mocked database dependencies, endpoints that require external services
-(enclave, DynamoDB, Clerk webhook verification) are excluded from automated
+(gateway, DynamoDB, Clerk webhook verification) are excluded from automated
 fuzz testing since they cannot be meaningfully tested without infrastructure.
 """
 
@@ -68,10 +68,10 @@ def _make_app():
     return app
 
 
-# Patch enclave startup/shutdown and TownSimulation before loading schema
+# Patch gateway startup/shutdown and TownSimulation before loading schema
 # so schemathesis can create its internal ASGI client without lifespan errors.
-_startup_patch = patch("main.startup_enclave", new_callable=AsyncMock)
-_shutdown_patch = patch("main.shutdown_enclave", new_callable=AsyncMock)
+_startup_patch = patch("main.startup_gateway", new_callable=AsyncMock)
+_shutdown_patch = patch("main.shutdown_gateway", new_callable=AsyncMock)
 _town_sim_patch = patch("main.TownSimulation")
 
 _startup_patch.start()
@@ -84,32 +84,21 @@ app = _make_app()
 
 # Exclude endpoints that require infrastructure not available in mock mode:
 # - /ws/* endpoints need API Gateway + DynamoDB connection state
-# - /chat/enclave/* need a running enclave instance
 # - /webhooks/* need Clerk signature verification + real webhook payloads
-# - /agents POST/DELETE/message need enclave for encryption
+# - Agent write operations need gateway for workspace management
 schema = schemathesis.openapi.from_asgi("/api/v1/openapi.json", app=app)
 schema = (
     schema.exclude(
         path_regex="^/api/v1/ws/",
     )
     .exclude(
-        path_regex="^/api/v1/chat/enclave/",
-    )
-    .exclude(
         path_regex="^/api/v1/webhooks/",
     )
     .exclude(
-        # Agent write operations need enclave; reads (GET /agents, GET /{name}, GET /{name}/state) work fine
         operation_id="create_agent",
     )
     .exclude(
         operation_id="delete_agent",
-    )
-    .exclude(
-        operation_id="send_agent_message",
-    )
-    .exclude(
-        operation_id="upload_agent_state",
     )
 )
 
@@ -124,8 +113,7 @@ def test_no_server_errors(case):
 
     Excluded endpoints (require infrastructure):
     - WebSocket routes (/ws/*) - need API Gateway + DynamoDB
-    - Enclave routes (/chat/enclave/*) - need running enclave
     - Webhook routes (/webhooks/*) - need Clerk signature verification
-    - Agent write operations - need enclave for encryption
+    - Agent write operations - need gateway for workspace management
     """
     case.call_and_validate(checks=[not_a_server_error])

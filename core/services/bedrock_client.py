@@ -1,30 +1,22 @@
 """
-Bedrock client factory that supports multiple credential sources.
+Bedrock client factory.
+
+Uses IAM role credentials by default (no credential service needed).
 """
+
+import os
 
 import boto3
 from botocore.config import Config as BotoConfig
 
-from core.services.credential_service import AWSCredentials
-
 
 class BedrockClientFactory:
-    """Factory for creating Bedrock clients with appropriate credentials."""
+    """Factory for creating Bedrock clients."""
 
     @staticmethod
-    def create_client(
-        credentials: AWSCredentials,
-        timeout: float = 120.0,
-    ):
+    def create_client(timeout: float = 120.0):
         """
-        Create a Bedrock runtime client.
-
-        Args:
-            credentials: Resolved AWS credentials
-            timeout: Request timeout in seconds
-
-        Returns:
-            boto3 bedrock-runtime client
+        Create a Bedrock runtime client using IAM role credentials.
         """
         boto_config = BotoConfig(
             read_timeout=int(timeout),
@@ -32,19 +24,8 @@ class BedrockClientFactory:
             retries={"max_attempts": 2},
         )
 
-        if credentials.is_custom:
-            # Use explicit credentials
-            return boto3.client(
-                "bedrock-runtime",
-                region_name=credentials.region,
-                aws_access_key_id=credentials.access_key_id,
-                aws_secret_access_key=credentials.secret_access_key,
-                config=boto_config,
-            )
-        else:
-            # Use IAM role (no explicit credentials)
-            return boto3.client(
-                "bedrock-runtime",
-                region_name=credentials.region,
-                config=boto_config,
-            )
+        return boto3.client(
+            "bedrock-runtime",
+            region_name=os.environ.get("AWS_REGION", "us-east-1"),
+            config=boto_config,
+        )

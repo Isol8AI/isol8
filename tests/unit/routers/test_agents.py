@@ -3,8 +3,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
 
-from core.crypto import generate_x25519_keypair
-
 
 class TestAgentEndpoints:
     """Test agent REST API endpoints."""
@@ -18,21 +16,11 @@ class TestAgentEndpoints:
         assert data["agents"] == []
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_enclave")
-    async def test_create_agent(self, mock_get_enclave, async_client, test_user):
+    @patch("routers.agents.get_gateway_manager")
+    async def test_create_agent(self, mock_get_gw, async_client, test_user):
         """Test creating a new agent."""
-        # Setup mock enclave
-        mock_enclave = MagicMock()
-        keypair = generate_x25519_keypair()
-        mock_enclave.get_info.return_value = MagicMock(enclave_public_key=keypair.public_key)
-        mock_enclave.encrypt_for_storage.return_value = MagicMock(
-            ephemeral_public_key=b"x" * 32,
-            iv=b"y" * 16,
-            ciphertext=b"z" * 100,
-            auth_tag=b"a" * 16,
-            hkdf_salt=b"b" * 32,
-        )
-        mock_get_enclave.return_value = mock_enclave
+        mock_manager = MagicMock()
+        mock_get_gw.return_value = mock_manager
 
         response = await async_client.post(
             "/api/v1/agents",
@@ -45,23 +33,15 @@ class TestAgentEndpoints:
         data = response.json()
         assert data["agent_name"] == "luna"
         assert data["user_id"] == test_user.id
+        assert data["soul_content"] == "# Luna\nA friendly companion."
+        mock_manager.create_agent_workspace.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_enclave")
-    async def test_create_duplicate_agent(self, mock_get_enclave, async_client, test_user):
+    @patch("routers.agents.get_gateway_manager")
+    async def test_create_duplicate_agent(self, mock_get_gw, async_client, test_user):
         """Test creating duplicate agent fails."""
-        # Setup mock enclave
-        mock_enclave = MagicMock()
-        keypair = generate_x25519_keypair()
-        mock_enclave.get_info.return_value = MagicMock(enclave_public_key=keypair.public_key)
-        mock_enclave.encrypt_for_storage.return_value = MagicMock(
-            ephemeral_public_key=b"x" * 32,
-            iv=b"y" * 16,
-            ciphertext=b"z" * 100,
-            auth_tag=b"a" * 16,
-            hkdf_salt=b"b" * 32,
-        )
-        mock_get_enclave.return_value = mock_enclave
+        mock_manager = MagicMock()
+        mock_get_gw.return_value = mock_manager
 
         # Create first
         await async_client.post(
@@ -77,21 +57,11 @@ class TestAgentEndpoints:
         assert response.status_code == 409
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_enclave")
-    async def test_get_agent(self, mock_get_enclave, async_client, test_user):
+    @patch("routers.agents.get_gateway_manager")
+    async def test_get_agent(self, mock_get_gw, async_client, test_user):
         """Test getting agent details."""
-        # Setup mock enclave
-        mock_enclave = MagicMock()
-        keypair = generate_x25519_keypair()
-        mock_enclave.get_info.return_value = MagicMock(enclave_public_key=keypair.public_key)
-        mock_enclave.encrypt_for_storage.return_value = MagicMock(
-            ephemeral_public_key=b"x" * 32,
-            iv=b"y" * 16,
-            ciphertext=b"z" * 100,
-            auth_tag=b"a" * 16,
-            hkdf_salt=b"b" * 32,
-        )
-        mock_get_enclave.return_value = mock_enclave
+        mock_manager = MagicMock()
+        mock_get_gw.return_value = mock_manager
 
         # Create first
         await async_client.post(
@@ -112,21 +82,11 @@ class TestAgentEndpoints:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_enclave")
-    async def test_delete_agent(self, mock_get_enclave, async_client, test_user):
+    @patch("routers.agents.get_gateway_manager")
+    async def test_delete_agent(self, mock_get_gw, async_client, test_user):
         """Test deleting an agent."""
-        # Setup mock enclave
-        mock_enclave = MagicMock()
-        keypair = generate_x25519_keypair()
-        mock_enclave.get_info.return_value = MagicMock(enclave_public_key=keypair.public_key)
-        mock_enclave.encrypt_for_storage.return_value = MagicMock(
-            ephemeral_public_key=b"x" * 32,
-            iv=b"y" * 16,
-            ciphertext=b"z" * 100,
-            auth_tag=b"a" * 16,
-            hkdf_salt=b"b" * 32,
-        )
-        mock_get_enclave.return_value = mock_enclave
+        mock_manager = MagicMock()
+        mock_get_gw.return_value = mock_manager
 
         # Create first
         await async_client.post(
@@ -137,27 +97,18 @@ class TestAgentEndpoints:
         # Delete
         response = await async_client.delete("/api/v1/agents/luna")
         assert response.status_code == 204
+        mock_manager.delete_agent_workspace.assert_called_once()
 
         # Verify gone
         response = await async_client.get("/api/v1/agents/luna")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_enclave")
-    async def test_list_agents(self, mock_get_enclave, async_client, test_user):
+    @patch("routers.agents.get_gateway_manager")
+    async def test_list_agents(self, mock_get_gw, async_client, test_user):
         """Test listing all user's agents."""
-        # Setup mock enclave
-        mock_enclave = MagicMock()
-        keypair = generate_x25519_keypair()
-        mock_enclave.get_info.return_value = MagicMock(enclave_public_key=keypair.public_key)
-        mock_enclave.encrypt_for_storage.return_value = MagicMock(
-            ephemeral_public_key=b"x" * 32,
-            iv=b"y" * 16,
-            ciphertext=b"z" * 100,
-            auth_tag=b"a" * 16,
-            hkdf_salt=b"b" * 32,
-        )
-        mock_get_enclave.return_value = mock_enclave
+        mock_manager = MagicMock()
+        mock_get_gw.return_value = mock_manager
 
         # Create multiple
         await async_client.post("/api/v1/agents", json={"agent_name": "luna"})

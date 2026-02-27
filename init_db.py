@@ -56,9 +56,6 @@ async def init_models(reset: bool = False):
                 print(f"Creating SQLAlchemy tables in '{schema}' schema...")
                 await conn.run_sync(Base.metadata.create_all)
 
-            # Note: OpenMemory SDK initialization removed during migration to mem0.
-            # Plan 2 will implement memory tables in the enclave's isolated PostgreSQL.
-
             print(f"Database initialization complete for schema '{schema}'.")
             return
         except OperationalError as e:

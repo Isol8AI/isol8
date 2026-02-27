@@ -32,15 +32,6 @@ async def test_every_endpoint_has_operation_id(async_client):
 
 
 @pytest.mark.asyncio
-async def test_debug_encryption_report_has_response_model(async_client):
-    """GET /debug/encryption/report should have a response model."""
-    response = await async_client.get("/api/v1/openapi.json")
-    spec = response.json()
-    path = spec["paths"]["/api/v1/debug/encryption/report"]["get"]
-    assert "content" in path["responses"]["200"]
-
-
-@pytest.mark.asyncio
 async def test_webhook_endpoint_has_summary(async_client):
     """POST /webhooks/clerk should have a summary."""
     response = await async_client.get("/api/v1/openapi.json")

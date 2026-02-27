@@ -1,12 +1,11 @@
 import os
-from typing import Optional
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    PROJECT_NAME: str = "Isol8 Chat"
+    PROJECT_NAME: str = "Isol8"
     API_V1_STR: str = "/api/v1"
 
     # Environment mode
@@ -15,24 +14,21 @@ class Settings(BaseSettings):
 
     # Clerk Auth
     CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "https://your-clerk-domain.clerk.accounts.dev")
-    CLERK_AUDIENCE: Optional[str] = None
-    CLERK_WEBHOOK_SECRET: Optional[str] = os.getenv("CLERK_WEBHOOK_SECRET")
+    CLERK_AUDIENCE: str | None = None
+    CLERK_WEBHOOK_SECRET: str | None = os.getenv("CLERK_WEBHOOK_SECRET")
 
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/securechat")
 
     # Clerk Secret Key (for fetching user/org metadata)
-    CLERK_SECRET_KEY: Optional[str] = os.getenv("CLERK_SECRET_KEY")
+    CLERK_SECRET_KEY: str | None = os.getenv("CLERK_SECRET_KEY")
 
-    # AWS Bedrock Configuration
+    # AWS Configuration
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
 
-    # Tool API Keys (passed to enclave for OpenClaw tools)
+    # Tool API Keys (passed to OpenClaw gateway)
     BRAVE_API_KEY: str = os.getenv("BRAVE_API_KEY", "")
-
-    # Credential encryption key (for user/org AWS creds stored in Clerk)
-    CREDENTIAL_ENCRYPTION_KEY: Optional[str] = os.getenv("CREDENTIAL_ENCRYPTION_KEY")
 
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
@@ -42,17 +38,9 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
-    # Enclave Configuration
-    # In production, this would be the Nitro enclave endpoint
-    ENCLAVE_MODE: str = os.getenv("ENCLAVE_MODE", "mock")  # "mock" or "nitro"
-    ENCLAVE_INFERENCE_TIMEOUT: float = float(os.getenv("ENCLAVE_INFERENCE_TIMEOUT", "120.0"))
-
-    # Nitro enclave settings (only used when ENCLAVE_MODE=nitro)
-    ENCLAVE_CID: int = 0  # 0 = auto-discover
-    ENCLAVE_PORT: int = 5000
-
-    # Credential refresh interval (seconds) - creds expire after 1 hour
-    ENCLAVE_CREDENTIAL_REFRESH_SECONDS: int = int(os.getenv("ENCLAVE_CREDENTIAL_REFRESH_SECONDS", "2700"))  # 45 minutes
+    # OpenClaw Gateway Configuration
+    GATEWAY_PORT: int = int(os.getenv("GATEWAY_PORT", "18789"))
+    GATEWAY_WORKSPACE: str = os.getenv("GATEWAY_WORKSPACE", "/var/lib/isol8/gateway-workspace")
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
@@ -63,13 +51,6 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_METER_ID: str = os.getenv("STRIPE_METER_ID", "")
     BILLING_MARKUP: float = float(os.getenv("BILLING_MARKUP", "1.4"))
-
-    @field_validator("ENCLAVE_CID", mode="before")
-    @classmethod
-    def validate_enclave_cid(cls, v):
-        if v == "" or v is None:
-            return 0
-        return int(v)
 
     @field_validator("CLERK_ISSUER")
     @classmethod
@@ -96,7 +77,6 @@ PLAN_BUDGETS = {
 FREE_TIER_LIMIT = PLAN_BUDGETS["free"]
 
 # Fallback models used when Bedrock discovery is unavailable (e.g., local dev without AWS creds).
-# IDs use inference profile format (us. prefix) for models that require it.
 FALLBACK_MODELS = [
     {"id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0", "name": "Claude 3.5 Sonnet"},
     {"id": "us.anthropic.claude-3-5-haiku-20241022-v1:0", "name": "Claude 3.5 Haiku"},

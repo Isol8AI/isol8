@@ -4,8 +4,7 @@ import asyncio
 from decimal import Decimal
 
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from core.config import settings
 from models.billing import ModelPricing
@@ -58,7 +57,7 @@ BEDROCK_PRICES = [
 
 async def seed():
     engine = create_async_engine(settings.DATABASE_URL)
-    async_session = sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    async_session = async_sessionmaker(engine, expire_on_commit=False)
 
     async with async_session() as db:
         for price_data in BEDROCK_PRICES:

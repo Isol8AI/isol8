@@ -28,7 +28,7 @@ class TownService:
         personality_summary: Optional[str] = None,
         avatar_config: Optional[dict] = None,
     ) -> TownAgent:
-        """Register an agent in GooseTown. Requires background encryption mode."""
+        """Register an agent in GooseTown."""
         result = await self.db.execute(
             select(AgentState).where(
                 AgentState.user_id == user_id,
@@ -39,12 +39,6 @@ class TownService:
 
         if not agent_state:
             raise ValueError(f"Agent '{agent_name}' not found for user {user_id}")
-
-        if agent_state.encryption_mode != "background":
-            raise ValueError(
-                f"Agent '{agent_name}' must be in background encryption mode to join GooseTown. "
-                f"Current mode: {agent_state.encryption_mode}"
-            )
 
         existing = await self._get_town_agent(user_id, agent_name)
         if existing:

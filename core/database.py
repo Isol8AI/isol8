@@ -1,8 +1,9 @@
 import os
 import re
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
+
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
+
 from core.config import settings
 
 
@@ -63,18 +64,5 @@ async def get_db():
 
 
 def get_session_factory():
-    """Dependency that returns the session factory.
-
-    This allows tests to override the session factory used in streaming endpoints.
-    """
+    """Return the session factory for use in streaming endpoints and tests."""
     return async_session_factory
-
-
-async def check_db_health() -> bool:
-    """Verify database connectivity."""
-    try:
-        async with async_session_factory() as session:
-            await session.execute(text("SELECT 1"))
-        return True
-    except Exception:
-        return False
