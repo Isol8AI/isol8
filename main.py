@@ -93,7 +93,7 @@ openapi_tags = [
 app = FastAPI(
     title="Isol8 API",
     description=(
-        "AI agent platform powered by OpenClaw. " "Personal agents with persistent memory and streaming LLM inference."
+        "AI agent platform powered by OpenClaw. Personal agents with persistent memory and streaming LLM inference."
     ),
     version="2.0.0",
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
