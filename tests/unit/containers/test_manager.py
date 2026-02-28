@@ -369,17 +369,17 @@ class TestReconcile:
 
 
 class TestEnvForContainer:
-    """Test _env_for_container credential endpoint env vars."""
+    """Test _env_for_container — IMDS provides credentials, no injection."""
 
-    def test_uses_credential_endpoint_env_vars(self, manager):
-        """Container env uses ECS credential URI instead of static creds."""
+    def test_no_aws_credentials_injected(self, manager):
+        """Container env does NOT include AWS credentials (IMDS provides them)."""
         env = manager._env_for_container(gateway_token="my-secret-token")
 
-        assert env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] == "http://172.17.0.1:8000/internal/credentials"
-        assert env["AWS_CONTAINER_AUTHORIZATION_TOKEN"] == "my-secret-token"
-        assert env["AWS_PROFILE"] == "default"
         assert "AWS_ACCESS_KEY_ID" not in env
         assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert "AWS_SESSION_TOKEN" not in env
+        assert "AWS_CONTAINER_CREDENTIALS_FULL_URI" not in env
+        assert "AWS_PROFILE" not in env
 
     def test_passes_brave_api_key(self, manager):
         """BRAVE_API_KEY is passed through when set."""

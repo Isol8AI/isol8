@@ -99,20 +99,15 @@ class ContainerManager:
     def _env_for_container(self, gateway_token: str) -> dict[str, str]:
         """Environment variables passed to each user container.
 
-        Uses AWS_CONTAINER_CREDENTIALS_FULL_URI so the AWS SDK inside
-        the container auto-refreshes credentials from our vending endpoint.
+        Credentials come from EC2 IMDS (Instance Metadata Service).
+        The EC2 instance profile (isol8-dev-ec2-role) has Bedrock permissions.
+        IMDS hop limit must be >= 2 for Docker bridge containers to reach it.
+        The AWS SDK auto-refreshes IMDS credentials — no expiry concerns.
         """
         region = os.environ.get("AWS_REGION", "us-east-1")
         env: dict[str, str] = {
             "AWS_REGION": region,
             "AWS_DEFAULT_REGION": region,
-            "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://172.17.0.1:8000/internal/credentials",
-            "AWS_CONTAINER_AUTHORIZATION_TOKEN": gateway_token,
-            # OpenClaw's credential detection only checks for env vars like
-            # AWS_ACCESS_KEY_ID or AWS_PROFILE before invoking the SDK chain.
-            # Setting AWS_PROFILE=default signals credentials are available,
-            # so the SDK proceeds to find them via the container credential URI.
-            "AWS_PROFILE": "default",
         }
         brave_key = os.environ.get("BRAVE_API_KEY", "")
         if brave_key:
