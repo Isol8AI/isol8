@@ -65,7 +65,13 @@ def write_openclaw_config(
                     "primary": primary_model,
                 },
                 "memorySearch": {
-                    "enabled": False,
+                    "enabled": True,
+                    "provider": "local",
+                    "local": {
+                        "modelPath": "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf",
+                    },
+                    "fallback": "none",
+                    "sources": ["memory", "sessions"],
                 },
             },
         },

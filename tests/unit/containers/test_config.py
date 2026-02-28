@@ -70,11 +70,16 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         assert config["models"]["bedrockDiscovery"]["enabled"] is False
 
-    def test_memory_search_disabled(self):
-        """Memory search is disabled (Bedrock not a valid upstream provider)."""
+    def test_memory_search_local_embeddings(self):
+        """Memory search uses local GGUF embeddings."""
         config = json.loads(write_openclaw_config())
         mem = config["agents"]["defaults"]["memorySearch"]
-        assert mem["enabled"] is False
+        assert mem["enabled"] is True
+        assert mem["provider"] == "local"
+        assert "gguf" in mem["local"]["modelPath"].lower()
+        assert mem["fallback"] == "none"
+        assert "memory" in mem["sources"]
+        assert "sessions" in mem["sources"]
 
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
