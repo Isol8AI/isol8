@@ -33,7 +33,7 @@ class TestSubscriptionCreatedProvisionContainer:
         """subscription.created event triggers container provisioning."""
         mock_cm = MagicMock()
         mock_cm.provision_container.return_value = MagicMock(
-            user_id="user_test_123", port=19000, container_id="abc123", status="running"
+            user_id="user_test_123", port=19000, container_id="abc123", status="running", gateway_token="test-gw-token"
         )
         mock_get_cm.return_value = mock_cm
 

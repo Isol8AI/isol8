@@ -8,7 +8,7 @@ Verifies that:
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch  # noqa: F401 — AsyncMock used in FakeSession
 
 
 class TestContainerAwareAgentChat:
@@ -29,28 +29,6 @@ class TestContainerAwareAgentChat:
         state.agent_name = "luna"
         state.soul_content = "# Luna\nA friendly agent."
         return state
-
-    @pytest.fixture
-    def mock_agent_service(self, mock_agent_state):
-        """Mock AgentService that returns an agent."""
-        service = MagicMock()
-        service.get_agent = AsyncMock(return_value=mock_agent_state)
-        return service
-
-    @pytest.fixture
-    def mock_session_factory(self, mock_agent_service):
-        """Mock session factory that yields a DB session."""
-
-        class MockSession:
-            async def __aenter__(self):
-                return MagicMock()
-
-            async def __aexit__(self, *args):
-                pass
-
-        factory = MagicMock()
-        factory.return_value = MockSession()
-        return factory
 
     @pytest.mark.asyncio
     async def test_routes_to_user_container_when_available(self, mock_management_api, mock_agent_state):
@@ -74,8 +52,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client) as MockClient,
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
@@ -86,13 +62,12 @@ class TestContainerAwareAgentChat:
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-123",
-                    user_id="user_with_container",
-                    agent_name="luna",
-                    message="Hello!",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-123",
+                user_id="user_with_container",
+                agent_name="luna",
+                message="Hello!",
+            )
 
         # Should have looked up container info
         mock_container_manager.get_container_info.assert_called_once_with("user_with_container")
@@ -108,30 +83,32 @@ class TestContainerAwareAgentChat:
         mock_container_manager = MagicMock()
         mock_container_manager.get_container_info.return_value = None
 
+        mock_db_result = MagicMock()
+        mock_db_result.scalar_one_or_none.return_value = None
+        mock_db_session = AsyncMock()
+        mock_db_session.execute = AsyncMock(return_value=mock_db_result)
+
         with (
             patch("routers.websocket_chat.get_management_api_client", return_value=mock_management_api),
             patch("routers.websocket_chat.get_session_factory") as mock_sf,
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
-                    return MagicMock()
+                    return mock_db_session
 
                 async def __aexit__(self, *args):
                     pass
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-no-container",
-                    user_id="free_user",
-                    agent_name="luna",
-                    message="Hello!",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-no-container",
+                user_id="free_user",
+                agent_name="luna",
+                message="Hello!",
+            )
 
         calls = mock_management_api.send_message.call_args_list
         assert any(c[0][1]["type"] == "error" and "container" in c[0][1]["message"].lower() for c in calls)
@@ -154,8 +131,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client),
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
@@ -166,13 +141,12 @@ class TestContainerAwareAgentChat:
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-789",
-                    user_id="user_123",
-                    agent_name="luna",
-                    message="Hi",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-789",
+                user_id="user_123",
+                agent_name="luna",
+                message="Hi",
+            )
 
         # Should have sent chunks + done
         calls = mock_management_api.send_message.call_args_list
@@ -199,8 +173,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client),
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
@@ -211,13 +183,12 @@ class TestContainerAwareAgentChat:
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-hb",
-                    user_id="user_123",
-                    agent_name="luna",
-                    message="Hi",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-hb",
+                user_id="user_123",
+                agent_name="luna",
+                message="Hi",
+            )
 
         calls = mock_management_api.send_message.call_args_list
         assert any(c[0][1]["type"] == "heartbeat" for c in calls)
@@ -240,8 +211,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client),
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
@@ -252,13 +221,12 @@ class TestContainerAwareAgentChat:
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-skip",
-                    user_id="container_user",
-                    agent_name="luna",
-                    message="Hi",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-skip",
+                user_id="container_user",
+                agent_name="luna",
+                message="Hi",
+            )
 
         # Should have streamed and sent done
         calls = mock_management_api.send_message.call_args_list
@@ -284,8 +252,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client),
         ):
-            mock_service = MagicMock()
-            mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
             class FakeSession:
                 async def __aenter__(self):
@@ -296,13 +262,12 @@ class TestContainerAwareAgentChat:
 
             mock_sf.return_value = MagicMock(return_value=FakeSession())
 
-            with patch("routers.websocket_chat.AgentService", return_value=mock_service):
-                await _process_agent_chat_background(
-                    connection_id="conn-err",
-                    user_id="user_123",
-                    agent_name="luna",
-                    message="Hi",
-                )
+            await _process_agent_chat_background(
+                connection_id="conn-err",
+                user_id="user_123",
+                agent_name="luna",
+                message="Hi",
+            )
 
         # Should send error message to client
         calls = mock_management_api.send_message.call_args_list

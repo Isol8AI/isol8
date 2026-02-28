@@ -91,6 +91,12 @@ schema = (
         path_regex="^/api/v1/webhooks/",
     )
     .exclude(
+        path_regex="^/api/v1/billing/",
+    )
+    .exclude(
+        path_regex="^/api/v1/container/",
+    )
+    .exclude(
         operation_id="create_agent",
     )
     .exclude(
