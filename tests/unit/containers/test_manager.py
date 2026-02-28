@@ -377,6 +377,7 @@ class TestEnvForContainer:
 
         assert env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] == "http://172.17.0.1:8000/internal/credentials"
         assert env["AWS_CONTAINER_AUTHORIZATION_TOKEN"] == "my-secret-token"
+        assert env["AWS_PROFILE"] == "default"
         assert "AWS_ACCESS_KEY_ID" not in env
         assert "AWS_SECRET_ACCESS_KEY" not in env
 

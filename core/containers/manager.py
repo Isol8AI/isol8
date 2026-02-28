@@ -108,6 +108,11 @@ class ContainerManager:
             "AWS_DEFAULT_REGION": region,
             "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://172.17.0.1:8000/internal/credentials",
             "AWS_CONTAINER_AUTHORIZATION_TOKEN": gateway_token,
+            # OpenClaw's credential detection only checks for env vars like
+            # AWS_ACCESS_KEY_ID or AWS_PROFILE before invoking the SDK chain.
+            # Setting AWS_PROFILE=default signals credentials are available,
+            # so the SDK proceeds to find them via the container credential URI.
+            "AWS_PROFILE": "default",
         }
         brave_key = os.environ.get("BRAVE_API_KEY", "")
         if brave_key:
