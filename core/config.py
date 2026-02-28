@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
     CONTAINER_PORT_START: int = int(os.getenv("CONTAINER_PORT_START", "19000"))
     CONTAINER_PORT_END: int = int(os.getenv("CONTAINER_PORT_END", "19999"))
+    CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")

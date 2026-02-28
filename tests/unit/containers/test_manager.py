@@ -368,6 +368,32 @@ class TestReconcile:
         assert len(mgr._cache) == 0
 
 
+class TestEnvForContainer:
+    """Test _env_for_container credential endpoint env vars."""
+
+    def test_uses_credential_endpoint_env_vars(self, manager):
+        """Container env uses ECS credential URI instead of static creds."""
+        env = manager._env_for_container(gateway_token="my-secret-token")
+
+        assert env["AWS_CONTAINER_CREDENTIALS_FULL_URI"] == "http://172.17.0.1:8000/internal/credentials"
+        assert env["AWS_CONTAINER_AUTHORIZATION_TOKEN"] == "my-secret-token"
+        assert "AWS_ACCESS_KEY_ID" not in env
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+
+    def test_passes_brave_api_key(self, manager):
+        """BRAVE_API_KEY is passed through when set."""
+        with patch.dict("os.environ", {"BRAVE_API_KEY": "bk-test123"}):
+            env = manager._env_for_container(gateway_token="token")
+        assert env["BRAVE_API_KEY"] == "bk-test123"
+
+    def test_sets_aws_region(self, manager):
+        """AWS region env vars are set."""
+        with patch.dict("os.environ", {"AWS_REGION": "us-west-2"}):
+            env = manager._env_for_container(gateway_token="token")
+        assert env["AWS_REGION"] == "us-west-2"
+        assert env["AWS_DEFAULT_REGION"] == "us-west-2"
+
+
 class TestContainerInfo:
     """Test ContainerInfo data class."""
 

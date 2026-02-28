@@ -96,18 +96,19 @@ class ContainerManager:
         safe = user_id.replace("_", "-").lower()
         return f"isol8-workspace-{safe}"
 
-    def _env_for_container(self) -> dict[str, str]:
-        """Environment variables passed to each user container."""
-        env = {
-            "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
-            "AWS_DEFAULT_REGION": os.environ.get("AWS_DEFAULT_REGION", os.environ.get("AWS_REGION", "us-east-1")),
+    def _env_for_container(self, gateway_token: str) -> dict[str, str]:
+        """Environment variables passed to each user container.
+
+        Uses AWS_CONTAINER_CREDENTIALS_FULL_URI so the AWS SDK inside
+        the container auto-refreshes credentials from our vending endpoint.
+        """
+        region = os.environ.get("AWS_REGION", "us-east-1")
+        env: dict[str, str] = {
+            "AWS_REGION": region,
+            "AWS_DEFAULT_REGION": region,
+            "AWS_CONTAINER_CREDENTIALS_FULL_URI": "http://172.17.0.1:8000/internal/credentials",
+            "AWS_CONTAINER_AUTHORIZATION_TOKEN": gateway_token,
         }
-        # Pass through IAM credentials if present (EC2 instance profile)
-        for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"):
-            val = os.environ.get(key)
-            if val:
-                env[key] = val
-        # Tool API keys
         brave_key = os.environ.get("BRAVE_API_KEY", "")
         if brave_key:
             env["BRAVE_API_KEY"] = brave_key
@@ -218,7 +219,7 @@ class ContainerManager:
                         "lan",
                         "--allow-unconfigured",
                     ],
-                    environment=self._env_for_container(),
+                    environment=self._env_for_container(gateway_token=gateway_token),
                     volumes={
                         volume_name: {
                             "bind": "/home/node/.openclaw",
@@ -431,11 +432,13 @@ class ContainerManager:
             raise ContainerError("Docker not available", user_id)
 
         container_name = self._container_name(user_id)
+        info = self._cache.get(user_id)
+        gateway_token = info.gateway_token if info else ""
         try:
             container = self._docker.containers.get(container_name)
             exit_code, output = container.exec_run(
                 command,
-                environment=self._env_for_container(),
+                environment=self._env_for_container(gateway_token=gateway_token),
             )
             result = output.decode("utf-8", errors="replace")
 
@@ -542,7 +545,8 @@ class ContainerManager:
         """Write openclaw.json into a Docker volume using a temp container.
 
         Uses base64 encoding to safely pass JSON through shell without
-        escaping issues.
+        escaping issues. Chowns the volume to UID 1000 (node user) so the
+        OpenClaw container can create subdirectories (workspace, canvas, cron).
         """
         import base64
 
@@ -553,7 +557,7 @@ class ContainerManager:
                 command=[
                     "sh",
                     "-c",
-                    f"echo '{encoded}' | base64 -d > /workspace/openclaw.json",
+                    f"echo '{encoded}' | base64 -d > /workspace/openclaw.json && chown -R 1000:1000 /workspace",
                 ],
                 volumes={volume_name: {"bind": "/workspace", "mode": "rw"}},
                 remove=True,

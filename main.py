@@ -24,6 +24,7 @@ from routers import (
     billing,
     container_rpc,
     debug,
+    internal_credentials,
     town,
     users,
     webhooks,
@@ -174,6 +175,9 @@ app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["cont
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
+
+# Internal credential vending (ECS-compatible, hidden from OpenAPI)
+app.include_router(internal_credentials.router, prefix="/internal")
 
 # GooseTown routes
 app.include_router(town.router, prefix="/api/v1/town", tags=["town"])

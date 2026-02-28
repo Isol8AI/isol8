@@ -4,10 +4,16 @@ Generic RPC proxy to user's OpenClaw gateway container.
 Single endpoint: POST /rpc accepts { method, params } and forwards
 to the user's container via short-lived WebSocket connection.
 Gateway tokens stay server-side — never exposed to the browser.
+
+The OpenClaw gateway requires a connect handshake before accepting
+RPC calls: receive connect.challenge → send connect with auth token
+→ receive hello-ok → then send RPC request.
 """
 
+import asyncio
 import json
 import logging
+import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,6 +35,51 @@ class RpcRequest(BaseModel):
     params: Optional[Dict[str, Any]] = Field(default=None, description="Optional method parameters")
 
 
+async def _openclaw_handshake(ws, token: str) -> None:
+    """Complete the OpenClaw gateway connect handshake.
+
+    1. Receive connect.challenge from gateway
+    2. Send connect request with auth token
+    3. Verify hello-ok response
+
+    Raises:
+        RuntimeError: If handshake fails.
+    """
+    # Step 1: receive connect.challenge
+    raw = await asyncio.wait_for(ws.recv(), timeout=10)
+    challenge = json.loads(raw)
+    if challenge.get("event") != "connect.challenge":
+        raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
+
+    # Step 2: send connect
+    connect_msg = {
+        "type": "req",
+        "id": str(uuid.uuid4()),
+        "method": "connect",
+        "params": {
+            "minProtocol": 3,
+            "maxProtocol": 3,
+            "client": {
+                "id": "cli",
+                "version": "1.0.0",
+                "platform": "linux",
+                "mode": "cli",
+            },
+            "role": "operator",
+            "scopes": ["operator.read", "operator.write"],
+            "auth": {"token": token},
+        },
+    }
+    await ws.send(json.dumps(connect_msg))
+
+    # Step 3: verify hello-ok
+    resp_raw = await asyncio.wait_for(ws.recv(), timeout=10)
+    resp = json.loads(resp_raw)
+    if not resp.get("ok"):
+        err = resp.get("error", {}).get("message", "unknown error")
+        raise RuntimeError(f"Gateway connect failed: {err}")
+
+
 async def _call_gateway_rpc(
     port: int,
     token: str,
@@ -37,14 +88,19 @@ async def _call_gateway_rpc(
 ) -> Any:
     """Open a short-lived WebSocket to the gateway, send RPC call, return response."""
     uri = f"ws://127.0.0.1:{port}"
-    headers = {}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
 
-    message = json.dumps({"method": method, "params": params or {}})
+    async with ws_connect(uri, open_timeout=_WS_TIMEOUT, close_timeout=5) as ws:
+        # Complete OpenClaw connect handshake first
+        await _openclaw_handshake(ws, token)
 
-    async with ws_connect(uri, additional_headers=headers, open_timeout=_WS_TIMEOUT, close_timeout=5) as ws:
-        await ws.send(message)
+        # Now send the actual RPC request
+        rpc_msg = {
+            "type": "req",
+            "id": str(uuid.uuid4()),
+            "method": method,
+            "params": params or {},
+        }
+        await ws.send(json.dumps(rpc_msg))
         raw = await ws.recv()
 
     return json.loads(raw)

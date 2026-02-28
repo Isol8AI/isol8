@@ -143,12 +143,24 @@ class TestContainerRpcEndpoint:
 class TestCallGatewayRpc:
     """Unit tests for the _call_gateway_rpc function."""
 
+    def _make_handshake_ws(self, rpc_response: dict) -> AsyncMock:
+        """Create a mock WS that completes the connect handshake then returns rpc_response."""
+        mock_ws = AsyncMock()
+        # recv sequence: connect.challenge, hello-ok, rpc response
+        mock_ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge"}),
+                json.dumps({"ok": True}),
+                json.dumps(rpc_response),
+            ]
+        )
+        return mock_ws
+
     @pytest.mark.asyncio
     async def test_sends_method_and_params(self):
         from routers.container_rpc import _call_gateway_rpc
 
-        mock_ws = AsyncMock()
-        mock_ws.recv.return_value = json.dumps({"agents": ["main"]})
+        mock_ws = self._make_handshake_ws({"agents": ["main"]})
 
         with patch("routers.container_rpc.ws_connect") as mock_connect:
             mock_connect.return_value.__aenter__ = AsyncMock(return_value=mock_ws)
@@ -157,16 +169,16 @@ class TestCallGatewayRpc:
             result = await _call_gateway_rpc(port=19001, token="tok", method="agents.list", params={"active": True})
 
         assert result == {"agents": ["main"]}
-        sent = json.loads(mock_ws.send.call_args[0][0])
-        assert sent["method"] == "agents.list"
-        assert sent["params"] == {"active": True}
+        # Second send call is the RPC request (first is the connect handshake)
+        rpc_sent = json.loads(mock_ws.send.call_args_list[1][0][0])
+        assert rpc_sent["method"] == "agents.list"
+        assert rpc_sent["params"] == {"active": True}
 
     @pytest.mark.asyncio
-    async def test_sets_auth_header(self):
+    async def test_sets_auth_in_handshake(self):
         from routers.container_rpc import _call_gateway_rpc
 
-        mock_ws = AsyncMock()
-        mock_ws.recv.return_value = json.dumps({})
+        mock_ws = self._make_handshake_ws({})
 
         with patch("routers.container_rpc.ws_connect") as mock_connect:
             mock_connect.return_value.__aenter__ = AsyncMock(return_value=mock_ws)
@@ -174,6 +186,7 @@ class TestCallGatewayRpc:
 
             await _call_gateway_rpc(port=19001, token="my-secret", method="health")
 
-        call_kwargs = mock_connect.call_args
-        headers = call_kwargs.kwargs.get("additional_headers", {})
-        assert headers.get("Authorization") == "Bearer my-secret"
+        # First send call is the connect handshake with auth token
+        connect_sent = json.loads(mock_ws.send.call_args_list[0][0][0])
+        assert connect_sent["method"] == "connect"
+        assert connect_sent["params"]["auth"]["token"] == "my-secret"
