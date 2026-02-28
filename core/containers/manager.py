@@ -12,6 +12,7 @@ Thread safety:
 
 import logging
 import os
+import secrets
 import threading
 from typing import Optional
 
@@ -41,13 +42,14 @@ class ContainerError(Exception):
 class ContainerInfo:
     """Lightweight container state for caching."""
 
-    __slots__ = ("user_id", "port", "container_id", "status")
+    __slots__ = ("user_id", "port", "container_id", "status", "gateway_token")
 
-    def __init__(self, user_id: str, port: int, container_id: str, status: str):
+    def __init__(self, user_id: str, port: int, container_id: str, status: str, gateway_token: str = ""):
         self.user_id = user_id
         self.port = port
         self.container_id = container_id
         self.status = status
+        self.gateway_token = gateway_token
 
 
 class ContainerManager:
@@ -182,12 +184,16 @@ class ContainerManager:
                 self._docker.volumes.create(name=volume_name)
                 logger.info("Volume %s ready", volume_name)
 
+                # Generate a gateway auth token (required for --bind lan)
+                gateway_token = secrets.token_urlsafe(32)
+
                 # Write openclaw.json to volume via temporary container
                 region = os.environ.get("AWS_REGION", "us-east-1")
                 brave_key = brave_api_key or os.environ.get("BRAVE_API_KEY", "")
                 config_json = write_openclaw_config(
                     region=region,
                     brave_api_key=brave_key,
+                    gateway_token=gateway_token,
                 )
                 self._write_config_to_volume(volume_name, config_json)
 
@@ -233,6 +239,7 @@ class ContainerManager:
                     port=port,
                     container_id=container.id,
                     status="running",
+                    gateway_token=gateway_token,
                 )
                 self._cache[user_id] = info
                 logger.info(
@@ -356,8 +363,8 @@ class ContainerManager:
 
     def is_healthy(self, user_id: str) -> bool:
         """Check if a user's container gateway is responding."""
-        port = self.get_container_port(user_id)
-        if not port:
+        info = self._cache.get(user_id)
+        if not info or info.status != "running":
             return False
 
         import urllib.request
@@ -365,9 +372,11 @@ class ContainerManager:
 
         try:
             req = urllib.request.Request(
-                f"http://127.0.0.1:{port}/v1/chat/completions",
+                f"http://127.0.0.1:{info.port}/v1/chat/completions",
                 method="OPTIONS",
             )
+            if info.gateway_token:
+                req.add_header("Authorization", f"Bearer {info.gateway_token}")
             with urllib.request.urlopen(req, timeout=3) as resp:
                 return resp.status < 500
         except urllib.error.HTTPError as e:

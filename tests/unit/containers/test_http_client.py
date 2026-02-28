@@ -16,6 +16,14 @@ class TestGatewayHttpClient:
         client = GatewayHttpClient(base_url="http://127.0.0.1:19005/")
         assert client._base_url == "http://127.0.0.1:19005"
 
+    def test_initialization_with_token(self):
+        client = GatewayHttpClient(base_url="http://127.0.0.1:19005", token="my-secret")
+        assert client._token == "my-secret"
+
+    def test_initialization_default_no_token(self):
+        client = GatewayHttpClient()
+        assert client._token == ""
+
 
 class TestGatewayRequestError:
     def test_error_with_status_code(self):

@@ -57,8 +57,13 @@ class TestContainerAwareAgentChat:
         """When user has a container, chat streams through per-user GatewayHttpClient."""
         from routers.websocket_chat import _process_agent_chat_background
 
+        mock_container_info = MagicMock()
+        mock_container_info.port = 19005
+        mock_container_info.status = "running"
+        mock_container_info.gateway_token = "test-token"
+
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = 19005
+        mock_container_manager.get_container_info.return_value = mock_container_info
 
         mock_gateway_client = MagicMock()
         mock_gateway_client.chat_stream.return_value = iter(["Hello", " ", "world!"])
@@ -69,7 +74,6 @@ class TestContainerAwareAgentChat:
             patch("routers.websocket_chat.get_container_manager", return_value=mock_container_manager),
             patch("routers.websocket_chat.GatewayHttpClient", return_value=mock_gateway_client) as MockClient,
         ):
-            # Set up session factory mock
             mock_service = MagicMock()
             mock_service.get_agent = AsyncMock(return_value=mock_agent_state)
 
@@ -90,11 +94,11 @@ class TestContainerAwareAgentChat:
                     message="Hello!",
                 )
 
-        # Should have looked up container port
-        mock_container_manager.get_container_port.assert_called_once_with("user_with_container")
+        # Should have looked up container info
+        mock_container_manager.get_container_info.assert_called_once_with("user_with_container")
 
-        # Should have created a per-user GatewayHttpClient with the container's port
-        MockClient.assert_called_once_with(base_url="http://127.0.0.1:19005")
+        # Should have created a per-user GatewayHttpClient with the container's port and token
+        MockClient.assert_called_once_with(base_url="http://127.0.0.1:19005", token="test-token")
 
     @pytest.mark.asyncio
     async def test_no_container_sends_error_to_client(self, mock_management_api, mock_agent_state):
@@ -102,7 +106,7 @@ class TestContainerAwareAgentChat:
         from routers.websocket_chat import _process_agent_chat_background
 
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = None
+        mock_container_manager.get_container_info.return_value = None
 
         with (
             patch("routers.websocket_chat.get_management_api_client", return_value=mock_management_api),
@@ -137,8 +141,9 @@ class TestContainerAwareAgentChat:
         """Chunks from gateway stream are pushed to client via Management API."""
         from routers.websocket_chat import _process_agent_chat_background
 
+        mock_info = MagicMock(port=19000, status="running", gateway_token="t")
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = 19000
+        mock_container_manager.get_container_info.return_value = mock_info
 
         mock_gateway_client = MagicMock()
         mock_gateway_client.chat_stream.return_value = iter(["Hello", " world"])
@@ -180,8 +185,9 @@ class TestContainerAwareAgentChat:
         """None chunks (heartbeats) from stream are forwarded as heartbeat messages."""
         from routers.websocket_chat import _process_agent_chat_background
 
+        mock_info = MagicMock(port=19000, status="running", gateway_token="t")
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = 19000
+        mock_container_manager.get_container_info.return_value = mock_info
 
         mock_gateway_client = MagicMock()
         # None = heartbeat sentinel
@@ -221,8 +227,9 @@ class TestContainerAwareAgentChat:
         """Users with containers stream successfully without any shared gateway involvement."""
         from routers.websocket_chat import _process_agent_chat_background
 
+        mock_info = MagicMock(port=19000, status="running", gateway_token="t")
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = 19000
+        mock_container_manager.get_container_info.return_value = mock_info
 
         mock_gateway_client = MagicMock()
         mock_gateway_client.chat_stream.return_value = iter(["Ok"])
@@ -264,8 +271,9 @@ class TestContainerAwareAgentChat:
         from routers.websocket_chat import _process_agent_chat_background
         from core.containers import GatewayRequestError
 
+        mock_info = MagicMock(port=19000, status="running", gateway_token="t")
         mock_container_manager = MagicMock()
-        mock_container_manager.get_container_port.return_value = 19000
+        mock_container_manager.get_container_info.return_value = mock_info
 
         mock_gateway_client = MagicMock()
         mock_gateway_client.chat_stream.side_effect = GatewayRequestError("Connection refused")

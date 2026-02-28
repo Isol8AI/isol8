@@ -242,9 +242,9 @@ async def _process_agent_chat_background(
 
         # Route to user's container
         container_manager = get_container_manager()
-        container_port = container_manager.get_container_port(user_id)
+        container_info = container_manager.get_container_info(user_id)
 
-        if not container_port:
+        if not container_info or container_info.status != "running":
             management_api.send_message(
                 connection_id,
                 {
@@ -254,8 +254,11 @@ async def _process_agent_chat_background(
             )
             return
 
-        gateway_client = GatewayHttpClient(base_url=f"http://127.0.0.1:{container_port}")
-        logger.debug("Routing to user container on port %d", container_port)
+        gateway_client = GatewayHttpClient(
+            base_url=f"http://127.0.0.1:{container_info.port}",
+            token=container_info.gateway_token,
+        )
+        logger.debug("Routing to user container on port %d", container_info.port)
 
         # Stream response from gateway
         chunk_count = 0

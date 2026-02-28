@@ -1,9 +1,9 @@
 """
 OpenClaw configuration generator for per-user containers.
 
-Generates openclaw.json with Bedrock provider, tools, and memory search
-configured. Reuses the same config structure as the shared gateway
-(core/gateway/manager.py) but parameterized per user.
+Generates openclaw.json with Bedrock provider and tools configured.
+Each container gets a gateway auth token so it can bind to LAN
+(required for Docker port mapping).
 """
 
 import json
@@ -13,6 +13,7 @@ def write_openclaw_config(
     region: str = "us-east-1",
     brave_api_key: str = "",
     primary_model: str = "amazon-bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+    gateway_token: str = "",
 ) -> str:
     """Generate an openclaw.json config string for a user's container.
 
@@ -20,14 +21,17 @@ def write_openclaw_config(
         region: AWS region for Bedrock.
         brave_api_key: Brave Search API key (optional).
         primary_model: Default model for agents.
+        gateway_token: Auth token for the gateway HTTP API.
 
     Returns:
         JSON string of the openclaw.json config.
     """
+    auth = {"mode": "token", "token": gateway_token} if gateway_token else {"mode": "none"}
     config = {
         "gateway": {
             "mode": "local",
-            "auth": {"mode": "none"},
+            "auth": auth,
+            "controlUi": {"enabled": False},
             "http": {
                 "endpoints": {
                     "chatCompletions": {"enabled": True},
@@ -61,18 +65,7 @@ def write_openclaw_config(
                     "primary": primary_model,
                 },
                 "memorySearch": {
-                    "enabled": True,
-                    "provider": "bedrock",
-                    "model": "amazon.nova-2-multimodal-embeddings-v1:0",
-                    "sources": ["memory", "sessions"],
-                    "store": {
-                        "driver": "sqlite",
-                    },
-                    "sync": {"watch": False, "onSessionStart": True, "onSearch": True},
-                    "query": {
-                        "maxResults": 20,
-                        "hybrid": {"enabled": True, "vectorWeight": 0.7, "textWeight": 0.3},
-                    },
+                    "enabled": False,
                 },
             },
         },

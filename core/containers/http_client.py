@@ -43,8 +43,9 @@ class GatewayRequestError(Exception):
 class GatewayHttpClient:
     """HTTP client for the OpenClaw gateway."""
 
-    def __init__(self, base_url: str = "http://127.0.0.1:18789"):
+    def __init__(self, base_url: str = "http://127.0.0.1:18789", token: str = ""):
         self._base_url = base_url.rstrip("/")
+        self._token = token
 
     def chat_stream(
         self,
@@ -78,6 +79,8 @@ class GatewayHttpClient:
             "x-openclaw-agent-id": agent_id,
             "x-openclaw-session-key": session_key,
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
 
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
@@ -198,6 +201,8 @@ class GatewayHttpClient:
             "x-openclaw-agent-id": agent_id,
             "x-openclaw-session-key": session_key,
         }
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
 
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
 
