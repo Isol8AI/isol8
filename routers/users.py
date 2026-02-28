@@ -9,6 +9,7 @@ from sqlalchemy.future import select
 
 from core.database import get_db
 from core.auth import get_current_user, AuthContext
+from core.services.billing_service import BillingService
 from models.user import User
 from schemas.user_schemas import SyncUserResponse
 
@@ -38,14 +39,26 @@ async def sync_user(auth: AuthContext = Depends(get_current_user), db: AsyncSess
         db.add(new_user)
         try:
             await db.commit()
-            return {"status": "created", "user_id": user_id}
+            status = "created"
         except IntegrityError:
             await db.rollback()
             logger.debug("User sync race condition handled: %s", user_id)
-            return {"status": "exists", "user_id": user_id}
+            status = "exists"
         except Exception as e:
             logger.error("Database error on user sync for %s: %s", user_id, e)
             await db.rollback()
             raise HTTPException(status_code=500, detail="Database operation failed")
+    else:
+        status = "exists"
 
-    return {"status": "exists", "user_id": user_id}
+    # Ensure billing account exists (idempotent — covers users created before billing)
+    try:
+        billing = BillingService(db)
+        await billing.create_customer_for_user(
+            clerk_user_id=user_id,
+            email="",
+        )
+    except Exception as e:
+        logger.warning("Failed to ensure billing account for user %s: %s", user_id, e)
+
+    return {"status": status, "user_id": user_id}

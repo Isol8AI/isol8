@@ -1,11 +1,9 @@
 """
-Debug and health API for user's OpenClaw container.
+Dev-only container provisioning endpoints.
 
-Requires a dedicated container — returns 404 for free-tier users.
-Includes dev-only provisioning endpoint for local testing.
+Bypasses Stripe for local testing — disabled in production.
 """
 
-import json
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -18,96 +16,6 @@ from core.containers.manager import ContainerError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _require_container(user_id: str) -> int:
-    cm = get_container_manager()
-    port = cm.get_container_port(user_id)
-    if not port:
-        raise HTTPException(status_code=404, detail="No container found. Upgrade to a paid plan.")
-    return port
-
-
-def _exec(user_id: str, command: list[str]) -> str:
-    cm = get_container_manager()
-    try:
-        return cm.exec_command(user_id, command)
-    except ContainerError as e:
-        logger.error("Container exec failed for user %s: %s", user_id, e)
-        raise HTTPException(status_code=502, detail="Container command failed")
-
-
-@router.get(
-    "/status",
-    summary="Container status",
-    description="Returns a status snapshot of the user's container.",
-    operation_id="get_debug_status",
-    responses={404: {"description": "No container (free tier)"}},
-)
-async def get_status(auth: AuthContext = Depends(get_current_user)):
-    _require_container(auth.user_id)
-    raw = _exec(auth.user_id, ["openclaw", "status", "--json"])
-    try:
-        status = json.loads(raw)
-    except json.JSONDecodeError:
-        status = {"raw": raw}
-    return {"status": status}
-
-
-@router.get(
-    "/health",
-    summary="Container health check",
-    description="Checks if the user's container gateway is healthy.",
-    operation_id="get_debug_health",
-    responses={404: {"description": "No container (free tier)"}},
-)
-async def get_health(auth: AuthContext = Depends(get_current_user)):
-    _require_container(auth.user_id)
-    cm = get_container_manager()
-    healthy = cm.is_healthy(auth.user_id)
-    return {"healthy": healthy}
-
-
-@router.get(
-    "/models",
-    summary="List available models",
-    description="Returns models available in the user's container.",
-    operation_id="get_debug_models",
-    responses={404: {"description": "No container (free tier)"}},
-)
-async def get_models(auth: AuthContext = Depends(get_current_user)):
-    _require_container(auth.user_id)
-    raw = _exec(auth.user_id, ["openclaw", "model", "list", "--json"])
-    try:
-        models = json.loads(raw)
-    except json.JSONDecodeError:
-        models = []
-    return {"models": models}
-
-
-@router.get(
-    "/events",
-    summary="Recent events",
-    description="Returns recent event log from the user's container.",
-    operation_id="get_debug_events",
-    responses={404: {"description": "No container (free tier)"}},
-)
-async def get_events(
-    limit: int = Query(50, ge=1, le=200),
-    auth: AuthContext = Depends(get_current_user),
-):
-    _require_container(auth.user_id)
-    raw = _exec(auth.user_id, ["openclaw", "event", "list", "--json", "--limit", str(limit)])
-    try:
-        events = json.loads(raw)
-    except json.JSONDecodeError:
-        events = []
-    return {"events": events}
-
-
-# =============================================================================
-# Dev-only provisioning (bypasses Stripe for local testing)
-# =============================================================================
 
 
 @router.post(

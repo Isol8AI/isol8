@@ -4,7 +4,7 @@ Tests for OpenAPI configuration on the FastAPI app.
 Validates that the generated OpenAPI spec includes:
 - Correct title, version, and description
 - Server list with all environments
-- Tag descriptions for all 7 route groups
+- Tag descriptions for all 8 route groups
 - BearerAuth (JWT) security scheme
 """
 
@@ -20,6 +20,7 @@ EXPECTED_TAGS = [
     "websocket",
     "town",
     "billing",
+    "debug",
     "health",
 ]
 
@@ -102,7 +103,7 @@ class TestOpenAPITags:
 
     @pytest.mark.asyncio
     async def test_all_tags_present(self, openapi_spec):
-        """Spec should include tag entries for all 7 route groups."""
+        """Spec should include tag entries for all 8 route groups."""
         tag_names = [t["name"] for t in openapi_spec["tags"]]
         for expected in EXPECTED_TAGS:
             assert expected in tag_names, f"Missing tag: {expected}"

@@ -22,18 +22,13 @@ from core.services.town_simulation import TownSimulation
 from routers import (
     agents,
     billing,
-    channels,
-    cron,
+    container_rpc,
     debug,
-    files,
-    logs,
-    skills,
     town,
     users,
     webhooks,
     websocket_chat,
 )
-from routers import settings as settings_router
 
 logger = logging.getLogger(__name__)
 
@@ -92,32 +87,12 @@ openapi_tags = [
         "description": "Billing, usage tracking, and subscription management.",
     },
     {
-        "name": "settings",
-        "description": "OpenClaw container configuration management.",
-    },
-    {
-        "name": "files",
-        "description": "Workspace file management for user containers.",
-    },
-    {
-        "name": "cron",
-        "description": "Cron job scheduling and management.",
-    },
-    {
-        "name": "skills",
-        "description": "Skill installation and management.",
+        "name": "container",
+        "description": "OpenClaw container RPC proxy for the control panel.",
     },
     {
         "name": "debug",
-        "description": "Container debug, health, and diagnostics.",
-    },
-    {
-        "name": "logs",
-        "description": "Container log viewing.",
-    },
-    {
-        "name": "channels",
-        "description": "Communication channel management.",
+        "description": "Dev-only container provisioning.",
     },
     {
         "name": "health",
@@ -194,26 +169,11 @@ app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
 
-# Settings routes (container config management)
-app.include_router(settings_router.router, prefix="/api/v1/settings", tags=["settings"])
+# Container RPC proxy (OpenClaw control panel)
+app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
 
-# File management routes (container workspace)
-app.include_router(files.router, prefix="/api/v1/files", tags=["files"])
-
-# Cron job management routes
-app.include_router(cron.router, prefix="/api/v1/cron", tags=["cron"])
-
-# Skills management routes
-app.include_router(skills.router, prefix="/api/v1/skills", tags=["skills"])
-
-# Debug and diagnostics routes
+# Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-# Log viewing routes
-app.include_router(logs.router, prefix="/api/v1/logs", tags=["logs"])
-
-# Channel management routes
-app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
 
 # GooseTown routes
 app.include_router(town.router, prefix="/api/v1/town", tags=["town"])

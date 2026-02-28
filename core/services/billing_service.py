@@ -4,6 +4,7 @@ import logging
 import os
 import stripe
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
@@ -50,6 +51,7 @@ class BillingService:
         """Create Stripe customer + billing account for a personal user.
 
         Idempotent: returns existing account if already created.
+        Handles race conditions via unique constraint on clerk_user_id.
         """
         existing = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == clerk_user_id))
         account = existing.scalar_one_or_none()
@@ -57,7 +59,7 @@ class BillingService:
             return account
 
         customer = stripe.Customer.create(
-            email=email,
+            email=email or None,
             metadata={"clerk_user_id": clerk_user_id},
         )
 
@@ -66,7 +68,13 @@ class BillingService:
             stripe_customer_id=customer.id,
         )
         self.db.add(account)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except IntegrityError:
+            await self.db.rollback()
+            logger.info("Billing account race condition for user %s, re-fetching", clerk_user_id)
+            result = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == clerk_user_id))
+            account = result.scalar_one()
         return account
 
     async def create_customer_for_org(self, clerk_org_id: str, org_name: str) -> BillingAccount:

@@ -34,12 +34,32 @@ def get_container_manager() -> ContainerManager:
 async def startup_containers() -> None:
     """Reconcile container state on application startup.
 
-    Restarts containers that should be running based on DB records.
-    Called from main.py lifespan handler.
+    Reads gateway tokens from the containers DB table and passes them
+    to reconcile() so the in-memory cache has auth tokens for each
+    running container.
     """
+    from sqlalchemy import select
+    from core.database import get_session_factory
+    from models.container import Container
+
+    # Read gateway tokens from DB
+    db_tokens: dict[str, str] = {}
+    try:
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            result = await db.execute(
+                select(Container.user_id, Container.gateway_token).where(Container.status == "running")
+            )
+            for row in result:
+                if row.gateway_token:
+                    db_tokens[row.user_id] = row.gateway_token
+        logger.info("Loaded %d gateway tokens from DB", len(db_tokens))
+    except Exception as e:
+        logger.warning("Failed to load container tokens from DB: %s", e)
+
     manager = get_container_manager()
     try:
-        manager.reconcile()
+        manager.reconcile(db_tokens=db_tokens)
         logger.info("Container reconciliation complete")
     except Exception as e:
         logger.warning("Container reconciliation failed: %s", e)

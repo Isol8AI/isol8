@@ -135,7 +135,16 @@ async def get_current_user(
 ) -> AuthContext:
     """Validate JWT and return AuthContext with user and org claims."""
     try:
-        payload = await _decode_token(credentials.credentials)
+        token = credentials.credentials
+        # Diagnostic: log unverified claims to trace auth failures (DEBUG only)
+        try:
+            unverified = jwt.get_unverified_claims(token)
+            logger.debug(
+                "JWT claims: iss=%s sub=%s aud=%s", unverified.get("iss"), unverified.get("sub"), unverified.get("aud")
+            )
+        except Exception as parse_err:
+            logger.debug("Could not decode unverified JWT claims: %s", parse_err)
+        payload = await _decode_token(token)
         org = _extract_org_claims(payload)
 
         return AuthContext(
@@ -147,8 +156,10 @@ async def get_current_user(
         )
 
     except jwt.ExpiredSignatureError:
+        logger.warning("AUTH FAIL: JWT expired")
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTClaimsError:
+    except jwt.JWTClaimsError as e:
+        logger.warning("AUTH FAIL: JWT claims error: %s", e)
         raise HTTPException(status_code=401, detail="Invalid claims")
     except httpx.HTTPError as e:
         logger.error(f"Failed to fetch JWKS: {e}")

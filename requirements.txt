@@ -23,6 +23,8 @@ svix==1.21.0
 stripe>=8.0.0
 # Docker SDK for per-user container management
 docker>=7.0.0
+# WebSocket client for OpenClaw gateway RPC proxy
+websockets>=12.0
 
 # Testing
 pytest==8.0.2

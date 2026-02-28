@@ -31,10 +31,15 @@ class TestGetBillingAccount:
         assert "current_period" in data
 
     @pytest.mark.asyncio
-    async def test_get_billing_account_not_found(self, async_client):
-        """Should return 404 when no billing account exists."""
+    @patch("core.services.billing_service.stripe")
+    async def test_get_billing_account_auto_creates(self, mock_stripe, async_client):
+        """Should auto-create billing account when none exists."""
+        mock_stripe.Customer.create.return_value = MagicMock(id="cus_auto_created")
         response = await async_client.get("/api/v1/billing/account")
-        assert response.status_code == 404
+        assert response.status_code == 200
+        data = response.json()
+        assert data["plan_tier"] == "free"
+        assert data["has_subscription"] is False
 
 
 class TestGetUsage:

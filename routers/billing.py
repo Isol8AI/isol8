@@ -6,6 +6,7 @@ from datetime import date
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
@@ -16,6 +17,7 @@ from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
 from models.billing import BillingAccount
+from models.container import Container
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -56,7 +58,9 @@ async def get_billing_account(
 ):
     account = await _get_billing_account(auth, db)
     if not account:
-        raise HTTPException(status_code=404, detail="Billing account not found")
+        # Auto-create for users who signed up before billing existed
+        billing_service = BillingService(db)
+        account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
 
     usage_service = UsageService(db)
     monthly_microdollars = await usage_service.get_monthly_billable(account.id)
@@ -149,11 +153,12 @@ async def create_checkout(
     auth: AuthContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    billing_service = BillingService(db)
     account = await _get_billing_account(auth, db)
     if not account:
-        raise HTTPException(status_code=404, detail="Billing account not found")
+        # Auto-create billing account for users who signed up before billing existed
+        account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
 
-    billing_service = BillingService(db)
     url = await billing_service.create_checkout_session(account, request.tier.value)
     return CheckoutResponse(checkout_url=url)
 
@@ -219,8 +224,28 @@ async def handle_stripe_webhook(
             if tier not in ("free",):
                 container_manager = get_container_manager()
                 try:
-                    container_manager.provision_container(account.clerk_user_id)
-                    logger.info("Container provisioned for user %s (tier=%s)", account.clerk_user_id, tier)
+                    info = container_manager.provision_container(account.clerk_user_id)
+
+                    # Persist container info to DB (idempotent for webhook re-delivery)
+                    container_row = Container(
+                        user_id=account.clerk_user_id,
+                        port=info.port,
+                        container_id=info.container_id,
+                        gateway_token=info.gateway_token,
+                        status="running",
+                    )
+                    db.add(container_row)
+                    try:
+                        await db.commit()
+                    except IntegrityError:
+                        await db.rollback()
+                        logger.info(
+                            "Container row already exists for user %s (webhook re-delivery)", account.clerk_user_id
+                        )
+
+                    logger.info(
+                        "Container provisioned for user %s (tier=%s, port=%d)", account.clerk_user_id, tier, info.port
+                    )
                 except ContainerError as e:
                     logger.error("Failed to provision container for user %s: %s", account.clerk_user_id, e)
 
@@ -245,6 +270,14 @@ async def handle_stripe_webhook(
             container_manager = get_container_manager()
             try:
                 container_manager.stop_container(account.clerk_user_id)
+
+                # Update container status in DB
+                result_c = await db.execute(select(Container).where(Container.user_id == account.clerk_user_id))
+                container_row = result_c.scalar_one_or_none()
+                if container_row:
+                    container_row.status = "stopped"
+                    await db.commit()
+
                 logger.info("Container stopped for user %s (subscription cancelled)", account.clerk_user_id)
             except ContainerError as e:
                 logger.error("Failed to stop container for user %s: %s", account.clerk_user_id, e)

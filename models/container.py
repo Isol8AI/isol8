@@ -1,8 +1,8 @@
 """
 Container model for tracking per-user OpenClaw Docker containers.
 
-Each paying user gets a dedicated container with a unique port mapping.
-Free-tier users have no container record and use the shared gateway.
+Each paying user gets a dedicated container with a unique port mapping
+and a gateway auth token for API communication.
 """
 
 import uuid
@@ -33,6 +33,7 @@ class Container(Base):
         user_id: Clerk user ID (unique — one container per user).
         port: Host port mapped to the container's gateway (19000-19999).
         container_id: Docker container ID (set after provisioning).
+        gateway_token: Auth token for the OpenClaw gateway HTTP API.
         status: Container lifecycle state.
         created_at: When the container was first provisioned.
         updated_at: Last status change.
@@ -48,6 +49,7 @@ class Container(Base):
     user_id = Column(String, nullable=False, unique=True)
     port = Column(Integer, nullable=False, unique=True)
     container_id = Column(String, nullable=True)
+    gateway_token = Column(String, nullable=True)
     status = Column(
         String,
         nullable=False,

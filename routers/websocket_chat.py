@@ -14,13 +14,15 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy import select
 
 from core.containers import get_container_manager, GatewayRequestError
 from core.containers.http_client import GatewayHttpClient
+from core.containers.manager import ContainerInfo
 from core.database import get_session_factory as db_get_session_factory
-from core.services.agent_service import AgentService
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
+from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -212,8 +214,9 @@ async def _process_agent_chat_background(
     """
     Process agent chat message in background task with streaming.
 
-    Routes to the user's dedicated container. Users without a container
-    receive an error message.
+    Routes to the user's dedicated OpenClaw container. OpenClaw manages
+    agents internally — agent_name is passed directly as x-openclaw-agent-id
+    (e.g. "main"). Users without a container receive an error message.
     """
     logger.debug(
         "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
@@ -223,33 +226,36 @@ async def _process_agent_chat_background(
     )
 
     management_api = get_management_api_client()
-    session_factory = get_session_factory()
 
     try:
-        # Look up agent in DB to get UUID
-        async with session_factory() as db:
-            service = AgentService(db)
-            agent_state = await service.get_agent(user_id, agent_name)
-
-        if not agent_state:
-            management_api.send_message(
-                connection_id,
-                {"type": "error", "message": f"Agent '{agent_name}' not found"},
-            )
-            return
-
-        agent_id = str(agent_state.id)
-
-        # Route to user's container
+        # Get container info: try in-memory cache first, fall back to DB
         container_manager = get_container_manager()
         container_info = container_manager.get_container_info(user_id)
+
+        if not container_info or container_info.status != "running":
+            # Cache miss (e.g. after restart) — rebuild from DB
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                result = await db.execute(select(Container).where(Container.user_id == user_id))
+                container_row = result.scalar_one_or_none()
+
+            if container_row and container_row.status == "running":
+                container_info = ContainerInfo(
+                    user_id=user_id,
+                    port=container_row.port,
+                    container_id=container_row.container_id or "",
+                    status="running",
+                    gateway_token=container_row.gateway_token or "",
+                )
+                container_manager._cache[user_id] = container_info
+                logger.info("Restored container from DB: user=%s port=%d", user_id, container_row.port)
 
         if not container_info or container_info.status != "running":
             management_api.send_message(
                 connection_id,
                 {
                     "type": "error",
-                    "message": "No container provisioned for this user. Agent chat requires an active container.",
+                    "message": "No container provisioned. Please subscribe to start chatting.",
                 },
             )
             return
@@ -260,15 +266,14 @@ async def _process_agent_chat_background(
         )
         logger.debug("Routing to user container on port %d", container_info.port)
 
-        # Stream response from gateway
+        # Stream response — pass agent_name directly to OpenClaw
         chunk_count = 0
 
         for chunk in gateway_client.chat_stream(
             message=message,
-            agent_id=agent_id,
+            agent_id=agent_name,
         ):
             if chunk is None:
-                # Heartbeat — gateway is alive but processing (tool execution)
                 management_api.send_message(connection_id, {"type": "heartbeat"})
                 continue
 

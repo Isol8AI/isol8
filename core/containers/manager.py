@@ -460,14 +460,21 @@ class ContainerManager:
     # Reconciliation (startup)
     # =========================================================================
 
-    def reconcile(self) -> None:
+    def reconcile(self, db_tokens: Optional[dict[str, str]] = None) -> None:
         """Rebuild in-memory cache from running Docker containers.
 
         Called on application startup to re-discover existing containers.
+
+        Args:
+            db_tokens: Optional mapping of user_id -> gateway_token from the
+                       database, used to restore auth tokens that are only
+                       persisted in the containers table.
         """
         if not self._docker:
             logger.warning("Docker not available, skipping reconciliation")
             return
+
+        tokens = db_tokens or {}
 
         try:
             containers = self._docker.containers.list(
@@ -502,13 +509,15 @@ class ContainerManager:
                 port=port,
                 container_id=container.id,
                 status=container.status,
+                gateway_token=tokens.get(user_id, ""),
             )
             self._cache[user_id] = info
             logger.info(
-                "Reconciled container: user=%s port=%d status=%s",
+                "Reconciled container: user=%s port=%d status=%s token=%s",
                 user_id,
                 port,
                 container.status,
+                "yes" if info.gateway_token else "no",
             )
 
         logger.info("Reconciled %d containers", len(self._cache))
