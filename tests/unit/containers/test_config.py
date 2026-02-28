@@ -43,10 +43,21 @@ class TestWriteOpenclawConfig:
         assert config["tools"]["web"]["search"]["provider"] == "brave"
 
     def test_gateway_mode_local(self):
-        """Gateway mode is local with no auth."""
+        """Gateway mode is local with no auth when no token provided."""
         config = json.loads(write_openclaw_config())
         assert config["gateway"]["mode"] == "local"
         assert config["gateway"]["auth"]["mode"] == "none"
+
+    def test_gateway_auth_token(self):
+        """Gateway auth uses token mode when token is provided."""
+        config = json.loads(write_openclaw_config(gateway_token="my-secret"))
+        assert config["gateway"]["auth"]["mode"] == "token"
+        assert config["gateway"]["auth"]["token"] == "my-secret"
+
+    def test_control_ui_disabled(self):
+        """Control UI is disabled for headless containers."""
+        config = json.loads(write_openclaw_config())
+        assert config["gateway"]["controlUi"]["enabled"] is False
 
     def test_chat_completions_enabled(self):
         """Chat completions endpoint is enabled."""
@@ -59,14 +70,11 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         assert config["models"]["bedrockDiscovery"]["enabled"] is False
 
-    def test_memory_search_enabled(self):
-        """Memory search is enabled by default."""
+    def test_memory_search_disabled(self):
+        """Memory search is disabled (Bedrock not a valid upstream provider)."""
         config = json.loads(write_openclaw_config())
         mem = config["agents"]["defaults"]["memorySearch"]
-        assert mem["enabled"] is True
-        assert mem["provider"] == "bedrock"
-        assert "memory" in mem["sources"]
-        assert "sessions" in mem["sources"]
+        assert mem["enabled"] is False
 
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
