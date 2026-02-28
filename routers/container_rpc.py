@@ -66,7 +66,7 @@ async def _openclaw_handshake(ws, token: str) -> None:
                 "mode": "cli",
             },
             "role": "operator",
-            "scopes": ["operator.read", "operator.write"],
+            "scopes": ["operator.admin"],
             "auth": {"token": token},
         },
     }
