@@ -145,3 +145,51 @@ class TestTokenLookup:
         from routers.internal_credentials import _find_user_by_token
 
         assert _find_user_by_token({}, "unknown") is None
+
+
+class TestBearerPrefixStripping:
+    """Test that Authorization header with Bearer prefix works."""
+
+    @pytest.fixture
+    def mock_container_manager(self):
+        from core.containers.manager import ContainerInfo
+
+        info = ContainerInfo(
+            user_id="user_abc",
+            port=19000,
+            container_id="abc123",
+            status="running",
+            gateway_token="test-gateway-token-xyz",
+        )
+        manager = MagicMock()
+        manager._cache = {"user_abc": info}
+        return manager
+
+    @pytest.mark.asyncio
+    async def test_accepts_bearer_prefixed_token(self, mock_container_manager):
+        """Token sent as 'Bearer <token>' should still match."""
+        from routers.internal_credentials import get_container_credentials, _credential_cache
+
+        _credential_cache.clear()
+
+        mock_sts = MagicMock()
+        mock_sts.assume_role.return_value = {
+            "Credentials": {
+                "AccessKeyId": "AKIABEARER",
+                "SecretAccessKey": "secret",
+                "SessionToken": "token",
+                "Expiration": datetime(2099, 1, 1, 0, 0, 0, tzinfo=timezone.utc),
+            }
+        }
+
+        with (
+            patch("routers.internal_credentials.get_container_manager", return_value=mock_container_manager),
+            patch("routers.internal_credentials.boto3") as mock_boto3,
+            patch("routers.internal_credentials.settings") as mock_settings,
+        ):
+            mock_boto3.client.return_value = mock_sts
+            mock_settings.CONTAINER_EXECUTION_ROLE_ARN = "arn:aws:iam::123:role/test-role"
+
+            result = await get_container_credentials(authorization="Bearer test-gateway-token-xyz")
+
+        assert result.AccessKeyId == "AKIABEARER"

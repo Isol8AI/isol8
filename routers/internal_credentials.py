@@ -101,8 +101,14 @@ async def get_container_credentials(
     if not authorization:
         raise HTTPException(status_code=403, detail="Missing authorization")
 
+    # AWS SDK sends AWS_CONTAINER_AUTHORIZATION_TOKEN as-is, but some
+    # SDK versions may prefix with "Bearer ". Strip it for comparison.
+    token = authorization
+    if token.lower().startswith("bearer "):
+        token = token[7:]
+
     cm = get_container_manager()
-    user_id = _find_user_by_token(cm._cache, authorization)
+    user_id = _find_user_by_token(cm._cache, token)
 
     if not user_id:
         logger.warning("Credential request with unknown token (first 8: %s...)", authorization[:8])
