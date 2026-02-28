@@ -14,23 +14,24 @@ logger = logging.getLogger(__name__)
 # Configure Stripe
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-# Stripe Price IDs per tier — set via env vars after creating products in Stripe Dashboard.
+# Stripe Price IDs per tier.
+# Fixed prices differ per tier; metered usage price is shared (same LLM cost).
+METERED_PRICE_ID = os.getenv("STRIPE_METERED_PRICE_ID", "")
+
 PLAN_PRICES = {
     "starter": {
         "fixed": os.getenv("STRIPE_STARTER_FIXED_PRICE_ID", ""),
-        "metered": os.getenv("STRIPE_STARTER_METERED_PRICE_ID", ""),
+        "metered": METERED_PRICE_ID,
     },
     "pro": {
         "fixed": os.getenv("STRIPE_PRO_FIXED_PRICE_ID", ""),
-        "metered": os.getenv("STRIPE_PRO_METERED_PRICE_ID", ""),
-    },
-    "usage_only": {
-        "fixed": "",
-        "metered": os.getenv("STRIPE_USAGE_METERED_PRICE_ID", ""),
+        "metered": METERED_PRICE_ID,
     },
 }
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.getenv(
+    "FRONTEND_URL", settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
+)
 
 
 class BillingServiceError(Exception):
@@ -106,12 +107,16 @@ class BillingService:
         if prices.get("metered"):
             line_items.append({"price": prices["metered"]})
 
+        if not line_items:
+            raise BillingServiceError(f"No Stripe price IDs configured for tier: {tier}")
+
         session = stripe.checkout.Session.create(
             customer=billing_account.stripe_customer_id,
             mode="subscription",
             line_items=line_items,
-            success_url=f"{FRONTEND_URL}/settings/billing?success=true",
-            cancel_url=f"{FRONTEND_URL}/settings/billing?canceled=true",
+            subscription_data={"metadata": {"plan_tier": tier}},
+            success_url=f"{FRONTEND_URL}/chat?subscription=success",
+            cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
         )
         return session.url
 

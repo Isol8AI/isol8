@@ -82,6 +82,9 @@ class TestCheckout:
         return account
 
     @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.PLAN_PRICES", {"starter": {"fixed": "price_starter", "metered": "price_metered"}}
+    )
     @patch("core.services.billing_service.stripe")
     async def test_create_checkout(self, mock_stripe, async_client, billing_account):
         """Should return Stripe checkout URL."""

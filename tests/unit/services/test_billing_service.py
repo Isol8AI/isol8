@@ -85,6 +85,9 @@ class TestBillingServiceCheckout:
         return BillingService(db_session)
 
     @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.PLAN_PRICES", {"starter": {"fixed": "price_starter", "metered": "price_metered"}}
+    )
     @patch("core.services.billing_service.stripe")
     async def test_create_checkout_session(self, mock_stripe, service, billing_account):
         """Should create Stripe Checkout session."""
@@ -97,6 +100,27 @@ class TestBillingServiceCheckout:
 
         assert url == "https://checkout.stripe.com/test"
         mock_stripe.checkout.Session.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.PLAN_PRICES", {"pro": {"fixed": "price_pro", "metered": "price_metered"}})
+    @patch("core.services.billing_service.stripe")
+    async def test_checkout_passes_plan_tier_metadata(self, mock_stripe, service, billing_account):
+        """Should pass plan_tier metadata so webhook can read the tier."""
+        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
+
+        await service.create_checkout_session(billing_account=billing_account, tier="pro")
+
+        call_kwargs = mock_stripe.checkout.Session.create.call_args[1]
+        assert call_kwargs["subscription_data"]["metadata"]["plan_tier"] == "pro"
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.PLAN_PRICES", {"empty_tier": {"fixed": "", "metered": ""}})
+    async def test_checkout_rejects_empty_price_ids(self, service, billing_account):
+        """Should raise error when no price IDs are configured for tier."""
+        from core.services.billing_service import BillingServiceError
+
+        with pytest.raises(BillingServiceError, match="No Stripe price IDs configured"):
+            await service.create_checkout_session(billing_account=billing_account, tier="empty_tier")
 
 
 class TestBillingServicePortal:

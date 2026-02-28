@@ -9,7 +9,6 @@ class PlanTier(str, Enum):
     FREE = "free"
     STARTER = "starter"
     PRO = "pro"
-    USAGE_ONLY = "usage_only"
 
 
 class UsagePeriod(BaseModel):

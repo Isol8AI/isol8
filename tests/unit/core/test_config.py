@@ -68,5 +68,4 @@ class TestBillingConfig:
         assert "free" in PLAN_BUDGETS
         assert "starter" in PLAN_BUDGETS
         assert "pro" in PLAN_BUDGETS
-        assert "usage_only" in PLAN_BUDGETS
         assert FREE_TIER_LIMIT == 2_000_000
