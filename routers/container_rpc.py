@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from websockets import connect as ws_connect
 
 from core.auth import AuthContext, get_current_user
+from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_db
@@ -117,6 +118,36 @@ async def _call_gateway_rpc(
                     err_msg = data.get("error", {}).get("message", "RPC call rejected")
                     raise RuntimeError(f"Gateway RPC error: {err_msg}")
                 return data.get("payload", {})
+
+
+@router.get(
+    "/status",
+    summary="Get container metadata for current user",
+    description=(
+        "Returns the user's container status and metadata. "
+        "Sensitive fields (gateway_token, task_arn, access_point_id) are excluded."
+    ),
+    operation_id="container_status",
+    responses={
+        404: {"description": "No container for this user"},
+    },
+)
+async def container_status(
+    auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ecs_manager = get_ecs_manager()
+    container = await ecs_manager.get_service_status(auth.user_id, db)
+    if not container:
+        raise HTTPException(status_code=404, detail="No container found")
+
+    return {
+        "service_name": container.service_name,
+        "status": container.status,
+        "created_at": container.created_at.isoformat() if container.created_at else None,
+        "updated_at": container.updated_at.isoformat() if container.updated_at else None,
+        "region": settings.AWS_REGION,
+    }
 
 
 @router.post(

@@ -220,8 +220,8 @@ jobs:
               "systemctl restart isol8",
               "echo \"=== Waiting for container to start ===\"",
               "for i in $(seq 1 30); do docker inspect isol8 --format={{.State.Running}} 2>/dev/null && break || true; done",
-              "echo \"=== Resetting database schema ===\"",
-              "docker exec isol8 python init_db.py --reset",
+              "echo \"=== Running database migrations ===\"",
+              "docker exec isol8 python init_db.py",
               "echo \"=== Container status ===\"",
               "docker ps --filter name=isol8",
               "echo \"=== Done ===\""
@@ -259,7 +259,7 @@ jobs:
       # =====================================================================
       # Normal Deploy: ASG Instance Refresh (full replacement, ~15 min)
       # =====================================================================
-      - name: Reset Database Schema
+      - name: Run Database Migrations
         if: ${{ !(github.event_name == 'workflow_dispatch' && (github.event.inputs.fast_deploy == 'true')) }}
         run: |
           ASG_NAME="isol8-dev-asg"
@@ -277,7 +277,7 @@ jobs:
             --timeout-seconds 120 \
             --parameters 'commands=[
               "echo \"=== Resetting database schema ===\"",
-              "if docker ps --format {{.Names}} | grep -q isol8; then docker exec isol8 python init_db.py --reset && echo \"=== Schema reset complete ===\"; else echo \"Container not running - skipping (new instance will handle schema via user_data.sh)\"; fi"
+              "if docker ps --format {{.Names}} | grep -q isol8; then docker exec isol8 python init_db.py && echo \"=== Schema migration complete ===\"; else echo \"Container not running - skipping (new instance will handle schema via user_data.sh)\"; fi"
             ]' \
             --query 'Command.CommandId' \
             --output text)
@@ -466,7 +466,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["docker exec isol8 python init_db.py --reset"]' \
+            --parameters 'commands=["docker exec isol8 python init_db.py"]' \
             --query 'Command.CommandId' \
             --output text)
 
@@ -564,7 +564,7 @@ jobs:
           COMMAND_ID=$(aws ssm send-command \
             --instance-ids "$INSTANCE_ID" \
             --document-name "AWS-RunShellScript" \
-            --parameters 'commands=["docker exec isol8 python init_db.py --reset"]' \
+            --parameters 'commands=["docker exec isol8 python init_db.py"]' \
             --query 'Command.CommandId' \
             --output text)
 
