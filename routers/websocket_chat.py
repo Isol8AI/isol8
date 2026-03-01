@@ -314,7 +314,7 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": str(e)},
+                    "error": {"message": "Internal error processing request."},
                 },
             )
         except Exception:

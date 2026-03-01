@@ -312,28 +312,60 @@ class TestReqMessageRouting:
     """Tests for type=req RPC proxy messages."""
 
     @pytest.mark.asyncio
-    async def test_req_message_accepted(
-        self, test_app, mock_connection_service, mock_management_api, mock_session_factory
-    ):
+    async def test_req_message_accepted(self, test_app, mock_connection_service, mock_management_api):
         """Valid req message should be accepted and return 200."""
         mock_connection_service.get_connection.return_value = {
             "user_id": "test-user",
             "org_id": None,
         }
 
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/message",
-                headers={"x-connection-id": "conn-123"},
-                json={
-                    "type": "req",
-                    "id": "req-uuid-1",
-                    "method": "health",
-                    "params": {},
-                },
-            )
+        with patch("routers.websocket_chat._process_rpc_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-123"},
+                    json={
+                        "type": "req",
+                        "id": "req-uuid-1",
+                        "method": "health",
+                        "params": {},
+                    },
+                )
 
         assert response.status_code == 200
+        mock_management_api.send_message.assert_not_called()
+        mock_bg.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_req_background_task_receives_correct_args(
+        self, test_app, mock_connection_service, mock_management_api
+    ):
+        """Background task should receive connection_id, user_id, req_id, method, params."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+
+        with patch("routers.websocket_chat._process_rpc_background") as mock_bg:
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-123"},
+                    json={
+                        "type": "req",
+                        "id": "req-uuid-1",
+                        "method": "agents.list",
+                        "params": {"filter": "active"},
+                    },
+                )
+
+        mock_bg.assert_called_once_with(
+            connection_id="conn-123",
+            user_id="test-user",
+            req_id="req-uuid-1",
+            method="agents.list",
+            params={"filter": "active"},
+        )
 
     @pytest.mark.asyncio
     async def test_req_missing_id_sends_error(self, test_app, mock_connection_service, mock_management_api):

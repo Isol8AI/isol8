@@ -154,9 +154,9 @@ async def container_status(
     "/rpc",
     summary="[Deprecated] Proxy RPC call to user's OpenClaw container",
     description=(
-        "DEPRECATED: Use WebSocket req/res protocol instead. "
-        "This HTTP fallback will be removed in a future release. "
-        "Forwards a JSON-RPC call to the user's dedicated OpenClaw container."
+        "DEPRECATED: Use the WebSocket connection at /api/v1/ws with "
+        "{type: 'req', id, method, params} messages instead. "
+        "This HTTP fallback will be removed in a future release."
     ),
     deprecated=True,
     operation_id="container_rpc",

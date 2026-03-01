@@ -58,8 +58,12 @@ async def startup_containers() -> None:
 
 
 async def shutdown_containers() -> None:
-    """No-op: ECS Services keep running across control-plane restarts."""
-    logger.info("Container shutdown: ECS services keep running")
+    """Close gateway connection pool; ECS Services keep running."""
+    global _gateway_pool
+    if _gateway_pool is not None:
+        await _gateway_pool.close_all()
+        _gateway_pool = None
+    logger.info("Container shutdown complete")
 
 
 __all__ = [
