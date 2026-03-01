@@ -94,16 +94,26 @@ async def _call_gateway_rpc(
         await _openclaw_handshake(ws, token)
 
         # Now send the actual RPC request
+        req_id = str(uuid.uuid4())
         rpc_msg = {
             "type": "req",
-            "id": str(uuid.uuid4()),
+            "id": req_id,
             "method": method,
             "params": params or {},
         }
         await ws.send(json.dumps(rpc_msg))
-        raw = await ws.recv()
 
-    return json.loads(raw)
+        # Read messages until we get the matching RPC response.
+        # The gateway may send event broadcasts (health, state) before
+        # responding to our request — skip those.
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=_WS_TIMEOUT)
+            data = json.loads(raw)
+            if data.get("type") == "res" and data.get("id") == req_id:
+                if not data.get("ok"):
+                    err_msg = data.get("error", {}).get("message", "RPC call rejected")
+                    raise RuntimeError(f"Gateway RPC error: {err_msg}")
+                return data.get("payload", {})
 
 
 @router.post(

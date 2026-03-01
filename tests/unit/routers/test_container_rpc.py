@@ -143,23 +143,42 @@ class TestContainerRpcEndpoint:
 class TestCallGatewayRpc:
     """Unit tests for the _call_gateway_rpc function."""
 
-    def _make_handshake_ws(self, rpc_response: dict) -> AsyncMock:
-        """Create a mock WS that completes the connect handshake then returns rpc_response."""
+    RPC_ID = "test-rpc-id"
+
+    def _make_handshake_ws(self, rpc_payload: dict, extra_events: list | None = None) -> AsyncMock:
+        """Create a mock WS that completes the connect handshake then returns rpc_payload.
+
+        Args:
+            rpc_payload: The payload field of the RPC response.
+            extra_events: Optional list of event messages received before the RPC response.
+        """
         mock_ws = AsyncMock()
-        # recv sequence: connect.challenge, hello-ok, rpc response
-        mock_ws.recv = AsyncMock(
-            side_effect=[
-                json.dumps({"event": "connect.challenge"}),
-                json.dumps({"ok": True}),
-                json.dumps(rpc_response),
-            ]
+        messages = [
+            json.dumps({"event": "connect.challenge"}),
+            json.dumps({"ok": True}),
+        ]
+        if extra_events:
+            messages.extend(json.dumps(e) for e in extra_events)
+        messages.append(
+            json.dumps(
+                {
+                    "type": "res",
+                    "id": self.RPC_ID,
+                    "ok": True,
+                    "payload": rpc_payload,
+                }
+            )
         )
+        mock_ws.recv = AsyncMock(side_effect=messages)
         return mock_ws
 
     @pytest.mark.asyncio
-    async def test_sends_method_and_params(self):
+    @patch("routers.container_rpc.uuid.uuid4")
+    async def test_sends_method_and_params(self, mock_uuid):
         from routers.container_rpc import _call_gateway_rpc
 
+        # First uuid call is handshake, second is our RPC request id
+        mock_uuid.side_effect = ["handshake-id", self.RPC_ID]
         mock_ws = self._make_handshake_ws({"agents": ["main"]})
 
         with patch("routers.container_rpc.ws_connect") as mock_connect:
@@ -175,9 +194,11 @@ class TestCallGatewayRpc:
         assert rpc_sent["params"] == {"active": True}
 
     @pytest.mark.asyncio
-    async def test_sets_auth_in_handshake(self):
+    @patch("routers.container_rpc.uuid.uuid4")
+    async def test_sets_auth_in_handshake(self, mock_uuid):
         from routers.container_rpc import _call_gateway_rpc
 
+        mock_uuid.side_effect = ["handshake-id", self.RPC_ID]
         mock_ws = self._make_handshake_ws({})
 
         with patch("routers.container_rpc.ws_connect") as mock_connect:
@@ -190,3 +211,47 @@ class TestCallGatewayRpc:
         connect_sent = json.loads(mock_ws.send.call_args_list[0][0][0])
         assert connect_sent["method"] == "connect"
         assert connect_sent["params"]["auth"]["token"] == "my-secret"
+
+    @pytest.mark.asyncio
+    @patch("routers.container_rpc.uuid.uuid4")
+    async def test_skips_event_broadcasts_before_rpc_response(self, mock_uuid):
+        from routers.container_rpc import _call_gateway_rpc
+
+        mock_uuid.side_effect = ["handshake-id", self.RPC_ID]
+        mock_ws = self._make_handshake_ws(
+            rpc_payload={"sessions": [{"key": "s1"}]},
+            extra_events=[
+                {"type": "event", "event": "health", "payload": {"ok": True}},
+                {"type": "event", "event": "presence", "payload": {}},
+            ],
+        )
+
+        with patch("routers.container_rpc.ws_connect") as mock_connect:
+            mock_connect.return_value.__aenter__ = AsyncMock(return_value=mock_ws)
+            mock_connect.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await _call_gateway_rpc(port=19001, token="tok", method="sessions.list")
+
+        assert result == {"sessions": [{"key": "s1"}]}
+
+    @pytest.mark.asyncio
+    @patch("routers.container_rpc.uuid.uuid4")
+    async def test_raises_on_rpc_error_response(self, mock_uuid):
+        from routers.container_rpc import _call_gateway_rpc
+
+        mock_uuid.side_effect = ["handshake-id", self.RPC_ID]
+        mock_ws = AsyncMock()
+        mock_ws.recv = AsyncMock(
+            side_effect=[
+                json.dumps({"event": "connect.challenge"}),
+                json.dumps({"ok": True}),
+                json.dumps({"type": "res", "id": self.RPC_ID, "ok": False, "error": {"message": "method not found"}}),
+            ]
+        )
+
+        with patch("routers.container_rpc.ws_connect") as mock_connect:
+            mock_connect.return_value.__aenter__ = AsyncMock(return_value=mock_ws)
+            mock_connect.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            with pytest.raises(RuntimeError, match="method not found"):
+                await _call_gateway_rpc(port=19001, token="tok", method="nonexistent")
