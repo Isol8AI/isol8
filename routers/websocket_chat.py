@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core.containers import get_ecs_manager, GatewayHttpClient, GatewayRequestError
+from core.containers import get_ecs_manager, get_gateway_pool, GatewayHttpClient, GatewayRequestError
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
@@ -82,6 +82,12 @@ async def ws_connect(
         org_id=x_org_id,
     )
 
+    try:
+        pool = get_gateway_pool()
+        pool.add_frontend_connection(x_user_id, x_connection_id)
+    except Exception as e:
+        logger.warning("Failed to register frontend connection with pool: %s", e)
+
     return Response(status_code=200)
 
 
@@ -99,6 +105,16 @@ async def ws_disconnect(
         return Response(status_code=200)
 
     logger.info("WebSocket disconnect: connection_id=%s", x_connection_id)
+
+    # Unregister from gateway connection pool
+    try:
+        connection_service = get_connection_service()
+        connection = connection_service.get_connection(x_connection_id)
+        if connection:
+            pool = get_gateway_pool()
+            pool.remove_frontend_connection(connection["user_id"], x_connection_id)
+    except Exception as e:
+        logger.warning("Failed to unregister frontend connection from pool: %s", e)
 
     # Clean up town viewer subscription if active
     try:
@@ -167,6 +183,34 @@ async def ws_message(
         remove_town_viewer(x_connection_id)
         return Response(status_code=200)
 
+    if msg_type == "req":
+        req_id = body.get("id")
+        method = body.get("method")
+        params = body.get("params", {})
+
+        if not req_id or not method:
+            management_api = get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": "Missing id or method"},
+                },
+            )
+            return Response(status_code=200)
+
+        background_tasks.add_task(
+            _process_rpc_background,
+            connection_id=x_connection_id,
+            user_id=user_id,
+            req_id=req_id,
+            method=method,
+            params=params,
+        )
+        return Response(status_code=200)
+
     if msg_type == "agent_chat":
         agent_name = body.get("agent_name")
         message = body.get("message")
@@ -195,6 +239,86 @@ async def ws_message(
         {"type": "error", "message": f"Unknown message type: {msg_type}"},
     )
     return Response(status_code=200)
+
+
+# =============================================================================
+# OpenClaw RPC Proxy
+# =============================================================================
+
+
+async def _process_rpc_background(
+    connection_id: str,
+    user_id: str,
+    req_id: str,
+    method: str,
+    params: dict,
+) -> None:
+    """Process an OpenClaw RPC request via the gateway connection pool."""
+    management_api = get_management_api_client()
+
+    try:
+        ecs_manager = get_ecs_manager()
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            container, ip = await ecs_manager.resolve_running_container(user_id, db)
+
+        if not container:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": "No container provisioned."},
+                },
+            )
+            return
+
+        if not ip:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": "Container is starting up. Try again in a moment."},
+                },
+            )
+            return
+
+        pool = get_gateway_pool()
+        result = await pool.send_rpc(
+            user_id=user_id,
+            req_id=req_id,
+            method=method,
+            params=params,
+            ip=ip,
+            token=container.gateway_token,
+        )
+        management_api.send_message(
+            connection_id,
+            {
+                "type": "res",
+                "id": req_id,
+                "ok": True,
+                "payload": result,
+            },
+        )
+
+    except Exception as e:
+        logger.error("RPC %s failed for user %s: %s", method, user_id, e)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": str(e)},
+                },
+            )
+        except Exception:
+            pass
 
 
 # =============================================================================

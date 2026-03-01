@@ -54,6 +54,15 @@ def mock_session_factory():
         yield mock_factory
 
 
+@pytest.fixture(autouse=True)
+def mock_gateway_pool():
+    """Mock gateway connection pool (autouse since it's called in connect/disconnect)."""
+    with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+        mock_pool = MagicMock()
+        mock_getter.return_value = mock_pool
+        yield mock_pool
+
+
 class TestConnectEndpoint:
     """Tests for POST /ws/connect endpoint."""
 
@@ -297,3 +306,73 @@ class TestMessageEndpoint:
         assert call_args[0][0] == "test-conn-123"
         assert call_args[0][1]["type"] == "error"
         assert "unknown message type" in call_args[0][1]["message"].lower()
+
+
+class TestReqMessageRouting:
+    """Tests for type=req RPC proxy messages."""
+
+    @pytest.mark.asyncio
+    async def test_req_message_accepted(
+        self, test_app, mock_connection_service, mock_management_api, mock_session_factory
+    ):
+        """Valid req message should be accepted and return 200."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-123"},
+                json={
+                    "type": "req",
+                    "id": "req-uuid-1",
+                    "method": "health",
+                    "params": {},
+                },
+            )
+
+        assert response.status_code == 200
+
+    @pytest.mark.asyncio
+    async def test_req_missing_id_sends_error(self, test_app, mock_connection_service, mock_management_api):
+        """req without id should send error res back."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-123"},
+                json={"type": "req", "method": "health"},
+            )
+
+        assert response.status_code == 200
+        mock_management_api.send_message.assert_called_once()
+        sent_msg = mock_management_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "res"
+        assert sent_msg["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_req_missing_method_sends_error(self, test_app, mock_connection_service, mock_management_api):
+        """req without method should send error res back."""
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-123"},
+                json={"type": "req", "id": "req-uuid-2"},
+            )
+
+        assert response.status_code == 200
+        sent_msg = mock_management_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "res"
+        assert sent_msg["id"] == "req-uuid-2"
+        assert sent_msg["ok"] is False
