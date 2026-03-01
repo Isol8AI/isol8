@@ -151,12 +151,10 @@ resource "aws_ecs_task_definition" "openclaw" {
       image     = var.openclaw_image
       essential = true
 
-      command = [
-        "node", "openclaw.mjs", "gateway",
-        "--port", "18789",
-        "--bind", "lan",
-        "--allow-unconfigured"
-      ]
+      # Config is written to EFS by the EC2 control plane and mounted
+      # into the container at /home/node/.openclaw via per-user access
+      # points. No inline config generation needed.
+      command = ["node", "openclaw.mjs", "gateway", "--port", "18789", "--bind", "lan"]
 
       portMappings = [
         {

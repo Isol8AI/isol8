@@ -112,7 +112,8 @@ ECS_CLUSTER_ARN=${ecs_cluster_arn}
 ECS_TASK_DEFINITION=${ecs_task_definition}
 ECS_SUBNETS=${ecs_subnets}
 ECS_SECURITY_GROUP_ID=${ecs_security_group_id}
-EFS_MOUNT_PATH=/mnt/efs
+EFS_MOUNT_PATH=/mnt/efs/users
+EFS_FILE_SYSTEM_ID=${efs_file_system_id}
 S3_CONFIG_BUCKET=${s3_config_bucket}
 CLOUD_MAP_NAMESPACE_ID=${cloud_map_namespace_id}
 CLOUD_MAP_SERVICE_ID=${cloud_map_service_id}
@@ -145,6 +146,7 @@ for i in 1 2 3 4 5; do
 done
 mountpoint -q /mnt/efs || { echo "FATAL: EFS mount failed after 5 attempts"; exit 1; }
 chmod 1777 /mnt/efs
+mkdir -p /mnt/efs/users
 echo "${efs_file_system_id}:/ /mnt/efs efs _netdev,tls 0 0" >> /etc/fstab
 
 # -----------------------------------------------------------------------------
