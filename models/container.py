@@ -80,6 +80,7 @@ class Container(Base):
             name="chk_container_status",
         ),
         Index("idx_containers_status", "status"),
+        Index("idx_containers_gateway_token", "gateway_token", unique=True),
     )
 
     def __repr__(self) -> str:

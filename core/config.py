@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     # --- S3 Config ---
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
 
+    # --- IAM ---
+    CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
+
     # --- OpenClaw ---
     OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
 
