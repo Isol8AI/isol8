@@ -1,23 +1,24 @@
-"""Billing API endpoints with container provisioning integration."""
+"""Billing API endpoints with ECS Fargate container provisioning."""
 
+import json
 import logging
+import secrets
 from datetime import date
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
-from core.containers import get_container_manager
-from core.containers.manager import ContainerError
+from core.containers import get_ecs_manager, get_config_store, get_workspace
+from core.containers.config import write_openclaw_config
+from core.containers.ecs_manager import EcsManagerError
 from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
 from models.billing import BillingAccount
-from models.container import Container
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -220,34 +221,29 @@ async def handle_stripe_webhook(
         if account:
             await billing_service.update_subscription(account, subscription_id, tier)
 
-            # Provision container for paid tiers
-            if tier not in ("free",):
-                container_manager = get_container_manager()
-                try:
-                    info = container_manager.provision_container(account.clerk_user_id)
+            # Provision ECS Service for subscriber
+            try:
+                user_id = account.clerk_user_id
+                gateway_token = secrets.token_urlsafe(32)
 
-                    # Persist container info to DB (idempotent for webhook re-delivery)
-                    container_row = Container(
-                        user_id=account.clerk_user_id,
-                        port=info.port,
-                        container_id=info.container_id,
-                        gateway_token=info.gateway_token,
-                        status="running",
-                    )
-                    db.add(container_row)
-                    try:
-                        await db.commit()
-                    except IntegrityError:
-                        await db.rollback()
-                        logger.info(
-                            "Container row already exists for user %s (webhook re-delivery)", account.clerk_user_id
-                        )
+                # Write openclaw.json config to S3
+                config_json = write_openclaw_config(
+                    region=settings.AWS_REGION,
+                    brave_api_key=settings.BRAVE_API_KEY,
+                    gateway_token=gateway_token,
+                )
+                config_dict = json.loads(config_json)
+                get_config_store().put_config(user_id, config_dict)
 
-                    logger.info(
-                        "Container provisioned for user %s (tier=%s, port=%d)", account.clerk_user_id, tier, info.port
-                    )
-                except ContainerError as e:
-                    logger.error("Failed to provision container for user %s: %s", account.clerk_user_id, e)
+                # Create EFS workspace directory
+                get_workspace().ensure_user_dir(user_id)
+
+                # Create ECS Service (also upserts Container DB row)
+                service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+
+                logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
+            except EcsManagerError as e:
+                logger.error("Failed to provision ECS service for user %s: %s", account.clerk_user_id, e)
 
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
@@ -266,21 +262,12 @@ async def handle_stripe_webhook(
         if account:
             await billing_service.cancel_subscription(account)
 
-            # Stop container (volume preserved for 30-day grace period)
-            container_manager = get_container_manager()
+            # Stop ECS Service (EFS volume preserved for 30-day grace period)
             try:
-                container_manager.stop_container(account.clerk_user_id)
-
-                # Update container status in DB
-                result_c = await db.execute(select(Container).where(Container.user_id == account.clerk_user_id))
-                container_row = result_c.scalar_one_or_none()
-                if container_row:
-                    container_row.status = "stopped"
-                    await db.commit()
-
-                logger.info("Container stopped for user %s (subscription cancelled)", account.clerk_user_id)
-            except ContainerError as e:
-                logger.error("Failed to stop container for user %s: %s", account.clerk_user_id, e)
+                await get_ecs_manager().stop_user_service(account.clerk_user_id, db)
+                logger.info("ECS service stopped for user %s (subscription cancelled)", account.clerk_user_id)
+            except EcsManagerError as e:
+                logger.error("Failed to stop ECS service for user %s: %s", account.clerk_user_id, e)
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))

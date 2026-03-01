@@ -1,7 +1,7 @@
 """Tests for billing API endpoints."""
 
 from decimal import Decimal
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -117,9 +117,14 @@ class TestStripeWebhook:
         return account
 
     @pytest.mark.asyncio
+    @patch("routers.billing.get_workspace")
+    @patch("routers.billing.get_config_store")
+    @patch("routers.billing.get_ecs_manager")
     @patch("routers.billing.stripe")
-    async def test_subscription_created_webhook(self, mock_stripe, async_client, billing_account, db_session):
-        """Should update billing account on subscription.created."""
+    async def test_subscription_created_webhook(
+        self, mock_stripe, mock_get_ecs, mock_get_config, mock_get_workspace, async_client, billing_account, db_session
+    ):
+        """Should update billing account and provision ECS service on subscription.created."""
         mock_stripe.Webhook.construct_event.return_value = {
             "type": "customer.subscription.created",
             "data": {
@@ -132,6 +137,19 @@ class TestStripeWebhook:
             },
         }
 
+        # Mock ECS manager
+        mock_ecs = AsyncMock()
+        mock_ecs.create_user_service.return_value = "openclaw-user_web"
+        mock_get_ecs.return_value = mock_ecs
+
+        # Mock config store
+        mock_config = MagicMock()
+        mock_get_config.return_value = mock_config
+
+        # Mock workspace
+        mock_ws = MagicMock()
+        mock_get_workspace.return_value = mock_ws
+
         response = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=b'{"test": true}',
@@ -141,3 +159,41 @@ class TestStripeWebhook:
             },
         )
         assert response.status_code == 200
+
+        # Verify ECS provisioning was called
+        mock_config.put_config.assert_called_once()
+        mock_ws.ensure_user_dir.assert_called_once_with("user_webhook_test")
+        mock_ecs.create_user_service.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.get_ecs_manager")
+    @patch("routers.billing.stripe")
+    async def test_subscription_deleted_webhook(
+        self, mock_stripe, mock_get_ecs, async_client, billing_account, db_session
+    ):
+        """Should cancel subscription and stop ECS service on subscription.deleted."""
+        mock_stripe.Webhook.construct_event.return_value = {
+            "type": "customer.subscription.deleted",
+            "data": {
+                "object": {
+                    "id": "sub_test_123",
+                    "customer": "cus_webhook_test",
+                }
+            },
+        }
+
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+
+        response = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=b'{"test": true}',
+            headers={
+                "stripe-signature": "test_sig",
+                "content-type": "application/json",
+            },
+        )
+        assert response.status_code == 200
+
+        # Verify ECS stop was called
+        mock_ecs.stop_user_service.assert_called_once()
