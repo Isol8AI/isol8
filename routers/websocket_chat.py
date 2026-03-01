@@ -11,15 +11,15 @@ Responses are pushed via Management API, not returned in HTTP response body.
 
 import logging
 from typing import Any, Dict, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from core.containers import get_ecs_manager, get_gateway_pool, GatewayHttpClient, GatewayRequestError
-from core.containers.ecs_manager import GATEWAY_PORT
+from core.containers import get_ecs_manager, get_gateway_pool
 from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
-from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
+from core.services.management_api_client import ManagementApiClient
 
 logger = logging.getLogger(__name__)
 
@@ -333,11 +333,12 @@ async def _process_agent_chat_background(
     message: str,
 ) -> None:
     """
-    Process agent chat message in background task with streaming.
+    Process agent chat message via OpenClaw's native chat.send RPC.
 
-    Routes to the user's dedicated OpenClaw container. OpenClaw manages
-    agents internally — agent_name is passed directly as x-openclaw-agent-id
-    (e.g. "main"). Users without a container receive an error message.
+    Sends the message through the persistent WebSocket connection pool.
+    The RPC returns immediately with an ack; streaming response events
+    (text_delta, turn_completed, etc.) are handled by the pool's reader
+    task and forwarded to the frontend automatically.
     """
     logger.debug(
         "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
@@ -375,54 +376,26 @@ async def _process_agent_chat_background(
             )
             return
 
-        gateway_client = GatewayHttpClient(
-            base_url=f"http://{ip}:{GATEWAY_PORT}",
+        pool = get_gateway_pool()
+        req_id = str(uuid4())
+
+        result = await pool.send_rpc(
+            user_id=user_id,
+            req_id=req_id,
+            method="chat.send",
+            params={"message": message, "agentId": agent_name},
+            ip=ip,
             token=container.gateway_token,
         )
-        logger.debug("Routing to user container at %s:%d", ip, GATEWAY_PORT)
+        logger.debug("chat.send acked for agent %s: %s", agent_name, result)
+        # Streaming response events are forwarded by the connection pool's reader task
 
-        # Stream response — pass agent_name directly to OpenClaw
-        chunk_count = 0
-
-        for chunk in gateway_client.chat_stream(
-            message=message,
-            agent_id=agent_name,
-        ):
-            if chunk is None:
-                management_api.send_message(connection_id, {"type": "heartbeat"})
-                continue
-
-            chunk_count += 1
-            push_ok = management_api.send_message(
-                connection_id,
-                {"type": "chunk", "content": chunk},
-            )
-            if not push_ok:
-                logger.warning("Connection %s gone during agent streaming", connection_id)
-                return
-
-        logger.debug(
-            "Agent stream complete: connection_id=%s, agent=%s, chunks=%d",
-            connection_id,
-            agent_name,
-            chunk_count,
-        )
-        management_api.send_message(connection_id, {"type": "done"})
-
-    except GatewayRequestError as e:
-        logger.error("Gateway error for agent %s: %s", agent_name, e)
-        management_api.send_message(
-            connection_id,
-            {"type": "error", "message": f"Agent processing error: {e}"},
-        )
-    except ManagementApiClientError as e:
-        logger.error("Management API error for connection %s: %s", connection_id, e)
     except Exception as e:
-        logger.exception("Unexpected error processing agent chat for connection %s: %s", connection_id, e)
+        logger.error("chat.send failed for agent %s: %s", agent_name, e)
         try:
             management_api.send_message(
                 connection_id,
-                {"type": "error", "message": "Internal error during processing"},
+                {"type": "error", "message": f"Failed to send message: {e}"},
             )
         except Exception:
             pass

@@ -4,6 +4,7 @@ Unit tests for WebSocket agent_chat message type routing and validation.
 Tests the agent_chat message type in POST /ws/message:
 - Routing: agent_chat messages are accepted and background task is queued
 - Validation: missing fields send errors via Management API
+- Background task: uses chat.send RPC via GatewayConnectionPool
 
 Uses the same pattern as test_websocket_chat.py:
 - httpx AsyncClient with ASGITransport for HTTP endpoint testing
@@ -11,11 +12,11 @@ Uses the same pattern as test_websocket_chat.py:
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from routers.websocket_chat import router
+from routers.websocket_chat import router, _process_agent_chat_background
 
 
 @pytest.fixture
@@ -183,3 +184,116 @@ class TestAgentChatBackgroundTask:
             agent_name="luna",
             message="Tell me a story",
         )
+
+
+class TestProcessAgentChatBackground:
+    """Tests for the _process_agent_chat_background function (RPC-based flow)."""
+
+    @pytest.fixture
+    def mock_ecs_manager(self):
+        with patch("routers.websocket_chat.get_ecs_manager") as mock_getter:
+            manager = AsyncMock()
+            mock_getter.return_value = manager
+            yield manager
+
+    @pytest.fixture
+    def mock_session_factory(self):
+        with patch("routers.websocket_chat.get_session_factory") as mock_getter:
+            factory = MagicMock()
+            session = AsyncMock()
+            factory.return_value.__aenter__ = AsyncMock(return_value=session)
+            factory.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_getter.return_value = factory
+            yield factory
+
+    @pytest.fixture
+    def mock_pool(self):
+        with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
+            pool = AsyncMock()
+            pool.send_rpc = AsyncMock(return_value={"runId": "run-123", "status": "started"})
+            mock_getter.return_value = pool
+            yield pool
+
+    @pytest.fixture
+    def mock_mgmt_api(self):
+        with patch("routers.websocket_chat.get_management_api_client") as mock_getter:
+            client = MagicMock()
+            client.send_message = MagicMock(return_value=True)
+            mock_getter.return_value = client
+            yield client
+
+    @pytest.fixture
+    def container_with_ip(self, mock_ecs_manager):
+        """Set up ECS manager to return a running container with IP."""
+        container = MagicMock()
+        container.gateway_token = "test-gw-token"
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
+        return container
+
+    @pytest.mark.asyncio
+    async def test_sends_chat_rpc(
+        self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """Should send chat.send RPC via the gateway pool."""
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            agent_name="luna",
+            message="Hello!",
+        )
+        mock_pool.send_rpc.assert_called_once()
+        call_kwargs = mock_pool.send_rpc.call_args[1]
+        assert call_kwargs["user_id"] == "user-1"
+        assert call_kwargs["method"] == "chat.send"
+        assert call_kwargs["params"] == {"message": "Hello!", "agentId": "luna"}
+        assert call_kwargs["ip"] == "10.0.1.5"
+        assert call_kwargs["token"] == "test-gw-token"
+
+    @pytest.mark.asyncio
+    async def test_no_container_sends_error(self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api):
+        """No container should send error to frontend, not call pool."""
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            agent_name="luna",
+            message="Hello!",
+        )
+        mock_pool.send_rpc.assert_not_called()
+        mock_mgmt_api.send_message.assert_called_once()
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert "No container" in sent_msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_no_ip_sends_error(self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api):
+        """Container without IP should send starting-up error."""
+        container = MagicMock()
+        mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, None))
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            agent_name="luna",
+            message="Hello!",
+        )
+        mock_pool.send_rpc.assert_not_called()
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert "starting up" in sent_msg["message"]
+
+    @pytest.mark.asyncio
+    async def test_rpc_error_sends_error_to_frontend(
+        self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api, container_with_ip
+    ):
+        """RPC failure should send error message to frontend."""
+        mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))
+        await _process_agent_chat_background(
+            connection_id="conn-1",
+            user_id="user-1",
+            agent_name="luna",
+            message="Hello!",
+        )
+        mock_mgmt_api.send_message.assert_called_once()
+        sent_msg = mock_mgmt_api.send_message.call_args[0][1]
+        assert sent_msg["type"] == "error"
+        assert "Connection lost" in sent_msg["message"]

@@ -21,6 +21,19 @@ from core.containers.ecs_manager import GATEWAY_PORT
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
+_CHAT_EVENTS = frozenset(
+    {
+        "text_delta",
+        "block_final",
+        "turn_started",
+        "turn_completed",
+        "turn_failed",
+        "turn_cancelled",
+        "tool_started",
+        "tool_finished",
+        "status",
+    }
+)
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
@@ -106,6 +119,33 @@ class GatewayConnection:
         finally:
             self._pending_rpcs.pop(req_id, None)
 
+    @staticmethod
+    def _transform_chat_event(event_name: str, payload: dict) -> dict | None:
+        """Transform an OpenClaw chat event into the frontend chat message format.
+
+        Returns a dict to send to the frontend, or None to skip the event.
+        """
+        if event_name == "text_delta":
+            content = payload.get("delta") or payload.get("content") or ""
+            return {"type": "chunk", "content": content} if content else None
+        if event_name == "block_final":
+            content = payload.get("text") or payload.get("content") or ""
+            return {"type": "chunk", "content": content} if content else None
+        if event_name == "turn_completed":
+            return {"type": "done"}
+        if event_name in ("turn_failed", "turn_cancelled"):
+            if event_name == "turn_cancelled":
+                msg = "Agent run was cancelled"
+            elif isinstance(payload.get("error"), dict):
+                msg = payload["error"].get("message", "Agent run failed")
+            else:
+                msg = str(payload.get("error", "Agent run failed"))
+            return {"type": "error", "message": msg}
+        if event_name in ("turn_started", "tool_started"):
+            return {"type": "heartbeat"}
+        # tool_finished, status — skip
+        return None
+
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message."""
         msg_type = data.get("type")
@@ -122,12 +162,27 @@ class GatewayConnection:
             return
 
         if msg_type == "event":
-            # Forward to all frontend connections
-            for conn_id in list(self._frontend_connections):
-                try:
-                    self._management_api.send_message(conn_id, data)
-                except Exception:
-                    logger.warning("Failed to forward event to %s", conn_id)
+            event_name = data.get("event", "")
+            payload = data.get("payload", {})
+            logger.debug("Gateway event: %s payload=%s", event_name, payload)
+
+            if event_name in _CHAT_EVENTS:
+                # Transform chat events to frontend chunk/done/error/heartbeat format
+                transformed = self._transform_chat_event(event_name, payload)
+                if transformed is None:
+                    return
+                for conn_id in list(self._frontend_connections):
+                    try:
+                        self._management_api.send_message(conn_id, transformed)
+                    except Exception:
+                        logger.warning("Failed to forward chat event to %s", conn_id)
+            else:
+                # Forward non-chat events as-is for SWR revalidation
+                for conn_id in list(self._frontend_connections):
+                    try:
+                        self._management_api.send_message(conn_id, data)
+                    except Exception:
+                        logger.warning("Failed to forward event to %s", conn_id)
             return
 
     async def _reader_loop(self) -> None:
