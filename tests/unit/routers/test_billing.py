@@ -118,11 +118,10 @@ class TestStripeWebhook:
 
     @pytest.mark.asyncio
     @patch("routers.billing.get_workspace")
-    @patch("routers.billing.get_config_store")
     @patch("routers.billing.get_ecs_manager")
     @patch("routers.billing.stripe")
     async def test_subscription_created_webhook(
-        self, mock_stripe, mock_get_ecs, mock_get_config, mock_get_workspace, async_client, billing_account, db_session
+        self, mock_stripe, mock_get_ecs, mock_get_workspace, async_client, billing_account, db_session
     ):
         """Should update billing account and provision ECS service on subscription.created."""
         mock_stripe.Webhook.construct_event.return_value = {
@@ -142,10 +141,6 @@ class TestStripeWebhook:
         mock_ecs.create_user_service.return_value = "openclaw-user_web"
         mock_get_ecs.return_value = mock_ecs
 
-        # Mock config store
-        mock_config = MagicMock()
-        mock_get_config.return_value = mock_config
-
         # Mock workspace
         mock_ws = MagicMock()
         mock_get_workspace.return_value = mock_ws
@@ -160,10 +155,14 @@ class TestStripeWebhook:
         )
         assert response.status_code == 200
 
-        # Verify ECS provisioning was called
-        mock_config.put_config.assert_called_once()
-        mock_ws.ensure_user_dir.assert_called_once_with("user_webhook_test")
+        # Verify ECS provisioning was called first (creates access point + dir)
         mock_ecs.create_user_service.assert_called_once()
+
+        # Verify config written to EFS after service creation
+        mock_ws.write_file.assert_called_once()
+        write_args = mock_ws.write_file.call_args
+        assert write_args[0][0] == "user_webhook_test"
+        assert write_args[0][1] == "openclaw.json"
 
     @pytest.mark.asyncio
     @patch("routers.billing.get_ecs_manager")

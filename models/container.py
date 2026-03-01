@@ -32,6 +32,8 @@ class Container(Base):
         user_id: Clerk user ID (unique -- one service per user).
         service_name: ECS service name (set after creation).
         task_arn: Current ECS task ARN (updated on deployment).
+        access_point_id: Per-user EFS access point ID for isolation.
+        task_definition_arn: Per-user ECS task definition revision ARN.
         gateway_token: Auth token for the OpenClaw gateway HTTP API.
         status: Service lifecycle state.
         created_at: When the service was first provisioned.
@@ -50,6 +52,10 @@ class Container(Base):
     # ECS Fargate fields
     service_name = Column(String, unique=True, nullable=True)
     task_arn = Column(String, nullable=True)
+
+    # Per-user EFS isolation
+    access_point_id = Column(String, nullable=True)
+    task_definition_arn = Column(String, nullable=True)
 
     # Auth
     gateway_token = Column(String, nullable=False)

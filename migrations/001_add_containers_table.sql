@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS containers (
     user_id VARCHAR NOT NULL,
     service_name VARCHAR,
     task_arn VARCHAR,
+    access_point_id VARCHAR,
+    task_definition_arn VARCHAR,
     gateway_token VARCHAR NOT NULL,
     status VARCHAR NOT NULL DEFAULT 'stopped',
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

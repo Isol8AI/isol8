@@ -1,5 +1,11 @@
 """S3-backed storage for per-user openclaw.json configs.
 
+.. deprecated::
+    Config is now written directly to EFS by the EC2 control plane
+    (see billing.py and workspace.py). This module is retained for
+    potential rollback but is no longer imported by the container
+    orchestration package (__init__.py).
+
 Each user's openclaw.json is stored at:
     s3://{bucket}/users/{user_id}/openclaw.json
 

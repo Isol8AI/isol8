@@ -50,7 +50,8 @@ class Settings(BaseSettings):
     CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
 
     # --- EFS ---
-    EFS_MOUNT_PATH: str = os.getenv("EFS_MOUNT_PATH", "/mnt/efs")
+    EFS_MOUNT_PATH: str = os.getenv("EFS_MOUNT_PATH", "/mnt/efs/users")
+    EFS_FILE_SYSTEM_ID: str = os.getenv("EFS_FILE_SYSTEM_ID", "")
 
     # --- S3 Config ---
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")

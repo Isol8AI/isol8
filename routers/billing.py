@@ -1,6 +1,5 @@
 """Billing API endpoints with ECS Fargate container provisioning."""
 
-import json
 import logging
 import secrets
 from datetime import date
@@ -12,9 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
-from core.containers import get_ecs_manager, get_config_store, get_workspace
+from core.containers import get_ecs_manager, get_workspace
 from core.containers.config import write_openclaw_config
-from core.containers.config_store import ConfigStoreError
 from core.containers.ecs_manager import EcsManagerError
 from core.containers.workspace import WorkspaceError
 from core.database import get_db
@@ -228,23 +226,23 @@ async def handle_stripe_webhook(
                 user_id = account.clerk_user_id
                 gateway_token = secrets.token_urlsafe(32)
 
-                # Write openclaw.json config to S3
+                # Create ECS Service first — this creates the per-user EFS
+                # access point, which in turn creates the user directory with
+                # correct UID=1000 ownership. Config must be written AFTER so
+                # the directory exists with proper permissions.
+                service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+
+                # Write openclaw.json config to EFS (root can write to
+                # UID=1000-owned directory; container can read 644 files)
                 config_json = write_openclaw_config(
                     region=settings.AWS_REGION,
                     brave_api_key=settings.BRAVE_API_KEY,
                     gateway_token=gateway_token,
                 )
-                config_dict = json.loads(config_json)
-                get_config_store().put_config(user_id, config_dict)
-
-                # Create EFS workspace directory
-                get_workspace().ensure_user_dir(user_id)
-
-                # Create ECS Service (also upserts Container DB row)
-                service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+                get_workspace().write_file(user_id, "openclaw.json", config_json)
 
                 logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
-            except (EcsManagerError, ConfigStoreError, WorkspaceError) as e:
+            except (EcsManagerError, WorkspaceError) as e:
                 logger.error("Failed to provision ECS service for user %s: %s", account.clerk_user_id, e)
 
     elif event_type == "customer.subscription.updated":

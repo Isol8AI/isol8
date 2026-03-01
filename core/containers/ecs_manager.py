@@ -2,8 +2,9 @@
 ECS Fargate service manager for per-user OpenClaw gateways.
 
 Each subscriber gets a dedicated ECS Service (desiredCount 0/1) that
-runs an OpenClaw gateway container. Task IPs are discovered via the
-ECS describe_tasks API.
+runs an OpenClaw gateway container with a per-user EFS access point
+for data isolation. Task IPs are discovered via the ECS describe_tasks
+API.
 """
 
 import hashlib
@@ -36,11 +37,13 @@ class EcsManager:
 
     def __init__(self):
         self._ecs = boto3.client("ecs", region_name=settings.AWS_REGION)
+        self._efs = boto3.client("efs", region_name=settings.AWS_REGION)
         self._cluster = settings.ECS_CLUSTER_ARN
         self._task_def = settings.ECS_TASK_DEFINITION
         self._subnets = [s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()]
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
+        self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
 
     def _service_name(self, user_id: str) -> str:
         """Generate deterministic, collision-resistant service name from user_id.
@@ -52,13 +55,147 @@ class EcsManager:
         uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:12]
         return f"openclaw-{uid_hash}"
 
-    async def create_user_service(self, user_id: str, gateway_token: str, db: AsyncSession) -> str:
-        """Create an ECS Service for a user.
+    # ------------------------------------------------------------------
+    # Per-user EFS access points
+    # ------------------------------------------------------------------
 
-        The gateway container starts with --allow-unconfigured, so no token
-        override is needed at service creation time. The gateway_token is
-        stored in the Container DB record for later use when routing
-        requests through the HTTP client.
+    def _create_access_point(self, user_id: str) -> str:
+        """Create a per-user EFS access point rooted at /users/{user_id}.
+
+        The access point enforces POSIX UID/GID 1000 (matching the
+        OpenClaw container's node user) and creates the root directory
+        with 0755 permissions if it doesn't exist.
+
+        Args:
+            user_id: Clerk user ID.
+
+        Returns:
+            The access point ID (e.g. "fsap-0abc123...").
+
+        Raises:
+            EcsManagerError: If the EFS API call fails.
+        """
+        try:
+            resp = self._efs.create_access_point(
+                FileSystemId=self._efs_file_system_id,
+                PosixUser={"Uid": 1000, "Gid": 1000},
+                RootDirectory={
+                    "Path": f"/users/{user_id}",
+                    "CreationInfo": {
+                        "OwnerUid": 1000,
+                        "OwnerGid": 1000,
+                        "Permissions": "0755",
+                    },
+                },
+                Tags=[
+                    {"Key": "user_id", "Value": user_id},
+                    {"Key": "ManagedBy", "Value": "isol8-backend"},
+                ],
+            )
+            access_point_id = resp["AccessPointId"]
+            logger.info("Created EFS access point %s for user %s", access_point_id, user_id)
+            return access_point_id
+        except Exception as e:
+            raise EcsManagerError(
+                f"Failed to create EFS access point for user {user_id}: {e}",
+                user_id,
+            )
+
+    def _delete_access_point(self, access_point_id: str) -> None:
+        """Delete an EFS access point. Idempotent (ignores not-found)."""
+        try:
+            self._efs.delete_access_point(AccessPointId=access_point_id)
+            logger.info("Deleted EFS access point %s", access_point_id)
+        except self._efs.exceptions.AccessPointNotFound:
+            logger.warning("Access point %s already deleted", access_point_id)
+        except Exception as e:
+            logger.error("Failed to delete access point %s: %s", access_point_id, e)
+
+    # ------------------------------------------------------------------
+    # Per-user task definition revisions
+    # ------------------------------------------------------------------
+
+    def _register_task_definition(self, access_point_id: str) -> str:
+        """Clone the base task definition with a per-user EFS access point.
+
+        Reads the Terraform-managed base task definition, replaces the
+        EFS volume's access point ID with the per-user one, and registers
+        a new revision in the same family.
+
+        Args:
+            access_point_id: The per-user EFS access point ID.
+
+        Returns:
+            The ARN of the newly registered task definition revision.
+
+        Raises:
+            EcsManagerError: If the ECS API calls fail.
+        """
+        try:
+            # Read the base task definition
+            desc_resp = self._ecs.describe_task_definition(taskDefinition=self._task_def)
+            base = desc_resp["taskDefinition"]
+
+            # Clone volumes with per-user access point
+            volumes = []
+            for vol in base.get("volumes", []):
+                vol_copy = dict(vol)
+                efs_config = vol_copy.get("efsVolumeConfiguration")
+                if efs_config:
+                    efs_copy = dict(efs_config)
+                    auth_config = dict(efs_copy.get("authorizationConfig", {}))
+                    auth_config["accessPointId"] = access_point_id
+                    efs_copy["authorizationConfig"] = auth_config
+                    vol_copy["efsVolumeConfiguration"] = efs_copy
+                volumes.append(vol_copy)
+
+            # Register new revision in the same family
+            reg_kwargs = dict(
+                family=base["family"],
+                taskRoleArn=base.get("taskRoleArn", ""),
+                executionRoleArn=base.get("executionRoleArn", ""),
+                networkMode=base.get("networkMode", "awsvpc"),
+                containerDefinitions=base["containerDefinitions"],
+                volumes=volumes,
+                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
+                cpu=base.get("cpu", "256"),
+                memory=base.get("memory", "512"),
+            )
+            # runtimePlatform is optional; passing None causes ParamValidationError
+            if base.get("runtimePlatform"):
+                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
+
+            reg_resp = self._ecs.register_task_definition(**reg_kwargs)
+            task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            logger.info("Registered per-user task definition %s", task_def_arn)
+            return task_def_arn
+        except Exception as e:
+            raise EcsManagerError(
+                f"Failed to register per-user task definition: {e}",
+                user_id="",
+            )
+
+    def _deregister_task_definition(self, task_definition_arn: str) -> None:
+        """Deregister a per-user task definition revision. Idempotent."""
+        try:
+            self._ecs.deregister_task_definition(taskDefinition=task_definition_arn)
+            logger.info("Deregistered task definition %s", task_definition_arn)
+        except Exception as e:
+            logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
+
+    # ------------------------------------------------------------------
+    # Service lifecycle
+    # ------------------------------------------------------------------
+
+    async def create_user_service(self, user_id: str, gateway_token: str, db: AsyncSession) -> str:
+        """Create an ECS Service for a user with per-user EFS isolation.
+
+        1. Creates a per-user EFS access point
+        2. Registers a per-user task definition revision
+        3. Creates the ECS service pointing to the per-user task def
+        4. Upserts the Container DB record
+
+        On failure, rolls back created resources.
 
         Args:
             user_id: Clerk user ID.
@@ -69,15 +206,24 @@ class EcsManager:
             The ECS service name.
 
         Raises:
-            EcsManagerError: If the ECS create_service call fails.
+            EcsManagerError: If any step fails.
         """
         service_name = self._service_name(user_id)
+        access_point_id = None
+        task_def_arn = None
 
         try:
+            # Step 1: Create per-user EFS access point
+            access_point_id = self._create_access_point(user_id)
+
+            # Step 2: Register per-user task definition with that access point
+            task_def_arn = self._register_task_definition(access_point_id)
+
+            # Step 3: Create ECS service with per-user task definition
             create_kwargs = dict(
                 cluster=self._cluster,
                 serviceName=service_name,
-                taskDefinition=self._task_def,
+                taskDefinition=task_def_arn,
                 desiredCount=1,
                 launchType="FARGATE",
                 networkConfiguration={
@@ -93,7 +239,19 @@ class EcsManager:
             if settings.ENVIRONMENT != "prod":
                 create_kwargs["enableExecuteCommand"] = True
             self._ecs.create_service(**create_kwargs)
+        except EcsManagerError:
+            # Rollback already-created resources
+            if task_def_arn:
+                self._deregister_task_definition(task_def_arn)
+            if access_point_id:
+                self._delete_access_point(access_point_id)
+            raise
         except Exception as e:
+            # Rollback already-created resources
+            if task_def_arn:
+                self._deregister_task_definition(task_def_arn)
+            if access_point_id:
+                self._delete_access_point(access_point_id)
             logger.error(
                 "Failed to create ECS service %s for user %s: %s",
                 service_name,
@@ -102,18 +260,22 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to create ECS service: {e}", user_id)
 
-        # Upsert container record
+        # Step 4: Upsert container record
         result = await db.execute(select(Container).where(Container.user_id == user_id))
         container = result.scalar_one_or_none()
         if container:
             container.service_name = service_name
             container.gateway_token = gateway_token
+            container.access_point_id = access_point_id
+            container.task_definition_arn = task_def_arn
             container.status = "provisioning"
         else:
             container = Container(
                 user_id=user_id,
                 service_name=service_name,
                 gateway_token=gateway_token,
+                access_point_id=access_point_id,
+                task_definition_arn=task_def_arn,
                 status="provisioning",
             )
             db.add(container)
@@ -194,10 +356,12 @@ class EcsManager:
         logger.info("Started ECS service %s for user %s", service_name, user_id)
 
     async def delete_user_service(self, user_id: str, db: AsyncSession) -> None:
-        """Remove a user's ECS service entirely.
+        """Remove a user's ECS service and per-user resources entirely.
 
-        Scales to 0 first, then deletes the service and removes the
-        Container DB record.
+        1. Scale to 0 and delete ECS service
+        2. Deregister per-user task definition (if present)
+        3. Delete per-user EFS access point (if present)
+        4. Delete Container DB record
 
         Args:
             user_id: Clerk user ID.
@@ -229,14 +393,26 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
-        # Delete container record from DB
+        # Clean up per-user resources and delete container record from DB
         result = await db.execute(select(Container).where(Container.user_id == user_id))
         container = result.scalar_one_or_none()
         if container:
+            # Deregister per-user task definition
+            if container.task_definition_arn:
+                self._deregister_task_definition(container.task_definition_arn)
+
+            # Delete per-user EFS access point
+            if container.access_point_id:
+                self._delete_access_point(container.access_point_id)
+
             await db.delete(container)
             await db.commit()
 
         logger.info("Deleted ECS service %s for user %s", service_name, user_id)
+
+    # ------------------------------------------------------------------
+    # Discovery and health
+    # ------------------------------------------------------------------
 
     def discover_ip(self, service_name: str) -> str | None:
         """Discover a task's private IP via ECS describe_tasks API.

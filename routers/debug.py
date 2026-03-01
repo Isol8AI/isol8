@@ -4,7 +4,6 @@ Dev-only container provisioning endpoints.
 Bypasses Stripe for local testing — disabled in production.
 """
 
-import json
 import logging
 import secrets
 
@@ -14,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
-from core.containers import get_ecs_manager, get_config_store, get_workspace
+from core.containers import get_ecs_manager, get_workspace
 from core.containers.config import write_openclaw_config
 from core.containers.ecs_manager import EcsManagerError
 from core.database import get_db
@@ -60,15 +59,18 @@ async def provision_container(
 
     try:
         gateway_token = secrets.token_urlsafe(32)
+
+        # Create ECS service first (creates access point → dir with UID=1000)
+        service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+
+        # Then write config to EFS (access point already created the dir)
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             brave_api_key=settings.BRAVE_API_KEY,
             gateway_token=gateway_token,
         )
-        config_dict = json.loads(config_json)
-        get_config_store().put_config(user_id, config_dict)
-        get_workspace().ensure_user_dir(user_id)
-        service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+        get_workspace().write_file(user_id, "openclaw.json", config_json)
+
         return {
             "status": "provisioned",
             "service_name": service_name,
@@ -100,7 +102,6 @@ async def remove_container(
 
     try:
         await get_ecs_manager().delete_user_service(user_id, db)
-        get_config_store().delete_config(user_id)
         return {"status": "removed"}
     except EcsManagerError as e:
         logger.error("Dev remove failed for user %s: %s", user_id, e)
