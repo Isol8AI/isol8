@@ -14,7 +14,9 @@ from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
 from core.containers import get_ecs_manager, get_config_store, get_workspace
 from core.containers.config import write_openclaw_config
+from core.containers.config_store import ConfigStoreError
 from core.containers.ecs_manager import EcsManagerError
+from core.containers.workspace import WorkspaceError
 from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
@@ -242,7 +244,7 @@ async def handle_stripe_webhook(
                 service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
 
                 logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
-            except EcsManagerError as e:
+            except (EcsManagerError, ConfigStoreError, WorkspaceError) as e:
                 logger.error("Failed to provision ECS service for user %s: %s", account.clerk_user_id, e)
 
     elif event_type == "customer.subscription.updated":
