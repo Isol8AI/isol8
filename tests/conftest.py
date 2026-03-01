@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from core.auth import AuthContext
 from models.base import Base
 from models.user import User
-from models.agent_state import AgentState
 from models.audit_log import AuditLog
 from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
 from models.container import Container
@@ -81,7 +80,6 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(TownAgent.__table__.delete())
         await cleanup_session.execute(AuditLog.__table__.delete())
         await cleanup_session.execute(Container.__table__.delete())
-        await cleanup_session.execute(AgentState.__table__.delete())
         await cleanup_session.execute(User.__table__.delete())
         await cleanup_session.commit()
 

@@ -1,7 +1,6 @@
 """Tests for GooseTown router endpoints."""
 
 import pytest
-from models.agent_state import AgentState
 
 
 class TestTownOptIn:
@@ -9,13 +8,6 @@ class TestTownOptIn:
 
     @pytest.mark.asyncio
     async def test_opt_in_success(self, async_client, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         response = await async_client.post(
             "/api/v1/town/opt-in",
             json={
@@ -31,28 +23,12 @@ class TestTownOptIn:
         assert data["display_name"] == "Luna the Dreamer"
         assert data["is_active"] is True
 
-    @pytest.mark.asyncio
-    async def test_opt_in_agent_not_found(self, async_client, test_user):
-        response = await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agent_name": "ghost", "display_name": "Ghost"},
-        )
-
-        assert response.status_code == 400
-
 
 class TestTownOptOut:
     """Test POST /api/v1/town/opt-out."""
 
     @pytest.mark.asyncio
     async def test_opt_out_success(self, async_client, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         await async_client.post(
             "/api/v1/town/opt-in",
             json={"agent_name": "luna", "display_name": "Luna"},
@@ -108,13 +84,6 @@ class TestTownState:
 
     @pytest.mark.asyncio
     async def test_get_state_with_agents(self, async_client, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         await async_client.post(
             "/api/v1/town/opt-in",
             json={"agent_name": "luna", "display_name": "Luna"},
@@ -149,13 +118,6 @@ class TestTownDescriptions:
 
     @pytest.mark.asyncio
     async def test_get_descriptions_with_agents(self, async_client, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         await async_client.post(
             "/api/v1/town/opt-in",
             json={

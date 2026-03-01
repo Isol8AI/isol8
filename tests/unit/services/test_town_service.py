@@ -3,7 +3,6 @@
 import pytest
 
 from core.services.town_service import TownService
-from models.agent_state import AgentState
 
 
 class TestTownServiceOptIn:
@@ -15,13 +14,6 @@ class TestTownServiceOptIn:
 
     @pytest.mark.asyncio
     async def test_opt_in_creates_town_agent_and_state(self, service, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         town_agent = await service.opt_in(
             user_id=test_user.id,
             agent_name="luna",
@@ -35,23 +27,7 @@ class TestTownServiceOptIn:
         assert town_agent.is_active is True
 
     @pytest.mark.asyncio
-    async def test_opt_in_fails_if_agent_not_found(self, service, test_user):
-        with pytest.raises(ValueError, match="not found"):
-            await service.opt_in(
-                user_id=test_user.id,
-                agent_name="nonexistent",
-                display_name="Ghost",
-            )
-
-    @pytest.mark.asyncio
     async def test_opt_out_deactivates_agent(self, service, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         await service.opt_in(
             user_id=test_user.id,
             agent_name="luna",
@@ -80,13 +56,6 @@ class TestTownServiceState:
             (test_user, "luna", "Luna"),
             (other_user, "rex", "Rex"),
         ]:
-            agent_state = AgentState(
-                user_id=user.id,
-                agent_name=name,
-            )
-            db_session.add(agent_state)
-            await db_session.flush()
-
             await service.opt_in(
                 user_id=user.id,
                 agent_name=name,
@@ -98,13 +67,6 @@ class TestTownServiceState:
 
     @pytest.mark.asyncio
     async def test_get_town_state(self, service, db_session, test_user):
-        agent_state = AgentState(
-            user_id=test_user.id,
-            agent_name="luna",
-        )
-        db_session.add(agent_state)
-        await db_session.flush()
-
         await service.opt_in(
             user_id=test_user.id,
             agent_name="luna",
@@ -118,7 +80,7 @@ class TestTownServiceState:
 
 
 class TestTownServiceSeedAgent:
-    """Test seed_agent for default agents (bypasses AgentState check)."""
+    """Test seed_agent for default system-generated agents."""
 
     @pytest.fixture
     def service(self, db_session):
@@ -212,12 +174,6 @@ class TestTownServiceRelationships:
             (test_user, "luna", "Luna"),
             (other_user, "rex", "Rex"),
         ]:
-            agent_state = AgentState(
-                user_id=user.id,
-                agent_name=name,
-            )
-            db_session.add(agent_state)
-            await db_session.flush()
             await service.opt_in(user_id=user.id, agent_name=name, display_name=display)
 
         agents = await service.get_active_agents()
@@ -233,12 +189,6 @@ class TestTownServiceRelationships:
             (test_user, "luna", "Luna"),
             (other_user, "rex", "Rex"),
         ]:
-            agent_state = AgentState(
-                user_id=user.id,
-                agent_name=name,
-            )
-            db_session.add(agent_state)
-            await db_session.flush()
             await service.opt_in(user_id=user.id, agent_name=name, display_name=display)
 
         agents = await service.get_active_agents()

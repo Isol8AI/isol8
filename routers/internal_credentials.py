@@ -19,12 +19,14 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import boto3
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
-from core.containers import get_container_manager
-from core.containers.manager import ContainerInfo
+from core.database import get_db
+from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -51,12 +53,11 @@ class EcsCredentialResponse(BaseModel):
     Expiration: str  # ISO 8601 UTC
 
 
-def _find_user_by_token(cache: dict[str, ContainerInfo], token: str) -> Optional[str]:
-    """Look up user_id by gateway_token. O(n) scan, fine for ~1000 containers."""
-    for user_id, info in cache.items():
-        if info.gateway_token == token:
-            return user_id
-    return None
+async def _find_user_by_token(db: AsyncSession, token: str) -> Optional[str]:
+    """Look up user_id by gateway_token from the Container DB table."""
+    result = await db.execute(select(Container.user_id).where(Container.gateway_token == token))
+    row = result.scalar_one_or_none()
+    return row
 
 
 def _get_or_refresh_credentials(user_id: str) -> CachedCredentials:
@@ -96,6 +97,7 @@ def _get_or_refresh_credentials(user_id: str) -> CachedCredentials:
 )
 async def get_container_credentials(
     authorization: Optional[str] = Header(None),
+    db: AsyncSession = Depends(get_db),
 ) -> EcsCredentialResponse:
     """Return temporary AWS credentials for the requesting container."""
     if not authorization:
@@ -107,8 +109,7 @@ async def get_container_credentials(
     if token.lower().startswith("bearer "):
         token = token[7:]
 
-    cm = get_container_manager()
-    user_id = _find_user_by_token(cm._cache, token)
+    user_id = await _find_user_by_token(db, token)
 
     if not user_id:
         logger.warning("Credential request with unknown token (first 8: %s...)", authorization[:8])

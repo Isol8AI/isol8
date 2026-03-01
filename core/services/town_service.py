@@ -8,7 +8,6 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.agent_state import AgentState
 from models.town import TownAgent, TownState, TownConversation, TownRelationship
 
 logger = logging.getLogger(__name__)
@@ -28,18 +27,11 @@ class TownService:
         personality_summary: Optional[str] = None,
         avatar_config: Optional[dict] = None,
     ) -> TownAgent:
-        """Register an agent in GooseTown."""
-        result = await self.db.execute(
-            select(AgentState).where(
-                AgentState.user_id == user_id,
-                AgentState.agent_name == agent_name,
-            )
-        )
-        agent_state = result.scalar_one_or_none()
+        """Register an agent in GooseTown.
 
-        if not agent_state:
-            raise ValueError(f"Agent '{agent_name}' not found for user {user_id}")
-
+        Agent name validation is the caller's responsibility (agents now
+        live on EFS, so there is no DB-side AgentState to check).
+        """
         existing = await self._get_town_agent(user_id, agent_name)
         if existing:
             if not existing.is_active:
@@ -198,7 +190,7 @@ class TownService:
         position_y: float = 0.0,
         home_location: str = "home",
     ) -> TownAgent:
-        """Seed a default agent directly, bypassing AgentState/encryption checks.
+        """Seed a default agent directly.
 
         Used by TownSimulation.seed_default_agents() for system-generated agents.
         If the agent already exists and is active, returns it unchanged.
