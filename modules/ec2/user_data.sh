@@ -144,6 +144,7 @@ for i in 1 2 3 4 5; do
   /bin/sleep 10
 done
 mountpoint -q /mnt/efs || { echo "FATAL: EFS mount failed after 5 attempts"; exit 1; }
+chmod 1777 /mnt/efs
 echo "${efs_file_system_id}:/ /mnt/efs efs _netdev,tls 0 0" >> /etc/fstab
 
 # -----------------------------------------------------------------------------
