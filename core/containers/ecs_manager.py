@@ -2,10 +2,11 @@
 ECS Fargate service manager for per-user OpenClaw gateways.
 
 Each subscriber gets a dedicated ECS Service (desiredCount 0/1) that
-runs an OpenClaw gateway container. Cloud Map handles service discovery
-so the control plane can route requests to the correct task IP.
+runs an OpenClaw gateway container. Task IPs are discovered via the
+ECS describe_tasks API.
 """
 
+import hashlib
 import logging
 import urllib.request
 import urllib.error
@@ -35,17 +36,21 @@ class EcsManager:
 
     def __init__(self):
         self._ecs = boto3.client("ecs", region_name=settings.AWS_REGION)
-        self._sd = boto3.client("servicediscovery", region_name=settings.AWS_REGION)
         self._cluster = settings.ECS_CLUSTER_ARN
         self._task_def = settings.ECS_TASK_DEFINITION
         self._subnets = [s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()]
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
-        self._namespace = settings.CLOUD_MAP_NAMESPACE_ID
 
     def _service_name(self, user_id: str) -> str:
-        """Generate deterministic service name from user_id."""
-        return f"openclaw-{user_id[:8]}"
+        """Generate deterministic, collision-resistant service name from user_id.
+
+        ECS service names must be <= 255 chars. We use a SHA-256 hash
+        truncated to 12 hex chars (48 bits) for uniqueness while keeping
+        names short and readable.
+        """
+        uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:12]
+        return f"openclaw-{uid_hash}"
 
     async def create_user_service(self, user_id: str, gateway_token: str, db: AsyncSession) -> str:
         """Create an ECS Service for a user.
@@ -69,7 +74,7 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         try:
-            self._ecs.create_service(
+            create_kwargs = dict(
                 cluster=self._cluster,
                 serviceName=service_name,
                 taskDefinition=self._task_def,
@@ -83,8 +88,11 @@ class EcsManager:
                     }
                 },
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
-                enableExecuteCommand=True,
             )
+            # Only enable ECS Exec for non-production environments
+            if settings.ENVIRONMENT != "prod":
+                create_kwargs["enableExecuteCommand"] = True
+            self._ecs.create_service(**create_kwargs)
         except Exception as e:
             logger.error(
                 "Failed to create ECS service %s for user %s: %s",
@@ -231,25 +239,47 @@ class EcsManager:
         logger.info("Deleted ECS service %s for user %s", service_name, user_id)
 
     def discover_ip(self, service_name: str) -> str | None:
-        """Discover a task's private IP via Cloud Map service discovery.
+        """Discover a task's private IP via ECS describe_tasks API.
+
+        Lists running tasks for the given ECS service, then describes
+        them to extract the private IPv4 address from the ENI attachment.
+        This is more reliable than Cloud Map and ensures per-service
+        isolation (each service's tasks are queried independently).
 
         Args:
-            service_name: The ECS service name registered in Cloud Map.
+            service_name: The ECS service name.
 
         Returns:
-            The task's private IPv4 address, or None if not found.
+            The task's private IPv4 address, or None if no running task.
         """
         try:
-            response = self._sd.discover_instances(
-                NamespaceName=self._namespace,
-                ServiceName=service_name,
+            # List tasks for this specific service
+            list_resp = self._ecs.list_tasks(
+                cluster=self._cluster,
+                serviceName=service_name,
+                desiredStatus="RUNNING",
             )
-            instances = response.get("Instances", [])
-            if instances:
-                attrs = instances[0].get("Attributes", {})
-                return attrs.get("AWS_INSTANCE_IPV4")
+            task_arns = list_resp.get("taskArns", [])
+            if not task_arns:
+                return None
+
+            # Describe the first running task to get its ENI IP
+            desc_resp = self._ecs.describe_tasks(
+                cluster=self._cluster,
+                tasks=[task_arns[0]],
+            )
+            tasks = desc_resp.get("tasks", [])
+            if not tasks:
+                return None
+
+            # Extract private IP from ENI attachment
+            for attachment in tasks[0].get("attachments", []):
+                if attachment.get("type") == "ElasticNetworkInterface":
+                    for detail in attachment.get("details", []):
+                        if detail.get("name") == "privateIPv4Address":
+                            return detail.get("value")
         except Exception as e:
-            logger.error("Cloud Map discovery failed for %s: %s", service_name, e)
+            logger.error("ECS task discovery failed for %s: %s", service_name, e)
         return None
 
     def is_healthy(self, ip: str) -> bool:
@@ -277,6 +307,46 @@ class EcsManager:
             return e.code < 500
         except Exception:
             return False
+
+    async def resolve_running_container(self, user_id: str, db: AsyncSession) -> tuple[Container | None, str | None]:
+        """Look up a user's container and discover its task IP.
+
+        Accepts containers in "provisioning" or "running" status.
+        If a provisioning container's task is healthy, automatically
+        transitions the status to "running".
+
+        Args:
+            user_id: Clerk user ID.
+            db: Async database session.
+
+        Returns:
+            Tuple of (Container, task_ip) or (None, None) if no active container.
+        """
+        result = await db.execute(
+            select(Container).where(
+                Container.user_id == user_id,
+                Container.status.in_(["provisioning", "running"]),
+            )
+        )
+        container = result.scalar_one_or_none()
+        if not container:
+            return None, None
+
+        ip = self.discover_ip(container.service_name)
+        if not ip:
+            return container, None
+
+        # Auto-transition provisioning → running once the task is reachable
+        if container.status == "provisioning" and self.is_healthy(ip):
+            container.status = "running"
+            await db.commit()
+            logger.info(
+                "Container %s for user %s transitioned to running",
+                container.service_name,
+                user_id,
+            )
+
+        return container, ip
 
     async def get_service_status(self, user_id: str, db: AsyncSession) -> Container | None:
         """Get the Container record for a user.

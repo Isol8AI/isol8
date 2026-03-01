@@ -18,7 +18,6 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from websockets import connect as ws_connect
 
@@ -26,7 +25,6 @@ from core.auth import AuthContext, get_current_user
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_db
-from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -142,23 +140,14 @@ async def container_rpc(
 ):
     user_id = auth.user_id
 
-    # Look up container from DB
-    result = await db.execute(
-        select(Container).where(
-            Container.user_id == user_id,
-            Container.status == "running",
-        )
-    )
-    container = result.scalar_one_or_none()
+    # Look up container and discover task IP
+    ecs_manager = get_ecs_manager()
+    container, ip = await ecs_manager.resolve_running_container(user_id, db)
     if not container:
         raise HTTPException(
             status_code=404,
             detail="No running container. Subscribe to access the control panel.",
         )
-
-    # Discover IP via Cloud Map
-    ecs_manager = get_ecs_manager()
-    ip = ecs_manager.discover_ip(container.service_name)
     if not ip:
         raise HTTPException(status_code=502, detail="Container gateway is starting up")
 

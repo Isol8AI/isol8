@@ -22,16 +22,9 @@ from models.container import Container
 def mock_ecs_client():
     """Create a mock ECS boto3 client."""
     client = MagicMock()
-    client.create_service.return_value = {"service": {"serviceName": "openclaw-user_tes"}}
+    client.create_service.return_value = {"service": {"serviceName": "openclaw-f4ae64abb2db"}}
     client.update_service.return_value = {}
     client.delete_service.return_value = {}
-    return client
-
-
-@pytest.fixture
-def mock_sd_client():
-    """Create a mock ServiceDiscovery boto3 client."""
-    client = MagicMock()
     return client
 
 
@@ -40,23 +33,20 @@ def mock_settings():
     """Mock settings with test ECS configuration."""
     with patch("core.containers.ecs_manager.settings") as s:
         s.AWS_REGION = "us-east-1"
+        s.ENVIRONMENT = "dev"
         s.ECS_CLUSTER_ARN = "arn:aws:ecs:us-east-1:123456789:cluster/test-cluster"
         s.ECS_TASK_DEFINITION = "arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:1"
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
-        s.CLOUD_MAP_NAMESPACE_ID = "ns-test"
         yield s
 
 
 @pytest.fixture
-def manager(mock_settings, mock_ecs_client, mock_sd_client):
+def manager(mock_settings, mock_ecs_client):
     """Create an EcsManager with mocked boto3 clients."""
     with patch("core.containers.ecs_manager.boto3") as mock_boto3:
-        mock_boto3.client.side_effect = lambda service, **kwargs: {
-            "ecs": mock_ecs_client,
-            "servicediscovery": mock_sd_client,
-        }[service]
+        mock_boto3.client.return_value = mock_ecs_client
         mgr = EcsManager()
     return mgr
 
@@ -75,7 +65,7 @@ def mock_db():
 
 
 def _make_container(
-    user_id="user_test_123", service_name="openclaw-user_tes", gateway_token="tok-abc", status="running"
+    user_id="user_test_123", service_name="openclaw-f4ae64abb2db", gateway_token="tok-abc", status="running"
 ):
     """Helper to create a Container model instance for mocking."""
     c = Container(
@@ -93,22 +83,34 @@ def _make_container(
 
 
 class TestServiceNaming:
-    """Test deterministic service name generation."""
+    """Test deterministic, collision-resistant service name generation."""
 
-    def test_service_name_truncates(self, manager):
-        """Service name uses first 8 chars of user_id."""
+    def test_service_name_is_deterministic(self, manager):
+        """Same user_id always produces the same service name."""
+        name1 = manager._service_name("user_test_123")
+        name2 = manager._service_name("user_test_123")
+        assert name1 == name2
+
+    def test_service_name_uses_hash(self, manager):
+        """Service name uses hash prefix, not raw user_id."""
         name = manager._service_name("user_test_123_long_id")
-        assert name == "openclaw-user_tes"
+        assert name.startswith("openclaw-")
+        # Hash portion is 12 hex chars
+        hash_part = name.replace("openclaw-", "")
+        assert len(hash_part) == 12
+        assert all(c in "0123456789abcdef" for c in hash_part)
 
-    def test_service_name_short_id(self, manager):
-        """Short user_id is used as-is."""
-        name = manager._service_name("abc")
-        assert name == "openclaw-abc"
+    def test_service_name_different_users(self, manager):
+        """Different user IDs produce different service names."""
+        name1 = manager._service_name("user_2abc123")
+        name2 = manager._service_name("user_2xyz789")
+        assert name1 != name2
 
-    def test_service_name_exact_8(self, manager):
-        """Exactly 8-char user_id works."""
-        name = manager._service_name("12345678")
-        assert name == "openclaw-12345678"
+    def test_service_name_similar_prefix_no_collision(self, manager):
+        """Users sharing a prefix (e.g. 'user_') get unique names."""
+        name1 = manager._service_name("user_2aaaaaa")
+        name2 = manager._service_name("user_2aaaaaab")
+        assert name1 != name2
 
 
 # ---------------------------------------------------------------------------
@@ -165,13 +167,13 @@ class TestCreateUserService:
 
         service_name = await manager.create_user_service("user_test_123", "token-abc", mock_db)
 
-        assert service_name == "openclaw-user_tes"
+        assert service_name == "openclaw-f4ae64abb2db"
 
         # Verify ECS create_service called with correct args
         mock_ecs_client.create_service.assert_called_once()
         call_kwargs = mock_ecs_client.create_service.call_args.kwargs
         assert call_kwargs["cluster"] == manager._cluster
-        assert call_kwargs["serviceName"] == "openclaw-user_tes"
+        assert call_kwargs["serviceName"] == "openclaw-f4ae64abb2db"
         assert call_kwargs["taskDefinition"] == manager._task_def
         assert call_kwargs["desiredCount"] == 1
         assert call_kwargs["launchType"] == "FARGATE"
@@ -183,7 +185,7 @@ class TestCreateUserService:
         mock_db.add.assert_called_once()
         added_container = mock_db.add.call_args[0][0]
         assert added_container.user_id == "user_test_123"
-        assert added_container.service_name == "openclaw-user_tes"
+        assert added_container.service_name == "openclaw-f4ae64abb2db"
         assert added_container.gateway_token == "token-abc"
         assert added_container.status == "provisioning"
         mock_db.commit.assert_awaited_once()
@@ -197,7 +199,7 @@ class TestCreateUserService:
 
         service_name = await manager.create_user_service("user_test_123", "new-token", mock_db)
 
-        assert service_name == "openclaw-user_tes"
+        assert service_name == "openclaw-f4ae64abb2db"
         # Should NOT call db.add — updates in place
         mock_db.add.assert_not_called()
         assert existing.gateway_token == "new-token"
@@ -237,7 +239,7 @@ class TestStopUserService:
 
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-user_tes",
+            service="openclaw-f4ae64abb2db",
             desiredCount=0,
         )
         assert existing.status == "stopped"
@@ -285,7 +287,7 @@ class TestStartUserService:
 
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-user_tes",
+            service="openclaw-f4ae64abb2db",
             desiredCount=1,
             forceNewDeployment=True,
         )
@@ -334,13 +336,13 @@ class TestDeleteUserService:
         # Verify update_service (scale to 0) called first
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-user_tes",
+            service="openclaw-f4ae64abb2db",
             desiredCount=0,
         )
         # Verify delete_service called
         mock_ecs_client.delete_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-user_tes",
+            service="openclaw-f4ae64abb2db",
             force=True,
         )
         # Verify DB record deleted
@@ -376,78 +378,89 @@ class TestDeleteUserService:
 
 
 class TestDiscoverIp:
-    """Test Cloud Map service discovery."""
+    """Test ECS-based task IP discovery."""
 
-    def test_returns_ip(self, manager, mock_sd_client):
-        """discover_ip returns the IPv4 address from Cloud Map."""
-        mock_sd_client.discover_instances.return_value = {
-            "Instances": [
+    def test_returns_ip(self, manager, mock_ecs_client):
+        """discover_ip returns the private IPv4 from ECS describe_tasks."""
+        mock_ecs_client.list_tasks.return_value = {
+            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
+        }
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
                 {
-                    "InstanceId": "task-abc",
-                    "Attributes": {
-                        "AWS_INSTANCE_IPV4": "10.0.1.42",
-                        "AWS_INSTANCE_PORT": "18789",
-                    },
+                    "taskArn": "arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [
+                                {"name": "subnetId", "value": "subnet-aaa"},
+                                {"name": "privateIPv4Address", "value": "10.0.1.42"},
+                            ],
+                        }
+                    ],
                 }
             ]
         }
 
-        ip = manager.discover_ip("openclaw-user_tes")
+        ip = manager.discover_ip("openclaw-abc123def4")
 
         assert ip == "10.0.1.42"
-        mock_sd_client.discover_instances.assert_called_once_with(
-            NamespaceName=manager._namespace,
-            ServiceName="openclaw-user_tes",
+        mock_ecs_client.list_tasks.assert_called_once_with(
+            cluster=manager._cluster,
+            serviceName="openclaw-abc123def4",
+            desiredStatus="RUNNING",
         )
 
-    def test_returns_none_when_no_instances(self, manager, mock_sd_client):
-        """discover_ip returns None when no instances found."""
-        mock_sd_client.discover_instances.return_value = {"Instances": []}
+    def test_returns_none_when_no_tasks(self, manager, mock_ecs_client):
+        """discover_ip returns None when no running tasks found."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
 
-        ip = manager.discover_ip("openclaw-user_tes")
+        ip = manager.discover_ip("openclaw-abc123def4")
         assert ip is None
 
-    def test_returns_none_on_error(self, manager, mock_sd_client):
+    def test_returns_none_on_error(self, manager, mock_ecs_client):
         """discover_ip returns None on SDK error."""
-        mock_sd_client.discover_instances.side_effect = ClientError(
-            {"Error": {"Code": "NamespaceNotFound", "Message": "not found"}},
-            "DiscoverInstances",
+        mock_ecs_client.list_tasks.side_effect = ClientError(
+            {"Error": {"Code": "ServiceNotFound", "Message": "not found"}},
+            "ListTasks",
         )
 
-        ip = manager.discover_ip("openclaw-user_tes")
+        ip = manager.discover_ip("openclaw-abc123def4")
         assert ip is None
 
-    def test_returns_none_when_no_ipv4_attr(self, manager, mock_sd_client):
-        """discover_ip returns None when instance lacks IPv4 attribute."""
-        mock_sd_client.discover_instances.return_value = {
-            "Instances": [
+    def test_returns_none_when_no_eni(self, manager, mock_ecs_client):
+        """discover_ip returns None when task has no ENI attachment."""
+        mock_ecs_client.list_tasks.return_value = {
+            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
+        }
+        mock_ecs_client.describe_tasks.return_value = {"tasks": [{"taskArn": "...", "attachments": []}]}
+
+        ip = manager.discover_ip("openclaw-abc123def4")
+        assert ip is None
+
+    def test_returns_none_when_no_ip_in_eni(self, manager, mock_ecs_client):
+        """discover_ip returns None when ENI lacks privateIPv4Address."""
+        mock_ecs_client.list_tasks.return_value = {
+            "taskArns": ["arn:aws:ecs:us-east-1:123456789:task/test-cluster/abc123"]
+        }
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
                 {
-                    "InstanceId": "task-abc",
-                    "Attributes": {},
+                    "taskArn": "...",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [
+                                {"name": "subnetId", "value": "subnet-aaa"},
+                            ],
+                        }
+                    ],
                 }
             ]
         }
 
-        ip = manager.discover_ip("openclaw-user_tes")
+        ip = manager.discover_ip("openclaw-abc123def4")
         assert ip is None
-
-    def test_returns_first_instance_ip(self, manager, mock_sd_client):
-        """discover_ip returns IP from the first instance when multiple exist."""
-        mock_sd_client.discover_instances.return_value = {
-            "Instances": [
-                {
-                    "InstanceId": "task-1",
-                    "Attributes": {"AWS_INSTANCE_IPV4": "10.0.1.1"},
-                },
-                {
-                    "InstanceId": "task-2",
-                    "Attributes": {"AWS_INSTANCE_IPV4": "10.0.1.2"},
-                },
-            ]
-        }
-
-        ip = manager.discover_ip("openclaw-user_tes")
-        assert ip == "10.0.1.1"
 
 
 # ---------------------------------------------------------------------------

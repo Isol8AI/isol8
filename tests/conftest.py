@@ -23,10 +23,10 @@ from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
 from models.container import Container
 from models.town import TownAgent, TownState, TownConversation, TownRelationship
 
-# Check TEST_DATABASE_URL first (explicit), then DATABASE_URL (CI sets this), then fallback to remote
+# Check TEST_DATABASE_URL first (explicit), then DATABASE_URL (CI sets this), then local Docker fallback
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or os.getenv(
     "DATABASE_URL",
-    "postgresql+asyncpg://postgres:AnkleTaker2314_@db.asisbbkdmtioeowicepp.supabase.co:5432/postgres",
+    "postgresql+asyncpg://postgres:postgres@localhost:5432/securechat",
 )
 
 

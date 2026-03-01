@@ -12,9 +12,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install build tools, curl (healthcheck), and Docker CLI (container management)
+# Install build tools and curl (healthcheck)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential curl ca-certificates docker.io \
+        build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -23,12 +23,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create workspace directories
-RUN mkdir -p /var/lib/isol8/containers
-
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser
-RUN chown -R appuser:appuser /var/lib/isol8/containers
 
 # Copy application code
 COPY --chown=appuser:appuser . .

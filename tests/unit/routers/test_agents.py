@@ -178,12 +178,13 @@ class TestAgentEndpoints:
         """Test deleting an agent."""
         mock_ws = MagicMock()
         mock_ws.list_agents.return_value = ["luna"]
-        mock_ws.user_path.return_value = Path("/mnt/efs/user_test_123")
+        mock_ws._resolve_user_file.return_value = Path("/mnt/efs/user_test_123/agents/luna")
         mock_get_ws.return_value = mock_ws
 
         response = await async_client.delete("/api/v1/agents/luna")
         assert response.status_code == 204
 
+        mock_ws._resolve_user_file.assert_called_once_with("user_test_123", "agents/luna")
         mock_shutil.rmtree.assert_called_once_with(Path("/mnt/efs/user_test_123/agents/luna"))
 
     @pytest.mark.asyncio

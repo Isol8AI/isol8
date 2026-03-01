@@ -10,7 +10,7 @@ import shutil
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
 
 from core.auth import get_current_user
@@ -87,7 +87,7 @@ async def create_agent(
     },
 )
 async def get_agent(
-    agent_name: str,
+    agent_name: str = Path(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$"),
     auth=Depends(get_current_user),
 ):
     workspace = get_workspace()
@@ -128,8 +128,8 @@ class UpdateAgentRequest(BaseModel):
     },
 )
 async def update_agent(
-    agent_name: str,
     request: UpdateAgentRequest,
+    agent_name: str = Path(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$"),
     auth=Depends(get_current_user),
 ):
     workspace = get_workspace()
@@ -161,7 +161,7 @@ async def update_agent(
     },
 )
 async def delete_agent(
-    agent_name: str,
+    agent_name: str = Path(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$"),
     auth=Depends(get_current_user),
 ):
     workspace = get_workspace()
@@ -171,10 +171,13 @@ async def delete_agent(
     if agent_name not in existing_agents:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
-    # Remove the entire agent directory from EFS
-    agent_dir = workspace.user_path(auth.user_id) / "agents" / agent_name
+    # Remove the entire agent directory from EFS (path-validated)
     try:
+        agent_dir = workspace._resolve_user_file(auth.user_id, f"agents/{agent_name}")
         shutil.rmtree(agent_dir)
+    except WorkspaceError as exc:
+        logger.error("Path validation failed for agent %s: %s", agent_name, exc)
+        raise HTTPException(status_code=400, detail="Invalid agent name") from exc
     except OSError as exc:
-        logger.error("Failed to delete agent directory %s: %s", agent_dir, exc)
+        logger.error("Failed to delete agent directory for %s: %s", agent_name, exc)
         raise HTTPException(status_code=500, detail="Failed to delete agent workspace") from exc

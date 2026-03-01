@@ -14,14 +14,12 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from sqlalchemy import select
 
 from core.containers import get_ecs_manager, GatewayHttpClient, GatewayRequestError
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
-from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -227,16 +225,11 @@ async def _process_agent_chat_background(
     management_api = get_management_api_client()
 
     try:
-        # Look up user's container from DB
+        # Look up user's container and discover task IP
+        ecs_manager = get_ecs_manager()
         session_factory = get_session_factory()
         async with session_factory() as db:
-            result = await db.execute(
-                select(Container).where(
-                    Container.user_id == user_id,
-                    Container.status == "running",
-                )
-            )
-            container = result.scalar_one_or_none()
+            container, ip = await ecs_manager.resolve_running_container(user_id, db)
 
         if not container:
             management_api.send_message(
@@ -247,10 +240,6 @@ async def _process_agent_chat_background(
                 },
             )
             return
-
-        # Discover task IP via Cloud Map
-        ecs_manager = get_ecs_manager()
-        ip = ecs_manager.discover_ip(container.service_name)
 
         if not ip:
             management_api.send_message(
