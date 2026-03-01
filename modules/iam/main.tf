@@ -421,11 +421,20 @@ resource "aws_iam_role_policy" "ec2_ecs_management" {
         Effect = "Allow"
         Action = [
           "elasticfilesystem:CreateAccessPoint",
-          "elasticfilesystem:DeleteAccessPoint",
           "elasticfilesystem:DescribeAccessPoints",
           "elasticfilesystem:TagResource"
         ]
         Resource = var.efs_file_system_arn
+      },
+      {
+        # Access point ARNs use a different path (access-point/fsap-*)
+        # so they require a separate resource scope
+        Effect = "Allow"
+        Action = [
+          "elasticfilesystem:DeleteAccessPoint",
+          "elasticfilesystem:TagResource"
+        ]
+        Resource = "arn:aws:elasticfilesystem:*:${data.aws_caller_identity.current.account_id}:access-point/*"
       },
       {
         Effect   = "Allow"
