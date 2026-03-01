@@ -38,12 +38,25 @@ class Settings(BaseSettings):
         """Parse CORS_ORIGINS as comma-separated list."""
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
-    # Per-user container configuration
-    CONTAINERS_ROOT: str = os.getenv("CONTAINERS_ROOT", "/var/lib/isol8/containers")
+    # --- ECS Fargate ---
+    ECS_CLUSTER_ARN: str = os.getenv("ECS_CLUSTER_ARN", "")
+    ECS_TASK_DEFINITION: str = os.getenv("ECS_TASK_DEFINITION", "")
+    ECS_SUBNETS: str = os.getenv("ECS_SUBNETS", "")  # comma-separated
+    ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
+
+    # --- Cloud Map ---
+    CLOUD_MAP_NAMESPACE_ID: str = os.getenv("CLOUD_MAP_NAMESPACE_ID", "")
+    CLOUD_MAP_SERVICE_ID: str = os.getenv("CLOUD_MAP_SERVICE_ID", "")
+    CLOUD_MAP_SERVICE_ARN: str = os.getenv("CLOUD_MAP_SERVICE_ARN", "")
+
+    # --- EFS ---
+    EFS_MOUNT_PATH: str = os.getenv("EFS_MOUNT_PATH", "/mnt/efs")
+
+    # --- S3 Config ---
+    S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
+
+    # --- OpenClaw ---
     OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
-    CONTAINER_PORT_START: int = int(os.getenv("CONTAINER_PORT_START", "19000"))
-    CONTAINER_PORT_END: int = int(os.getenv("CONTAINER_PORT_END", "19999"))
-    CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
