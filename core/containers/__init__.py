@@ -1,82 +1,76 @@
 """
-Per-user OpenClaw container orchestration.
+Per-user OpenClaw container orchestration (ECS Fargate).
 
-Each user gets a dedicated Docker container running an OpenClaw
-gateway instance.
+Each subscriber gets a dedicated ECS Service running an OpenClaw gateway.
+Agent workspaces live on EFS, openclaw.json configs live in S3, and
+Cloud Map handles service discovery for routing.
 """
 
 import logging
 from typing import Optional
 
-from core.containers.manager import ContainerManager, ContainerError
+from core.containers.ecs_manager import EcsManager, EcsManagerError
+from core.containers.config_store import ConfigStore, ConfigStoreError
+from core.containers.workspace import Workspace, WorkspaceError
 from core.containers.http_client import GatewayHttpClient, GatewayRequestError
 
 logger = logging.getLogger(__name__)
 
-_container_manager: Optional[ContainerManager] = None
+_ecs_manager: Optional[EcsManager] = None
+_config_store: Optional[ConfigStore] = None
+_workspace: Optional[Workspace] = None
 
 
-def get_container_manager() -> ContainerManager:
-    """Get the container manager singleton."""
-    global _container_manager
-    if _container_manager is None:
+def get_ecs_manager() -> EcsManager:
+    """Get the ECS manager singleton."""
+    global _ecs_manager
+    if _ecs_manager is None:
+        _ecs_manager = EcsManager()
+    return _ecs_manager
+
+
+def get_config_store() -> ConfigStore:
+    """Get the S3 config store singleton."""
+    global _config_store
+    if _config_store is None:
         from core.config import settings
 
-        _container_manager = ContainerManager(
-            containers_root=settings.CONTAINERS_ROOT,
-            openclaw_image=settings.OPENCLAW_IMAGE,
-            port_range_start=settings.CONTAINER_PORT_START,
-            port_range_end=settings.CONTAINER_PORT_END,
-        )
-    return _container_manager
+        _config_store = ConfigStore(bucket=settings.S3_CONFIG_BUCKET)
+    return _config_store
+
+
+def get_workspace() -> Workspace:
+    """Get the EFS workspace singleton."""
+    global _workspace
+    if _workspace is None:
+        from core.config import settings
+
+        _workspace = Workspace(mount_path=settings.EFS_MOUNT_PATH)
+    return _workspace
 
 
 async def startup_containers() -> None:
-    """Reconcile container state on application startup.
-
-    Reads gateway tokens from the containers DB table and passes them
-    to reconcile() so the in-memory cache has auth tokens for each
-    running container.
-    """
-    from sqlalchemy import select
-    from core.database import get_session_factory
-    from models.container import Container
-
-    # Read gateway tokens from DB
-    db_tokens: dict[str, str] = {}
-    try:
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            result = await db.execute(
-                select(Container.user_id, Container.gateway_token).where(Container.status == "running")
-            )
-            for row in result:
-                if row.gateway_token:
-                    db_tokens[row.user_id] = row.gateway_token
-        logger.info("Loaded %d gateway tokens from DB", len(db_tokens))
-    except Exception as e:
-        logger.warning("Failed to load container tokens from DB: %s", e)
-
-    manager = get_container_manager()
-    try:
-        manager.reconcile(db_tokens=db_tokens)
-        logger.info("Container reconciliation complete")
-    except Exception as e:
-        logger.warning("Container reconciliation failed: %s", e)
+    """No-op: ECS Services are always-on; no reconciliation needed at startup."""
+    logger.info("Container startup: ECS services are always-on, nothing to reconcile")
 
 
 async def shutdown_containers() -> None:
-    """Clean up container manager on shutdown (containers keep running)."""
-    global _container_manager
-    _container_manager = None
+    """No-op: ECS Services keep running across control-plane restarts."""
+    logger.info("Container shutdown: ECS services keep running")
 
 
 __all__ = [
-    "ContainerManager",
-    "ContainerError",
+    "EcsManager",
+    "EcsManagerError",
+    "ConfigStore",
+    "ConfigStoreError",
+    "Workspace",
+    "WorkspaceError",
     "GatewayHttpClient",
     "GatewayRequestError",
-    "get_container_manager",
+    "get_ecs_manager",
+    "get_config_store",
+    "get_workspace",
     "startup_containers",
     "shutdown_containers",
 ]
