@@ -22,7 +22,6 @@ logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
-_RECONNECT_DELAYS = [1, 2, 4]  # exponential backoff
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
 
@@ -97,7 +96,7 @@ class GatewayConnection:
 
     async def wait_for_response(self, req_id: str, timeout: float = _RPC_TIMEOUT) -> Any:
         """Wait for the matching res message. Returns payload or raises."""
-        future = asyncio.get_event_loop().create_future()
+        future = asyncio.get_running_loop().create_future()
         self._pending_rpcs[req_id] = future
         try:
             return await asyncio.wait_for(future, timeout=timeout)

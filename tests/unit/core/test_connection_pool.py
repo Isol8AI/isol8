@@ -79,7 +79,6 @@ class TestGatewayConnection:
     @pytest.mark.asyncio
     async def test_wait_for_response_times_out(self, connection):
         """wait_for_response should raise TimeoutError after timeout."""
-        connection._pending_rpcs["req-timeout"] = asyncio.get_event_loop().create_future()
         with pytest.raises(asyncio.TimeoutError):
             await connection.wait_for_response("req-timeout", timeout=0.1)
         assert "req-timeout" not in connection._pending_rpcs
