@@ -1,7 +1,7 @@
 """
-Container model for tracking per-user OpenClaw Docker containers.
+Container model for tracking per-user OpenClaw ECS Fargate services.
 
-Each paying user gets a dedicated container with a unique port mapping
+Each subscriber gets a dedicated ECS Service with a unique service name
 and a gateway auth token for API communication.
 """
 
@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 from sqlalchemy import (
     Column,
     DateTime,
-    Integer,
     String,
     Index,
     CheckConstraint,
@@ -23,19 +22,19 @@ from models.base import Base
 
 class Container(Base):
     """
-    Per-user Docker container tracking.
+    Per-user ECS Fargate service tracking.
 
-    Maps a Clerk user ID to a running Docker container with a unique
-    host port for the OpenClaw gateway.
+    Maps a Clerk user ID to an ECS Service running an OpenClaw gateway
+    task discovered via Cloud Map.
 
     Attributes:
         id: Unique identifier (UUID).
-        user_id: Clerk user ID (unique — one container per user).
-        port: Host port mapped to the container's gateway (19000-19999).
-        container_id: Docker container ID (set after provisioning).
+        user_id: Clerk user ID (unique -- one service per user).
+        service_name: ECS service name (set after creation).
+        task_arn: Current ECS task ARN (updated on deployment).
         gateway_token: Auth token for the OpenClaw gateway HTTP API.
-        status: Container lifecycle state.
-        created_at: When the container was first provisioned.
+        status: Service lifecycle state.
+        created_at: When the service was first provisioned.
         updated_at: Last status change.
     """
 
@@ -46,15 +45,21 @@ class Container(Base):
         primary_key=True,
         default=uuid.uuid4,
     )
-    user_id = Column(String, nullable=False, unique=True)
-    port = Column(Integer, nullable=False, unique=True)
-    container_id = Column(String, nullable=True)
-    gateway_token = Column(String, nullable=True)
+    user_id = Column(String, nullable=False, unique=True, index=True)
+
+    # ECS Fargate fields
+    service_name = Column(String, unique=True, nullable=True)
+    task_arn = Column(String, nullable=True)
+
+    # Auth
+    gateway_token = Column(String, nullable=False)
+
+    # Status: provisioning, running, stopped, error
     status = Column(
         String,
         nullable=False,
-        default="provisioning",
-        server_default="provisioning",
+        default="stopped",
+        server_default="stopped",
     )
 
     created_at = Column(
@@ -74,13 +79,8 @@ class Container(Base):
             "status IN ('provisioning', 'running', 'stopped', 'error')",
             name="chk_container_status",
         ),
-        CheckConstraint(
-            "port >= 19000 AND port <= 19999",
-            name="chk_container_port_range",
-        ),
-        Index("idx_containers_user", "user_id", unique=True),
         Index("idx_containers_status", "status"),
     )
 
     def __repr__(self) -> str:
-        return f"<Container(user_id={self.user_id}, port={self.port}, status={self.status})>"
+        return f"<Container(user_id={self.user_id}, service_name={self.service_name}, status={self.status})>"
