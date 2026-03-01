@@ -1,21 +1,21 @@
 """
 Agent CRUD API endpoints.
 
-Container-aware: routes to user's dedicated container when available.
+EFS-backed: agent workspaces live on shared EFS at
+{mount}/{user_id}/agents/{agent_name}/.
 """
 
 import logging
+import shutil
 
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import get_current_user
-from core.containers import get_container_manager
-from core.database import get_db
-from core.services.agent_service import AgentService
+from core.containers import get_workspace
+from core.containers.workspace import WorkspaceError
 from schemas.agent import AgentListResponse, AgentResponse, CreateAgentRequest
 
 logger = logging.getLogger(__name__)
@@ -35,22 +35,10 @@ router = APIRouter()
 )
 async def list_agents(
     auth=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    service = AgentService(db)
-    agents = await service.list_agents(auth.user_id)
-    return AgentListResponse(
-        agents=[
-            AgentResponse(
-                agent_name=a.agent_name,
-                user_id=a.user_id,
-                created_at=a.created_at,
-                updated_at=a.updated_at,
-                soul_content=a.soul_content,
-            )
-            for a in agents
-        ]
-    )
+    workspace = get_workspace()
+    agent_names = workspace.list_agents(auth.user_id)
+    return AgentListResponse(agents=[AgentResponse(agent_name=name) for name in agent_names])
 
 
 @router.post(
@@ -68,54 +56,22 @@ async def list_agents(
 async def create_agent(
     request: CreateAgentRequest,
     auth=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    service = AgentService(db)
+    workspace = get_workspace()
 
     # Check if agent already exists
-    existing = await service.get_agent(auth.user_id, request.agent_name)
-    if existing:
+    existing_agents = workspace.list_agents(auth.user_id)
+    if request.agent_name in existing_agents:
         raise HTTPException(status_code=409, detail=f"Agent '{request.agent_name}' already exists")
 
-    # Create agent in DB
-    agent = await service.create_agent(
-        user_id=auth.user_id,
-        agent_name=request.agent_name,
-        soul_content=request.soul_content,
-    )
-    await db.commit()
-
-    # Create workspace: in user's container if they have one, else shared gateway
-    container_manager = get_container_manager()
-    container_port = container_manager.get_container_port(auth.user_id)
-
-    if container_port:
-        # User has a dedicated container — exec inside it
-        try:
-            container_manager.exec_command(
-                auth.user_id,
-                ["openclaw", "agent", "create", "--name", request.agent_name],
-            )
-            if request.soul_content:
-                container_manager.exec_command(
-                    auth.user_id,
-                    [
-                        "sh",
-                        "-c",
-                        f"echo '{request.soul_content}' > /home/node/.openclaw/agents/{request.agent_name}/SOUL.md",
-                    ],
-                )
-        except Exception as e:
-            logger.warning("Failed to create agent in container: %s", e)
-    else:
-        logger.info("No container for user=%s, agent=%s saved to DB only", auth.user_id, request.agent_name)
+    # Ensure user directory exists and write SOUL.md
+    workspace.ensure_user_dir(auth.user_id)
+    soul_content = request.soul_content or ""
+    workspace.write_file(auth.user_id, f"agents/{request.agent_name}/SOUL.md", soul_content)
 
     return AgentResponse(
-        agent_name=agent.agent_name,
-        user_id=agent.user_id,
-        created_at=agent.created_at,
-        updated_at=agent.updated_at,
-        soul_content=agent.soul_content,
+        agent_name=request.agent_name,
+        soul_content=soul_content if soul_content else None,
     )
 
 
@@ -133,19 +89,24 @@ async def create_agent(
 async def get_agent(
     agent_name: str,
     auth=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    service = AgentService(db)
-    agent = await service.get_agent(auth.user_id, agent_name)
-    if not agent:
+    workspace = get_workspace()
+
+    # Check if agent exists
+    existing_agents = workspace.list_agents(auth.user_id)
+    if agent_name not in existing_agents:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
+    # Read SOUL.md if it exists
+    soul_content = None
+    try:
+        soul_content = workspace.read_file(auth.user_id, f"agents/{agent_name}/SOUL.md")
+    except WorkspaceError:
+        pass  # SOUL.md may not exist, that's fine
+
     return AgentResponse(
-        agent_name=agent.agent_name,
-        user_id=agent.user_id,
-        created_at=agent.created_at,
-        updated_at=agent.updated_at,
-        soul_content=agent.soul_content,
+        agent_name=agent_name,
+        soul_content=soul_content,
     )
 
 
@@ -170,36 +131,21 @@ async def update_agent(
     agent_name: str,
     request: UpdateAgentRequest,
     auth=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    service = AgentService(db)
-    agent = await service.update_soul_content(auth.user_id, agent_name, request.soul_content)
-    if not agent:
+    workspace = get_workspace()
+
+    # Check if agent exists
+    existing_agents = workspace.list_agents(auth.user_id)
+    if agent_name not in existing_agents:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
-    await db.commit()
-
-    # Update workspace: in user's container if they have one, else shared gateway
-    container_manager = get_container_manager()
-    container_port = container_manager.get_container_port(auth.user_id)
-
-    if container_port:
-        try:
-            container_manager.exec_command(
-                auth.user_id,
-                ["sh", "-c", f"echo '{request.soul_content}' > /home/node/.openclaw/agents/{agent_name}/SOUL.md"],
-            )
-        except Exception as e:
-            logger.warning("Failed to update agent in container: %s", e)
-    else:
-        logger.info("No container for user=%s, soul_content saved to DB only for agent=%s", auth.user_id, agent_name)
+    # Write SOUL.md
+    soul_content = request.soul_content or ""
+    workspace.write_file(auth.user_id, f"agents/{agent_name}/SOUL.md", soul_content)
 
     return AgentResponse(
-        agent_name=agent.agent_name,
-        user_id=agent.user_id,
-        created_at=agent.created_at,
-        updated_at=agent.updated_at,
-        soul_content=agent.soul_content,
+        agent_name=agent_name,
+        soul_content=soul_content if soul_content else None,
     )
 
 
@@ -217,30 +163,18 @@ async def update_agent(
 async def delete_agent(
     agent_name: str,
     auth=Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    service = AgentService(db)
+    workspace = get_workspace()
 
-    # Get agent to find its UUID for workspace cleanup
-    agent = await service.get_agent(auth.user_id, agent_name)
-    if not agent:
+    # Check if agent exists
+    existing_agents = workspace.list_agents(auth.user_id)
+    if agent_name not in existing_agents:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_name}' not found")
 
-    # Delete from DB
-    await service.delete_agent(auth.user_id, agent_name)
-    await db.commit()
-
-    # Delete workspace: from user's container if they have one, else shared gateway
-    container_manager = get_container_manager()
-    container_port = container_manager.get_container_port(auth.user_id)
-
-    if container_port:
-        try:
-            container_manager.exec_command(
-                auth.user_id,
-                ["openclaw", "agent", "delete", "--name", agent_name],
-            )
-        except Exception as e:
-            logger.warning("Failed to delete agent from container: %s", e)
-    else:
-        logger.info("No container for user=%s, skipping workspace cleanup for agent=%s", auth.user_id, agent_name)
+    # Remove the entire agent directory from EFS
+    agent_dir = workspace.user_path(auth.user_id) / "agents" / agent_name
+    try:
+        shutil.rmtree(agent_dir)
+    except OSError as exc:
+        logger.error("Failed to delete agent directory %s: %s", agent_dir, exc)
+        raise HTTPException(status_code=500, detail="Failed to delete agent workspace") from exc

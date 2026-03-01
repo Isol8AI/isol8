@@ -14,12 +14,16 @@ class CreateAgentRequest(BaseModel):
 
 
 class AgentResponse(BaseModel):
-    """Agent details response."""
+    """Agent details response.
+
+    With EFS-backed workspaces, only agent_name is guaranteed.
+    user_id, timestamps, and soul_content are optional.
+    """
 
     agent_name: str
-    user_id: str
-    created_at: datetime
-    updated_at: datetime
+    user_id: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     soul_content: Optional[str] = None
 
     class Config:

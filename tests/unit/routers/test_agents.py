@@ -1,27 +1,36 @@
-"""Tests for Agent API endpoints."""
+"""Tests for Agent API endpoints (EFS workspace-backed)."""
 
 import pytest
 from unittest.mock import MagicMock, patch
+from pathlib import Path
+
+from core.containers.workspace import WorkspaceError
 
 
 class TestAgentEndpoints:
     """Test agent REST API endpoints."""
 
     @pytest.mark.asyncio
-    async def test_list_agents_empty(self, async_client, test_user):
+    @patch("routers.agents.get_workspace")
+    async def test_list_agents_empty(self, mock_get_ws, async_client, test_user):
         """Test listing agents when user has none."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
+
         response = await async_client.get("/api/v1/agents")
         assert response.status_code == 200
         data = response.json()
         assert data["agents"] == []
+        mock_ws.list_agents.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_container_manager")
-    async def test_create_agent(self, mock_get_cm, async_client, test_user):
+    @patch("routers.agents.get_workspace")
+    async def test_create_agent(self, mock_get_ws, async_client, test_user):
         """Test creating a new agent."""
-        mock_cm = MagicMock()
-        mock_cm.get_container_port.return_value = None
-        mock_get_cm.return_value = mock_cm
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
 
         response = await async_client.post(
             "/api/v1/agents",
@@ -33,24 +42,46 @@ class TestAgentEndpoints:
         assert response.status_code == 201
         data = response.json()
         assert data["agent_name"] == "luna"
-        assert data["user_id"] == test_user.id
         assert data["soul_content"] == "# Luna\nA friendly companion."
 
-    @pytest.mark.asyncio
-    @patch("routers.agents.get_container_manager")
-    async def test_create_duplicate_agent(self, mock_get_cm, async_client, test_user):
-        """Test creating duplicate agent fails."""
-        mock_cm = MagicMock()
-        mock_cm.get_container_port.return_value = None
-        mock_get_cm.return_value = mock_cm
+        mock_ws.ensure_user_dir.assert_called_once_with("user_test_123")
+        mock_ws.write_file.assert_called_once_with(
+            "user_test_123",
+            "agents/luna/SOUL.md",
+            "# Luna\nA friendly companion.",
+        )
 
-        # Create first
-        await async_client.post(
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_create_agent_no_soul(self, mock_get_ws, async_client, test_user):
+        """Test creating an agent without soul content."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
+
+        response = await async_client.post(
             "/api/v1/agents",
             json={"agent_name": "luna"},
         )
+        assert response.status_code == 201
+        data = response.json()
+        assert data["agent_name"] == "luna"
+        assert data["soul_content"] is None
 
-        # Try to create again
+        mock_ws.write_file.assert_called_once_with(
+            "user_test_123",
+            "agents/luna/SOUL.md",
+            "",
+        )
+
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_create_duplicate_agent(self, mock_get_ws, async_client, test_user):
+        """Test creating duplicate agent fails."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna"]
+        mock_get_ws.return_value = mock_ws
+
         response = await async_client.post(
             "/api/v1/agents",
             json={"agent_name": "luna"},
@@ -58,66 +89,122 @@ class TestAgentEndpoints:
         assert response.status_code == 409
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_container_manager")
-    async def test_get_agent(self, mock_get_cm, async_client, test_user):
+    @patch("routers.agents.get_workspace")
+    async def test_get_agent(self, mock_get_ws, async_client, test_user):
         """Test getting agent details."""
-        mock_cm = MagicMock()
-        mock_cm.get_container_port.return_value = None
-        mock_get_cm.return_value = mock_cm
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna"]
+        mock_ws.read_file.return_value = "# Luna\nA friendly companion."
+        mock_get_ws.return_value = mock_ws
 
-        # Create first
-        await async_client.post(
-            "/api/v1/agents",
-            json={"agent_name": "luna"},
-        )
-
-        # Get details
         response = await async_client.get("/api/v1/agents/luna")
         assert response.status_code == 200
         data = response.json()
         assert data["agent_name"] == "luna"
+        assert data["soul_content"] == "# Luna\nA friendly companion."
+
+        mock_ws.read_file.assert_called_once_with(
+            "user_test_123",
+            "agents/luna/SOUL.md",
+        )
 
     @pytest.mark.asyncio
-    async def test_get_nonexistent_agent(self, async_client, test_user):
+    @patch("routers.agents.get_workspace")
+    async def test_get_agent_no_soul(self, mock_get_ws, async_client, test_user):
+        """Test getting agent that exists but has no SOUL.md."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna"]
+        mock_ws.read_file.side_effect = WorkspaceError("File not found")
+        mock_get_ws.return_value = mock_ws
+
+        response = await async_client.get("/api/v1/agents/luna")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_name"] == "luna"
+        assert data["soul_content"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_get_nonexistent_agent(self, mock_get_ws, async_client, test_user):
         """Test getting non-existent agent returns 404."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
+
         response = await async_client.get("/api/v1/agents/nonexistent")
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_container_manager")
-    async def test_delete_agent(self, mock_get_cm, async_client, test_user):
-        """Test deleting an agent."""
-        mock_cm = MagicMock()
-        mock_cm.get_container_port.return_value = None
-        mock_get_cm.return_value = mock_cm
+    @patch("routers.agents.get_workspace")
+    async def test_update_agent(self, mock_get_ws, async_client, test_user):
+        """Test updating agent SOUL.md."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna"]
+        mock_get_ws.return_value = mock_ws
 
-        # Create first
-        await async_client.post(
-            "/api/v1/agents",
-            json={"agent_name": "luna"},
+        response = await async_client.put(
+            "/api/v1/agents/luna",
+            json={"soul_content": "# Luna v2\nUpdated personality."},
+        )
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_name"] == "luna"
+        assert data["soul_content"] == "# Luna v2\nUpdated personality."
+
+        mock_ws.write_file.assert_called_once_with(
+            "user_test_123",
+            "agents/luna/SOUL.md",
+            "# Luna v2\nUpdated personality.",
         )
 
-        # Delete
-        response = await async_client.delete("/api/v1/agents/luna")
-        assert response.status_code == 204
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_update_nonexistent_agent(self, mock_get_ws, async_client, test_user):
+        """Test updating non-existent agent returns 404."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
 
-        # Verify gone
-        response = await async_client.get("/api/v1/agents/luna")
+        response = await async_client.put(
+            "/api/v1/agents/nonexistent",
+            json={"soul_content": "new content"},
+        )
         assert response.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.agents.get_container_manager")
-    async def test_list_agents(self, mock_get_cm, async_client, test_user):
+    @patch("routers.agents.shutil")
+    @patch("routers.agents.get_workspace")
+    async def test_delete_agent(self, mock_get_ws, mock_shutil, async_client, test_user):
+        """Test deleting an agent."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna"]
+        mock_ws.user_path.return_value = Path("/mnt/efs/user_test_123")
+        mock_get_ws.return_value = mock_ws
+
+        response = await async_client.delete("/api/v1/agents/luna")
+        assert response.status_code == 204
+
+        mock_shutil.rmtree.assert_called_once_with(Path("/mnt/efs/user_test_123/agents/luna"))
+
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_delete_nonexistent_agent(self, mock_get_ws, async_client, test_user):
+        """Test deleting non-existent agent returns 404."""
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = []
+        mock_get_ws.return_value = mock_ws
+
+        response = await async_client.delete("/api/v1/agents/nonexistent")
+        assert response.status_code == 404
+
+    @pytest.mark.asyncio
+    @patch("routers.agents.get_workspace")
+    async def test_list_agents(self, mock_get_ws, async_client, test_user):
         """Test listing all user's agents."""
-        mock_cm = MagicMock()
-        mock_cm.get_container_port.return_value = None
-        mock_get_cm.return_value = mock_cm
+        mock_ws = MagicMock()
+        mock_ws.list_agents.return_value = ["luna", "rex"]
+        mock_get_ws.return_value = mock_ws
 
-        # Create multiple
-        await async_client.post("/api/v1/agents", json={"agent_name": "luna"})
-        await async_client.post("/api/v1/agents", json={"agent_name": "rex"})
-
-        # List
         response = await async_client.get("/api/v1/agents")
         assert response.status_code == 200
         data = response.json()
