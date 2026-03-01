@@ -152,12 +152,13 @@ async def container_status(
 
 @router.post(
     "/rpc",
-    summary="Proxy RPC call to user's OpenClaw container",
+    summary="[Deprecated] Proxy RPC call to user's OpenClaw container",
     description=(
-        "Forwards a JSON-RPC call to the user's dedicated OpenClaw container. "
-        "Opens a short-lived WebSocket connection, sends the method call, "
-        "and returns the response. Gateway tokens are never exposed to the browser."
+        "DEPRECATED: Use WebSocket req/res protocol instead. "
+        "This HTTP fallback will be removed in a future release. "
+        "Forwards a JSON-RPC call to the user's dedicated OpenClaw container."
     ),
+    deprecated=True,
     operation_id="container_rpc",
     responses={
         404: {"description": "No running container for this user"},
