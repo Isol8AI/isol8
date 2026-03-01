@@ -18,10 +18,15 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from websockets import connect as ws_connect
 
 from core.auth import AuthContext, get_current_user
-from core.containers import get_container_manager
+from core.containers import get_ecs_manager
+from core.containers.ecs_manager import GATEWAY_PORT
+from core.database import get_db
+from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -81,13 +86,13 @@ async def _openclaw_handshake(ws, token: str) -> None:
 
 
 async def _call_gateway_rpc(
-    port: int,
+    ip: str,
     token: str,
     method: str,
     params: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Open a short-lived WebSocket to the gateway, send RPC call, return response."""
-    uri = f"ws://127.0.0.1:{port}"
+    uri = f"ws://{ip}:{GATEWAY_PORT}"
 
     async with ws_connect(uri, open_timeout=_WS_TIMEOUT, close_timeout=5) as ws:
         # Complete OpenClaw connect handshake first
@@ -133,34 +138,48 @@ async def _call_gateway_rpc(
 async def container_rpc(
     body: RpcRequest,
     auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
-    cm = get_container_manager()
-    info = cm.get_container_info(auth.user_id)
+    user_id = auth.user_id
 
-    if not info or info.status != "running":
+    # Look up container from DB
+    result = await db.execute(
+        select(Container).where(
+            Container.user_id == user_id,
+            Container.status == "running",
+        )
+    )
+    container = result.scalar_one_or_none()
+    if not container:
         raise HTTPException(
             status_code=404,
             detail="No running container. Subscribe to access the control panel.",
         )
 
+    # Discover IP via Cloud Map
+    ecs_manager = get_ecs_manager()
+    ip = ecs_manager.discover_ip(container.service_name)
+    if not ip:
+        raise HTTPException(status_code=502, detail="Container gateway is starting up")
+
     try:
         result = await _call_gateway_rpc(
-            port=info.port,
-            token=info.gateway_token,
+            ip=ip,
+            token=container.gateway_token,
             method=body.method,
             params=body.params,
         )
     except ConnectionRefusedError:
-        logger.error("Gateway refused connection for user %s on port %d", auth.user_id, info.port)
+        logger.error("Gateway refused connection for user %s at %s", user_id, ip)
         raise HTTPException(status_code=502, detail="Container gateway is not responding")
     except TimeoutError:
-        logger.error("Gateway timeout for user %s on port %d", auth.user_id, info.port)
+        logger.error("Gateway timeout for user %s at %s", user_id, ip)
         raise HTTPException(status_code=502, detail="Container gateway timed out")
     except json.JSONDecodeError as e:
-        logger.error("Invalid JSON from gateway for user %s: %s", auth.user_id, e)
+        logger.error("Invalid JSON from gateway for user %s: %s", user_id, e)
         raise HTTPException(status_code=502, detail="Invalid response from container gateway")
     except Exception as e:
-        logger.error("RPC call failed for user %s: %s", auth.user_id, e)
+        logger.error("RPC call failed for user %s: %s", user_id, e)
         raise HTTPException(status_code=502, detail="Gateway RPC call failed")
 
     return {"result": result}
