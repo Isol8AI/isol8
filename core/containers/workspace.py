@@ -36,6 +36,8 @@ class Workspace:
 
     def user_path(self, user_id: str) -> Path:
         """Return the root directory for a user's workspace."""
+        if not user_id or "/" in user_id or ".." in user_id:
+            raise WorkspaceError(f"Invalid user_id: {user_id!r}", user_id=user_id)
         return self._mount / user_id
 
     def _resolve_user_file(self, user_id: str, path: str) -> Path:
@@ -47,7 +49,7 @@ class Workspace:
         """
         user_dir = self.user_path(user_id).resolve()
         resolved = (user_dir / path).resolve()
-        if not str(resolved).startswith(str(user_dir)):
+        if resolved != user_dir and not str(resolved).startswith(str(user_dir) + "/"):
             raise WorkspaceError(
                 f"Path traversal denied: {path!r}",
                 user_id=user_id,
@@ -71,6 +73,7 @@ class Workspace:
         try:
             p.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
+            logger.error("Failed to create user directory for %s: %s", user_id, exc)
             raise WorkspaceError(
                 f"Failed to create user directory for {user_id}: {exc}",
                 user_id=user_id,
@@ -116,6 +119,7 @@ class Workspace:
         try:
             return resolved.read_text(encoding="utf-8")
         except OSError as exc:
+            logger.error("Failed to read %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
                 f"Failed to read {path!r} for {user_id}: {exc}",
                 user_id=user_id,
@@ -140,6 +144,7 @@ class Workspace:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             resolved.write_text(content, encoding="utf-8")
         except OSError as exc:
+            logger.error("Failed to write %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
                 f"Failed to write {path!r} for {user_id}: {exc}",
                 user_id=user_id,
@@ -164,6 +169,7 @@ class Workspace:
         try:
             resolved.unlink()
         except OSError as exc:
+            logger.error("Failed to delete %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
                 f"Failed to delete {path!r} for {user_id}: {exc}",
                 user_id=user_id,
