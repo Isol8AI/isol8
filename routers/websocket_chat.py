@@ -16,9 +16,8 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy import select
 
-from core.containers import get_container_manager, GatewayRequestError
-from core.containers.http_client import GatewayHttpClient
-from core.containers.manager import ContainerInfo
+from core.containers import get_ecs_manager, GatewayHttpClient, GatewayRequestError
+from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
@@ -228,29 +227,18 @@ async def _process_agent_chat_background(
     management_api = get_management_api_client()
 
     try:
-        # Get container info: try in-memory cache first, fall back to DB
-        container_manager = get_container_manager()
-        container_info = container_manager.get_container_info(user_id)
-
-        if not container_info or container_info.status != "running":
-            # Cache miss (e.g. after restart) — rebuild from DB
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                result = await db.execute(select(Container).where(Container.user_id == user_id))
-                container_row = result.scalar_one_or_none()
-
-            if container_row and container_row.status == "running":
-                container_info = ContainerInfo(
-                    user_id=user_id,
-                    port=container_row.port,
-                    container_id=container_row.container_id or "",
-                    status="running",
-                    gateway_token=container_row.gateway_token or "",
+        # Look up user's container from DB
+        session_factory = get_session_factory()
+        async with session_factory() as db:
+            result = await db.execute(
+                select(Container).where(
+                    Container.user_id == user_id,
+                    Container.status == "running",
                 )
-                container_manager._cache[user_id] = container_info
-                logger.info("Restored container from DB: user=%s port=%d", user_id, container_row.port)
+            )
+            container = result.scalar_one_or_none()
 
-        if not container_info or container_info.status != "running":
+        if not container:
             management_api.send_message(
                 connection_id,
                 {
@@ -260,11 +248,25 @@ async def _process_agent_chat_background(
             )
             return
 
+        # Discover task IP via Cloud Map
+        ecs_manager = get_ecs_manager()
+        ip = ecs_manager.discover_ip(container.service_name)
+
+        if not ip:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "error",
+                    "message": "Your agent is starting up. Please try again in a moment.",
+                },
+            )
+            return
+
         gateway_client = GatewayHttpClient(
-            base_url=f"http://127.0.0.1:{container_info.port}",
-            token=container_info.gateway_token,
+            base_url=f"http://{ip}:{GATEWAY_PORT}",
+            token=container.gateway_token,
         )
-        logger.debug("Routing to user container on port %d", container_info.port)
+        logger.debug("Routing to user container at %s:%d", ip, GATEWAY_PORT)
 
         # Stream response — pass agent_name directly to OpenClaw
         chunk_count = 0
