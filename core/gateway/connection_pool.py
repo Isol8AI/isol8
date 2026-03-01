@@ -87,7 +87,7 @@ class GatewayConnection:
             "params": {
                 "minProtocol": 3,
                 "maxProtocol": 3,
-                "client": {"id": "isol8-pool", "version": "1.0.0", "platform": "linux", "mode": "cli"},
+                "client": {"id": "cli", "version": "1.0.0", "platform": "linux", "mode": "cli"},
                 "role": "operator",
                 "scopes": ["operator.admin"],
                 "auth": {"token": self.token},
@@ -141,9 +141,15 @@ class GatewayConnection:
             else:
                 msg = str(payload.get("error", "Agent run failed"))
             return {"type": "error", "message": msg}
-        if event_name in ("turn_started", "tool_started"):
+        if event_name == "turn_started":
             return {"type": "heartbeat"}
-        # tool_finished, status — skip
+        if event_name == "tool_started":
+            tool = payload.get("name") or payload.get("tool") or "tool"
+            return {"type": "tool_start", "tool": tool}
+        if event_name == "tool_finished":
+            tool = payload.get("name") or payload.get("tool") or "tool"
+            return {"type": "tool_end", "tool": tool}
+        # status — skip
         return None
 
     def _handle_message(self, data: dict) -> None:

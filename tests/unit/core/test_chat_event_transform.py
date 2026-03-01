@@ -69,12 +69,25 @@ class TestTransformChatEvent:
         result = GatewayConnection._transform_chat_event("turn_started", {})
         assert result == {"type": "heartbeat"}
 
-    def test_tool_started_returns_heartbeat(self):
-        result = GatewayConnection._transform_chat_event("tool_started", {"tool": "brave_search"})
-        assert result == {"type": "heartbeat"}
+    def test_tool_started_returns_tool_start(self):
+        result = GatewayConnection._transform_chat_event("tool_started", {"name": "brave_search"})
+        assert result == {"type": "tool_start", "tool": "brave_search"}
 
-    def test_tool_finished_returns_none(self):
-        assert GatewayConnection._transform_chat_event("tool_finished", {}) is None
+    def test_tool_started_fallback_tool_field(self):
+        result = GatewayConnection._transform_chat_event("tool_started", {"tool": "read_file"})
+        assert result == {"type": "tool_start", "tool": "read_file"}
+
+    def test_tool_started_fallback_default(self):
+        result = GatewayConnection._transform_chat_event("tool_started", {})
+        assert result == {"type": "tool_start", "tool": "tool"}
+
+    def test_tool_finished_returns_tool_end(self):
+        result = GatewayConnection._transform_chat_event("tool_finished", {"name": "brave_search"})
+        assert result == {"type": "tool_end", "tool": "brave_search"}
+
+    def test_tool_finished_fallback_default(self):
+        result = GatewayConnection._transform_chat_event("tool_finished", {})
+        assert result == {"type": "tool_end", "tool": "tool"}
 
     def test_status_returns_none(self):
         assert GatewayConnection._transform_chat_event("status", {"state": "thinking"}) is None
@@ -123,15 +136,28 @@ class TestHandleMessageChatEvents:
         mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
 
     def test_skipped_chat_event_not_forwarded(self, connection, mock_management_api):
-        """Events that transform to None (tool_finished) should not be forwarded."""
+        """Events that transform to None (status) should not be forwarded."""
         connection._handle_message(
             {
                 "type": "event",
-                "event": "tool_finished",
-                "payload": {},
+                "event": "status",
+                "payload": {"state": "thinking"},
             }
         )
         mock_management_api.send_message.assert_not_called()
+
+    def test_tool_started_sends_tool_start(self, connection, mock_management_api):
+        """tool_started should be transformed to {type: tool_start, tool: name}."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "tool_started",
+                "payload": {"name": "brave_search"},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "tool_start", "tool": "brave_search"}
+        )
 
     def test_turn_completed_sends_done(self, connection, mock_management_api):
         """turn_completed should be transformed to {type: done}."""
