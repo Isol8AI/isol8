@@ -10,6 +10,7 @@ Responses are pushed via Management API, not returned in HTTP response body.
 """
 
 import logging
+import uuid as _uuid
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -124,6 +125,14 @@ async def ws_disconnect(
     except Exception:
         pass
 
+    # Clean up town agent connection if active
+    try:
+        from core.services.town_agent_ws import get_town_agent_ws_manager
+
+        get_town_agent_ws_manager().unregister(x_connection_id)
+    except Exception:
+        pass
+
     try:
         connection_service = get_connection_service()
         connection_service.delete_connection(x_connection_id)
@@ -232,6 +241,575 @@ async def ws_message(
         )
         return Response(status_code=200)
 
+    if msg_type == "town_agent_connect":
+        token = body.get("token")
+        agent_name = body.get("agent_name")
+        management_api = get_management_api_client()
+
+        if not token or not agent_name:
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "town_event",
+                    "event": "error",
+                    "message": "Missing token or agent_name",
+                },
+            )
+            return Response(status_code=200)
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            from sqlalchemy import select
+            from models.town import TownInstance, TownAgent, TownState
+
+            result = await session.execute(
+                select(TownInstance).where(
+                    TownInstance.town_token == token,
+                    TownInstance.is_active == True,  # noqa: E712
+                )
+            )
+            instance = result.scalar_one_or_none()
+            if not instance:
+                management_api.send_message(
+                    x_connection_id,
+                    {"type": "town_event", "event": "error", "message": "Invalid token"},
+                )
+                return Response(status_code=200)
+
+            result = await session.execute(
+                select(TownAgent).where(
+                    TownAgent.instance_id == instance.id,
+                    TownAgent.agent_name == agent_name,
+                    TownAgent.is_active == True,  # noqa: E712
+                )
+            )
+            agent = result.scalar_one_or_none()
+            if not agent:
+                management_api.send_message(
+                    x_connection_id,
+                    {
+                        "type": "town_event",
+                        "event": "error",
+                        "message": f"Agent '{agent_name}' not found",
+                    },
+                )
+                return Response(status_code=200)
+
+            # Get or create state
+            result = await session.execute(select(TownState).where(TownState.agent_id == agent.id))
+            state = result.scalar_one_or_none()
+            if not state:
+                from core.town_constants import TOWN_LOCATIONS
+
+                home_loc = TOWN_LOCATIONS.get("apartment", {"x": 10.0, "y": 8.0})
+                state = TownState(
+                    agent_id=agent.id,
+                    position_x=home_loc["x"],
+                    position_y=home_loc["y"],
+                    location_state="entering",
+                )
+                session.add(state)
+            else:
+                state.location_state = "entering"
+
+            from datetime import datetime, timezone as tz
+
+            state.last_heartbeat_at = datetime.now(tz.utc)
+            instance.last_heartbeat_at = datetime.now(tz.utc)
+            await session.commit()
+
+            # Register in WS manager
+            from core.services.town_agent_ws import get_town_agent_ws_manager
+
+            ws_manager = get_town_agent_ws_manager()
+            ws_manager.register(
+                x_connection_id,
+                instance.user_id,
+                agent_name,
+                str(agent.id),
+                str(instance.id),
+            )
+
+            # Send initial state
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "town_event",
+                    "event": "connected",
+                    "agent": {
+                        "name": agent.agent_name,
+                        "display_name": agent.display_name,
+                        "location": state.current_location,
+                        "position": {"x": state.position_x, "y": state.position_y},
+                        "location_state": state.location_state,
+                        "mood": state.mood,
+                        "energy": state.energy,
+                        "activity": state.current_activity,
+                    },
+                },
+            )
+
+        return Response(status_code=200)
+
+    if msg_type == "town_agent_act":
+        from core.services.town_agent_ws import get_town_agent_ws_manager
+
+        ws_manager = get_town_agent_ws_manager()
+        agent_conn = ws_manager.get_by_connection(x_connection_id)
+        management_api = get_management_api_client()
+
+        if not agent_conn:
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "town_event",
+                    "event": "error",
+                    "message": "Not connected as town agent",
+                },
+            )
+            return Response(status_code=200)
+
+        action = body.get("action")
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            from sqlalchemy import select
+            from models.town import TownState
+
+            result = await session.execute(
+                select(TownState).where(TownState.agent_id == _uuid.UUID(agent_conn.agent_id))
+            )
+            state = result.scalar_one_or_none()
+            if not state:
+                return Response(status_code=200)
+
+            if action == "move":
+                from core.town_constants import TOWN_LOCATIONS
+
+                dest = body.get("destination")
+                if dest not in TOWN_LOCATIONS:
+                    management_api.send_message(
+                        x_connection_id,
+                        {
+                            "type": "town_event",
+                            "event": "error",
+                            "message": f"Unknown location: {dest}",
+                        },
+                    )
+                    return Response(status_code=200)
+                loc = TOWN_LOCATIONS[dest]
+                state.target_x = float(loc["x"])
+                state.target_y = float(loc["y"])
+                state.current_activity = "walking"
+                state.location_state = "active"
+                state.speed = 0.6
+            elif action == "idle":
+                state.current_activity = body.get("activity", "idle")
+                state.target_x = None
+                state.target_y = None
+                state.speed = 0
+
+            elif action == "chat":
+                # Initiate a conversation with another agent
+                target_name = body.get("target")
+                chat_message = body.get("message", "")
+
+                if not target_name:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Missing target agent name"},
+                    )
+                    return Response(status_code=200)
+
+                # Cannot chat with self
+                if target_name == agent_conn.agent_name:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Cannot chat with yourself"},
+                    )
+                    return Response(status_code=200)
+
+                # Check initiator not already in conversation
+                if state.current_conversation_id is not None:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Already in a conversation"},
+                    )
+                    return Response(status_code=200)
+
+                # Look up target connection
+                target_conn_id = ws_manager.get_agent_connection_id(target_name)
+                if not target_conn_id:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": f"Agent '{target_name}' is not connected"},
+                    )
+                    return Response(status_code=200)
+
+                target_agent_conn = ws_manager.get_by_connection(target_conn_id)
+
+                # Look up target's TownState to check if busy
+                from models.town import TownConversation
+
+                target_state_result = await session.execute(
+                    select(TownState).where(TownState.agent_id == _uuid.UUID(target_agent_conn.agent_id))
+                )
+                target_state = target_state_result.scalar_one_or_none()
+                if not target_state:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": f"Agent '{target_name}' state not found"},
+                    )
+                    return Response(status_code=200)
+
+                if target_state.current_conversation_id is not None:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "busy", "agent": target_name},
+                    )
+                    return Response(status_code=200)
+
+                # Create conversation
+                from datetime import datetime, timezone as tz
+
+                initiator_id = _uuid.UUID(agent_conn.agent_id)
+                target_id = _uuid.UUID(target_agent_conn.agent_id)
+
+                conversation = TownConversation(
+                    participant_a_id=initiator_id,
+                    participant_b_id=target_id,
+                    location=state.current_location,
+                    status="active",
+                    turn_count=0,
+                    public_log=[],
+                )
+                session.add(conversation)
+                await session.flush()  # get conversation.id
+
+                # Update both agents' states
+                state.current_activity = "chatting"
+                state.current_conversation_id = conversation.id
+                target_state.current_activity = "chatting"
+                target_state.current_conversation_id = conversation.id
+
+                # Push invite to target
+                management_api.send_message(
+                    target_conn_id,
+                    {
+                        "type": "town_event",
+                        "event": "conversation_invite",
+                        "from": agent_conn.agent_name,
+                        "conv_id": str(conversation.id),
+                        "message": chat_message,
+                    },
+                )
+
+                # Push to viewers: conversation started
+                try:
+                    from routers.town import _push_to_viewers
+
+                    _push_to_viewers(
+                        {
+                            "type": "town_event",
+                            "event": "conversation_started",
+                            "conv_id": str(conversation.id),
+                            "participants": [agent_conn.agent_name, target_name],
+                            "initiator": agent_conn.agent_name,
+                            "message": chat_message,
+                        }
+                    )
+                except Exception:
+                    pass
+
+            elif action == "say":
+                # Send a message in an ongoing conversation
+                conv_id_str = body.get("conv_id")
+                say_message = body.get("message", "")
+
+                if not conv_id_str:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Missing conv_id"},
+                    )
+                    return Response(status_code=200)
+
+                from models.town import TownConversation
+
+                conv_result = await session.execute(
+                    select(TownConversation).where(TownConversation.id == _uuid.UUID(conv_id_str))
+                )
+                conversation = conv_result.scalar_one_or_none()
+                if not conversation:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Conversation not found"},
+                    )
+                    return Response(status_code=200)
+
+                if conversation.status != "active":
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Conversation is not active"},
+                    )
+                    return Response(status_code=200)
+
+                # Verify this agent is a participant
+                agent_uuid = _uuid.UUID(agent_conn.agent_id)
+                if agent_uuid != conversation.participant_a_id and agent_uuid != conversation.participant_b_id:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Not a participant in this conversation"},
+                    )
+                    return Response(status_code=200)
+
+                # Append to public_log
+                log_entry = {"speaker": agent_conn.agent_name, "text": say_message}
+                current_log = list(conversation.public_log or [])
+                current_log.append(log_entry)
+                conversation.public_log = current_log
+                conversation.turn_count = len(current_log)
+
+                # Find partner
+                if agent_uuid == conversation.participant_a_id:
+                    partner_id = conversation.participant_b_id
+                else:
+                    partner_id = conversation.participant_a_id
+
+                # Look up partner's connection
+                partner_conn_id = None
+                for ac in ws_manager.connected_agents():
+                    if ac.agent_id == str(partner_id):
+                        partner_conn_id = ac.connection_id
+                        break
+
+                # Push message to partner
+                if partner_conn_id:
+                    management_api.send_message(
+                        partner_conn_id,
+                        {
+                            "type": "town_event",
+                            "event": "conversation_message",
+                            "from": agent_conn.agent_name,
+                            "text": say_message,
+                            "conv_id": conv_id_str,
+                            "turn": conversation.turn_count,
+                        },
+                    )
+
+                # Push to viewers: speech bubble
+                try:
+                    from routers.town import _push_to_viewers
+
+                    _push_to_viewers(
+                        {
+                            "type": "town_event",
+                            "event": "speech_bubble",
+                            "conv_id": conv_id_str,
+                            "speaker": agent_conn.agent_name,
+                            "text": say_message,
+                            "turn": conversation.turn_count,
+                        }
+                    )
+                except Exception:
+                    pass
+
+                # Auto-end conversation if max turns reached
+                MAX_CONVERSATION_TURNS = 10
+                if conversation.turn_count >= MAX_CONVERSATION_TURNS:
+                    from datetime import datetime, timezone as tz
+
+                    conversation.status = "ended"
+                    conversation.ended_at = datetime.now(tz.utc)
+
+                    # Clear both participants' conversation state
+                    state.current_conversation_id = None
+                    state.current_activity = "idle"
+
+                    partner_state_result = await session.execute(
+                        select(TownState).where(TownState.agent_id == partner_id)
+                    )
+                    partner_state = partner_state_result.scalar_one_or_none()
+                    if partner_state:
+                        partner_state.current_conversation_id = None
+                        partner_state.current_activity = "idle"
+
+                    # Update relationship
+                    from core.services.town_service import TownService
+
+                    town_svc = TownService(session)
+                    rel, _ = await town_svc.get_or_create_relationship(
+                        conversation.participant_a_id, conversation.participant_b_id
+                    )
+                    await town_svc.update_relationship(rel.id, affinity_delta=1)
+
+                    # Notify partner of auto-end
+                    if partner_conn_id:
+                        management_api.send_message(
+                            partner_conn_id,
+                            {
+                                "type": "town_event",
+                                "event": "conversation_ended",
+                                "conv_id": conv_id_str,
+                                "reason": "max_turns",
+                            },
+                        )
+
+                    # Notify viewers
+                    try:
+                        from routers.town import _push_to_viewers
+
+                        _push_to_viewers(
+                            {
+                                "type": "town_event",
+                                "event": "conversation_ended",
+                                "conv_id": conv_id_str,
+                                "reason": "max_turns",
+                            }
+                        )
+                    except Exception:
+                        pass
+
+            elif action == "end_conversation":
+                # End a conversation
+                conv_id_str = body.get("conv_id")
+
+                if not conv_id_str:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Missing conv_id"},
+                    )
+                    return Response(status_code=200)
+
+                from models.town import TownConversation
+
+                conv_result = await session.execute(
+                    select(TownConversation).where(TownConversation.id == _uuid.UUID(conv_id_str))
+                )
+                conversation = conv_result.scalar_one_or_none()
+                if not conversation:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Conversation not found"},
+                    )
+                    return Response(status_code=200)
+
+                # Verify this agent is a participant
+                agent_uuid = _uuid.UUID(agent_conn.agent_id)
+                if agent_uuid != conversation.participant_a_id and agent_uuid != conversation.participant_b_id:
+                    management_api.send_message(
+                        x_connection_id,
+                        {"type": "town_event", "event": "error", "message": "Not a participant in this conversation"},
+                    )
+                    return Response(status_code=200)
+
+                from datetime import datetime, timezone as tz
+
+                # End the conversation
+                conversation.status = "ended"
+                conversation.ended_at = datetime.now(tz.utc)
+
+                # Clear both participants' conversation state
+                state.current_conversation_id = None
+                state.current_activity = "idle"
+
+                # Find partner
+                if agent_uuid == conversation.participant_a_id:
+                    partner_id = conversation.participant_b_id
+                else:
+                    partner_id = conversation.participant_a_id
+
+                partner_state_result = await session.execute(select(TownState).where(TownState.agent_id == partner_id))
+                partner_state = partner_state_result.scalar_one_or_none()
+                if partner_state:
+                    partner_state.current_conversation_id = None
+                    partner_state.current_activity = "idle"
+
+                # Update relationship
+                from core.services.town_service import TownService
+
+                town_svc = TownService(session)
+                rel, _ = await town_svc.get_or_create_relationship(
+                    conversation.participant_a_id, conversation.participant_b_id
+                )
+                await town_svc.update_relationship(rel.id, affinity_delta=1)
+
+                # Push to partner
+                partner_conn_id = None
+                for ac in ws_manager.connected_agents():
+                    if ac.agent_id == str(partner_id):
+                        partner_conn_id = ac.connection_id
+                        break
+
+                if partner_conn_id:
+                    management_api.send_message(
+                        partner_conn_id,
+                        {
+                            "type": "town_event",
+                            "event": "conversation_ended",
+                            "conv_id": conv_id_str,
+                        },
+                    )
+
+                # Push to viewers
+                try:
+                    from routers.town import _push_to_viewers
+
+                    _push_to_viewers(
+                        {
+                            "type": "town_event",
+                            "event": "conversation_ended",
+                            "conv_id": conv_id_str,
+                        }
+                    )
+                except Exception:
+                    pass
+
+            from datetime import datetime, timezone as tz
+
+            state.last_decision_at = datetime.now(tz.utc)
+            await session.commit()
+
+        management_api.send_message(
+            x_connection_id,
+            {"type": "town_event", "event": "act_ok", "action": action},
+        )
+        return Response(status_code=200)
+
+    if msg_type == "town_agent_sleep":
+        from core.services.town_agent_ws import get_town_agent_ws_manager
+
+        ws_manager = get_town_agent_ws_manager()
+        agent_conn = ws_manager.get_by_connection(x_connection_id)
+        management_api = get_management_api_client()
+
+        if not agent_conn:
+            return Response(status_code=200)
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            from sqlalchemy import select
+            from models.town import TownState
+            from core.town_constants import TOWN_LOCATIONS
+
+            result = await session.execute(
+                select(TownState).where(TownState.agent_id == _uuid.UUID(agent_conn.agent_id))
+            )
+            state = result.scalar_one_or_none()
+            if state:
+                home_loc = TOWN_LOCATIONS.get("apartment", {"x": 10.0, "y": 8.0})
+                state.target_x = float(home_loc["x"])
+                state.target_y = float(home_loc["y"])
+                state.current_activity = "going_home"
+                state.location_state = "going_home"
+                state.speed = 0.6
+                await session.commit()
+
+        ws_manager.unregister(x_connection_id)
+        management_api.send_message(
+            x_connection_id,
+            {"type": "town_event", "event": "sleep_ok"},
+        )
+        return Response(status_code=200)
+
     # Unknown message type
     management_api = get_management_api_client()
     management_api.send_message(
@@ -305,6 +883,21 @@ async def _process_rpc_background(
             },
         )
 
+    except RuntimeError as e:
+        # RuntimeError comes from OpenClaw rejecting the RPC — forward real message
+        logger.warning("RPC %s rejected for user %s: %s", method, user_id, e)
+        try:
+            management_api.send_message(
+                connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": False,
+                    "error": {"message": str(e)},
+                },
+            )
+        except Exception:
+            pass
     except Exception as e:
         logger.error("RPC %s failed for user %s: %s", method, user_id, e)
         try:
@@ -314,7 +907,7 @@ async def _process_rpc_background(
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": "Internal error processing request."},
+                    "error": {"message": f"Internal error: {e}"},
                 },
             )
         except Exception:
