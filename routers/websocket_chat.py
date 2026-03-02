@@ -212,7 +212,7 @@ async def ws_message(
         return Response(status_code=200)
 
     if msg_type == "agent_chat":
-        agent_id = body.get("agent_id") or body.get("agent_name")
+        agent_id = body.get("agent_id")
         message = body.get("message")
 
         if not agent_id or not message:
