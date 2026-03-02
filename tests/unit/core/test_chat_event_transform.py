@@ -1,8 +1,8 @@
 # backend/tests/unit/core/test_chat_event_transform.py
 """Unit tests for GatewayConnection._transform_chat_event().
 
-Verifies that OpenClaw chat events are correctly transformed into
-the frontend's chunk/done/error/heartbeat message format.
+Verifies that OpenClaw native chat events are correctly transformed into
+the frontend's chunk/done/error message format.
 """
 
 import pytest
@@ -11,88 +11,70 @@ from core.gateway.connection_pool import GatewayConnection
 
 
 class TestTransformChatEvent:
-    """Tests for _transform_chat_event static method."""
+    """Tests for _transform_chat_event static method (native chat events only)."""
 
-    def test_text_delta_with_delta_field(self):
-        result = GatewayConnection._transform_chat_event("text_delta", {"delta": "Hello "})
-        assert result == {"type": "chunk", "content": "Hello "}
+    def test_chat_delta_with_content_blocks(self):
+        """Native format: message.content is an array of content blocks with delta field."""
+        result = GatewayConnection._transform_chat_event(
+            "chat",
+            {
+                "state": "delta",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Hello world", "delta": " world"}],
+                },
+            },
+        )
+        assert result == {"type": "chunk", "content": " world"}
 
-    def test_text_delta_with_content_field(self):
-        result = GatewayConnection._transform_chat_event("text_delta", {"content": "world"})
-        assert result == {"type": "chunk", "content": "world"}
+    def test_chat_delta_content_block_text_fallback(self):
+        """When delta is missing, fall back to text field in content block."""
+        result = GatewayConnection._transform_chat_event(
+            "chat",
+            {
+                "state": "delta",
+                "message": {"content": [{"type": "text", "text": "Hello"}]},
+            },
+        )
+        assert result == {"type": "chunk", "content": "Hello"}
 
-    def test_text_delta_prefers_delta_over_content(self):
-        result = GatewayConnection._transform_chat_event("text_delta", {"delta": "preferred", "content": "fallback"})
-        assert result == {"type": "chunk", "content": "preferred"}
+    def test_chat_delta_with_string_content(self):
+        """Fallback: message.content is a plain string."""
+        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": "Hello"}})
+        assert result == {"type": "chunk", "content": "Hello"}
 
-    def test_text_delta_empty_content_returns_none(self):
-        assert GatewayConnection._transform_chat_event("text_delta", {}) is None
-        assert GatewayConnection._transform_chat_event("text_delta", {"delta": ""}) is None
-        assert GatewayConnection._transform_chat_event("text_delta", {"content": ""}) is None
+    def test_chat_delta_with_string_message(self):
+        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": "Hi there"})
+        assert result == {"type": "chunk", "content": "Hi there"}
 
-    def test_block_final_with_text_field(self):
-        result = GatewayConnection._transform_chat_event("block_final", {"text": "Complete block."})
-        assert result == {"type": "chunk", "content": "Complete block."}
+    def test_chat_delta_empty_message(self):
+        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {}}) is None
+        assert GatewayConnection._transform_chat_event("chat", {"state": "delta"}) is None
+        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": []}}) is None
 
-    def test_block_final_with_content_field(self):
-        result = GatewayConnection._transform_chat_event("block_final", {"content": "Fallback content"})
-        assert result == {"type": "chunk", "content": "Fallback content"}
-
-    def test_block_final_empty_returns_none(self):
-        assert GatewayConnection._transform_chat_event("block_final", {}) is None
-
-    def test_turn_completed(self):
-        result = GatewayConnection._transform_chat_event("turn_completed", {})
+    def test_chat_final(self):
+        result = GatewayConnection._transform_chat_event("chat", {"state": "final"})
         assert result == {"type": "done"}
 
-    def test_turn_failed_with_error_dict(self):
-        result = GatewayConnection._transform_chat_event("turn_failed", {"error": {"message": "Model rate limited"}})
-        assert result == {"type": "error", "message": "Model rate limited"}
+    def test_chat_error_with_dict(self):
+        result = GatewayConnection._transform_chat_event(
+            "chat", {"state": "error", "error": {"message": "Rate limited"}}
+        )
+        assert result == {"type": "error", "message": "Rate limited"}
 
-    def test_turn_failed_with_error_dict_no_message(self):
-        result = GatewayConnection._transform_chat_event("turn_failed", {"error": {"code": 500}})
-        assert result == {"type": "error", "message": "Agent run failed"}
-
-    def test_turn_failed_with_string_error(self):
-        result = GatewayConnection._transform_chat_event("turn_failed", {"error": "Something broke"})
+    def test_chat_error_with_string(self):
+        result = GatewayConnection._transform_chat_event("chat", {"state": "error", "error": "Something broke"})
         assert result == {"type": "error", "message": "Something broke"}
 
-    def test_turn_failed_no_error(self):
-        result = GatewayConnection._transform_chat_event("turn_failed", {})
-        assert result == {"type": "error", "message": "Agent run failed"}
-
-    def test_turn_cancelled(self):
-        result = GatewayConnection._transform_chat_event("turn_cancelled", {})
+    def test_chat_aborted(self):
+        result = GatewayConnection._transform_chat_event("chat", {"state": "aborted"})
         assert result == {"type": "error", "message": "Agent run was cancelled"}
 
-    def test_turn_started_returns_heartbeat(self):
-        result = GatewayConnection._transform_chat_event("turn_started", {})
-        assert result == {"type": "heartbeat"}
+    def test_chat_unknown_state(self):
+        assert GatewayConnection._transform_chat_event("chat", {"state": "unknown"}) is None
 
-    def test_tool_started_returns_tool_start(self):
-        result = GatewayConnection._transform_chat_event("tool_started", {"name": "brave_search"})
-        assert result == {"type": "tool_start", "tool": "brave_search"}
-
-    def test_tool_started_fallback_tool_field(self):
-        result = GatewayConnection._transform_chat_event("tool_started", {"tool": "read_file"})
-        assert result == {"type": "tool_start", "tool": "read_file"}
-
-    def test_tool_started_fallback_default(self):
-        result = GatewayConnection._transform_chat_event("tool_started", {})
-        assert result == {"type": "tool_start", "tool": "tool"}
-
-    def test_tool_finished_returns_tool_end(self):
-        result = GatewayConnection._transform_chat_event("tool_finished", {"name": "brave_search"})
-        assert result == {"type": "tool_end", "tool": "brave_search"}
-
-    def test_tool_finished_fallback_default(self):
-        result = GatewayConnection._transform_chat_event("tool_finished", {})
-        assert result == {"type": "tool_end", "tool": "tool"}
-
-    def test_status_returns_none(self):
-        assert GatewayConnection._transform_chat_event("status", {"state": "thinking"}) is None
-
-    def test_unknown_event_returns_none(self):
+    def test_non_chat_event_returns_none(self):
+        assert GatewayConnection._transform_chat_event("text_delta", {"delta": "Hi"}) is None
         assert GatewayConnection._transform_chat_event("unknown_event", {}) is None
 
 
@@ -123,8 +105,8 @@ class TestHandleMessageChatEvents:
         connection._handle_message(
             {
                 "type": "event",
-                "event": "text_delta",
-                "payload": {"delta": "Hi!"},
+                "event": "chat",
+                "payload": {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hi!"}]}},
             }
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hi!"})
@@ -136,36 +118,22 @@ class TestHandleMessageChatEvents:
         mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
 
     def test_skipped_chat_event_not_forwarded(self, connection, mock_management_api):
-        """Events that transform to None (status) should not be forwarded."""
+        """Events that transform to None should not be forwarded."""
         connection._handle_message(
             {
                 "type": "event",
-                "event": "status",
-                "payload": {"state": "thinking"},
+                "event": "chat",
+                "payload": {"state": "unknown"},
             }
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_tool_started_sends_tool_start(self, connection, mock_management_api):
-        """tool_started should be transformed to {type: tool_start, tool: name}."""
+    def test_chat_final_sends_done(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
-                "event": "tool_started",
-                "payload": {"name": "brave_search"},
-            }
-        )
-        mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "tool_start", "tool": "brave_search"}
-        )
-
-    def test_turn_completed_sends_done(self, connection, mock_management_api):
-        """turn_completed should be transformed to {type: done}."""
-        connection._handle_message(
-            {
-                "type": "event",
-                "event": "turn_completed",
-                "payload": {},
+                "event": "chat",
+                "payload": {"state": "final"},
             }
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done"})
@@ -176,8 +144,8 @@ class TestHandleMessageChatEvents:
         connection._handle_message(
             {
                 "type": "event",
-                "event": "text_delta",
-                "payload": {"delta": "chunk"},
+                "event": "chat",
+                "payload": {"state": "delta", "message": {"content": "chunk"}},
             }
         )
         assert mock_management_api.send_message.call_count == 2

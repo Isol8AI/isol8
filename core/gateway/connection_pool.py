@@ -21,19 +21,7 @@ from core.containers.ecs_manager import GATEWAY_PORT
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
-_CHAT_EVENTS = frozenset(
-    {
-        "text_delta",
-        "block_final",
-        "turn_started",
-        "turn_completed",
-        "turn_failed",
-        "turn_cancelled",
-        "tool_started",
-        "tool_finished",
-        "status",
-    }
-)
+_CHAT_EVENTS = frozenset({"chat"})
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
@@ -124,32 +112,38 @@ class GatewayConnection:
         """Transform an OpenClaw chat event into the frontend chat message format.
 
         Returns a dict to send to the frontend, or None to skip the event.
+        Only handles native "chat" events with state field (delta/final/aborted/error).
         """
-        if event_name == "text_delta":
-            content = payload.get("delta") or payload.get("content") or ""
+        if event_name != "chat":
+            return None
+
+        state = payload.get("state", "")
+        if state == "delta":
+            msg = payload.get("message", {})
+            content = ""
+            if isinstance(msg, dict):
+                content_blocks = msg.get("content", [])
+                if isinstance(content_blocks, list) and content_blocks:
+                    block = content_blocks[-1]
+                    if isinstance(block, dict):
+                        content = block.get("delta") or block.get("text") or ""
+                    elif isinstance(block, str):
+                        content = block
+                elif isinstance(content_blocks, str):
+                    content = content_blocks
+                if not content:
+                    content = msg.get("delta") or ""
+            elif isinstance(msg, str):
+                content = msg
             return {"type": "chunk", "content": content} if content else None
-        if event_name == "block_final":
-            content = payload.get("text") or payload.get("content") or ""
-            return {"type": "chunk", "content": content} if content else None
-        if event_name == "turn_completed":
+        if state == "final":
             return {"type": "done"}
-        if event_name in ("turn_failed", "turn_cancelled"):
-            if event_name == "turn_cancelled":
-                msg = "Agent run was cancelled"
-            elif isinstance(payload.get("error"), dict):
-                msg = payload["error"].get("message", "Agent run failed")
-            else:
-                msg = str(payload.get("error", "Agent run failed"))
+        if state == "error":
+            err = payload.get("error", {})
+            msg = err.get("message", "Agent run failed") if isinstance(err, dict) else str(err or "Agent run failed")
             return {"type": "error", "message": msg}
-        if event_name == "turn_started":
-            return {"type": "heartbeat"}
-        if event_name == "tool_started":
-            tool = payload.get("name") or payload.get("tool") or "tool"
-            return {"type": "tool_start", "tool": tool}
-        if event_name == "tool_finished":
-            tool = payload.get("name") or payload.get("tool") or "tool"
-            return {"type": "tool_end", "tool": tool}
-        # status — skip
+        if state == "aborted":
+            return {"type": "error", "message": "Agent run was cancelled"}
         return None
 
     def _handle_message(self, data: dict) -> None:
