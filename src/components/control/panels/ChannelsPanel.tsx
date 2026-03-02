@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useCallback, useRef } from "react";
 import {
   Loader2,
   RefreshCw,
@@ -13,12 +13,16 @@ import {
   Scan,
   Link2,
   AlertCircle,
+  Settings,
+  Save,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 
 // ---------------------------------------------------------------------------
-// Types — matching OpenClaw's ChannelsStatusSnapshot
+// Types — matching OpenClaw protocol
 // ---------------------------------------------------------------------------
 
 interface ChannelAccountSnapshot {
@@ -56,6 +60,22 @@ interface ChannelsStatusSnapshot {
   channelDefaultAccountId: Record<string, string>;
 }
 
+interface ConfigSnapshot {
+  path: string;
+  exists: boolean;
+  raw: string | null;
+  config: Record<string, unknown>;
+  hash?: string;
+  valid: boolean;
+  issues?: { path: string; message: string }[];
+}
+
+interface ConfigPatchResult {
+  ok: boolean;
+  config: Record<string, unknown>;
+  restart?: { delayMs?: number };
+}
+
 interface WebLoginResult {
   message?: string;
   qrDataUrl?: string;
@@ -63,7 +83,89 @@ interface WebLoginResult {
 }
 
 // ---------------------------------------------------------------------------
-// Status fields to show per channel (fallback if channel is unknown)
+// Channel config field definitions
+// ---------------------------------------------------------------------------
+
+interface ChannelField {
+  key: string;
+  label: string;
+  placeholder: string;
+  sensitive: boolean;
+  help?: string;
+}
+
+const CHANNEL_CONFIG_FIELDS: Record<string, ChannelField[]> = {
+  telegram: [
+    {
+      key: "token",
+      label: "Bot Token",
+      placeholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+      sensitive: true,
+      help: "Get from @BotFather on Telegram",
+    },
+  ],
+  discord: [
+    {
+      key: "token",
+      label: "Bot Token",
+      placeholder: "your-discord-bot-token",
+      sensitive: true,
+      help: "From Discord Developer Portal → Bot → Token",
+    },
+  ],
+  slack: [
+    {
+      key: "botToken",
+      label: "Bot Token",
+      placeholder: "xoxb-your-slack-bot-token",
+      sensitive: true,
+      help: "From Slack API → OAuth & Permissions → Bot User OAuth Token",
+    },
+    {
+      key: "appToken",
+      label: "App Token",
+      placeholder: "xapp-your-slack-app-token",
+      sensitive: true,
+      help: "From Slack API → Basic Information → App-Level Tokens",
+    },
+  ],
+  signal: [
+    {
+      key: "number",
+      label: "Phone Number",
+      placeholder: "+1234567890",
+      sensitive: false,
+      help: "Signal phone number in E.164 format",
+    },
+  ],
+  googlechat: [
+    {
+      key: "credentials",
+      label: "Service Account JSON",
+      placeholder: '{"type":"service_account","project_id":"..."}',
+      sensitive: true,
+      help: "Google Cloud service account credentials JSON",
+    },
+  ],
+  nostr: [
+    {
+      key: "privateKey",
+      label: "Private Key (nsec)",
+      placeholder: "nsec1...",
+      sensitive: true,
+    },
+    {
+      key: "relays",
+      label: "Relay URLs",
+      placeholder: "wss://relay.damus.io,wss://nos.lol",
+      sensitive: false,
+      help: "Comma-separated relay URLs",
+    },
+  ],
+};
+
+// ---------------------------------------------------------------------------
+// Status constants
 // ---------------------------------------------------------------------------
 
 const DEFAULT_STATUS_FIELDS = [
@@ -104,19 +206,20 @@ const STATUS_LABELS: Record<string, string> = {
   baseUrl: "Base URL",
 };
 
+const REDACTED_SENTINEL = "__OPENCLAW_REDACTED__";
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 function formatTimestamp(ts: number | null | undefined): string {
   if (!ts) return "n/a";
-  const d = new Date(ts);
   const now = Date.now();
   const diffMs = now - ts;
   if (diffMs < 60_000) return "just now";
   if (diffMs < 3_600_000) return `${Math.floor(diffMs / 60_000)}m ago`;
   if (diffMs < 86_400_000) return `${Math.floor(diffMs / 3_600_000)}h ago`;
-  return d.toLocaleDateString();
+  return new Date(ts).toLocaleDateString();
 }
 
 function formatValue(
@@ -134,9 +237,22 @@ function formatValue(
   return { text: String(value), variant: "text" };
 }
 
-/** Is this a WhatsApp-type channel (uses QR login)? */
 function isWhatsAppChannel(channelId: string): boolean {
   return channelId === "whatsapp" || channelId === "web";
+}
+
+/** Extract channel config from the full config object. */
+function getChannelConfig(
+  config: Record<string, unknown>,
+  channelId: string,
+): Record<string, unknown> {
+  // Try channels.{id} first, then top-level {id}
+  const channels = config.channels as Record<string, unknown> | undefined;
+  const nested = channels?.[channelId];
+  if (nested && typeof nested === "object") return nested as Record<string, unknown>;
+  const topLevel = config[channelId];
+  if (topLevel && typeof topLevel === "object") return topLevel as Record<string, unknown>;
+  return {};
 }
 
 // ---------------------------------------------------------------------------
@@ -146,6 +262,10 @@ function isWhatsAppChannel(channelId: string): boolean {
 export function ChannelsPanel() {
   const { data, error, isLoading, mutate } =
     useGatewayRpc<ChannelsStatusSnapshot>("channels.status");
+  const {
+    data: configData,
+    mutate: mutateConfig,
+  } = useGatewayRpc<ConfigSnapshot>("config.get");
   const callRpc = useGatewayRpcMutation();
 
   // WhatsApp QR login state
@@ -226,6 +346,43 @@ export function ChannelsPanel() {
     }
   };
 
+  const handleSaveConfig = useCallback(
+    async (channelId: string, values: Record<string, string>) => {
+      setActionBusy(`save-${channelId}`);
+      setActionError(null);
+      try {
+        // Build partial config patch
+        const patch: Record<string, unknown> = {
+          channels: { [channelId]: {} as Record<string, unknown> },
+        };
+        const channelPatch = (patch.channels as Record<string, Record<string, unknown>>)[channelId];
+        for (const [key, value] of Object.entries(values)) {
+          // Don't send redacted values back — they haven't changed
+          if (value !== REDACTED_SENTINEL && value !== "") {
+            channelPatch[key] = value;
+          }
+        }
+
+        const baseHash = (configData as ConfigSnapshot | undefined)?.hash;
+        await callRpc<ConfigPatchResult>("config.patch", {
+          raw: JSON.stringify(patch),
+          ...(baseHash ? { baseHash } : {}),
+          note: `Configure ${channelId} from UI`,
+        });
+
+        // Refresh config and status after save
+        mutateConfig();
+        // Wait a moment for gateway restart then refresh status
+        setTimeout(() => mutate(), 3000);
+      } catch (err) {
+        setActionError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setActionBusy(null);
+      }
+    },
+    [callRpc, configData, mutate, mutateConfig],
+  );
+
   // ---- Loading / Error states ----
 
   if (isLoading) {
@@ -247,38 +404,23 @@ export function ChannelsPanel() {
     );
   }
 
-  // Parse response — handle both snapshot object and possible null
+  // Parse responses
   const snapshot = data as ChannelsStatusSnapshot | null | undefined;
-  // Fallback to default channel list when gateway returns empty channelOrder
-  // (matches OpenClaw UI behavior in resolveChannelOrder)
+  const config = (configData as ConfigSnapshot | undefined)?.config ?? {};
+
   const DEFAULT_CHANNELS = [
-    "whatsapp",
-    "telegram",
-    "discord",
-    "googlechat",
-    "slack",
-    "signal",
-    "imessage",
-    "nostr",
+    "whatsapp", "telegram", "discord", "googlechat",
+    "slack", "signal", "imessage", "nostr",
   ];
   const DEFAULT_LABELS: Record<string, string> = {
-    whatsapp: "WhatsApp",
-    telegram: "Telegram",
-    discord: "Discord",
-    googlechat: "Google Chat",
-    slack: "Slack",
-    signal: "Signal",
-    imessage: "iMessage",
-    nostr: "Nostr",
+    whatsapp: "WhatsApp", telegram: "Telegram", discord: "Discord",
+    googlechat: "Google Chat", slack: "Slack", signal: "Signal",
+    imessage: "iMessage", nostr: "Nostr",
   };
-  const channelOrder =
-    snapshot?.channelOrder?.length
-      ? snapshot.channelOrder
-      : DEFAULT_CHANNELS;
-  const channelLabels = {
-    ...DEFAULT_LABELS,
-    ...(snapshot?.channelLabels ?? {}),
-  };
+  const channelOrder = snapshot?.channelOrder?.length
+    ? snapshot.channelOrder
+    : DEFAULT_CHANNELS;
+  const channelLabels = { ...DEFAULT_LABELS, ...(snapshot?.channelLabels ?? {}) };
   const channelAccounts = snapshot?.channelAccounts ?? {};
   const channelDetailLabels = snapshot?.channelDetailLabels ?? {};
 
@@ -289,7 +431,7 @@ export function ChannelsPanel() {
         <div>
           <h2 className="text-lg font-semibold">Channels</h2>
           <p className="text-xs text-muted-foreground">
-            Manage communication channels and connections.
+            Connect communication channels to your agent.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -325,14 +467,15 @@ export function ChannelsPanel() {
       )}
 
       {/* Channel cards */}
-
       <div className="space-y-4">
         {channelOrder.map((channelId) => {
           const accounts = channelAccounts[channelId] ?? [];
-          const account = accounts[0]; // Show primary account
+          const account = accounts[0];
           const label = channelLabels[channelId] ?? channelId;
           const detail = channelDetailLabels[channelId];
           const isWa = isWhatsAppChannel(channelId);
+          const channelConf = getChannelConfig(config, channelId);
+          const configFields = CHANNEL_CONFIG_FIELDS[channelId];
 
           return (
             <ChannelCard
@@ -345,10 +488,13 @@ export function ChannelsPanel() {
               qrDataUrl={isWa ? qrDataUrl : null}
               loginMessage={isWa ? loginMessage : null}
               actionBusy={actionBusy}
+              configFields={configFields}
+              channelConfig={channelConf}
               onShowQr={() => handleShowQr(false)}
               onRelink={() => handleShowQr(true)}
               onWaitForScan={handleWaitForScan}
               onLogout={() => handleLogout(channelId)}
+              onSaveConfig={(values) => handleSaveConfig(channelId, values)}
             />
           );
         })}
@@ -387,10 +533,13 @@ function ChannelCard({
   qrDataUrl,
   loginMessage,
   actionBusy,
+  configFields,
+  channelConfig,
   onShowQr,
   onRelink,
   onWaitForScan,
   onLogout,
+  onSaveConfig,
 }: {
   channelId: string;
   label: string;
@@ -400,21 +549,23 @@ function ChannelCard({
   qrDataUrl: string | null;
   loginMessage: string | null;
   actionBusy: string | null;
+  configFields: ChannelField[] | undefined;
+  channelConfig: Record<string, unknown>;
   onShowQr: () => void;
   onRelink: () => void;
   onWaitForScan: () => void;
   onLogout: () => void;
+  onSaveConfig: (values: Record<string, string>) => void;
 }) {
   const busy = actionBusy !== null;
+  const [showConfig, setShowConfig] = useState(false);
 
-  // Pick fields to display
+  // Pick status fields to display
   const fields = account
     ? (EXTENDED_STATUS_FIELDS as readonly string[]).filter(
         (f) => account[f] !== undefined && account[f] !== null,
       )
     : [];
-
-  // Always show core fields even if undefined
   const coreFields = (DEFAULT_STATUS_FIELDS as readonly string[]).filter(
     (f) => !fields.includes(f),
   );
@@ -432,12 +583,24 @@ function ChannelCard({
             )}
           </div>
         </div>
-        {account?.connected && (
-          <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
-            <CheckCircle2 className="h-3 w-3" />
-            Connected
-          </span>
-        )}
+        <div className="flex items-center gap-2">
+          {account?.connected && (
+            <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+              <CheckCircle2 className="h-3 w-3" />
+              Connected
+            </span>
+          )}
+          {configFields && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowConfig(!showConfig)}
+              className="h-7 px-2"
+            >
+              <Settings className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Status grid */}
@@ -446,15 +609,9 @@ function ChannelCard({
           <div className="rounded-md border border-border/60 bg-muted/10 p-3">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5">
               {[...coreFields, ...fields].map((field) => {
-                const { text, variant } = formatValue(
-                  field,
-                  account[field],
-                );
+                const { text, variant } = formatValue(field, account[field]);
                 return (
-                  <div
-                    key={field}
-                    className="flex items-center gap-1.5 text-xs"
-                  >
+                  <div key={field} className="flex items-center gap-1.5 text-xs">
                     <span className="text-muted-foreground">
                       {STATUS_LABELS[field] || field}:
                     </span>
@@ -468,9 +625,25 @@ function ChannelCard({
       ) : (
         <div className="px-4 pb-3">
           <p className="text-xs text-muted-foreground">
-            Not configured. No account data available.
+            Not configured.{" "}
+            {configFields
+              ? "Click the gear icon to set up this channel."
+              : isWhatsApp
+                ? "Use Show QR to connect."
+                : "No configuration fields available for this channel."}
           </p>
         </div>
+      )}
+
+      {/* Config form */}
+      {showConfig && configFields && (
+        <ChannelConfigForm
+          channelId={channelId}
+          fields={configFields}
+          currentConfig={channelConfig}
+          busy={busy}
+          onSave={onSaveConfig}
+        />
       )}
 
       {/* WhatsApp QR code display */}
@@ -502,12 +675,7 @@ function ChannelCard({
       <div className="flex flex-wrap items-center gap-2 px-4 pb-4">
         {isWhatsApp ? (
           <>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onShowQr}
-              disabled={busy}
-            >
+            <Button variant="outline" size="sm" onClick={onShowQr} disabled={busy}>
               {actionBusy === "qr" ? (
                 <Loader2 className="h-3 w-3 animate-spin mr-1" />
               ) : (
@@ -515,12 +683,7 @@ function ChannelCard({
               )}
               Show QR
             </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onRelink}
-              disabled={busy}
-            >
+            <Button variant="outline" size="sm" onClick={onRelink} disabled={busy}>
               {actionBusy === "relink" ? (
                 <Loader2 className="h-3 w-3 animate-spin mr-1" />
               ) : (
@@ -529,12 +692,7 @@ function ChannelCard({
               Relink
             </Button>
             {qrDataUrl && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onWaitForScan}
-                disabled={busy}
-              >
+              <Button variant="outline" size="sm" onClick={onWaitForScan} disabled={busy}>
                 {actionBusy === "wait" ? (
                   <Loader2 className="h-3 w-3 animate-spin mr-1" />
                 ) : (
@@ -543,12 +701,7 @@ function ChannelCard({
                 Wait for scan
               </Button>
             )}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={onLogout}
-              disabled={busy}
-            >
+            <Button variant="outline" size="sm" onClick={onLogout} disabled={busy}>
               {actionBusy?.startsWith("logout") ? (
                 <Loader2 className="h-3 w-3 animate-spin mr-1" />
               ) : (
@@ -558,12 +711,7 @@ function ChannelCard({
             </Button>
           </>
         ) : (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={onLogout}
-            disabled={busy}
-          >
+          <Button variant="outline" size="sm" onClick={onLogout} disabled={busy}>
             {actionBusy?.startsWith("logout") ? (
               <Loader2 className="h-3 w-3 animate-spin mr-1" />
             ) : (
@@ -572,6 +720,138 @@ function ChannelCard({
             Logout
           </Button>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Channel config form
+// ---------------------------------------------------------------------------
+
+function ChannelConfigForm({
+  channelId,
+  fields,
+  currentConfig,
+  busy,
+  onSave,
+}: {
+  channelId: string;
+  fields: ChannelField[];
+  currentConfig: Record<string, unknown>;
+  busy: boolean;
+  onSave: (values: Record<string, string>) => void;
+}) {
+  // Initialize form values from current config
+  const initialValues = useRef<Record<string, string>>({});
+  if (Object.keys(initialValues.current).length === 0) {
+    for (const field of fields) {
+      const val = currentConfig[field.key];
+      initialValues.current[field.key] =
+        typeof val === "string" ? val : val ? String(val) : "";
+    }
+  }
+
+  const [values, setValues] = useState<Record<string, string>>(
+    () => ({ ...initialValues.current }),
+  );
+  const [showSecrets, setShowSecrets] = useState<Record<string, boolean>>({});
+  const [saved, setSaved] = useState(false);
+
+  const handleChange = (key: string, value: string) => {
+    setValues((prev) => ({ ...prev, [key]: value }));
+    setSaved(false);
+  };
+
+  const handleSave = () => {
+    onSave(values);
+    setSaved(true);
+  };
+
+  const hasChanges = fields.some((f) => {
+    const current = values[f.key] ?? "";
+    const original = initialValues.current[f.key] ?? "";
+    return current !== original && current !== REDACTED_SENTINEL;
+  });
+
+  return (
+    <div className="px-4 pb-3">
+      <div className="rounded-md border border-border/60 bg-muted/5 p-4 space-y-3">
+        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          Configuration
+        </h4>
+
+        {fields.map((field) => {
+          const isRedacted = values[field.key] === REDACTED_SENTINEL;
+          const isSecret = field.sensitive;
+          const showing = showSecrets[field.key] ?? false;
+
+          return (
+            <div key={field.key} className="space-y-1">
+              <label className="text-xs font-medium text-foreground">
+                {field.label}
+              </label>
+              <div className="relative">
+                <input
+                  type={isSecret && !showing ? "password" : "text"}
+                  value={isRedacted ? "••••••••" : values[field.key] ?? ""}
+                  placeholder={field.placeholder}
+                  onChange={(e) => handleChange(field.key, e.target.value)}
+                  onFocus={() => {
+                    // Clear redacted sentinel on focus so user can type new value
+                    if (isRedacted) {
+                      handleChange(field.key, "");
+                    }
+                  }}
+                  disabled={busy}
+                  className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                />
+                {isSecret && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setShowSecrets((prev) => ({
+                        ...prev,
+                        [field.key]: !prev[field.key],
+                      }))
+                    }
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    {showing ? (
+                      <EyeOff className="h-3 w-3" />
+                    ) : (
+                      <Eye className="h-3 w-3" />
+                    )}
+                  </button>
+                )}
+              </div>
+              {field.help && (
+                <p className="text-[10px] text-muted-foreground">{field.help}</p>
+              )}
+            </div>
+          );
+        })}
+
+        <div className="flex items-center gap-2 pt-1">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleSave}
+            disabled={busy || !hasChanges}
+          >
+            {busy ? (
+              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+            ) : (
+              <Save className="h-3 w-3 mr-1" />
+            )}
+            Save
+          </Button>
+          {saved && !busy && (
+            <span className="text-xs text-green-600">
+              Saved! Gateway restarting...
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
