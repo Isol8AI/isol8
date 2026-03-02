@@ -46,7 +46,6 @@ class GatewayConnection:
         self._frontend_connections: Set[str] = set()
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
-        self._chat_text_len: int = 0  # Track cumulative text length for delta computation
 
     @property
     def is_connected(self) -> bool:
@@ -116,16 +115,16 @@ class GatewayConnection:
         finally:
             self._pending_rpcs.pop(req_id, None)
 
-    def _transform_chat_event(self, event_name: str, payload: dict) -> dict | None:
+    @staticmethod
+    def _transform_chat_event(event_name: str, payload: dict) -> dict | None:
         """Transform an OpenClaw chat event into the frontend chat message format.
 
         Returns a dict to send to the frontend, or None to skip the event.
-        Only handles native "chat" events with state field (delta/final/aborted/error).
 
-        Content blocks may carry either an incremental ``delta`` (new text only)
-        or a cumulative ``text`` (full text so far).  When we see ``delta`` we
-        forward it directly; when we see ``text`` we compute the incremental
-        portion ourselves.
+        OpenClaw sends cumulative text in ``message.content[].text`` (the full
+        response so far, not just the new characters).  We forward it as-is;
+        the frontend replaces its display buffer on each chunk (matching how
+        OpenClaw's own UI works).
         """
         if event_name != "chat":
             return None
@@ -138,17 +137,9 @@ class GatewayConnection:
                 if isinstance(content_blocks, list) and content_blocks:
                     block = content_blocks[-1]
                     if isinstance(block, dict):
-                        # Prefer incremental delta if present
-                        block_delta = block.get("delta")
-                        if block_delta:
-                            self._chat_text_len += len(block_delta)
-                            return {"type": "chunk", "content": block_delta}
-                        # Fall back to cumulative text
-                        cumulative = block.get("text") or ""
-                        if cumulative:
-                            delta = cumulative[self._chat_text_len :]
-                            self._chat_text_len = len(cumulative)
-                            return {"type": "chunk", "content": delta} if delta else None
+                        text = block.get("text") or block.get("delta") or ""
+                        if text:
+                            return {"type": "chunk", "content": text}
                     elif isinstance(block, str) and block:
                         return {"type": "chunk", "content": block}
                 elif isinstance(content_blocks, str) and content_blocks:
@@ -161,15 +152,12 @@ class GatewayConnection:
                 return {"type": "chunk", "content": msg}
             return None
         if state == "final":
-            self._chat_text_len = 0  # Reset for next turn
             return {"type": "done"}
         if state == "error":
-            self._chat_text_len = 0
             err = payload.get("error", {})
             msg = err.get("message", "Agent run failed") if isinstance(err, dict) else str(err or "Agent run failed")
             return {"type": "error", "message": msg}
         if state == "aborted":
-            self._chat_text_len = 0
             return {"type": "error", "message": "Agent run was cancelled"}
         return None
 
