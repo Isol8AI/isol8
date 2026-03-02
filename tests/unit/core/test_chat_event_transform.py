@@ -1,11 +1,12 @@
 # backend/tests/unit/core/test_chat_event_transform.py
 """Unit tests for GatewayConnection.
 
-Covers _transform_chat_event() and is_connected property.
+Covers _transform_agent_event(), _extract_chat_text(), _handle_message routing,
+and is_connected property.
 """
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 from core.gateway.connection_pool import GatewayConnection
 
@@ -53,110 +54,93 @@ class TestIsConnected:
         assert conn.is_connected is True
 
 
-class TestTransformChatEvent:
-    """Tests for _transform_chat_event.
+class TestTransformAgentEvent:
+    """Tests for _transform_agent_event.
 
-    OpenClaw sends cumulative text in message.content[].text.  The method
-    forwards it as-is; the frontend replaces its display buffer on each chunk.
+    OpenClaw agent events fire for every LLM token (unthrottled).
+    Only assistant-stream events with cumulative text are forwarded.
     """
 
-    # -- Content block with text (cumulative, forwarded as-is) --
-
-    def test_cumulative_text_forwarded_directly(self):
-        """Cumulative text from content blocks is forwarded without delta computation."""
-        r1 = GatewayConnection._transform_chat_event(
-            "chat",
-            {"state": "delta", "message": {"content": [{"type": "text", "text": "Hello"}]}},
+    def test_assistant_stream_with_text(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}}
         )
-        assert r1 == {"type": "chunk", "content": "Hello"}
+        assert result == {"type": "chunk", "content": "Hello"}
 
-        r2 = GatewayConnection._transform_chat_event(
-            "chat",
-            {"state": "delta", "message": {"content": [{"type": "text", "text": "Hello world"}]}},
+    def test_assistant_stream_cumulative(self):
+        """Successive events carry progressively longer cumulative text."""
+        r1 = GatewayConnection._transform_agent_event({"stream": "assistant", "data": {"text": "He", "delta": "He"}})
+        assert r1 == {"type": "chunk", "content": "He"}
+
+        r2 = GatewayConnection._transform_agent_event(
+            {"stream": "assistant", "data": {"text": "Hello world", "delta": "llo world"}}
         )
         assert r2 == {"type": "chunk", "content": "Hello world"}
 
-    def test_content_block_with_delta_field(self):
-        """Content blocks with a 'delta' field (fallback) should also work."""
-        r = GatewayConnection._transform_chat_event(
-            "chat",
-            {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hi!"}]}},
-        )
-        assert r == {"type": "chunk", "content": "Hi!"}
+    def test_non_assistant_stream_ignored(self):
+        assert GatewayConnection._transform_agent_event({"stream": "lifecycle", "data": {"phase": "start"}}) is None
+        assert GatewayConnection._transform_agent_event({"stream": "tool", "data": {"tool": "brave_search"}}) is None
 
-    def test_multiple_content_blocks_uses_last(self):
-        """When multiple content blocks exist, the last one is used."""
-        r = GatewayConnection._transform_chat_event(
-            "chat",
+    def test_missing_stream_ignored(self):
+        assert GatewayConnection._transform_agent_event({"data": {"text": "Hi"}}) is None
+
+    def test_missing_data_ignored(self):
+        assert GatewayConnection._transform_agent_event({"stream": "assistant"}) is None
+
+    def test_non_dict_data_ignored(self):
+        assert GatewayConnection._transform_agent_event({"stream": "assistant", "data": "string"}) is None
+
+    def test_empty_text_ignored(self):
+        assert (
+            GatewayConnection._transform_agent_event({"stream": "assistant", "data": {"text": "", "delta": ""}}) is None
+        )
+
+
+class TestExtractChatText:
+    """Tests for _extract_chat_text — extracts text from chat event message field."""
+
+    def test_extracts_text_from_content_block(self):
+        result = GatewayConnection._extract_chat_text(
+            {"message": {"content": [{"type": "text", "text": "Hello world"}]}}
+        )
+        assert result == "Hello world"
+
+    def test_uses_last_content_block(self):
+        result = GatewayConnection._extract_chat_text(
             {
-                "state": "delta",
                 "message": {
                     "content": [
                         {"type": "thinking", "text": "internal"},
                         {"type": "text", "text": "visible"},
                     ]
-                },
-            },
+                }
+            }
         )
-        assert r == {"type": "chunk", "content": "visible"}
+        assert result == "visible"
 
-    # -- Fallback paths --
+    def test_no_message_returns_none(self):
+        assert GatewayConnection._extract_chat_text({}) is None
+        assert GatewayConnection._extract_chat_text({"message": "string"}) is None
 
-    def test_chat_delta_with_string_content(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": "Hello"}})
-        assert result == {"type": "chunk", "content": "Hello"}
+    def test_empty_content_returns_none(self):
+        assert GatewayConnection._extract_chat_text({"message": {"content": []}}) is None
+        assert GatewayConnection._extract_chat_text({"message": {}}) is None
 
-    def test_chat_delta_with_string_message(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": "Hi there"})
-        assert result == {"type": "chunk", "content": "Hi there"}
-
-    def test_message_level_delta_fallback(self):
-        """If content blocks have no text, fall back to message-level delta."""
-        result = GatewayConnection._transform_chat_event(
-            "chat", {"state": "delta", "message": {"delta": "fallback text"}}
-        )
-        assert result == {"type": "chunk", "content": "fallback text"}
-
-    def test_chat_delta_empty_message(self):
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {}}) is None
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta"}) is None
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": []}}) is None
-
-    # -- Terminal states --
-
-    def test_chat_final(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "final"})
-        assert result == {"type": "done"}
-
-    def test_chat_error_with_dict(self):
-        result = GatewayConnection._transform_chat_event(
-            "chat", {"state": "error", "error": {"message": "Rate limited"}}
-        )
-        assert result == {"type": "error", "message": "Rate limited"}
-
-    def test_chat_error_with_string(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "error", "error": "Something broke"})
-        assert result == {"type": "error", "message": "Something broke"}
-
-    def test_chat_aborted(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "aborted"})
-        assert result == {"type": "error", "message": "Agent run was cancelled"}
-
-    def test_chat_unknown_state(self):
-        assert GatewayConnection._transform_chat_event("chat", {"state": "unknown"}) is None
-
-    def test_non_chat_event_returns_none(self):
-        assert GatewayConnection._transform_chat_event("text_delta", {"delta": "Hi"}) is None
-        assert GatewayConnection._transform_chat_event("unknown_event", {}) is None
+    def test_empty_text_returns_none(self):
+        assert GatewayConnection._extract_chat_text({"message": {"content": [{"type": "text", "text": ""}]}}) is None
 
 
-class TestHandleMessageChatEvents:
-    """Tests that _handle_message correctly routes chat events through transformation."""
+class TestHandleMessage:
+    """Tests that _handle_message routes events correctly.
+
+    - Agent events → smooth streaming via _transform_agent_event
+    - Chat events → only terminal states (final sends complete text + done)
+    - Chat delta → skipped (agent events handle streaming)
+    - Other events → forwarded as-is
+    """
 
     @pytest.fixture
     def mock_management_api(self):
-        from unittest.mock import MagicMock
-
         client = MagicMock()
         client.send_message = MagicMock(return_value=True)
         return client
@@ -172,35 +156,70 @@ class TestHandleMessageChatEvents:
         conn._frontend_connections.add("conn-1")
         return conn
 
-    def test_chat_event_transformed_before_forwarding(self, connection, mock_management_api):
-        """Chat events should be transformed, not forwarded raw."""
+    # -- Agent events (unthrottled streaming) --
+
+    def test_agent_assistant_event_forwarded_as_chunk(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
-                "event": "chat",
-                "payload": {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hi!"}]}},
+                "event": "agent",
+                "payload": {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hi!"})
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hello"})
 
-    def test_non_chat_event_forwarded_as_is(self, connection, mock_management_api):
-        """Non-chat events should be forwarded raw for SWR revalidation."""
-        raw_event = {"type": "event", "event": "health", "payload": {"status": "ok"}}
-        connection._handle_message(raw_event)
-        mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
-
-    def test_skipped_chat_event_not_forwarded(self, connection, mock_management_api):
-        """Events that transform to None should not be forwarded."""
+    def test_agent_non_assistant_event_skipped(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
-                "event": "chat",
-                "payload": {"state": "unknown"},
+                "event": "agent",
+                "payload": {"stream": "lifecycle", "data": {"phase": "start"}},
             }
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_chat_final_sends_done(self, connection, mock_management_api):
+    # -- Chat events (terminal states only) --
+
+    def test_chat_delta_skipped(self, connection, mock_management_api):
+        """Chat delta events are ignored — agent events handle streaming."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "delta",
+                    "message": {"content": [{"type": "text", "text": "Hi!"}]},
+                },
+            }
+        )
+        mock_management_api.send_message.assert_not_called()
+
+    def test_chat_final_sends_complete_text_then_done(self, connection, mock_management_api):
+        """Final event sends the complete response text, then done signal."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Complete response here."}],
+                    },
+                },
+            }
+        )
+        assert mock_management_api.send_message.call_count == 2
+        mock_management_api.send_message.assert_any_call(
+            "conn-1", {"type": "chunk", "content": "Complete response here."}
+        )
+        mock_management_api.send_message.assert_any_call("conn-1", {"type": "done"})
+        # Verify order: chunk before done
+        calls = mock_management_api.send_message.call_args_list
+        assert calls[0] == call("conn-1", {"type": "chunk", "content": "Complete response here."})
+        assert calls[1] == call("conn-1", {"type": "done"})
+
+    def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
@@ -210,14 +229,66 @@ class TestHandleMessageChatEvents:
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done"})
 
-    def test_chat_events_sent_to_all_frontend_connections(self, connection, mock_management_api):
-        """Chat events should be forwarded to all registered frontend connections."""
-        connection._frontend_connections.add("conn-2")
+    def test_chat_error_with_dict(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "delta", "message": {"content": "chunk"}},
+                "payload": {"state": "error", "error": {"message": "Rate limited"}},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "error", "message": "Rate limited"})
+
+    def test_chat_error_with_string(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "error", "error": "Something broke"},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "error", "message": "Something broke"}
+        )
+
+    def test_chat_aborted(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "aborted"},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "error", "message": "Agent run was cancelled"}
+        )
+
+    def test_chat_unknown_state_skipped(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "unknown"},
+            }
+        )
+        mock_management_api.send_message.assert_not_called()
+
+    # -- Other events (forwarded as-is) --
+
+    def test_non_chat_non_agent_event_forwarded_as_is(self, connection, mock_management_api):
+        raw_event = {"type": "event", "event": "health", "payload": {"status": "ok"}}
+        connection._handle_message(raw_event)
+        mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
+
+    # -- Multi-connection forwarding --
+
+    def test_events_sent_to_all_frontend_connections(self, connection, mock_management_api):
+        connection._frontend_connections.add("conn-2")
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {"stream": "assistant", "data": {"text": "Hi"}},
             }
         )
         assert mock_management_api.send_message.call_count == 2

@@ -21,7 +21,6 @@ from core.containers.ecs_manager import GATEWAY_PORT
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
-_CHAT_EVENTS = frozenset({"chat"})
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 
@@ -116,53 +115,56 @@ class GatewayConnection:
             self._pending_rpcs.pop(req_id, None)
 
     @staticmethod
-    def _transform_chat_event(event_name: str, payload: dict) -> dict | None:
-        """Transform an OpenClaw chat event into the frontend chat message format.
+    def _transform_agent_event(payload: dict) -> dict | None:
+        """Extract streaming text from an unthrottled OpenClaw agent event.
 
-        Returns a dict to send to the frontend, or None to skip the event.
-
-        OpenClaw sends cumulative text in ``message.content[].text`` (the full
-        response so far, not just the new characters).  We forward it as-is;
-        the frontend replaces its display buffer on each chunk (matching how
-        OpenClaw's own UI works).
+        Agent events fire for every LLM token (no 150ms throttle). Only
+        ``stream: "assistant"`` events with text are forwarded. The text is
+        cumulative (full response so far); the frontend replaces its display
+        buffer on each chunk.
         """
-        if event_name != "chat":
+        if payload.get("stream") != "assistant":
             return None
-
-        state = payload.get("state", "")
-        if state == "delta":
-            msg = payload.get("message", {})
-            if isinstance(msg, dict):
-                content_blocks = msg.get("content", [])
-                if isinstance(content_blocks, list) and content_blocks:
-                    block = content_blocks[-1]
-                    if isinstance(block, dict):
-                        text = block.get("text") or block.get("delta") or ""
-                        if text:
-                            return {"type": "chunk", "content": text}
-                    elif isinstance(block, str) and block:
-                        return {"type": "chunk", "content": block}
-                elif isinstance(content_blocks, str) and content_blocks:
-                    return {"type": "chunk", "content": content_blocks}
-                # Fallback: message-level delta
-                msg_delta = msg.get("delta") or ""
-                if msg_delta:
-                    return {"type": "chunk", "content": msg_delta}
-            elif isinstance(msg, str) and msg:
-                return {"type": "chunk", "content": msg}
+        data = payload.get("data")
+        if not isinstance(data, dict):
             return None
-        if state == "final":
-            return {"type": "done"}
-        if state == "error":
-            err = payload.get("error", {})
-            msg = err.get("message", "Agent run failed") if isinstance(err, dict) else str(err or "Agent run failed")
-            return {"type": "error", "message": msg}
-        if state == "aborted":
-            return {"type": "error", "message": "Agent run was cancelled"}
+        text = data.get("text", "")
+        if text:
+            return {"type": "chunk", "content": text}
         return None
 
+    @staticmethod
+    def _extract_chat_text(payload: dict) -> str | None:
+        """Extract text from a chat event's message.content field."""
+        msg = payload.get("message")
+        if not isinstance(msg, dict):
+            return None
+        content = msg.get("content", [])
+        if isinstance(content, list) and content:
+            block = content[-1]
+            if isinstance(block, dict):
+                return block.get("text") or None
+        return None
+
+    def _forward_to_frontends(self, message: dict) -> None:
+        """Send a message to all registered frontend connections."""
+        for conn_id in list(self._frontend_connections):
+            try:
+                self._management_api.send_message(conn_id, message)
+            except Exception:
+                logger.warning("Failed to forward message to %s", conn_id)
+
     def _handle_message(self, data: dict) -> None:
-        """Route an incoming gateway message."""
+        """Route an incoming gateway message.
+
+        Event routing:
+        - ``agent`` events (unthrottled): token-by-token streaming via
+          ``_transform_agent_event``.
+        - ``chat`` events: only terminal states (final/error/aborted). Delta
+          states are ignored because agent events provide the same data without
+          the 150ms throttle.
+        - Other events: forwarded as-is for SWR revalidation.
+        """
         msg_type = data.get("type")
 
         if msg_type == "res":
@@ -180,73 +182,53 @@ class GatewayConnection:
             event_name = data.get("event", "")
             payload = data.get("payload", {})
 
-            if event_name in _CHAT_EVENTS:
-                state = payload.get("state", "")
-                # --- Diagnostic: trace every chat event through the pipeline ---
-                msg_obj = payload.get("message", {})
-                content_preview = ""
-                if isinstance(msg_obj, dict):
-                    cb = msg_obj.get("content", [])
-                    if isinstance(cb, list) and cb:
-                        block = cb[-1]
-                        if isinstance(block, dict):
-                            content_preview = (block.get("text") or block.get("delta") or "")[:80]
-                logger.info(
-                    "CHAT_EVENT user=%s state=%s content_len=%d preview=%r conns=%s",
-                    self.user_id,
-                    state,
-                    len(content_preview),
-                    content_preview[:40],
-                    list(self._frontend_connections),
-                )
-                # --- End diagnostic ---
+            if event_name == "agent":
+                # Unthrottled agent events — smooth token-by-token streaming
+                transformed = self._transform_agent_event(payload)
+                if transformed:
+                    self._forward_to_frontends(transformed)
 
-                transformed = self._transform_chat_event(event_name, payload)
-                if transformed is None:
-                    logger.info("CHAT_EVENT_SKIP user=%s state=%s (transform returned None)", self.user_id, state)
-                    return
-                for conn_id in list(self._frontend_connections):
-                    try:
-                        ok = self._management_api.send_message(conn_id, transformed)
-                        logger.info(
-                            "CHAT_SEND user=%s conn=%s type=%s ok=%s content_len=%d",
-                            self.user_id,
-                            conn_id,
-                            transformed.get("type"),
-                            ok,
-                            len(str(transformed.get("content", ""))),
-                        )
-                    except Exception as exc:
-                        logger.warning("CHAT_SEND_FAIL user=%s conn=%s: %s", self.user_id, conn_id, exc)
+            elif event_name == "chat":
+                # Chat events — only terminal states.
+                # Delta states are skipped; agent events handle streaming.
+                state = payload.get("state", "")
+                if state == "final":
+                    # Send complete text as safety net before done signal
+                    final_text = self._extract_chat_text(payload)
+                    if final_text:
+                        self._forward_to_frontends({"type": "chunk", "content": final_text})
+                    self._forward_to_frontends({"type": "done"})
+                elif state == "error":
+                    err = payload.get("error", {})
+                    msg = (
+                        err.get("message", "Agent run failed")
+                        if isinstance(err, dict)
+                        else str(err or "Agent run failed")
+                    )
+                    self._forward_to_frontends({"type": "error", "message": msg})
+                elif state == "aborted":
+                    self._forward_to_frontends({"type": "error", "message": "Agent run was cancelled"})
+
             else:
-                # Forward non-chat events as-is for SWR revalidation
-                for conn_id in list(self._frontend_connections):
-                    try:
-                        self._management_api.send_message(conn_id, data)
-                    except Exception:
-                        logger.warning("Failed to forward event to %s", conn_id)
+                # Forward other events as-is for SWR revalidation
+                self._forward_to_frontends(data)
             return
 
     async def _reader_loop(self) -> None:
         """Background task: read all messages from gateway WebSocket."""
-        logger.info("READER_LOOP_START user=%s", self.user_id)
-        msg_count = 0
         try:
             async for raw in self._ws:
-                msg_count += 1
                 try:
                     data = json.loads(raw)
                     self._handle_message(data)
                 except json.JSONDecodeError:
                     logger.warning("Non-JSON message from gateway for user %s", self.user_id)
         except asyncio.CancelledError:
-            logger.info("READER_LOOP_CANCELLED user=%s after %d msgs", self.user_id, msg_count)
             return
         except Exception as e:
             if self._closed:
-                logger.info("READER_LOOP_CLOSED user=%s after %d msgs", self.user_id, msg_count)
                 return
-            logger.error("READER_LOOP_ERROR user=%s after %d msgs: %s", self.user_id, msg_count, e)
+            logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
             # Reject all pending RPCs
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
