@@ -179,18 +179,45 @@ class GatewayConnection:
         if msg_type == "event":
             event_name = data.get("event", "")
             payload = data.get("payload", {})
-            logger.debug("Gateway event: %s payload=%s", event_name, payload)
 
             if event_name in _CHAT_EVENTS:
-                # Transform chat events to frontend chunk/done/error/heartbeat format
+                state = payload.get("state", "")
+                # --- Diagnostic: trace every chat event through the pipeline ---
+                msg_obj = payload.get("message", {})
+                content_preview = ""
+                if isinstance(msg_obj, dict):
+                    cb = msg_obj.get("content", [])
+                    if isinstance(cb, list) and cb:
+                        block = cb[-1]
+                        if isinstance(block, dict):
+                            content_preview = (block.get("text") or block.get("delta") or "")[:80]
+                logger.info(
+                    "CHAT_EVENT user=%s state=%s content_len=%d preview=%r conns=%s",
+                    self.user_id,
+                    state,
+                    len(content_preview),
+                    content_preview[:40],
+                    list(self._frontend_connections),
+                )
+                # --- End diagnostic ---
+
                 transformed = self._transform_chat_event(event_name, payload)
                 if transformed is None:
+                    logger.info("CHAT_EVENT_SKIP user=%s state=%s (transform returned None)", self.user_id, state)
                     return
                 for conn_id in list(self._frontend_connections):
                     try:
-                        self._management_api.send_message(conn_id, transformed)
-                    except Exception:
-                        logger.warning("Failed to forward chat event to %s", conn_id)
+                        ok = self._management_api.send_message(conn_id, transformed)
+                        logger.info(
+                            "CHAT_SEND user=%s conn=%s type=%s ok=%s content_len=%d",
+                            self.user_id,
+                            conn_id,
+                            transformed.get("type"),
+                            ok,
+                            len(str(transformed.get("content", ""))),
+                        )
+                    except Exception as exc:
+                        logger.warning("CHAT_SEND_FAIL user=%s conn=%s: %s", self.user_id, conn_id, exc)
             else:
                 # Forward non-chat events as-is for SWR revalidation
                 for conn_id in list(self._frontend_connections):
@@ -202,19 +229,24 @@ class GatewayConnection:
 
     async def _reader_loop(self) -> None:
         """Background task: read all messages from gateway WebSocket."""
+        logger.info("READER_LOOP_START user=%s", self.user_id)
+        msg_count = 0
         try:
             async for raw in self._ws:
+                msg_count += 1
                 try:
                     data = json.loads(raw)
                     self._handle_message(data)
                 except json.JSONDecodeError:
                     logger.warning("Non-JSON message from gateway for user %s", self.user_id)
         except asyncio.CancelledError:
+            logger.info("READER_LOOP_CANCELLED user=%s after %d msgs", self.user_id, msg_count)
             return
         except Exception as e:
             if self._closed:
+                logger.info("READER_LOOP_CLOSED user=%s after %d msgs", self.user_id, msg_count)
                 return
-            logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
+            logger.error("READER_LOOP_ERROR user=%s after %d msgs: %s", self.user_id, msg_count, e)
             # Reject all pending RPCs
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
