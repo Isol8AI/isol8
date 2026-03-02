@@ -46,6 +46,7 @@ class GatewayConnection:
         self._frontend_connections: Set[str] = set()
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
+        self._chat_text_len: int = 0  # Track cumulative text length for delta computation
 
     @property
     def is_connected(self) -> bool:
@@ -115,12 +116,15 @@ class GatewayConnection:
         finally:
             self._pending_rpcs.pop(req_id, None)
 
-    @staticmethod
-    def _transform_chat_event(event_name: str, payload: dict) -> dict | None:
+    def _transform_chat_event(self, event_name: str, payload: dict) -> dict | None:
         """Transform an OpenClaw chat event into the frontend chat message format.
 
         Returns a dict to send to the frontend, or None to skip the event.
         Only handles native "chat" events with state field (delta/final/aborted/error).
+
+        OpenClaw's content blocks contain cumulative ``text`` (full text so far)
+        rather than an incremental delta.  We track how much text we have already
+        forwarded and only send the new portion so the frontend can concatenate.
         """
         if event_name != "chat":
             return None
@@ -128,29 +132,37 @@ class GatewayConnection:
         state = payload.get("state", "")
         if state == "delta":
             msg = payload.get("message", {})
-            content = ""
+            full_text = ""
             if isinstance(msg, dict):
                 content_blocks = msg.get("content", [])
                 if isinstance(content_blocks, list) and content_blocks:
                     block = content_blocks[-1]
                     if isinstance(block, dict):
-                        content = block.get("delta") or block.get("text") or ""
+                        full_text = block.get("text") or ""
                     elif isinstance(block, str):
-                        content = block
+                        full_text = block
                 elif isinstance(content_blocks, str):
-                    content = content_blocks
-                if not content:
-                    content = msg.get("delta") or ""
+                    full_text = content_blocks
+                if not full_text:
+                    full_text = msg.get("delta") or ""
             elif isinstance(msg, str):
-                content = msg
-            return {"type": "chunk", "content": content} if content else None
+                full_text = msg
+            if not full_text:
+                return None
+            # Compute incremental delta from cumulative text
+            delta = full_text[self._chat_text_len :]
+            self._chat_text_len = len(full_text)
+            return {"type": "chunk", "content": delta} if delta else None
         if state == "final":
+            self._chat_text_len = 0  # Reset for next turn
             return {"type": "done"}
         if state == "error":
+            self._chat_text_len = 0
             err = payload.get("error", {})
             msg = err.get("message", "Agent run failed") if isinstance(err, dict) else str(err or "Agent run failed")
             return {"type": "error", "message": msg}
         if state == "aborted":
+            self._chat_text_len = 0
             return {"type": "error", "message": "Agent run was cancelled"}
         return None
 

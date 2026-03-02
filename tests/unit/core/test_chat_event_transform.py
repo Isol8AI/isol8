@@ -54,71 +54,90 @@ class TestIsConnected:
 
 
 class TestTransformChatEvent:
-    """Tests for _transform_chat_event static method (native chat events only)."""
+    """Tests for _transform_chat_event (computes incremental deltas from cumulative text)."""
 
-    def test_chat_delta_with_content_blocks(self):
-        """Native format: message.content is an array of content blocks with delta field."""
-        result = GatewayConnection._transform_chat_event(
-            "chat",
-            {
-                "state": "delta",
-                "message": {
-                    "role": "assistant",
-                    "content": [{"type": "text", "text": "Hello world", "delta": " world"}],
-                },
-            },
+    def _make_conn(self):
+        return GatewayConnection(
+            user_id="u",
+            ip="0.0.0.0",
+            token="t",
+            management_api=MagicMock(),
         )
-        assert result == {"type": "chunk", "content": " world"}
 
-    def test_chat_delta_content_block_text_fallback(self):
-        """When delta is missing, fall back to text field in content block."""
-        result = GatewayConnection._transform_chat_event(
+    def test_cumulative_text_produces_incremental_deltas(self):
+        """Successive cumulative text blocks should yield only the new portion."""
+        conn = self._make_conn()
+        r1 = conn._transform_chat_event(
             "chat",
-            {
-                "state": "delta",
-                "message": {"content": [{"type": "text", "text": "Hello"}]},
-            },
+            {"state": "delta", "message": {"content": [{"type": "text", "text": "Hello"}]}},
         )
-        assert result == {"type": "chunk", "content": "Hello"}
+        assert r1 == {"type": "chunk", "content": "Hello"}
+
+        r2 = conn._transform_chat_event(
+            "chat",
+            {"state": "delta", "message": {"content": [{"type": "text", "text": "Hello world"}]}},
+        )
+        assert r2 == {"type": "chunk", "content": " world"}
+
+    def test_final_resets_tracking(self):
+        """After final, the next turn starts fresh."""
+        conn = self._make_conn()
+        conn._transform_chat_event(
+            "chat",
+            {"state": "delta", "message": {"content": [{"type": "text", "text": "Hi"}]}},
+        )
+        conn._transform_chat_event("chat", {"state": "final"})
+
+        r = conn._transform_chat_event(
+            "chat",
+            {"state": "delta", "message": {"content": [{"type": "text", "text": "New turn"}]}},
+        )
+        assert r == {"type": "chunk", "content": "New turn"}
 
     def test_chat_delta_with_string_content(self):
-        """Fallback: message.content is a plain string."""
-        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": "Hello"}})
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "delta", "message": {"content": "Hello"}})
         assert result == {"type": "chunk", "content": "Hello"}
 
     def test_chat_delta_with_string_message(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": "Hi there"})
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "delta", "message": "Hi there"})
         assert result == {"type": "chunk", "content": "Hi there"}
 
     def test_chat_delta_empty_message(self):
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {}}) is None
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta"}) is None
-        assert GatewayConnection._transform_chat_event("chat", {"state": "delta", "message": {"content": []}}) is None
+        conn = self._make_conn()
+        assert conn._transform_chat_event("chat", {"state": "delta", "message": {}}) is None
+        assert conn._transform_chat_event("chat", {"state": "delta"}) is None
+        assert conn._transform_chat_event("chat", {"state": "delta", "message": {"content": []}}) is None
 
     def test_chat_final(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "final"})
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "final"})
         assert result == {"type": "done"}
 
     def test_chat_error_with_dict(self):
-        result = GatewayConnection._transform_chat_event(
-            "chat", {"state": "error", "error": {"message": "Rate limited"}}
-        )
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "error", "error": {"message": "Rate limited"}})
         assert result == {"type": "error", "message": "Rate limited"}
 
     def test_chat_error_with_string(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "error", "error": "Something broke"})
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "error", "error": "Something broke"})
         assert result == {"type": "error", "message": "Something broke"}
 
     def test_chat_aborted(self):
-        result = GatewayConnection._transform_chat_event("chat", {"state": "aborted"})
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "aborted"})
         assert result == {"type": "error", "message": "Agent run was cancelled"}
 
     def test_chat_unknown_state(self):
-        assert GatewayConnection._transform_chat_event("chat", {"state": "unknown"}) is None
+        conn = self._make_conn()
+        assert conn._transform_chat_event("chat", {"state": "unknown"}) is None
 
     def test_non_chat_event_returns_none(self):
-        assert GatewayConnection._transform_chat_event("text_delta", {"delta": "Hi"}) is None
-        assert GatewayConnection._transform_chat_event("unknown_event", {}) is None
+        conn = self._make_conn()
+        assert conn._transform_chat_event("text_delta", {"delta": "Hi"}) is None
+        assert conn._transform_chat_event("unknown_event", {}) is None
 
 
 class TestHandleMessageChatEvents:
@@ -149,7 +168,7 @@ class TestHandleMessageChatEvents:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hi!"}]}},
+                "payload": {"state": "delta", "message": {"content": [{"type": "text", "text": "Hi!"}]}},
             }
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hi!"})
