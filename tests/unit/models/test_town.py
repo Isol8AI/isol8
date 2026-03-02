@@ -2,7 +2,65 @@
 
 import pytest
 
-from models.town import TownAgent, TownState, TownConversation, TownRelationship
+from models.town import TownAgent, TownInstance, TownState, TownConversation, TownRelationship
+
+
+class TestTownInstanceModel:
+    """Test TownInstance database model."""
+
+    @pytest.mark.asyncio
+    async def test_create_town_instance(self, db_session):
+        instance = TownInstance(
+            user_id="user_inst_1",
+            apartment_unit=1,
+            town_token="tok_test_1",
+        )
+        db_session.add(instance)
+        await db_session.flush()
+
+        assert instance.id is not None
+        assert instance.user_id == "user_inst_1"
+        assert instance.apartment_unit == 1
+        assert instance.is_active is True
+
+    @pytest.mark.asyncio
+    async def test_unique_user_id(self, db_session):
+        i1 = TownInstance(user_id="user_dup", apartment_unit=1, town_token="tok_1")
+        i2 = TownInstance(user_id="user_dup", apartment_unit=2, town_token="tok_2")
+        db_session.add(i1)
+        await db_session.flush()
+        db_session.add(i2)
+
+        with pytest.raises(Exception):
+            await db_session.flush()
+
+        await db_session.rollback()
+
+    @pytest.mark.asyncio
+    async def test_unique_apartment_unit(self, db_session):
+        i1 = TownInstance(user_id="user_a1", apartment_unit=1, town_token="tok_a1")
+        i2 = TownInstance(user_id="user_a2", apartment_unit=1, town_token="tok_a2")
+        db_session.add(i1)
+        await db_session.flush()
+        db_session.add(i2)
+
+        with pytest.raises(Exception):
+            await db_session.flush()
+
+        await db_session.rollback()
+
+    @pytest.mark.asyncio
+    async def test_unique_town_token(self, db_session):
+        i1 = TownInstance(user_id="user_t1", apartment_unit=1, town_token="tok_shared")
+        i2 = TownInstance(user_id="user_t2", apartment_unit=2, town_token="tok_shared")
+        db_session.add(i1)
+        await db_session.flush()
+        db_session.add(i2)
+
+        with pytest.raises(Exception):
+            await db_session.flush()
+
+        await db_session.rollback()
 
 
 class TestTownAgentModel:
@@ -97,6 +155,25 @@ class TestTownStateModel:
         assert state.energy == 100
         assert state.current_activity == "idle"
 
+    @pytest.mark.asyncio
+    async def test_state_location_state_default(self, db_session, test_user):
+        agent = TownAgent(user_id=test_user.id, agent_name="loc_test", display_name="LocTest")
+        db_session.add(agent)
+        await db_session.flush()
+
+        state = TownState(agent_id=agent.id, position_x=0.0, position_y=0.0)
+        db_session.add(state)
+        await db_session.flush()
+
+        assert state.location_state == "sleeping"
+        assert state.target_x is None
+        assert state.target_y is None
+        assert state.facing_x == 0.0
+        assert state.facing_y == 1.0
+        assert state.speed == 0.0
+        assert state.current_conversation_id is None
+        assert state.last_heartbeat_at is None
+
 
 class TestTownConversationModel:
     """Test TownConversation database model."""
@@ -127,6 +204,20 @@ class TestTownConversationModel:
         assert convo.id is not None
         assert convo.turn_count == 3
         assert len(convo.public_log) == 3
+
+    @pytest.mark.asyncio
+    async def test_conversation_status_default(self, db_session, test_user, other_user):
+        agent_a = TownAgent(user_id=test_user.id, agent_name="cs_a", display_name="A")
+        agent_b = TownAgent(user_id=other_user.id, agent_name="cs_b", display_name="B")
+        db_session.add_all([agent_a, agent_b])
+        await db_session.flush()
+
+        convo = TownConversation(participant_a_id=agent_a.id, participant_b_id=agent_b.id)
+        db_session.add(convo)
+        await db_session.flush()
+
+        assert convo.status == "pending"
+        assert convo.waiting_for is None
 
 
 class TestTownRelationshipModel:
