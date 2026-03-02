@@ -99,7 +99,7 @@ class TestUsageTrackingIntegration:
     @pytest.mark.asyncio
     @patch("core.services.usage_service.stripe")
     async def test_record_usage_for_agent(self, mock_stripe, db_session, model_pricing, user_billing_account):
-        """Should record usage for agent chat with agent_name."""
+        """Should record usage for agent chat with agent_id."""
         usage_service = UsageService(db_session)
 
         account = await usage_service.get_billing_account_for_user("user_test_123")
@@ -110,11 +110,11 @@ class TestUsageTrackingIntegration:
             input_tokens=75,
             output_tokens=300,
             source="agent",
-            agent_name="my_agent",
+            agent_id="my_agent",
         )
 
         assert event.source == "agent"
-        assert event.agent_name == "my_agent"
+        assert event.agent_id == "my_agent"
         assert event.session_id is None
 
     @pytest.mark.asyncio

@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 EXPECTED_TAGS = [
     "users",
-    "agents",
     "webhooks",
     "websocket",
     "town",
     "billing",
+    "container",
     "debug",
     "health",
 ]
@@ -103,7 +103,7 @@ class TestOpenAPITags:
 
     @pytest.mark.asyncio
     async def test_all_tags_present(self, openapi_spec):
-        """Spec should include tag entries for all 8 route groups."""
+        """Spec should include tag entries for all route groups."""
         tag_names = [t["name"] for t in openapi_spec["tags"]]
         for expected in EXPECTED_TAGS:
             assert expected in tag_names, f"Missing tag: {expected}"

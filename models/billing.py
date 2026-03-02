@@ -113,7 +113,7 @@ class UsageEvent(Base):
     billable_amount = Column(Numeric(20, 12), nullable=False)
     source = Column(String, nullable=False)
     session_id = Column(String, nullable=True)
-    agent_name = Column(String, nullable=True)
+    agent_id = Column("agent_name", String, nullable=True)
     stripe_meter_event_id = Column(String, nullable=True)
     created_at = Column(
         DateTime(timezone=True),

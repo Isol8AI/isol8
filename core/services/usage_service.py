@@ -70,7 +70,7 @@ class UsageService:
         output_tokens: int,
         source: str,
         session_id: Optional[str] = None,
-        agent_name: Optional[str] = None,
+        agent_id: Optional[str] = None,
     ) -> UsageEvent:
         """Record a billable LLM usage event.
 
@@ -114,7 +114,7 @@ class UsageService:
             billable_amount=billable,
             source=source,
             session_id=session_id,
-            agent_name=agent_name,
+            agent_id=agent_id,
             month_partition=today.strftime("%Y-%m"),
         )
         self.db.add(event)

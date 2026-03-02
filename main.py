@@ -20,7 +20,6 @@ from core.database import get_db
 from core.containers import startup_containers, shutdown_containers
 from core.services.town_simulation import TownSimulation
 from routers import (
-    agents,
     billing,
     container_rpc,
     debug,
@@ -66,10 +65,6 @@ openapi_tags = [
     {
         "name": "users",
         "description": "User registration and sync.",
-    },
-    {
-        "name": "agents",
-        "description": "OpenClaw agent CRUD and messaging.",
     },
     {
         "name": "webhooks",
@@ -163,9 +158,6 @@ app.include_router(webhooks.router, prefix="/api/v1", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
-
-# Agent routes (OpenClaw integration)
-app.include_router(agents.router, prefix="/api/v1/agents", tags=["agents"])
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])

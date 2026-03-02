@@ -51,7 +51,7 @@ def valid_agent_chat_message():
     """Create a valid agent_chat message payload (plaintext)."""
     return {
         "type": "agent_chat",
-        "agent_name": "my-agent",
+        "agent_id": "my-agent",
         "message": "Hello, agent!",
     }
 
@@ -93,10 +93,10 @@ class TestAgentChatMessageRouting:
         mock_bg.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_agent_chat_missing_agent_name_sends_error(
+    async def test_agent_chat_missing_agent_id_sends_error(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
-        """Missing agent_name field should send error via Management API."""
+        """Missing agent_id field should send error via Management API."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/message",
@@ -104,7 +104,7 @@ class TestAgentChatMessageRouting:
                 json={
                     "type": "agent_chat",
                     "message": "Hello!",
-                    # agent_name missing
+                    # agent_id missing
                 },
             )
 
@@ -125,7 +125,7 @@ class TestAgentChatMessageRouting:
                 headers={"x-connection-id": "test-conn-123"},
                 json={
                     "type": "agent_chat",
-                    "agent_name": "my-agent",
+                    "agent_id": "my-agent",
                     # message missing
                 },
             )
@@ -140,14 +140,14 @@ class TestAgentChatMessageRouting:
     async def test_agent_chat_empty_fields_sends_error(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
-        """Empty agent_name and message should send error via Management API."""
+        """Empty agent_id and message should send error via Management API."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
                 "/ws/message",
                 headers={"x-connection-id": "test-conn-123"},
                 json={
                     "type": "agent_chat",
-                    "agent_name": "",
+                    "agent_id": "",
                     "message": "",
                 },
             )
@@ -165,7 +165,7 @@ class TestAgentChatBackgroundTask:
     async def test_background_task_receives_correct_args(
         self, test_app, mock_connection_service, mock_management_api, connected_user
     ):
-        """Background task should receive connection_id, user_id, agent_name, message."""
+        """Background task should receive connection_id, user_id, agent_id, message."""
         with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:
             async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
                 await client.post(
@@ -173,7 +173,7 @@ class TestAgentChatBackgroundTask:
                     headers={"x-connection-id": "test-conn-123"},
                     json={
                         "type": "agent_chat",
-                        "agent_name": "luna",
+                        "agent_id": "luna",
                         "message": "Tell me a story",
                     },
                 )
@@ -181,7 +181,7 @@ class TestAgentChatBackgroundTask:
         mock_bg.assert_called_once_with(
             connection_id="test-conn-123",
             user_id="test-user-456",
-            agent_name="luna",
+            agent_id="luna",
             message="Tell me a story",
         )
 
@@ -238,14 +238,17 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
-            agent_name="luna",
+            agent_id="luna",
             message="Hello!",
         )
         mock_pool.send_rpc.assert_called_once()
         call_kwargs = mock_pool.send_rpc.call_args[1]
         assert call_kwargs["user_id"] == "user-1"
         assert call_kwargs["method"] == "chat.send"
-        assert call_kwargs["params"] == {"message": "Hello!", "agentId": "luna"}
+        params = call_kwargs["params"]
+        assert params["sessionKey"] == "agent:luna:main"
+        assert params["message"] == "Hello!"
+        assert "idempotencyKey" in params  # UUID, just check it's present
         assert call_kwargs["ip"] == "10.0.1.5"
         assert call_kwargs["token"] == "test-gw-token"
 
@@ -256,7 +259,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
-            agent_name="luna",
+            agent_id="luna",
             message="Hello!",
         )
         mock_pool.send_rpc.assert_not_called()
@@ -273,7 +276,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
-            agent_name="luna",
+            agent_id="luna",
             message="Hello!",
         )
         mock_pool.send_rpc.assert_not_called()
@@ -290,7 +293,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
-            agent_name="luna",
+            agent_id="luna",
             message="Hello!",
         )
         mock_mgmt_api.send_message.assert_called_once()

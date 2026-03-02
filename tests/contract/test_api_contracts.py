@@ -102,12 +102,6 @@ schema = (
     .exclude(
         path_regex="^/api/v1/town/opt-in",
     )
-    .exclude(
-        operation_id="create_agent",
-    )
-    .exclude(
-        operation_id="delete_agent",
-    )
 )
 
 

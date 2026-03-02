@@ -133,12 +133,12 @@ class TestUsageEvent:
             total_cost=Decimal("0.000792"),
             billable_amount=Decimal("0.001109"),
             source="agent",
-            agent_name="luna",
+            agent_id="luna",
             month_partition="2026-02",
         )
         db_session.add(event)
         await db_session.commit()
-        assert event.agent_name == "luna"
+        assert event.agent_id == "luna"
         assert event.source == "agent"
 
 

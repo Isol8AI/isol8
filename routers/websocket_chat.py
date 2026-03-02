@@ -212,14 +212,14 @@ async def ws_message(
         return Response(status_code=200)
 
     if msg_type == "agent_chat":
-        agent_name = body.get("agent_name")
+        agent_id = body.get("agent_id")
         message = body.get("message")
 
-        if not agent_name or not message:
+        if not agent_id or not message:
             management_api = get_management_api_client()
             management_api.send_message(
                 x_connection_id,
-                {"type": "error", "message": "Missing agent_name or message"},
+                {"type": "error", "message": "Missing agent_id or message"},
             )
             return Response(status_code=200)
 
@@ -227,7 +227,7 @@ async def ws_message(
             _process_agent_chat_background,
             connection_id=x_connection_id,
             user_id=user_id,
-            agent_name=agent_name,
+            agent_id=agent_id,
             message=message,
         )
         return Response(status_code=200)
@@ -329,7 +329,7 @@ async def _process_rpc_background(
 async def _process_agent_chat_background(
     connection_id: str,
     user_id: str,
-    agent_name: str,
+    agent_id: str,
     message: str,
 ) -> None:
     """
@@ -344,7 +344,7 @@ async def _process_agent_chat_background(
         "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
         connection_id,
         user_id,
-        agent_name,
+        agent_id,
     )
 
     management_api = get_management_api_client()
@@ -379,19 +379,27 @@ async def _process_agent_chat_background(
         pool = get_gateway_pool()
         req_id = str(uuid4())
 
+        # Session key format: agent:{agentId}:{sessionName}
+        # OpenClaw resolves this to the agent's conversation session
+        session_key = f"agent:{agent_id}:main"
+
         result = await pool.send_rpc(
             user_id=user_id,
             req_id=req_id,
             method="chat.send",
-            params={"message": message, "agentId": agent_name},
+            params={
+                "sessionKey": session_key,
+                "message": message,
+                "idempotencyKey": str(uuid4()),
+            },
             ip=ip,
             token=container.gateway_token,
         )
-        logger.debug("chat.send acked for agent %s: %s", agent_name, result)
+        logger.debug("chat.send acked for agent %s: %s", agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
 
     except Exception as e:
-        logger.error("chat.send failed for agent %s: %s", agent_name, e)
+        logger.error("chat.send failed for agent %s: %s", agent_id, e)
         try:
             management_api.send_message(
                 connection_id,
