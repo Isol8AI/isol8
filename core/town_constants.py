@@ -15,6 +15,7 @@ TOWN_LOCATIONS: Dict[str, Dict] = {
     "shop": {"x": 12.0, "y": 36.0, "label": "General Store"},
     "park": {"x": 48.0, "y": 10.0, "label": "Park"},
     "home": {"x": 10.0, "y": 8.0, "label": "Residential"},
+    "apartment": {"x": 15.0, "y": 12.0, "label": "Apartment"},
     "workshop": {"x": 48.0, "y": 36.0, "label": "Workshop"},
 }
 
