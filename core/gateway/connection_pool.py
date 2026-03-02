@@ -49,7 +49,15 @@ class GatewayConnection:
 
     @property
     def is_connected(self) -> bool:
-        return self._ws is not None and not getattr(self._ws, "closed", True)
+        if self._ws is None:
+            return False
+        # websockets v16 uses .state enum; older versions used .closed bool
+        state = getattr(self._ws, "state", None)
+        if state is not None:
+            from websockets.protocol import State
+
+            return state == State.OPEN
+        return not getattr(self._ws, "closed", True)
 
     async def connect(self) -> None:
         """Open WebSocket, complete OpenClaw handshake, start reader."""
@@ -278,7 +286,10 @@ class GatewayConnectionPool:
         """Send RPC via persistent connection (create if needed)."""
         async with self._lock:
             conn = self._connections.get(user_id)
-            if conn is None or not conn.is_connected:
+            if conn is not None and not conn.is_connected:
+                await conn.close()
+                conn = None
+            if conn is None:
                 conn = await self._create_connection(user_id, ip, token)
 
         await conn.send_rpc(req_id, method, params)
