@@ -54,7 +54,7 @@ class TestIsConnected:
 
 
 class TestTransformChatEvent:
-    """Tests for _transform_chat_event (computes incremental deltas from cumulative text)."""
+    """Tests for _transform_chat_event (handles both incremental delta and cumulative text)."""
 
     def _make_conn(self):
         return GatewayConnection(
@@ -63,6 +63,25 @@ class TestTransformChatEvent:
             token="t",
             management_api=MagicMock(),
         )
+
+    # -- Incremental delta (block.delta) --
+
+    def test_incremental_delta_forwarded_directly(self):
+        """Content blocks with a 'delta' field should be forwarded as-is."""
+        conn = self._make_conn()
+        r1 = conn._transform_chat_event(
+            "chat",
+            {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hello"}]}},
+        )
+        assert r1 == {"type": "chunk", "content": "Hello"}
+
+        r2 = conn._transform_chat_event(
+            "chat",
+            {"state": "delta", "message": {"content": [{"type": "text", "delta": " world"}]}},
+        )
+        assert r2 == {"type": "chunk", "content": " world"}
+
+    # -- Cumulative text (block.text) --
 
     def test_cumulative_text_produces_incremental_deltas(self):
         """Successive cumulative text blocks should yield only the new portion."""
@@ -94,6 +113,8 @@ class TestTransformChatEvent:
         )
         assert r == {"type": "chunk", "content": "New turn"}
 
+    # -- Fallback paths --
+
     def test_chat_delta_with_string_content(self):
         conn = self._make_conn()
         result = conn._transform_chat_event("chat", {"state": "delta", "message": {"content": "Hello"}})
@@ -103,6 +124,12 @@ class TestTransformChatEvent:
         conn = self._make_conn()
         result = conn._transform_chat_event("chat", {"state": "delta", "message": "Hi there"})
         assert result == {"type": "chunk", "content": "Hi there"}
+
+    def test_message_level_delta_fallback(self):
+        """If content blocks have no text, fall back to message-level delta."""
+        conn = self._make_conn()
+        result = conn._transform_chat_event("chat", {"state": "delta", "message": {"delta": "fallback text"}})
+        assert result == {"type": "chunk", "content": "fallback text"}
 
     def test_chat_delta_empty_message(self):
         conn = self._make_conn()
@@ -168,7 +195,7 @@ class TestHandleMessageChatEvents:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "delta", "message": {"content": [{"type": "text", "text": "Hi!"}]}},
+                "payload": {"state": "delta", "message": {"content": [{"type": "text", "delta": "Hi!"}]}},
             }
         )
         mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hi!"})
