@@ -4,6 +4,14 @@
     {
       "source": "/ai-town/:match*",
       "destination": "/:match*"
+    },
+    {
+      "source": "/apartment",
+      "destination": "/index.html"
+    },
+    {
+      "source": "/((?!assets/).*)",
+      "destination": "/index.html"
     }
   ]
 }
