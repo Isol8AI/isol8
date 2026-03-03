@@ -12,7 +12,7 @@ import json
 def write_openclaw_config(
     region: str = "us-east-1",
     brave_api_key: str = "",
-    primary_model: str = "amazon-bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0",
+    primary_model: str = "amazon-bedrock/anthropic.claude-opus-4-5-20251101-v1:0",
     gateway_token: str = "",
 ) -> str:
     """Generate an openclaw.json config string for a user's container.
@@ -46,8 +46,26 @@ def write_openclaw_config(
                     "auth": "aws-sdk",
                     "models": [
                         {
-                            "id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
+                            "id": "anthropic.claude-opus-4-5-20251101-v1:0",
                             "name": "Claude Opus 4.5",
+                            "contextWindow": 200000,
+                            "maxTokens": 16384,
+                            "reasoning": False,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        {
+                            "id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+                            "name": "Claude Sonnet 4.5",
+                            "contextWindow": 200000,
+                            "maxTokens": 16384,
+                            "reasoning": False,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        {
+                            "id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+                            "name": "Claude Haiku 4.5",
                             "contextWindow": 200000,
                             "maxTokens": 16384,
                             "reasoning": False,
@@ -57,12 +75,17 @@ def write_openclaw_config(
                     ],
                 },
             },
-            "bedrockDiscovery": {"enabled": False},
+            "bedrockDiscovery": {"enabled": True},
         },
         "agents": {
             "defaults": {
                 "model": {
                     "primary": primary_model,
+                },
+                "models": {
+                    primary_model: {"alias": "Opus 4.5"},
+                    "amazon-bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0": {"alias": "Sonnet 4.5"},
+                    "amazon-bedrock/anthropic.claude-haiku-4-5-20251001-v1:0": {"alias": "Haiku 4.5"},
                 },
                 "memorySearch": {
                     "enabled": True,

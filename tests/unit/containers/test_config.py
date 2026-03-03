@@ -65,10 +65,28 @@ class TestWriteOpenclawConfig:
         endpoints = config["gateway"]["http"]["endpoints"]
         assert endpoints["chatCompletions"]["enabled"] is True
 
-    def test_bedrock_discovery_disabled(self):
-        """Bedrock discovery is disabled (we configure models explicitly)."""
+    def test_bedrock_discovery_enabled(self):
+        """Bedrock discovery is enabled for runtime model discovery."""
         config = json.loads(write_openclaw_config())
-        assert config["models"]["bedrockDiscovery"]["enabled"] is False
+        assert config["models"]["bedrockDiscovery"]["enabled"] is True
+
+    def test_models_catalog_populated(self):
+        """Models catalog has entries for the default models."""
+        config = json.loads(write_openclaw_config())
+        models = config["agents"]["defaults"]["models"]
+        assert len(models) >= 3
+        primary = config["agents"]["defaults"]["model"]["primary"]
+        assert primary in models
+
+    def test_multiple_bedrock_models_configured(self):
+        """Multiple Bedrock models are pre-configured."""
+        config = json.loads(write_openclaw_config())
+        models = config["models"]["providers"]["amazon-bedrock"]["models"]
+        assert len(models) >= 3
+        model_ids = [m["id"] for m in models]
+        assert "anthropic.claude-opus-4-5-20251101-v1:0" in model_ids
+        assert "anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
+        assert "anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
 
     def test_memory_search_local_embeddings(self):
         """Memory search uses local GGUF embeddings."""

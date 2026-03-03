@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any, Dict, Optional, Set
+from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
@@ -28,17 +28,23 @@ _GRACE_PERIOD = 30  # seconds before closing idle connection
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
 
+    # Type alias for the usage callback:
+    # (user_id, model_id, input_tokens, output_tokens) -> Coroutine
+    UsageCallback = Callable[[str, str, int, int], Coroutine[Any, Any, None]]
+
     def __init__(
         self,
         user_id: str,
         ip: str,
         token: str,
         management_api: Any,
+        on_usage: Optional["GatewayConnection.UsageCallback"] = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
         self._management_api = management_api
+        self._on_usage = on_usage
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
@@ -59,10 +65,11 @@ class GatewayConnection:
         return not getattr(self._ws, "closed", True)
 
     async def connect(self) -> None:
-        """Open WebSocket, complete OpenClaw handshake, start reader."""
+        """Open WebSocket, complete OpenClaw handshake, verify health, start reader."""
         uri = f"ws://{self.ip}:{GATEWAY_PORT}"
         self._ws = await ws_connect(uri, open_timeout=_HANDSHAKE_TIMEOUT, close_timeout=5)
         await self._handshake()
+        await self._verify_health()
         self._reader_task = asyncio.create_task(self._reader_loop())
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
@@ -96,6 +103,37 @@ class GatewayConnection:
         if not resp.get("ok"):
             err = resp.get("error", {}).get("message", "unknown error")
             raise RuntimeError(f"Gateway connect failed: {err}")
+
+    async def _verify_health(self) -> None:
+        """Send health RPC to verify gateway is operational after handshake.
+
+        Called before the reader loop starts, so we read responses directly
+        from the WebSocket. Any interleaved events are discarded (no
+        in-progress work should exist on a fresh connection).
+        """
+        req_id = str(uuid.uuid4())
+        msg = {"type": "req", "id": req_id, "method": "health", "params": {}}
+        await self._ws.send(json.dumps(msg))
+
+        deadline = asyncio.get_event_loop().time() + _HANDSHAKE_TIMEOUT
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise RuntimeError("Gateway health check timed out")
+
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
+            data = json.loads(raw)
+
+            # Skip any events that arrive before our health response
+            if data.get("type") != "res" or data.get("id") != req_id:
+                continue
+
+            if not data.get("ok"):
+                err = data.get("error", {}).get("message", "unknown")
+                raise RuntimeError(f"Gateway not healthy: {err}")
+
+            logger.debug("Health check passed for user %s", self.user_id)
+            return
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
         """Send {type: req} on the gateway WebSocket."""
@@ -154,6 +192,20 @@ class GatewayConnection:
             except Exception:
                 logger.warning("Failed to forward message to %s", conn_id)
 
+    def _fire_usage_callback(self, payload: dict) -> None:
+        """Extract token usage from a chat final payload and fire the callback."""
+        if not self._on_usage:
+            return
+        input_tokens = payload.get("inputTokens")
+        output_tokens = payload.get("outputTokens")
+        if not input_tokens or not output_tokens:
+            return
+        model = payload.get("model") or "unknown"
+        try:
+            asyncio.create_task(self._on_usage(self.user_id, model, int(input_tokens), int(output_tokens)))
+        except Exception:
+            logger.warning("Failed to schedule usage recording for user %s", self.user_id)
+
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
 
@@ -198,6 +250,8 @@ class GatewayConnection:
                     if final_text:
                         self._forward_to_frontends({"type": "chunk", "content": final_text})
                     self._forward_to_frontends({"type": "done"})
+                    # Record usage if token counts present
+                    self._fire_usage_callback(payload)
                 elif state == "error":
                     err = payload.get("error", {})
                     msg = (
@@ -273,8 +327,13 @@ class GatewayConnection:
 class GatewayConnectionPool:
     """Pool of persistent gateway connections, one per active user."""
 
-    def __init__(self, management_api: Any) -> None:
+    def __init__(
+        self,
+        management_api: Any,
+        on_usage: Optional[GatewayConnection.UsageCallback] = None,
+    ) -> None:
         self._management_api = management_api
+        self._on_usage = on_usage
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
@@ -287,6 +346,7 @@ class GatewayConnectionPool:
             ip=ip,
             token=token,
             management_api=self._management_api,
+            on_usage=self._on_usage,
         )
         # Transfer any already-registered frontend connections
         for fc in self._frontend_connections.get(user_id, set()):

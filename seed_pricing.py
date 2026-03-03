@@ -11,46 +11,65 @@ from models.billing import ModelPricing
 
 BEDROCK_PRICES = [
     {
-        "model_id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+        "model_id": "anthropic.claude-3-5-sonnet-20241022-v2:0",
         "display_name": "Claude 3.5 Sonnet",
         "input_cost_per_token": Decimal("0.000003"),
         "output_cost_per_token": Decimal("0.000015"),
     },
     {
-        "model_id": "us.anthropic.claude-3-5-haiku-20241022-v1:0",
+        "model_id": "anthropic.claude-3-5-haiku-20241022-v1:0",
         "display_name": "Claude 3.5 Haiku",
         "input_cost_per_token": Decimal("0.0000008"),
         "output_cost_per_token": Decimal("0.000004"),
     },
     {
-        "model_id": "us.anthropic.claude-3-opus-20240229-v1:0",
+        "model_id": "anthropic.claude-3-opus-20240229-v1:0",
         "display_name": "Claude 3 Opus",
         "input_cost_per_token": Decimal("0.000015"),
         "output_cost_per_token": Decimal("0.000075"),
     },
     {
-        "model_id": "us.meta.llama3-3-70b-instruct-v1:0",
+        "model_id": "meta.llama3-3-70b-instruct-v1:0",
         "display_name": "Llama 3.3 70B",
         "input_cost_per_token": Decimal("0.00000099"),
         "output_cost_per_token": Decimal("0.00000099"),
     },
     {
-        "model_id": "us.meta.llama3-1-70b-instruct-v1:0",
+        "model_id": "meta.llama3-1-70b-instruct-v1:0",
         "display_name": "Llama 3.1 70B",
         "input_cost_per_token": Decimal("0.00000099"),
         "output_cost_per_token": Decimal("0.00000099"),
     },
     {
-        "model_id": "us.amazon.nova-pro-v1:0",
+        "model_id": "amazon.nova-pro-v1:0",
         "display_name": "Amazon Nova Pro",
         "input_cost_per_token": Decimal("0.0000008"),
         "output_cost_per_token": Decimal("0.0000032"),
     },
     {
-        "model_id": "us.amazon.nova-lite-v1:0",
+        "model_id": "amazon.nova-lite-v1:0",
         "display_name": "Amazon Nova Lite",
         "input_cost_per_token": Decimal("0.00000006"),
         "output_cost_per_token": Decimal("0.00000024"),
+    },
+    # Claude 4.5 family
+    {
+        "model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
+        "display_name": "Claude Opus 4.5",
+        "input_cost_per_token": Decimal("0.000015"),
+        "output_cost_per_token": Decimal("0.000075"),
+    },
+    {
+        "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
+        "display_name": "Claude Sonnet 4.5",
+        "input_cost_per_token": Decimal("0.000003"),
+        "output_cost_per_token": Decimal("0.000015"),
+    },
+    {
+        "model_id": "anthropic.claude-haiku-4-5-20251001-v1:0",
+        "display_name": "Claude Haiku 4.5",
+        "input_cost_per_token": Decimal("0.000001"),
+        "output_cost_per_token": Decimal("0.000005"),
     },
 ]
 

@@ -42,6 +42,32 @@ def get_workspace() -> Workspace:
     return _workspace
 
 
+async def _record_gateway_usage(user_id: str, model_id: str, input_tokens: int, output_tokens: int) -> None:
+    """Record LLM usage from gateway chat events."""
+    try:
+        from core.database import get_session_factory as _db_session_factory
+        from core.services.usage_service import UsageService
+
+        session_factory = _db_session_factory()
+        async with session_factory() as db:
+            usage_service = UsageService(db)
+            account = await usage_service.get_billing_account_for_user(user_id)
+            if account:
+                await usage_service.record_usage(
+                    billing_account_id=account.id,
+                    clerk_user_id=user_id,
+                    model_id=model_id,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    source="agent",
+                )
+                logger.debug("Recorded usage for user %s: %d in / %d out", user_id, input_tokens, output_tokens)
+            else:
+                logger.warning("No billing account for user %s, skipping usage recording", user_id)
+    except Exception:
+        logger.exception("Failed to record gateway usage for user %s", user_id)
+
+
 def get_gateway_pool() -> Any:
     """Get the gateway connection pool singleton (GatewayConnectionPool)."""
     global _gateway_pool
@@ -51,6 +77,7 @@ def get_gateway_pool() -> Any:
 
         _gateway_pool = GatewayConnectionPool(
             management_api=ManagementApiClient(),
+            on_usage=_record_gateway_usage,
         )
     return _gateway_pool
 
