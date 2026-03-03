@@ -295,6 +295,11 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
           "arn:aws:bedrock:*:*:inference-profile/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "aws-marketplace:ViewSubscriptions"
+        Resource = "*"
       }
     ]
   })

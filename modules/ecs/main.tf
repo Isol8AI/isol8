@@ -154,7 +154,14 @@ resource "aws_ecs_task_definition" "openclaw" {
       # Config is written to EFS by the EC2 control plane and mounted
       # into the container at /home/node/.openclaw via per-user access
       # points. No inline config generation needed.
-      command = ["node", "openclaw.mjs", "gateway", "--port", "18789", "--bind", "lan"]
+      #
+      # The entrypoint creates an `openclaw` symlink in PATH so the agent's
+      # exec tool can call `openclaw gateway restart` etc. without needing
+      # the full `node /app/openclaw.mjs` path.
+      entryPoint = ["sh", "-c"]
+      command = [
+        "ln -sf /app/openclaw.mjs /usr/local/bin/openclaw && chmod +x /usr/local/bin/openclaw && exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
+      ]
 
       portMappings = [
         {
