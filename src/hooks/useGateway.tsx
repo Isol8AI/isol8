@@ -129,9 +129,19 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         if (data.ok) {
           pending.resolve(data.payload);
         } else {
-          const errMsg =
-            (data.error as Record<string, unknown>)?.message || "RPC call failed";
-          pending.reject(new Error(String(errMsg)));
+          const errObj = data.error as Record<string, unknown> | undefined;
+          const errMsg = errObj?.message || "RPC call failed";
+          // Surface additional detail (issues, details, code) if present
+          const parts: string[] = [String(errMsg)];
+          if (errObj?.code) parts.push(`[${errObj.code}]`);
+          if (errObj?.details) parts.push(String(errObj.details));
+          if (Array.isArray(errObj?.issues)) {
+            const issueTexts = (errObj.issues as { path?: string; message?: string }[])
+              .map(i => i.path ? `${i.path}: ${i.message}` : i.message)
+              .filter(Boolean);
+            if (issueTexts.length) parts.push(issueTexts.join("; "));
+          }
+          pending.reject(new Error(parts.join(" — ")));
         }
       }
       return;

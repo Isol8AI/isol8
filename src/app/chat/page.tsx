@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
-import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
+import { ControlIframe } from "@/components/control/ControlIframe";
 import { GatewayProvider } from "@/hooks/useGateway";
 
 export default function ChatPage() {
@@ -38,7 +38,7 @@ export default function ChatPage() {
           <AgentChatWindow key={selectedAgentId} agentId={selectedAgentId} />
         </div>
         {activeView === "control" && (
-          <ControlPanelRouter panel={activePanel} />
+          <ControlIframe />
         )}
       </ChatLayout>
     </GatewayProvider>
