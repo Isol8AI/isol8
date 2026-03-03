@@ -79,14 +79,15 @@ class TestWriteOpenclawConfig:
         assert primary in models
 
     def test_multiple_bedrock_models_configured(self):
-        """Multiple Bedrock models are pre-configured."""
+        """Multiple Bedrock models are pre-configured with inference profile IDs."""
         config = json.loads(write_openclaw_config())
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
-        assert len(models) >= 3
+        assert len(models) >= 4
         model_ids = [m["id"] for m in models]
-        assert "anthropic.claude-opus-4-5-20251101-v1:0" in model_ids
-        assert "anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
-        assert "anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
+        assert "us.anthropic.claude-opus-4-6-v1" in model_ids
+        assert "us.anthropic.claude-opus-4-5-20251101-v1:0" in model_ids
+        assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
+        assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
 
     def test_memory_search_local_embeddings(self):
         """Memory search uses local GGUF embeddings."""
