@@ -69,6 +69,16 @@ interface InternalMessage {
 }
 
 // =============================================================================
+// Module-level message cache
+//
+// Survives component unmounts (navigation away from /chat and back) but
+// clears on full page refresh. Keyed by agentId so each agent's history
+// is preserved independently.
+// =============================================================================
+
+const _messageCache = new Map<string, InternalMessage[]>();
+
+// =============================================================================
 // Hook
 //
 // NOTE: Only one useAgentChat instance should be active at a time. The backend
@@ -80,7 +90,9 @@ interface InternalMessage {
 export function useAgentChat(agentId: string | null): UseAgentChatReturn {
   const { isConnected, sendChat, onChatMessage } = useGateway();
 
-  const [messages, setMessages] = useState<InternalMessage[]>([]);
+  const [messages, setMessages] = useState<InternalMessage[]>(
+    () => (agentId ? _messageCache.get(agentId) ?? [] : []),
+  );
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -90,6 +102,13 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
   useEffect(() => {
     agentIdRef.current = agentId;
   }, [agentId]);
+
+  // ---- Sync messages to module-level cache ----
+  useEffect(() => {
+    if (agentId && messages.length > 0) {
+      _messageCache.set(agentId, messages);
+    }
+  }, [agentId, messages]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -245,6 +264,9 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
 
   const clearMessages = useCallback(() => {
     setMessages([]);
+    if (agentIdRef.current) {
+      _messageCache.delete(agentIdRef.current);
+    }
     setError(null);
     setIsStreaming(false);
     currentAssistantIdRef.current = null;
