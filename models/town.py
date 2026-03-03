@@ -60,7 +60,7 @@ class TownAgent(Base):
         nullable=False,
     )
     instance_id = Column(UUID(as_uuid=True), ForeignKey("town_instances.id"), nullable=True)
-    character = Column(String(10), default="f1")
+    character = Column(Text, default="f1")
 
     __table_args__ = (
         UniqueConstraint("user_id", "agent_name", name="uq_town_agents_user_agent"),

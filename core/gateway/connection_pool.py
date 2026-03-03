@@ -226,7 +226,12 @@ class GatewayConnection:
                 if data.get("ok"):
                     future.set_result(data.get("payload", {}))
                 else:
-                    err_msg = data.get("error", {}).get("message", "RPC call rejected")
+                    # Serialize the full error object so details/issues survive
+                    err_obj = data.get("error", {})
+                    if isinstance(err_obj, dict):
+                        err_msg = json.dumps(err_obj)
+                    else:
+                        err_msg = str(err_obj or "RPC call rejected")
                     future.set_exception(RuntimeError(err_msg))
             return
 

@@ -884,16 +884,23 @@ async def _process_rpc_background(
         )
 
     except RuntimeError as e:
-        # RuntimeError comes from OpenClaw rejecting the RPC — forward real message
+        # RuntimeError comes from OpenClaw rejecting the RPC — forward full error object.
+        # connection_pool serializes the gateway error dict as JSON in the message.
         logger.warning("RPC %s rejected for user %s: %s", method, user_id, e)
         try:
+            import json as _json
+
+            try:
+                error_obj = _json.loads(str(e))
+            except (ValueError, TypeError):
+                error_obj = {"message": str(e)}
             management_api.send_message(
                 connection_id,
                 {
                     "type": "res",
                     "id": req_id,
                     "ok": False,
-                    "error": {"message": str(e)},
+                    "error": error_obj,
                 },
             )
         except Exception:
