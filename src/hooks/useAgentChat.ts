@@ -21,6 +21,8 @@ import { useGateway, type ChatIncomingMessage } from "@/hooks/useGateway";
 
 const ERROR_PATTERNS: [RegExp, string][] = [
   [/timed out during opening handshake/i, "Your agent is starting up — please try again in a moment."],
+  [/Gateway not healthy/i, "Your agent is not ready yet. Please try again in a moment."],
+  [/health check timed out/i, "Your agent is not responding. Please try again in a moment."],
   [/Gateway connection lost/i, "Lost connection to your agent. Retrying..."],
   [/Connection closed/i, "Connection to your agent was interrupted. Please try again."],
   [/session file locked/i, "Your agent is busy with another request. Please wait a moment and try again."],

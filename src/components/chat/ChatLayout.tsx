@@ -138,7 +138,7 @@ export function ChatLayout({
                       <Button
                         variant="ghost"
                         className={cn(
-                          "flex-1 justify-start gap-2 font-normal truncate transition-all",
+                          "flex-1 justify-start gap-2 font-normal truncate transition-all h-auto py-1.5",
                           currentAgentId === agent.id
                             ? "bg-accent text-accent-foreground"
                             : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
@@ -146,7 +146,14 @@ export function ChatLayout({
                         onClick={() => handleSelectAgent(agent.id)}
                       >
                         <Bot className="h-4 w-4 flex-shrink-0 opacity-70" />
-                        <span className="truncate">{agentDisplayName(agent)}</span>
+                        <div className="flex flex-col items-start min-w-0">
+                          <span className="truncate w-full text-left">{agentDisplayName(agent)}</span>
+                          {agent.model && (
+                            <span className="text-[10px] text-muted-foreground/60 truncate w-full text-left">
+                              {agent.model.split("/").pop()?.replace(/-v\d+:\d+$/, "") || agent.model}
+                            </span>
+                          )}
+                        </div>
                       </Button>
                       <Button
                         variant="ghost"

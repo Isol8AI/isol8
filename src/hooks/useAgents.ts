@@ -7,6 +7,7 @@ export interface Agent {
   id: string;
   name?: string;
   identity?: { name?: string; emoji?: string; avatar?: string };
+  model?: string;
 }
 
 interface AgentsListResponse {
@@ -38,6 +39,14 @@ export function useAgents() {
     [callRpc, mutate],
   );
 
+  const updateAgent = useCallback(
+    async (agentId: string, updates: { model?: string }) => {
+      await callRpc("agents.update", { agentId, ...updates });
+      mutate();
+    },
+    [callRpc, mutate],
+  );
+
   return {
     agents,
     defaultId,
@@ -46,5 +55,6 @@ export function useAgents() {
     refresh: () => mutate(),
     createAgent,
     deleteAgent,
+    updateAgent,
   };
 }
