@@ -140,10 +140,13 @@ async def proxy_root(token: str = Query(default=None)):
             raise HTTPException(status_code=504, detail="Gateway timeout")
 
     html = resp.text
-    # Inject basePath with session ID so SPA constructs all URLs through our session
+    # Inject basePath with session ID so SPA constructs all URLs through our session.
+    # <base> tag makes the browser resolve relative asset paths (./assets/...) through
+    # the session route instead of the root page URL.
     base_path = f"/api/v1/control-ui/s/{session_id}"
+    base_tag = f'<base href="{base_path}/">'
     base_path_script = f'<script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__="{base_path}";</script>'
-    html = html.replace("<head>", f"<head>{base_path_script}", 1)
+    html = html.replace("<head>", f"<head>{base_tag}{base_path_script}", 1)
 
     return HTMLResponse(content=html, status_code=resp.status_code)
 
