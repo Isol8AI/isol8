@@ -1,14 +1,15 @@
 """Town service for managing GooseTown agent registration and state."""
 
 import logging
+import secrets
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.town import TownAgent, TownState, TownConversation, TownRelationship
+from models.town import TownAgent, TownInstance, TownState, TownConversation, TownRelationship
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +244,108 @@ class TownService:
 
         logger.info(f"Seeded default agent '{display_name}' at ({position_x}, {position_y})")
         return town_agent
+
+    # ------------------------------------------------------------------
+    # Instance-based opt-in / opt-out
+    # ------------------------------------------------------------------
+
+    async def get_active_instance(self, user_id: str) -> Optional[TownInstance]:
+        """Return the user's active TownInstance, or None."""
+        result = await self.db.execute(
+            select(TownInstance).where(
+                TownInstance.user_id == user_id,
+                TownInstance.is_active.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def create_instance(self, user_id: str) -> TownInstance:
+        """Create a new TownInstance with unique apartment_unit and token."""
+        max_unit = await self.db.execute(select(func.max(TownInstance.apartment_unit)))
+        current_max = max_unit.scalar() or 0
+        instance = TownInstance(
+            user_id=user_id,
+            apartment_unit=current_max + 1,
+            town_token=secrets.token_urlsafe(32),
+        )
+        self.db.add(instance)
+        await self.db.flush()
+        return instance
+
+    async def deactivate_instance(self, instance: TownInstance) -> None:
+        """Deactivate a TownInstance."""
+        instance.is_active = False
+        await self.db.flush()
+
+    async def get_instance_agents(self, instance_id: UUID) -> List[TownAgent]:
+        """Return all active agents for a given instance."""
+        result = await self.db.execute(
+            select(TownAgent).where(
+                TownAgent.instance_id == instance_id,
+                TownAgent.is_active.is_(True),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def deactivate_instance_agents(self, instance_id: UUID) -> int:
+        """Deactivate all agents for an instance. Returns count."""
+        agents = await self.get_instance_agents(instance_id)
+        for agent in agents:
+            agent.is_active = False
+        await self.db.flush()
+        return len(agents)
+
+    async def opt_in_instance(
+        self,
+        user_id: str,
+        agents_data: list,
+    ) -> Tuple[TownInstance, List[TownAgent]]:
+        """Instance-level opt-in: create instance + all agents + states."""
+        existing = await self.get_active_instance(user_id)
+        if existing:
+            raise ValueError("User already has an active GooseTown instance")
+
+        instance = await self.create_instance(user_id)
+        created_agents = []
+
+        for agent_data in agents_data:
+            agent = TownAgent(
+                user_id=user_id,
+                agent_name=agent_data.agent_name,
+                display_name=agent_data.display_name,
+                personality_summary=agent_data.personality_summary,
+                instance_id=instance.id,
+            )
+            self.db.add(agent)
+            await self.db.flush()
+
+            state = TownState(
+                agent_id=agent.id,
+                position_x=0.0,
+                position_y=0.0,
+            )
+            self.db.add(state)
+            await self.db.flush()
+
+            created_agents.append(agent)
+
+        logger.info(
+            f"Instance opt-in for user {user_id}: "
+            f"apartment_unit={instance.apartment_unit}, agents={len(created_agents)}"
+        )
+        return instance, created_agents
+
+    async def opt_out_instance(self, user_id: str) -> Tuple[Optional[TownInstance], int]:
+        """Instance-level opt-out: deactivate instance + all agents."""
+        instance = await self.get_active_instance(user_id)
+        if not instance:
+            return None, 0
+
+        count = await self.deactivate_instance_agents(instance.id)
+        await self.deactivate_instance(instance)
+
+        logger.info(f"Instance opt-out for user {user_id}: deactivated {count} agents")
+        return instance, count
 
     async def _get_town_agent(self, user_id: str, agent_name: str) -> Optional[TownAgent]:
         """Get a town agent by user_id and agent_name."""

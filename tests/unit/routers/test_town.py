@@ -1,52 +1,70 @@
 """Tests for GooseTown router endpoints."""
 
 import pytest
+from unittest.mock import MagicMock
+
+from core.services.town_skill import TownSkillService
+from routers.town import get_skill_service
+
+
+@pytest.fixture
+def mock_skill_service(app):
+    """Override get_skill_service with a no-op mock."""
+    mock_svc = MagicMock(spec=TownSkillService)
+    app.dependency_overrides[get_skill_service] = lambda: mock_svc
+    yield mock_svc
+    app.dependency_overrides.pop(get_skill_service, None)
 
 
 class TestTownOptIn:
-    """Test POST /api/v1/town/opt-in."""
+    """Test POST /api/v1/town/opt-in (instance-based)."""
 
     @pytest.mark.asyncio
-    async def test_opt_in_success(self, async_client, db_session, test_user):
+    async def test_opt_in_success(self, async_client, db_session, test_user, mock_skill_service):
         response = await async_client.post(
             "/api/v1/town/opt-in",
             json={
-                "agent_name": "luna",
-                "display_name": "Luna the Dreamer",
-                "personality_summary": "A curious bookworm",
+                "agents": [
+                    {
+                        "agent_name": "luna",
+                        "display_name": "Luna the Dreamer",
+                        "personality_summary": "A curious bookworm",
+                    }
+                ]
             },
         )
 
         assert response.status_code == 201
         data = response.json()
-        assert data["agent_name"] == "luna"
-        assert data["display_name"] == "Luna the Dreamer"
-        assert data["is_active"] is True
+        assert "instance_id" in data
+        assert "town_token" in data
+        assert data["apartment_unit"] == 1
+        assert len(data["agents"]) == 1
+        assert data["agents"][0]["agent_name"] == "luna"
+        assert data["agents"][0]["display_name"] == "Luna the Dreamer"
+        assert data["agents"][0]["is_active"] is True
 
 
 class TestTownOptOut:
-    """Test POST /api/v1/town/opt-out."""
+    """Test POST /api/v1/town/opt-out (instance-based)."""
 
     @pytest.mark.asyncio
-    async def test_opt_out_success(self, async_client, db_session, test_user):
+    async def test_opt_out_success(self, async_client, db_session, test_user, mock_skill_service):
         await async_client.post(
             "/api/v1/town/opt-in",
-            json={"agent_name": "luna", "display_name": "Luna"},
+            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
         )
 
-        response = await async_client.post(
-            "/api/v1/town/opt-out",
-            json={"agent_name": "luna"},
-        )
+        response = await async_client.post("/api/v1/town/opt-out")
 
         assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "opted_out"
+        assert data["deactivated_agents"] == 1
 
     @pytest.mark.asyncio
-    async def test_opt_out_not_found(self, async_client, test_user):
-        response = await async_client.post(
-            "/api/v1/town/opt-out",
-            json={"agent_name": "ghost"},
-        )
+    async def test_opt_out_not_found(self, async_client, test_user, mock_skill_service):
+        response = await async_client.post("/api/v1/town/opt-out")
 
         assert response.status_code == 404
 
@@ -83,10 +101,10 @@ class TestTownState:
         assert "currentTime" in data["engine"]
 
     @pytest.mark.asyncio
-    async def test_get_state_with_agents(self, async_client, db_session, test_user):
+    async def test_get_state_with_agents(self, async_client, db_session, test_user, mock_skill_service):
         await async_client.post(
             "/api/v1/town/opt-in",
-            json={"agent_name": "luna", "display_name": "Luna"},
+            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
         )
 
         response = await async_client.get("/api/v1/town/state")
@@ -117,13 +135,17 @@ class TestTownDescriptions:
         assert data["playerDescriptions"][0]["name"] == "Lucky"
 
     @pytest.mark.asyncio
-    async def test_get_descriptions_with_agents(self, async_client, db_session, test_user):
+    async def test_get_descriptions_with_agents(self, async_client, db_session, test_user, mock_skill_service):
         await async_client.post(
             "/api/v1/town/opt-in",
             json={
-                "agent_name": "luna",
-                "display_name": "Luna",
-                "personality_summary": "A dreamer",
+                "agents": [
+                    {
+                        "agent_name": "luna",
+                        "display_name": "Luna",
+                        "personality_summary": "A dreamer",
+                    }
+                ]
             },
         )
 
@@ -172,3 +194,28 @@ class TestTownStubs:
     async def test_input_status(self, async_client):
         response = await async_client.get("/api/v1/town/input-status")
         assert response.status_code == 200
+
+
+class TestTownApartment:
+    """Test GET /api/v1/town/apartment."""
+
+    @pytest.mark.asyncio
+    async def test_apartment_empty(self, async_client, db_session, test_user, mock_skill_service):
+        response = await async_client.get("/api/v1/town/apartment")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agents"] == []
+        assert data["activity"] == []
+
+    @pytest.mark.asyncio
+    async def test_apartment_with_agents(self, async_client, db_session, test_user, mock_skill_service):
+        await async_client.post(
+            "/api/v1/town/opt-in",
+            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
+        )
+
+        response = await async_client.get("/api/v1/town/apartment")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["agents"]) == 1
+        assert data["agents"][0]["agent_name"] == "luna"

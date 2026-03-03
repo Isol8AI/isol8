@@ -26,7 +26,7 @@ class TownInstance(Base):
     __tablename__ = "town_instances"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(String, nullable=False, unique=True)
+    user_id = Column(String, nullable=False, index=True)
     apartment_unit = Column(Integer, nullable=False, unique=True)
     town_token = Column(String, nullable=False, unique=True)
     is_active = Column(Boolean, default=True)

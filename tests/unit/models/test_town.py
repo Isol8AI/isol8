@@ -24,17 +24,16 @@ class TestTownInstanceModel:
         assert instance.is_active is True
 
     @pytest.mark.asyncio
-    async def test_unique_user_id(self, db_session):
+    async def test_multiple_instances_per_user(self, db_session):
+        """user_id is NOT unique — allows re-opt-in after opt-out."""
         i1 = TownInstance(user_id="user_dup", apartment_unit=1, town_token="tok_1")
         i2 = TownInstance(user_id="user_dup", apartment_unit=2, town_token="tok_2")
         db_session.add(i1)
         await db_session.flush()
         db_session.add(i2)
+        await db_session.flush()
 
-        with pytest.raises(Exception):
-            await db_session.flush()
-
-        await db_session.rollback()
+        assert i1.id != i2.id
 
     @pytest.mark.asyncio
     async def test_unique_apartment_unit(self, db_session):

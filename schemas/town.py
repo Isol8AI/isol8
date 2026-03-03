@@ -90,3 +90,82 @@ class TownConversationsListResponse(BaseModel):
     """List of recent conversations."""
 
     conversations: List[TownConversationResponse]
+
+
+# ---------------------------------------------------------------------------
+# Instance-based opt-in/opt-out schemas
+# ---------------------------------------------------------------------------
+
+
+class TownAgentOptIn(BaseModel):
+    """Single agent within an instance opt-in request."""
+
+    agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    display_name: str = Field(..., min_length=1, max_length=100)
+    personality_summary: Optional[str] = Field(None, max_length=200)
+
+
+class TownInstanceOptInRequest(BaseModel):
+    """Request to register a user instance with one or more agents."""
+
+    agents: List[TownAgentOptIn] = Field(..., min_length=1)
+
+
+class TownInstanceOptInAgentResponse(BaseModel):
+    """Agent info in the instance opt-in response."""
+
+    agent_name: str
+    display_name: str
+    personality_summary: Optional[str] = None
+    is_active: bool
+
+
+class TownInstanceOptInResponse(BaseModel):
+    """Response after successful instance opt-in."""
+
+    instance_id: UUID
+    apartment_unit: int
+    town_token: str
+    agents: List[TownInstanceOptInAgentResponse]
+
+
+class TownInstanceOptOutResponse(BaseModel):
+    """Response after successful instance opt-out."""
+
+    status: str
+    deactivated_agents: int
+
+
+class ApartmentAgentState(BaseModel):
+    """Agent state for the apartment view."""
+
+    agent_id: UUID
+    agent_name: str
+    display_name: str
+    character: Optional[str] = None
+    current_location: Optional[str] = None
+    current_activity: Optional[str] = None
+    mood: Optional[str] = None
+    energy: int = 100
+    status_message: Optional[str] = None
+    position_x: float = 0.0
+    position_y: float = 0.0
+    is_active: bool = True
+
+
+class ApartmentActivityEvent(BaseModel):
+    """Activity event in the apartment feed."""
+
+    agent_name: str
+    display_name: str
+    event_type: str
+    description: str
+    location: Optional[str] = None
+    timestamp: datetime
+
+
+class ApartmentResponse(BaseModel):
+    """Full apartment view response."""
+
+    agents: List[ApartmentAgentState]
+    activity: List[ApartmentActivityEvent]
