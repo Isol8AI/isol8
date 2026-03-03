@@ -200,6 +200,14 @@ resource "aws_ecs_task_definition" "openclaw" {
         }
       }
 
+      healthCheck = {
+        command     = ["CMD-SHELL", "openclaw gateway status --json | node -e \"process.stdin.on('data',d=>{try{const s=JSON.parse(d);process.exit(s.port&&s.port.status==='busy'?0:1)}catch{process.exit(1)}})\""]
+        interval    = 30
+        timeout     = 10
+        retries     = 3
+        startPeriod = 60
+      }
+
       linuxParameters = {
         initProcessEnabled = true
       }
