@@ -7,9 +7,21 @@ import pytest
 from fastapi import HTTPException
 from jose import jwt
 
-from core.auth import AuthContext, get_current_user, require_org_admin, require_org_context
+from core.auth import AuthContext, _jwks_cache, get_current_user, require_org_admin, require_org_context
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
+
+
+@pytest.fixture(autouse=True)
+def _clear_jwks_cache():
+    """Reset the module-level JWKS cache before each test to avoid cross-test pollution."""
+    _jwks_cache["data"] = None
+    _jwks_cache["expires_at"] = None
+    yield
+    _jwks_cache["data"] = None
+    _jwks_cache["expires_at"] = None
+
+
 TEST_RSA_N = (
     "0vx7agoebGcQSuuPiLJXZptN9nndrQmbXEps2aiAFbWhM78LhWx4cbbfAAtVT86zwu1RK7aPFFxuhDR1L6tSoc_"
     "BJECPebWKRXjBZCiFV4n3oknjhMstn64tZ_2W-5JsGY4Hc5n9yBXArwl93lqt7_RN5w6Cf0h4QyQ5v-65YGjQR0_"
