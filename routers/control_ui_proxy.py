@@ -6,20 +6,30 @@ Serves the control-UI SPA through the backend so that:
   2. The gateway auth token is injected server-side during the WS handshake —
      credentials never reach the browser.
 
+Auth flow:
+  - Root page requires ?token= (Clerk JWT). On success, sets a short-lived
+    HttpOnly session cookie with user_id so sub-resources (JS, CSS, fonts)
+    authenticate automatically without needing ?token= on every request.
+  - WebSocket also accepts ?token= for the initial handshake.
+
 HTTP GET  /api/v1/control-ui/{path}  → proxies static files from the gateway.
 WS        /api/v1/control-ui         → bidirectional relay with handshake injection.
 """
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
+import time
 import uuid
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Cookie, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
 
 from core.auth import _decode_token
+from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_db
@@ -29,6 +39,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _HTTP_TIMEOUT = 15.0  # seconds for upstream HTTP requests
+_COOKIE_NAME = "cui_session"
+_COOKIE_MAX_AGE = 300  # 5 minutes — enough for SPA asset loading
 
 
 # ---------------------------------------------------------------------------
@@ -56,38 +68,66 @@ async def _validate_clerk_token(token: str) -> str:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 
+def _sign_cookie(user_id: str, expires: int) -> str:
+    """Create a signed session cookie value: user_id|expires|signature."""
+    secret = settings.CLERK_SECRET_KEY or "control-ui-proxy-fallback-key"
+    payload = f"{user_id}|{expires}"
+    sig = hmac.new(secret.encode(), payload.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{payload}|{sig}"
+
+
+def _verify_cookie(cookie_value: str) -> str | None:
+    """Verify a signed session cookie. Returns user_id or None."""
+    try:
+        parts = cookie_value.split("|")
+        if len(parts) != 3:
+            return None
+        user_id, expires_str, sig = parts
+        expires = int(expires_str)
+        if time.time() > expires:
+            return None
+        secret = settings.CLERK_SECRET_KEY or "control-ui-proxy-fallback-key"
+        expected_payload = f"{user_id}|{expires_str}"
+        expected_sig = hmac.new(secret.encode(), expected_payload.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected_sig):
+            return None
+        return user_id
+    except Exception:
+        return None
+
+
 # ---------------------------------------------------------------------------
 # HTTP proxy — static files
 # ---------------------------------------------------------------------------
 
 
 @router.get("/{path:path}")
-async def proxy_static(path: str, token: str = Query(default=None)):
+async def proxy_static(
+    path: str,
+    request: Request,
+    token: str = Query(default=None),
+    cui_session: str | None = Cookie(default=None),
+):
     """Proxy static assets from the OpenClaw control UI SPA.
 
-    The root (index.html) requires a ?token= query parameter with a valid
-    Clerk JWT so we can resolve the user's container.  Sub-resources (JS,
-    CSS, fonts) are identical across containers and don't require auth.
+    The root page requires ?token= (Clerk JWT). On success, a session cookie
+    is set so sub-resources (JS, CSS, fonts) authenticate automatically.
     """
     is_root = path in ("", "index.html")
+    user_id = None
+    set_cookie = False
 
-    if is_root and not token:
-        raise HTTPException(status_code=401, detail="Missing token parameter")
-
-    if is_root:
+    # Auth: try token first, then cookie
+    if token:
         user_id = await _validate_clerk_token(token)
-        container, ip = await _resolve_user_container(user_id)
-    else:
-        # For sub-resources we still need a container IP to proxy from.
-        # Accept optional token; if absent, return 401 so the iframe
-        # can supply it.  In practice the browser sends these from the
-        # same origin after the root page loads, but the SPA may request
-        # assets before the iframe src is set.
-        if token:
-            user_id = await _validate_clerk_token(token)
-            container, ip = await _resolve_user_container(user_id)
-        else:
-            raise HTTPException(status_code=401, detail="Missing token parameter")
+        set_cookie = True  # Refresh cookie on token auth
+    elif cui_session:
+        user_id = _verify_cookie(cui_session)
+
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Missing or invalid authentication")
+
+    container, ip = await _resolve_user_container(user_id)
 
     upstream_url = f"http://{ip}:{GATEWAY_PORT}/{path}" if path else f"http://{ip}:{GATEWAY_PORT}/"
 
@@ -107,13 +147,29 @@ async def proxy_static(path: str, token: str = Query(default=None)):
         html = resp.text
         base_path_script = '<script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__="/api/v1/control-ui";</script>'
         html = html.replace("<head>", f"<head>{base_path_script}", 1)
-        return HTMLResponse(content=html, status_code=resp.status_code)
+        response = HTMLResponse(content=html, status_code=resp.status_code)
+    else:
+        response = Response(
+            content=resp.content,
+            status_code=resp.status_code,
+            media_type=content_type,
+        )
 
-    return Response(
-        content=resp.content,
-        status_code=resp.status_code,
-        media_type=content_type,
-    )
+    # Set session cookie so sub-resource requests don't need ?token=
+    if set_cookie:
+        expires = int(time.time()) + _COOKIE_MAX_AGE
+        cookie_value = _sign_cookie(user_id, expires)
+        response.set_cookie(
+            key=_COOKIE_NAME,
+            value=cookie_value,
+            max_age=_COOKIE_MAX_AGE,
+            httponly=True,
+            secure=True,
+            samesite="none",  # Required for cross-origin iframe
+            path="/api/v1/control-ui",
+        )
+
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +182,22 @@ async def proxy_websocket(ws: WebSocket, token: str = Query(default=None)):
     """WebSocket proxy that intercepts the OpenClaw handshake to inject the
     gateway auth token, then relays messages bidirectionally."""
     if not token:
-        await ws.close(code=4001, reason="Missing token parameter")
-        return
-
-    try:
-        user_id = await _validate_clerk_token(token)
-    except HTTPException:
-        await ws.close(code=4001, reason="Invalid or expired token")
-        return
+        # Try cookie from the WebSocket handshake headers
+        cookie_value = ws.cookies.get(_COOKIE_NAME)
+        if cookie_value:
+            user_id = _verify_cookie(cookie_value)
+            if not user_id:
+                await ws.close(code=4001, reason="Invalid or expired session")
+                return
+        else:
+            await ws.close(code=4001, reason="Missing token parameter")
+            return
+    else:
+        try:
+            user_id = await _validate_clerk_token(token)
+        except HTTPException:
+            await ws.close(code=4001, reason="Invalid or expired token")
+            return
 
     try:
         container, ip = await _resolve_user_container(user_id)
