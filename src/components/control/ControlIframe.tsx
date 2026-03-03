@@ -6,6 +6,7 @@ import { Loader2 } from "lucide-react";
 import { BACKEND_URL } from "@/lib/api";
 
 const TOKEN_REFRESH_MS = 50_000; // Refresh before Clerk's ~60s expiry
+const WS_URL = process.env.NEXT_PUBLIC_WS_URL || "";
 
 export function ControlIframe() {
   const { getToken } = useAuth();
@@ -19,7 +20,10 @@ export function ControlIframe() {
       try {
         const token = await getToken();
         if (cancelled || !token) return;
-        setSrc(`${BACKEND_URL}/control-ui/?token=${encodeURIComponent(token)}`);
+        const params = new URLSearchParams();
+        params.set("token", token);
+        if (WS_URL) params.set("ws_url", WS_URL);
+        setSrc(`${BACKEND_URL}/control-ui/?${params.toString()}`);
       } catch {
         // Token fetch failed — keep existing src (iframe will use cached page)
       }
