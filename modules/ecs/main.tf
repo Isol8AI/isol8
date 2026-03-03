@@ -154,7 +154,8 @@ resource "aws_ecs_task_definition" "openclaw" {
       # Config is written to EFS by the EC2 control plane and mounted
       # into the container at /home/node/.openclaw via per-user access
       # points. No inline config generation needed.
-      #
+      user = "1000:1000"
+      workingDirectory = "/home/node"
       command = ["node", "/app/openclaw.mjs", "gateway", "--port", "18789", "--bind", "lan"]
 
       portMappings = [
@@ -175,6 +176,10 @@ resource "aws_ecs_task_definition" "openclaw" {
       # NOTE: GATEWAY_TOKEN is injected at service creation time via
       # container overrides in the backend EcsManager, not here.
       environment = [
+        {
+          name  = "HOME"
+          value = "/home/node"
+        },
         {
           name  = "AWS_REGION"
           value = "us-east-1"
