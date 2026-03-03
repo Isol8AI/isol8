@@ -8,14 +8,18 @@ Serves the control-UI SPA through the backend so that:
 
 Auth flow:
   - Root page requires ?token= (Clerk JWT). On success, creates a short-lived
-    in-memory session and serves the page with basePath including the session ID.
-  - All sub-resources and WebSocket connections use the session ID from the URL
-    path — no cookies needed, works in cross-origin iframes.
+    in-memory session and serves the page with a <base> tag so assets resolve
+    through the session path.
+  - Sub-resources (JS/CSS) use the session ID from the URL path.
+  - WebSocket: the SPA connects to the root path and sends the Clerk JWT
+    (from ?token=) as its "gateway token" in the OpenClaw connect message.
+    The proxy validates the JWT, resolves the container, and replaces it
+    with the real gateway token before forwarding upstream.
 
 Routes:
   GET  /api/v1/control-ui/?token=...              → root page (creates session)
   GET  /api/v1/control-ui/s/{session}/{path}       → sub-resources via session
-  WS   /api/v1/control-ui/s/{session}              → WebSocket relay via session
+  WS   /api/v1/control-ui/                         → WebSocket relay (auth via connect msg)
 """
 
 import asyncio
@@ -23,7 +27,6 @@ import json
 import logging
 import secrets
 import time
-import uuid
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -183,57 +186,69 @@ async def proxy_static(session_id: str, path: str):
 
 
 # ---------------------------------------------------------------------------
-# WebSocket proxy — bidirectional relay with handshake injection
+# WebSocket proxy — auth via OpenClaw connect message
+# ---------------------------------------------------------------------------
+#
+# The SPA connects WebSocket to its own page origin (the root proxy path).
+# It sends the Clerk JWT (from ?token=) as the "gateway token" in the
+# OpenClaw connect message.  The proxy:
+#   1. Mimics the gateway's connect.challenge
+#   2. Receives the browser's connect (with Clerk JWT)
+#   3. Validates the JWT → resolves the user's container
+#   4. Opens upstream WS and authenticates with the REAL gateway token
+#   5. Forwards the hello-ok and relays bidirectionally
 # ---------------------------------------------------------------------------
 
 
-@router.websocket("/s/{session_id}")
-async def proxy_websocket(ws: WebSocket, session_id: str):
-    """WebSocket proxy that uses session for auth, intercepts the OpenClaw
-    handshake to inject the gateway token, then relays bidirectionally."""
-    session = _get_session(session_id)
-    if not session:
-        await ws.close(code=4001, reason="Invalid or expired session")
-        return
-
-    upstream_uri = f"ws://{session.ip}:{GATEWAY_PORT}"
-
+@router.websocket("/")
+async def proxy_websocket(ws: WebSocket):
+    """WebSocket proxy that authenticates via the Clerk JWT in the OpenClaw
+    connect message, then relays to the real gateway."""
     await ws.accept()
 
+    user_id = None
     try:
         from websockets import connect as ws_connect
 
+        # --- Phase 1: Browser handshake (we pretend to be the gateway) ---
+
+        # Send connect.challenge to the browser
+        await ws.send_text(json.dumps({"event": "connect.challenge"}))
+
+        # Receive the browser's connect message (contains Clerk JWT as auth token)
+        raw = await asyncio.wait_for(ws.receive_text(), timeout=15)
+        browser_connect = json.loads(raw)
+
+        if browser_connect.get("method") != "connect":
+            await ws.close(code=4002, reason="Expected connect message")
+            return
+
+        clerk_token = browser_connect.get("params", {}).get("auth", {}).get("token", "")
+        if not clerk_token:
+            await ws.close(code=4001, reason="Missing auth token")
+            return
+
+        # Validate Clerk JWT and resolve container
+        user_id = await _validate_clerk_token(clerk_token)
+        container, ip = await _resolve_user_container(user_id)
+
+        # --- Phase 2: Upstream handshake (real gateway) ---
+
+        upstream_uri = f"ws://{ip}:{GATEWAY_PORT}"
         async with ws_connect(upstream_uri, open_timeout=15, close_timeout=5) as upstream:
-            # --- Handshake interception ---
-            # Step 1: Receive connect.challenge from gateway
-            raw = await asyncio.wait_for(upstream.recv(), timeout=10)
-            challenge = json.loads(raw)
-            if challenge.get("event") != "connect.challenge":
+            # Receive connect.challenge from real gateway
+            gw_raw = await asyncio.wait_for(upstream.recv(), timeout=10)
+            gw_challenge = json.loads(gw_raw)
+            if gw_challenge.get("event") != "connect.challenge":
                 await ws.close(code=4002, reason="Unexpected gateway handshake")
                 return
 
-            # Step 2: Send connect with gateway auth token (injected server-side)
-            connect_msg = {
-                "type": "req",
-                "id": str(uuid.uuid4()),
-                "method": "connect",
-                "params": {
-                    "minProtocol": 3,
-                    "maxProtocol": 3,
-                    "client": {
-                        "id": "control-ui-proxy",
-                        "version": "1.0.0",
-                        "platform": "linux",
-                        "mode": "cli",
-                    },
-                    "role": "operator",
-                    "scopes": ["operator.admin"],
-                    "auth": {"token": session.gateway_token},
-                },
-            }
-            await upstream.send(json.dumps(connect_msg))
+            # Forward browser's connect message but replace auth token
+            upstream_connect = dict(browser_connect)
+            upstream_connect.setdefault("params", {})["auth"] = {"token": container.gateway_token}
+            await upstream.send(json.dumps(upstream_connect))
 
-            # Step 3: Verify hello-ok and forward to browser
+            # Receive hello-ok from gateway and forward to browser
             resp_raw = await asyncio.wait_for(upstream.recv(), timeout=10)
             resp = json.loads(resp_raw)
             if not resp.get("ok"):
@@ -241,10 +256,10 @@ async def proxy_websocket(ws: WebSocket, session_id: str):
                 await ws.close(code=4002, reason=f"Gateway connect failed: {err}")
                 return
 
-            # Forward the hello-ok to the browser
             await ws.send_text(resp_raw)
 
-            # --- Bidirectional relay ---
+            # --- Phase 3: Bidirectional relay ---
+
             async def browser_to_upstream():
                 try:
                     while True:
@@ -265,7 +280,6 @@ async def proxy_websocket(ws: WebSocket, session_id: str):
                 except Exception:
                     pass
 
-            # Run both directions concurrently; when either ends, cancel the other
             tasks = [
                 asyncio.create_task(browser_to_upstream()),
                 asyncio.create_task(upstream_to_browser()),
@@ -279,7 +293,7 @@ async def proxy_websocket(ws: WebSocket, session_id: str):
                     t.cancel()
 
     except Exception as e:
-        logger.warning("Control UI WebSocket proxy error for user %s: %s", session.user_id, e)
+        logger.warning("Control UI WebSocket proxy error for user %s: %s", user_id, e)
     finally:
         try:
             await ws.close()
