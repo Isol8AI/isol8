@@ -10,6 +10,7 @@ Responses are pushed via Management API, not returned in HTTP response body.
 """
 
 import logging
+import secrets
 import uuid as _uuid
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -61,7 +62,14 @@ def _send_connect_challenge(connection_id: str) -> None:
     """
     try:
         management_api = get_management_api_client()
-        management_api.send_message(connection_id, {"event": "connect.challenge"})
+        management_api.send_message(
+            connection_id,
+            {
+                "type": "event",
+                "event": "connect.challenge",
+                "payload": {"nonce": secrets.token_urlsafe(16)},
+            },
+        )
     except Exception as e:
         logger.warning("Failed to send connect.challenge to %s: %s", connection_id, e)
 
