@@ -81,6 +81,54 @@ async def provision_container(
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.patch(
+    "/provision",
+    summary="Update config and redeploy (dev only)",
+    description=(
+        "Rewrites openclaw.json with the latest config template and forces "
+        "a new ECS deployment so the gateway picks up the changes."
+    ),
+    operation_id="debug_redeploy_container",
+    responses={
+        403: {"description": "Not available in production"},
+        404: {"description": "No container found"},
+        503: {"description": "Redeploy failed"},
+    },
+)
+async def redeploy_container(
+    auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if settings.ENVIRONMENT == "prod":
+        raise HTTPException(status_code=403, detail="Not available in production")
+
+    user_id = auth.user_id
+
+    result = await db.execute(select(Container).where(Container.user_id == user_id))
+    container = result.scalar_one_or_none()
+    if not container:
+        raise HTTPException(status_code=404, detail="No container found")
+
+    try:
+        config_json = write_openclaw_config(
+            region=settings.AWS_REGION,
+            brave_api_key=settings.BRAVE_API_KEY,
+            gateway_token=container.gateway_token,
+        )
+        get_workspace().write_file(user_id, "openclaw.json", config_json)
+
+        await get_ecs_manager().start_user_service(user_id, db)
+
+        return {
+            "status": "redeploying",
+            "service_name": container.service_name,
+            "user_id": user_id,
+        }
+    except EcsManagerError as e:
+        logger.error("Dev redeploy failed for user %s: %s", user_id, e)
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.delete(
     "/provision",
     summary="Remove container (dev only)",
