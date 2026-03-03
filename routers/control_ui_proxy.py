@@ -112,11 +112,18 @@ async def _validate_clerk_token(token: str) -> str:
 
 @router.get("/")
 @router.get("/index.html")
-async def proxy_root(token: str = Query(default=None)):
+async def proxy_root(
+    token: str = Query(default=None),
+    ws_url: str = Query(default=None),
+):
     """Serve the control UI root page. Requires ?token= (Clerk JWT).
 
     Creates a session and injects the basePath with session ID so all
     subsequent requests (sub-resources + WebSocket) authenticate via URL path.
+
+    If ws_url is provided (WebSocket API Gateway URL), injects a localStorage
+    override so the SPA connects its WebSocket through the API Gateway instead
+    of directly to this proxy.
     """
     if not token:
         raise HTTPException(status_code=401, detail="Missing token parameter")
@@ -149,7 +156,29 @@ async def proxy_root(token: str = Query(default=None)):
     base_path = f"/api/v1/control-ui/s/{session_id}"
     base_tag = f'<base href="{base_path}/">'
     base_path_script = f'<script>window.__OPENCLAW_CONTROL_UI_BASE_PATH__="{base_path}";</script>'
-    html = html.replace("<head>", f"<head>{base_tag}{base_path_script}", 1)
+
+    # If a WebSocket API Gateway URL is provided, inject localStorage override
+    # so the SPA's WebSocket goes through the API Gateway (which supports WS)
+    # instead of trying api-dev.isol8.co (which is HTTP-only and returns 400).
+    ws_override_script = ""
+    if ws_url:
+        gateway_url_js = json.dumps(f"{ws_url}?token={token}")
+        ws_override_script = (
+            "<script>"
+            "(function(){"
+            'var k="openclaw.control.settings.v1",s={};'
+            "try{s=JSON.parse(localStorage.getItem(k))||{}}catch(e){}"
+            f"s.gatewayUrl={gateway_url_js};"
+            "localStorage.setItem(k,JSON.stringify(s))"
+            "})()"
+            "</script>"
+        )
+
+    html = html.replace(
+        "<head>",
+        f"<head>{base_tag}{base_path_script}{ws_override_script}",
+        1,
+    )
 
     return HTMLResponse(content=html, status_code=resp.status_code)
 

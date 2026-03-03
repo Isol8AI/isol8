@@ -53,6 +53,19 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return db_get_session_factory()
 
 
+def _send_connect_challenge(connection_id: str) -> None:
+    """Send OpenClaw connect.challenge to a newly connected client.
+
+    The control UI SPA expects this event before sending its connect
+    handshake.  The chat frontend ignores it (no ``type`` field).
+    """
+    try:
+        management_api = get_management_api_client()
+        management_api.send_message(connection_id, {"event": "connect.challenge"})
+    except Exception as e:
+        logger.warning("Failed to send connect.challenge to %s: %s", connection_id, e)
+
+
 @router.post(
     "/connect",
     status_code=200,
@@ -65,6 +78,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     },
 )
 async def ws_connect(
+    background_tasks: BackgroundTasks,
     x_connection_id: Optional[str] = Header(None, alias="x-connection-id"),
     x_user_id: Optional[str] = Header(None, alias="x-user-id"),
     x_org_id: Optional[str] = Header(None, alias="x-org-id"),
@@ -88,6 +102,10 @@ async def ws_connect(
         pool.add_frontend_connection(x_user_id, x_connection_id)
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
+
+    # Send OpenClaw connect.challenge so the control UI SPA can complete
+    # its handshake.  The chat frontend silently ignores this message.
+    background_tasks.add_task(_send_connect_challenge, x_connection_id)
 
     return Response(status_code=200)
 
@@ -206,6 +224,23 @@ async def ws_message(
                     "id": req_id,
                     "ok": False,
                     "error": {"message": "Missing id or method"},
+                },
+            )
+            return Response(status_code=200)
+
+        # OpenClaw connect handshake — respond with hello-ok locally.
+        # The control UI SPA sends this after receiving connect.challenge.
+        # Auth is already handled by the Lambda authorizer, so we accept
+        # any token and respond immediately.
+        if method == "connect":
+            management_api = get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "res",
+                    "id": req_id,
+                    "ok": True,
+                    "payload": {"protocol": 3},
                 },
             )
             return Response(status_code=200)
