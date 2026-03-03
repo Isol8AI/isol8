@@ -155,14 +155,7 @@ resource "aws_ecs_task_definition" "openclaw" {
       # into the container at /home/node/.openclaw via per-user access
       # points. No inline config generation needed.
       #
-      # The Docker image already creates the /usr/local/bin/openclaw symlink
-      # at build time as root. The runtime ln is a no-op fallback in case a
-      # different base image is used; it must not be fatal since the container
-      # runs as UID 1000 (node) which cannot write to /usr/local/bin.
-      entryPoint = ["sh", "-c"]
-      command = [
-        "ln -sf /app/openclaw.mjs /usr/local/bin/openclaw 2>/dev/null || true; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
-      ]
+      command = ["node", "/app/openclaw.mjs", "gateway", "--port", "18789", "--bind", "lan"]
 
       portMappings = [
         {
@@ -202,7 +195,7 @@ resource "aws_ecs_task_definition" "openclaw" {
       }
 
       healthCheck = {
-        command     = ["CMD-SHELL", "openclaw gateway status --json | node -e \"process.stdin.on('data',d=>{try{const s=JSON.parse(d);process.exit(s.port&&s.port.status==='busy'?0:1)}catch{process.exit(1)}})\""]
+        command     = ["CMD-SHELL", "node /app/openclaw.mjs gateway status --json | node -e \"process.stdin.on('data',d=>{try{const s=JSON.parse(d);process.exit(s.port&&s.port.status==='busy'?0:1)}catch{process.exit(1)}})\""]
         interval    = 30
         timeout     = 10
         retries     = 3
