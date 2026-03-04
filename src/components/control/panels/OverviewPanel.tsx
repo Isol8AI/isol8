@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import {
   Loader2,
   RefreshCw,
@@ -12,13 +13,18 @@ import {
   Timer,
   MapPin,
   CreditCard,
-  Lightbulb,
   Activity,
+  RotateCcw,
+  Download,
+  Radio,
+  AlertCircle,
+  CheckCircle2,
 } from "lucide-react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -259,29 +265,8 @@ export function OverviewPanel() {
         />
       </div>
 
-      {/* Notes / Tips */}
-      <div className="space-y-3">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          Notes
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <TipCard
-            icon={Lightbulb}
-            title="Agent Chat"
-            body="Use the Channels panel to connect WhatsApp, Telegram, Discord, and more."
-          />
-          <TipCard
-            icon={Lightbulb}
-            title="Cron Jobs"
-            body="Schedule recurring tasks from the Cron panel to automate agent workflows."
-          />
-          <TipCard
-            icon={Lightbulb}
-            title="Session History"
-            body="View and manage conversation sessions in the Sessions panel."
-          />
-        </div>
-      </div>
+      {/* Gateway Actions */}
+      <GatewayActions onRefresh={handleRefresh} />
     </div>
   );
 }
@@ -349,22 +334,143 @@ function SummaryCard({
   );
 }
 
-function TipCard({
-  icon: Icon,
-  title,
-  body,
-}: {
-  icon: typeof Lightbulb;
-  title: string;
-  body: string;
-}) {
+// ---------------------------------------------------------------------------
+// Gateway Actions
+// ---------------------------------------------------------------------------
+
+function GatewayActions({ onRefresh }: { onRefresh: () => void }) {
+  const callRpc = useGatewayRpcMutation();
+  const [busy, setBusy] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  const runAction = useCallback(
+    async (
+      label: string,
+      method: string,
+      params?: Record<string, unknown>,
+      postAction?: () => void,
+    ) => {
+      setBusy(label);
+      setFeedback(null);
+      try {
+        await callRpc(method, params);
+        setFeedback({ type: "success", message: `${label}: success` });
+        postAction?.();
+      } catch (err) {
+        setFeedback({
+          type: "error",
+          message: `${label}: ${err instanceof Error ? err.message : String(err)}`,
+        });
+      } finally {
+        setBusy(null);
+      }
+    },
+    [callRpc],
+  );
+
   return (
-    <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-1">
-      <div className="flex items-center gap-1.5">
-        <Icon className="h-3.5 w-3.5 text-muted-foreground/60" />
-        <span className="text-xs font-semibold">{title}</span>
+    <div className="space-y-3">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        Quick Actions
+      </h3>
+
+      {feedback && (
+        <div
+          className={cn(
+            "flex items-center gap-2 rounded-md border p-2.5 text-xs",
+            feedback.type === "success"
+              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-400"
+              : "border-destructive/30 bg-destructive/5 text-destructive",
+          )}
+        >
+          {feedback.type === "success" ? (
+            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+          ) : (
+            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
+          )}
+          <span className="flex-1">{feedback.message}</span>
+          <button
+            className="text-muted-foreground hover:text-foreground"
+            onClick={() => setFeedback(null)}
+          >
+            dismiss
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        <ActionButton
+          icon={RotateCcw}
+          label="Reload Config"
+          busy={busy}
+          busyKey="Reload Config"
+          onClick={() => runAction("Reload Config", "config.apply", {}, onRefresh)}
+        />
+        <ActionButton
+          icon={Download}
+          label="Update Gateway"
+          busy={busy}
+          busyKey="Update Gateway"
+          onClick={() => {
+            if (!window.confirm("Update gateway? This will restart the service.")) return;
+            runAction("Update Gateway", "update.run", {}, () =>
+              setTimeout(onRefresh, 5000),
+            );
+          }}
+        />
+        <ActionButton
+          icon={Radio}
+          label="Probe Channels"
+          busy={busy}
+          busyKey="Probe Channels"
+          onClick={() =>
+            runAction("Probe Channels", "channels.status", {
+              probe: true,
+              timeoutMs: 8000,
+            })
+          }
+        />
+        <ActionButton
+          icon={Activity}
+          label="Health Check"
+          busy={busy}
+          busyKey="Health Check"
+          onClick={() => runAction("Health Check", "health", {}, onRefresh)}
+        />
       </div>
-      <p className="text-xs text-muted-foreground leading-relaxed">{body}</p>
     </div>
+  );
+}
+
+function ActionButton({
+  icon: Icon,
+  label,
+  busy,
+  busyKey,
+  onClick,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  busy: string | null;
+  busyKey: string;
+  onClick: () => void;
+}) {
+  const isBusy = busy === busyKey;
+  return (
+    <button
+      className="flex items-center gap-2 rounded-lg border border-border p-2.5 text-left transition-colors hover:bg-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
+      disabled={busy !== null}
+      onClick={onClick}
+    >
+      {isBusy ? (
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />
+      ) : (
+        <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+      )}
+      <span className="text-xs font-medium">{label}</span>
+    </button>
   );
 }
