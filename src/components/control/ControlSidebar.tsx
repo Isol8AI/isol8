@@ -7,6 +7,7 @@ import {
   Link2,
   Clock,
   BarChart3,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { key: "channels", label: "Channels", icon: Link2 },
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "usage", label: "Usage", icon: BarChart3 },
+  { key: "actions", label: "Actions", icon: Zap },
 ];
 
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
