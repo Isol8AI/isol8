@@ -26,8 +26,8 @@ class TestTownLocations:
         assert "library" in TOWN_LOCATIONS
         assert "park" in TOWN_LOCATIONS
         assert "apartment" in TOWN_LOCATIONS
-        assert "bridge_n" in TOWN_LOCATIONS
-        assert "bridge_s" in TOWN_LOCATIONS
+        assert "barn" in TOWN_LOCATIONS
+        assert "shop" in TOWN_LOCATIONS
 
     def test_locations_have_coordinates(self):
         for name, loc in TOWN_LOCATIONS.items():
