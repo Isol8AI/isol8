@@ -17,8 +17,8 @@ import { useAuth } from "@clerk/nextjs";
 // Constants
 // =============================================================================
 
-const MAX_RECONNECT_ATTEMPTS = 5;
-const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000];
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16000, 16000];
 const PING_INTERVAL_MS = 30000;
 const CONNECTION_TIMEOUT_MS = 10000;
 const RPC_TIMEOUT_MS = 30000;
@@ -65,10 +65,12 @@ interface PendingRpc {
 interface GatewayContextValue {
   isConnected: boolean;
   error: string | null;
+  reconnectAttempt: number;
   sendReq: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
   sendChat: (agentId: string, message: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
   onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => () => void;
+  reconnect: () => void;
 }
 
 const GatewayContext = createContext<GatewayContextValue | null>(null);
@@ -81,6 +83,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   const { getToken } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectAttemptRef = useRef(0);
@@ -202,6 +205,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;
+        setReconnectAttempt(0);
         setIsConnected(true);
         setError(null);
 
@@ -236,9 +240,10 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           const delay =
             RECONNECT_DELAYS[reconnectAttemptRef.current] || 16000;
           reconnectAttemptRef.current++;
+          setReconnectAttempt(reconnectAttemptRef.current);
           reconnectTimeoutRef.current = setTimeout(() => connectRef.current?.(), delay);
         } else {
-          setError("Connection lost. Please refresh the page.");
+          setError("Connection lost. Waiting for container...");
         }
       };
 
@@ -252,6 +257,18 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;
+
+  const reconnect = useCallback(() => {
+    if (wsRef.current) {
+      wsRef.current.close(1000, "Manual reconnect");
+      wsRef.current = null;
+    }
+    reconnectAttemptRef.current = 0;
+    setReconnectAttempt(0);
+    setError(null);
+    clearReconnectTimeout();
+    connect();
+  }, [connect, clearReconnectTimeout]);
 
   // ---- Auto-connect on mount ----
 
@@ -355,8 +372,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ isConnected, error, sendReq, sendChat, onEvent, onChatMessage }),
-    [isConnected, error, sendReq, sendChat, onEvent, onChatMessage],
+    () => ({ isConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
+    [isConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
   );
 
   return (
