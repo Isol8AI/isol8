@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
-import { ControlIframe } from "@/components/control/ControlIframe";
+import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 
 export default function ChatPage() {
@@ -39,7 +39,7 @@ export default function ChatPage() {
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">
-            <ControlIframe />
+            <ControlPanelRouter panel={activePanel} />
           </div>
         )}
       </ChatLayout>
