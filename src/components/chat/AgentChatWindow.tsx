@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef } from "react";
 
 import { ChatInput } from "./ChatInput";
+import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { MessageList } from "./MessageList";
 import { useAgentChat } from "@/hooks/useAgentChat";
 
@@ -30,7 +31,6 @@ export function AgentChatWindow({
     error: chatError,
     sendMessage,
     clearMessages,
-    isConnected,
   } = useAgentChat(agentId);
 
   const isInitialState = chatMessages.length === 0;
@@ -70,19 +70,10 @@ export function AgentChatWindow({
     [chatMessages],
   );
 
-  const connectionIndicator =
-    !isConnected ? (
-      <div className="px-3 py-1.5 rounded text-xs font-medium bg-yellow-900/30 text-yellow-300">
-        Connecting...
-      </div>
-    ) : null;
-
   if (chatError) {
     return (
       <div className="flex flex-col h-full bg-background/20">
-        <div className="absolute top-4 right-4 z-20">
-          {connectionIndicator}
-        </div>
+        <ConnectionStatusBar />
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
             <MessageList messages={messages} isTyping={isTyping} />
@@ -100,9 +91,7 @@ export function AgentChatWindow({
   if (isInitialState) {
     return (
       <div className="flex flex-col h-full bg-background/20">
-        <div className="absolute top-4 right-4 z-20">
-          {connectionIndicator}
-        </div>
+        <ConnectionStatusBar />
         <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="text-center mb-8">
             <h1 className="text-4xl font-bold mb-3 text-foreground tracking-tight font-host">
@@ -122,9 +111,7 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-background/20">
-      <div className="absolute top-4 right-4 z-20">
-        {connectionIndicator}
-      </div>
+      <ConnectionStatusBar />
       <MessageList messages={messages} isTyping={isTyping} />
       <ChatInput onSend={handleSend} disabled={isTyping} />
     </div>

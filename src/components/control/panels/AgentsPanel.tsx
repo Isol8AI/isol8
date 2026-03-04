@@ -142,7 +142,7 @@ const TOOL_ALIASES: Record<string, string> = {
 };
 
 // Fallback tool sections if tools.catalog RPC doesn't return groups
-const FALLBACK_SECTIONS: { id: string; label: string; tools: { id: string; label: string; description: string }[] }[] = [
+const FALLBACK_SECTIONS: { id: string; label: string; tools: { id: string; label: string; description: string; source?: string }[] }[] = [
   { id: "files", label: "Files", tools: [
     { id: "read", label: "read", description: "Read file contents" },
     { id: "write", label: "write", description: "Create or overwrite files" },
