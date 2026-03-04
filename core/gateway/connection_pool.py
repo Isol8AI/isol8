@@ -195,14 +195,48 @@ class GatewayConnection:
     def _fire_usage_callback(self, payload: dict) -> None:
         """Extract token usage from a chat final payload and fire the callback."""
         if not self._on_usage:
+            logger.debug("No usage callback registered for user %s", self.user_id)
             return
-        input_tokens = payload.get("inputTokens")
-        output_tokens = payload.get("outputTokens")
+
+        # Log the full payload keys to diagnose missing token fields
+        logger.info(
+            "Chat final payload for user %s — keys: %s",
+            self.user_id,
+            list(payload.keys()),
+        )
+
+        # Try multiple field name conventions (OpenClaw may use camelCase or nested)
+        input_tokens = payload.get("inputTokens") or payload.get("input_tokens")
+        output_tokens = payload.get("outputTokens") or payload.get("output_tokens")
+
+        # Check nested usage object (some OpenClaw versions nest under "usage")
         if not input_tokens or not output_tokens:
+            usage_obj = payload.get("usage")
+            if isinstance(usage_obj, dict):
+                input_tokens = input_tokens or usage_obj.get("inputTokens") or usage_obj.get("input_tokens")
+                output_tokens = output_tokens or usage_obj.get("outputTokens") or usage_obj.get("output_tokens")
+
+        if not input_tokens or not output_tokens:
+            logger.warning(
+                "Missing token counts in chat final for user %s "
+                "(inputTokens=%s, outputTokens=%s). Payload sample: %s",
+                self.user_id,
+                input_tokens,
+                output_tokens,
+                {k: payload[k] for k in list(payload.keys())[:10]},
+            )
             return
+
         model = payload.get("model") or "unknown"
         try:
             asyncio.create_task(self._on_usage(self.user_id, model, int(input_tokens), int(output_tokens)))
+            logger.info(
+                "Scheduled usage recording for user %s: model=%s in=%d out=%d",
+                self.user_id,
+                model,
+                int(input_tokens),
+                int(output_tokens),
+            )
         except Exception:
             logger.warning("Failed to schedule usage recording for user %s", self.user_id)
 
