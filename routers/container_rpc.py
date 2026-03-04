@@ -151,6 +151,49 @@ async def container_status(
 
 
 @router.post(
+    "/gateway/restart",
+    summary="Restart the OpenClaw gateway on the user's container",
+    description=(
+        "Sends a config.apply RPC to the user's running gateway container, "
+        "which triggers a gateway process restart. "
+        "Use this when the WebSocket connection is down but the container is running."
+    ),
+    operation_id="gateway_restart",
+    responses={
+        404: {"description": "No running container for this user"},
+        502: {"description": "Gateway is not responding"},
+    },
+)
+async def gateway_restart(
+    auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ecs_manager = get_ecs_manager()
+    container, ip = await ecs_manager.resolve_running_container(auth.user_id, db)
+    if not container:
+        raise HTTPException(status_code=404, detail="No running container")
+    if not ip:
+        raise HTTPException(status_code=502, detail="Container gateway is starting up")
+
+    try:
+        await _call_gateway_rpc(
+            ip=ip,
+            token=container.gateway_token,
+            method="config.apply",
+            params={},
+        )
+    except ConnectionRefusedError:
+        raise HTTPException(status_code=502, detail="Gateway is not responding")
+    except TimeoutError:
+        raise HTTPException(status_code=502, detail="Gateway restart timed out")
+    except Exception as e:
+        logger.error("Gateway restart failed for user %s: %s", auth.user_id, e)
+        raise HTTPException(status_code=502, detail="Gateway restart failed")
+
+    return {"ok": True}
+
+
+@router.post(
     "/rpc",
     summary="[Deprecated] Proxy RPC call to user's OpenClaw container",
     description=(
