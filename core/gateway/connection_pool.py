@@ -218,8 +218,7 @@ class GatewayConnection:
 
         if not input_tokens or not output_tokens:
             logger.warning(
-                "Missing token counts in chat final for user %s "
-                "(inputTokens=%s, outputTokens=%s). Payload sample: %s",
+                "Missing token counts in chat final for user %s (inputTokens=%s, outputTokens=%s). Payload sample: %s",
                 self.user_id,
                 input_tokens,
                 output_tokens,
