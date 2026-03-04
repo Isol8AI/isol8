@@ -1,11 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Loader2 } from "lucide-react";
 import { BACKEND_URL } from "@/lib/api";
-
-const TOKEN_REFRESH_MS = 50_000; // Refresh before Clerk's ~60s expiry
 
 function getWsUrl(): string {
   if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
@@ -24,12 +22,13 @@ const WS_URL = getWsUrl();
 export function ControlIframe() {
   const { getToken } = useAuth();
   const [src, setSrc] = useState<string | null>(null);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Load once — the SPA manages its own WebSocket reconnection.
+  // Reloading the iframe kills the WS connection and creates a new session.
   useEffect(() => {
     let cancelled = false;
 
-    async function refreshSrc() {
+    async function loadOnce() {
       try {
         const token = await getToken();
         if (cancelled || !token) return;
@@ -38,16 +37,14 @@ export function ControlIframe() {
         if (WS_URL) params.set("ws_url", WS_URL);
         setSrc(`${BACKEND_URL}/control-ui/?${params.toString()}`);
       } catch {
-        // Token fetch failed — keep existing src (iframe will use cached page)
+        // Token fetch failed — will retry on next render
       }
     }
 
-    refreshSrc();
-    intervalRef.current = setInterval(refreshSrc, TOKEN_REFRESH_MS);
+    loadOnce();
 
     return () => {
       cancelled = true;
-      if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [getToken]);
 
