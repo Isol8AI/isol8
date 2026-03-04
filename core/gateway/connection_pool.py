@@ -273,6 +273,16 @@ class GatewayConnection:
             event_name = data.get("event", "")
             payload = data.get("payload", {})
 
+            # Log all non-agent events for debugging usage pipeline
+            if event_name != "agent":
+                state = payload.get("state", "") if isinstance(payload, dict) else ""
+                logger.info(
+                    "Gateway event for user %s: event=%s state=%s",
+                    self.user_id,
+                    event_name,
+                    state,
+                )
+
             if event_name == "agent":
                 # Unthrottled agent events — smooth token-by-token streaming
                 transformed = self._transform_agent_event(payload)
