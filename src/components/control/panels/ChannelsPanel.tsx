@@ -91,7 +91,7 @@ interface ChannelField {
 const CHANNEL_CONFIG_FIELDS: Record<string, ChannelField[]> = {
   telegram: [
     {
-      key: "token",
+      key: "botToken",
       label: "Bot Token",
       placeholder: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
       sensitive: true,
