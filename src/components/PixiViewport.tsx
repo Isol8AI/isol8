@@ -24,7 +24,6 @@ export default PixiComponent('Viewport', {
     const viewport = new Viewport({
       // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access
       events: app.renderer.events,
-      passiveWheel: false,
       ...viewportProps,
     });
     if (viewportRef) {
@@ -39,16 +38,16 @@ export default PixiComponent('Viewport', {
     viewport
       .drag()
       .pinch({})
-      .wheel({ smooth: 5 })
-      .decelerate({ friction: 0.92 })
+      .decelerate({ friction: 0.97 })
       .clamp({ direction: 'all', underflow: 'center' })
       .clampZoom({
         minScale: Math.max(0.5, fitScale * 0.9),
         maxScale: 3.0,
       });
-    // Center on the world and zoom to fit
+    // Start at a zoom that shows detail (1.5x) rather than fitting entire map
+    const initialScale = Math.max(fitScale, 1.5);
     viewport.moveCenter(props.worldWidth / 2, props.worldHeight / 2);
-    viewport.setZoom(fitScale);
+    viewport.setZoom(initialScale);
     return viewport;
   },
   applyProps(viewport, oldProps: any, newProps: any) {

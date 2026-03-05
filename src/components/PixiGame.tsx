@@ -28,6 +28,22 @@ export const PixiGame = (props: {
   const pixiApp = useApp();
   const viewportRef = useRef<Viewport | undefined>();
 
+  // Ctrl/Cmd + wheel = zoom (Google Maps convention)
+  useEffect(() => {
+    const canvas = pixiApp.view as HTMLCanvasElement;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      e.preventDefault();
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
+      const newScale = Math.min(3.0, Math.max(0.5, viewport.scale.x * zoomFactor));
+      viewport.setZoom(newScale, true);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, [pixiApp]);
+
   const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
   const humanPlayerId = [...props.game.world.players.values()].find(
     (p) => p.human === humanTokenIdentifier,
@@ -92,7 +108,7 @@ export const PixiGame = (props: {
     const centerY = (height * tileDim) / 2;
     viewportRef.current.animate({
       position: new PIXI.Point(centerX, centerY),
-      scale: 1.2,
+      scale: 1.5,
       time: 1500,
       ease: 'easeInOutSine',
     });
