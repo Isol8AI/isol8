@@ -57,6 +57,34 @@ class ModelPricing(Base):
         return f"<ModelPricing(model_id={self.model_id}, active={self.is_active})>"
 
 
+class ToolPricing(Base):
+    """Per-tool pricing for non-LLM tool usage."""
+
+    __tablename__ = "tool_pricing"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tool_id = Column(String, nullable=False)
+    display_name = Column(String, nullable=False)
+    unit = Column(String, nullable=False)
+    cost_per_unit = Column(Numeric(20, 12), nullable=False)
+    effective_from = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+    is_active = Column(Boolean, nullable=False, default=True, server_default="true")
+    created_at = Column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (Index("idx_tool_pricing_active", "tool_id", unique=True, postgresql_where=is_active.is_(True)),)
+
+    def __repr__(self) -> str:
+        return f"<ToolPricing(tool_id={self.tool_id}, active={self.is_active})>"
+
+
 class BillingAccount(Base):
     """Maps Clerk users/orgs to Stripe customers."""
 
@@ -112,6 +140,9 @@ class UsageEvent(Base):
     total_cost = Column(Numeric(20, 12), nullable=False)
     billable_amount = Column(Numeric(20, 12), nullable=False)
     source = Column(String, nullable=False)
+    usage_type = Column(String, nullable=False, default="llm", server_default="llm")
+    tool_id = Column(String, nullable=True)
+    quantity = Column(Integer, nullable=True)
     session_id = Column(String, nullable=True)
     agent_id = Column("agent_name", String, nullable=True)
     stripe_meter_event_id = Column(String, nullable=True)
@@ -123,7 +154,7 @@ class UsageEvent(Base):
     month_partition = Column(String, nullable=False)
 
     __table_args__ = (
-        CheckConstraint("source IN ('chat', 'agent')", name="chk_usage_source"),
+        CheckConstraint("source IN ('chat', 'agent', 'tool')", name="chk_usage_source"),
         Index("idx_usage_event_account_month", "billing_account_id", "month_partition"),
         Index("idx_usage_event_created", "created_at"),
         Index(
@@ -147,6 +178,7 @@ class UsageDaily(Base):
     date = Column(Date, nullable=False)
     model_id = Column(String, nullable=False)
     source = Column(String, nullable=False)
+    usage_type = Column(String, nullable=False, default="llm", server_default="llm")
     total_input_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
     total_output_tokens = Column(BigInteger, nullable=False, default=0, server_default="0")
     total_cost = Column(Numeric(20, 12), nullable=False, default=Decimal("0"), server_default="0")
@@ -154,8 +186,8 @@ class UsageDaily(Base):
     request_count = Column(Integer, nullable=False, default=0, server_default="0")
 
     __table_args__ = (
-        CheckConstraint("source IN ('chat', 'agent')", name="chk_daily_source"),
-        UniqueConstraint("billing_account_id", "date", "model_id", "source", name="uq_usage_daily"),
+        CheckConstraint("source IN ('chat', 'agent', 'tool')", name="chk_daily_source"),
+        UniqueConstraint("billing_account_id", "date", "model_id", "source", "usage_type", name="uq_usage_daily"),
         Index("idx_usage_daily_account_date", "billing_account_id", "date"),
     )
 

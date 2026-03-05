@@ -141,6 +141,73 @@ class TestUsageEvent:
         assert event.agent_id == "luna"
         assert event.source == "agent"
 
+    @pytest.mark.asyncio
+    async def test_usage_event_tool_fields(self, db_session):
+        """UsageEvent supports tool usage tracking fields."""
+        account = BillingAccount(
+            clerk_user_id="user_tool_fields_test",
+            stripe_customer_id="cus_tool_fields",
+        )
+        db_session.add(account)
+        await db_session.commit()
+
+        event = UsageEvent(
+            billing_account_id=account.id,
+            clerk_user_id="user_tool_fields_test",
+            model_id="perplexity_search",
+            input_tokens=0,
+            output_tokens=0,
+            input_cost=Decimal("0"),
+            output_cost=Decimal("0"),
+            total_cost=Decimal("0.005"),
+            billable_amount=Decimal("0.005"),
+            source="tool",
+            usage_type="tool",
+            tool_id="perplexity_search",
+            quantity=1,
+            month_partition="2026-03",
+        )
+        db_session.add(event)
+        await db_session.commit()
+
+        result = await db_session.execute(select(UsageEvent).where(UsageEvent.tool_id == "perplexity_search"))
+        saved = result.scalar_one()
+        assert saved.usage_type == "tool"
+        assert saved.tool_id == "perplexity_search"
+        assert saved.quantity == 1
+
+    @pytest.mark.asyncio
+    async def test_usage_event_defaults_to_llm(self, db_session):
+        """UsageEvent usage_type defaults to 'llm' when not specified."""
+        account = BillingAccount(
+            clerk_user_id="user_llm_default_test",
+            stripe_customer_id="cus_llm_default",
+        )
+        db_session.add(account)
+        await db_session.commit()
+
+        event = UsageEvent(
+            billing_account_id=account.id,
+            clerk_user_id="user_llm_default_test",
+            model_id="anthropic.claude-opus-4-6",
+            input_tokens=100,
+            output_tokens=50,
+            input_cost=Decimal("0.0003"),
+            output_cost=Decimal("0.00075"),
+            total_cost=Decimal("0.00105"),
+            billable_amount=Decimal("0.00147"),
+            source="agent",
+            month_partition="2026-03",
+        )
+        db_session.add(event)
+        await db_session.commit()
+
+        result = await db_session.execute(select(UsageEvent).where(UsageEvent.clerk_user_id == "user_llm_default_test"))
+        saved = result.scalar_one()
+        assert saved.usage_type == "llm"
+        assert saved.tool_id is None
+        assert saved.quantity is None
+
 
 class TestUsageDaily:
     @pytest.mark.asyncio
@@ -170,3 +237,29 @@ class TestUsageDaily:
         saved = result.scalar_one()
         assert saved.total_input_tokens == 50000
         assert saved.request_count == 25
+
+    @pytest.mark.asyncio
+    async def test_usage_daily_tool_type(self, db_session):
+        """UsageDaily supports tool usage_type."""
+        account = BillingAccount(
+            clerk_user_id="user_daily_tool_test",
+            stripe_customer_id="cus_daily_tool",
+        )
+        db_session.add(account)
+        await db_session.commit()
+
+        daily = UsageDaily(
+            billing_account_id=account.id,
+            date=date(2026, 3, 5),
+            model_id="perplexity_search",
+            source="tool",
+            usage_type="tool",
+            request_count=10,
+        )
+        db_session.add(daily)
+        await db_session.commit()
+
+        result = await db_session.execute(select(UsageDaily).where(UsageDaily.usage_type == "tool"))
+        saved = result.scalar_one()
+        assert saved.usage_type == "tool"
+        assert saved.source == "tool"
