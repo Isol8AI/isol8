@@ -241,6 +241,42 @@ def place_building(obj_layer, detail_layer, x1, y1, x2, y2):
         detail_layer[door_x][y2] = DOOR_TILE
 
 
+def place_apartment(obj_layer, detail_layer, x1, y1, x2, y2):
+    """Place an apartment building -- larger and visually distinct from houses.
+
+    Uses a double-slate border and alternating brick pattern to look like a
+    multi-unit residential building.  Has two doors instead of one.
+    """
+    # Object layer: entire building is solid (blocks walking)
+    fill_rect(obj_layer, x1, y1, x2, y2, BRICK_A)
+
+    # Detail layer: double-slate border for a heavier, taller look
+    fill_rect(detail_layer, x1, y1, x2, y2, SLATE_A)
+
+    # Inner border ring uses SLATE_C for a two-tone roof effect
+    if x2 - x1 >= 2 and y2 - y1 >= 2:
+        fill_rect(detail_layer, x1 + 1, y1 + 1, x2 - 1, y2 - 1, SLATE_C)
+
+    # Interior brick body with denser alternation
+    if x2 - x1 >= 4 and y2 - y1 >= 4:
+        for x in range(x1 + 2, x2 - 1):
+            for y in range(y1 + 2, y2 - 1):
+                brick = [BRICK_B, BRICK_D, BRICK_C, BRICK_A]
+                detail_layer[x][y] = brick[(x * 3 + y * 2) % len(brick)]
+    elif x2 - x1 >= 2 and y2 - y1 >= 2:
+        # Fallback for smaller apartment (still distinct)
+        for x in range(x1 + 1, x2):
+            for y in range(y1 + 1, y2):
+                brick = [BRICK_B, BRICK_D, BRICK_C, BRICK_A]
+                detail_layer[x][y] = brick[(x * 3 + y * 2) % len(brick)]
+
+    # Two doors side-by-side at the bottom (multi-unit entrance)
+    mid_x = (x1 + x2) // 2
+    detail_layer[mid_x][y2] = DOOR_TILE
+    if mid_x - 1 >= x1:
+        detail_layer[mid_x - 1][y2] = DOOR_TILE
+
+
 # ===========================================================================
 # Map generation
 # ===========================================================================
@@ -308,7 +344,7 @@ def generate_city_map():
         bg_detail[35][y] = COBBLE_D
 
     # ------------------------------------------------------------------
-    # 5. Residential: 5 houses in northwest (around x=6-18, y=5-13)
+    # 5. Residential: 5 houses + apartment in northwest (around x=6-20, y=5-14)
     # ------------------------------------------------------------------
     # House 1: x=6-9, y=5-8
     place_building(obj, bg_detail, 6, 5, 9, 8)
@@ -320,6 +356,10 @@ def generate_city_map():
     place_building(obj, bg_detail, 6, 10, 9, 13)
     # House 5: x=11-14, y=10-13
     place_building(obj, bg_detail, 11, 10, 14, 13)
+
+    # Apartment building: x=16-20, y=10-14 (5x5, larger than 4x4 houses)
+    # This is the spawn point for agents opting into GooseTown.
+    place_apartment(obj, bg_detail, 16, 10, 20, 14)
 
     # ------------------------------------------------------------------
     # 6. Cafe: Building at west-center (x=8-12, y=18-21)

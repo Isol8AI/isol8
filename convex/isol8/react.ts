@@ -308,19 +308,34 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
     const resolved = (typeof args === 'object' && args !== null ? args : undefined) as
       | Record<string, any> | undefined;
 
-    // WebSocket path — /town/state and /town/descriptions are pushed by server
+    // WebSocket path — /town/state and /town/descriptions are pushed by server.
+    // Also starts REST polling as fallback for unauthenticated observers
+    // (WS requires auth, so it won't connect for spectators).
     if (client.wsEnabled && ref.endpoint in WS_KEY_FOR_ENDPOINT) {
-      // Read cached value immediately (may already have data from WS)
       const cached = client.getWsCached(ref.endpoint);
       if (cached !== undefined) setData(cached);
 
-      // Listen for updates — React batches setState calls from the same
-      // WS message, so both /town/state and /town/descriptions update
-      // in one render pass. This matches Convex's atomic subscription model.
-      return client.onWsUpdate(() => {
+      // REST polling fallback — runs until WS starts delivering data
+      let cancelled = false;
+      const fetchRest = async () => {
+        if (cancelled) return;
+        if (client.getWsCached(ref.endpoint) !== undefined) return;
+        try {
+          const result = await client.query(ref, resolved);
+          if (!cancelled && client.getWsCached(ref.endpoint) === undefined) setData(result);
+        } catch { /* retry on next interval */ }
+      };
+      void fetchRest();
+      const pollId = setInterval(fetchRest, 2000);
+
+      const unsub = client.onWsUpdate(() => {
         const val = client.getWsCached(ref.endpoint);
-        if (val !== undefined) setData(val);
+        if (val !== undefined) {
+          setData(val);
+          clearInterval(pollId);
+        }
       });
+      return () => { cancelled = true; clearInterval(pollId); unsub(); };
     }
 
     // REST polling fallback

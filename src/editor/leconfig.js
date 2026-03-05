@@ -1,19 +1,13 @@
-export const DEFAULTTILESETPATH = "./tilesets/gentle.png";
-//export const DEFAULTTILESETPATH = "./tilesets/magecity.png";
-//export const DEFAULTTILESETPATH = "./tilesets/forest.png";
-//export const DEFAULTTILESETPATH = "./tilesets/Serene.png";
-//export const DEFAULTTILESETPATH = "./tilesets/gentletreewall.png";
-//export const DEFAULTTILESETPATH = "./tilesets/Modern.png";
-//export const DEFAULTTILESETPATH = "./tilesets/phantasy2.png";
+export const DEFAULTTILESETPATH = "./tilesets/8bit-tileset.png";
 
-export const tilesetpadding = 0; 
+export const tilesetpadding = 0;
 
 
-export const DEFAULTILEDIMX = 32; // px
-export const DEFAULTILEDIMY = 32; // px
+export const DEFAULTILEDIMX = 20; // px
+export const DEFAULTILEDIMY = 20; // px
 
-export const levelwidth  = 2048; // px
-export const levelheight = 1536; // px
+export const levelwidth  = 1280; // px (64 tiles * 20px)
+export const levelheight = 960;  // px (48 tiles * 20px)
 
 export let leveltilewidth  = Math.floor(levelwidth / DEFAULTILEDIMX);
 export let leveltileheight = Math.floor(levelheight / DEFAULTILEDIMX);
