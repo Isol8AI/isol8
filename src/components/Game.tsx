@@ -3,7 +3,7 @@ import PixiGame from './PixiGame.tsx';
 
 import { useElementSize } from 'usehooks-ts';
 import { Stage } from '@pixi/react';
-import { ConvexProvider, useConvex, useQuery } from 'convex/react';
+import { ConvexProvider, useConvex, useConvexAuth, useMutation, useQuery } from 'convex/react';
 import PlayerDetails from './PlayerDetails.tsx';
 import { api } from '../../convex/_generated/api';
 import { useWorldHeartbeat } from '../hooks/useWorldHeartbeat.ts';
@@ -30,6 +30,23 @@ export default function Game() {
 
   // Send a periodic heartbeat to our world to keep it alive.
   useWorldHeartbeat();
+
+  const { isAuthenticated } = useConvexAuth();
+  const joinWorld = useMutation(api.world.joinWorld);
+
+  const humanTokenIdentifier = useQuery(api.world.userStatus, worldId ? { worldId } : 'skip') ?? null;
+  const humanPlayerId = game ? [...game.world.players.values()].find(
+    (p) => p.human === humanTokenIdentifier,
+  )?.id : undefined;
+
+  const handleJoin = async () => {
+    if (!worldId) return;
+    try {
+      await joinWorld({ worldId });
+    } catch (e) {
+      console.error('Failed to join:', e);
+    }
+  };
 
   const worldState = useQuery(api.world.worldState, worldId ? { worldId } : 'skip');
   const { historicalTime, timeManager } = useHistoricalTime(worldState?.engine);
@@ -83,6 +100,16 @@ export default function Game() {
               }}
             >−</button>
           </div>
+          {isAuthenticated && !humanPlayerId && (
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10">
+                <button
+                  className="px-6 py-3 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded-lg font-display text-lg tracking-wider shadow-lg transition-colors"
+                  onClick={handleJoin}
+                >
+                  Join Town
+                </button>
+              </div>
+            )}
         </div>
         {/* Sidebar — fixed width */}
         <div
