@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Fallback pricing when model not found in pricing table.
-# Generous estimate to avoid undercharging.
-FALLBACK_INPUT_COST = Decimal("0.000003")  # $3/1M tokens
-FALLBACK_OUTPUT_COST = Decimal("0.000015")  # $15/1M tokens
+# Uses Opus pricing (most expensive) to avoid undercharging.
+FALLBACK_INPUT_COST = Decimal("0.000015")  # $15/1M tokens
+FALLBACK_OUTPUT_COST = Decimal("0.000075")  # $75/1M tokens
 
 
 class UsageServiceError(Exception):
@@ -37,14 +37,35 @@ class UsageService:
         self.db = db
 
     async def get_active_model_pricing(self, model_id: str) -> Optional[ModelPricing]:
-        """Look up active pricing for a model."""
+        """Look up active pricing for a model.
+
+        Tries exact match first, then strips the ``us.`` cross-region
+        inference-profile prefix that Bedrock adds (gateway returns
+        ``us.anthropic.claude-…`` but the pricing table stores
+        ``anthropic.claude-…``).
+        """
         result = await self.db.execute(
             select(ModelPricing).where(
                 ModelPricing.model_id == model_id,
                 ModelPricing.is_active.is_(True),
             )
         )
-        return result.scalar_one_or_none()
+        pricing = result.scalar_one_or_none()
+        if pricing:
+            return pricing
+
+        # Try stripping cross-region prefix (us. / eu. / ap.)
+        stripped = model_id.split(".", 1)[1] if "." in model_id else None
+        if stripped and stripped != model_id:
+            result = await self.db.execute(
+                select(ModelPricing).where(
+                    ModelPricing.model_id == stripped,
+                    ModelPricing.is_active.is_(True),
+                )
+            )
+            return result.scalar_one_or_none()
+
+        return None
 
     async def get_billing_account(self, billing_account_id: UUID) -> Optional[BillingAccount]:
         """Fetch a billing account by ID."""
