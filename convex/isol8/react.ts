@@ -315,14 +315,16 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
       const cached = client.getWsCached(ref.endpoint);
       if (cached !== undefined) setData(cached);
 
-      // REST polling fallback — runs until WS starts delivering data
+      // REST polling — always active as fallback. For unauthenticated users
+      // (spectators), WS never connects so this is the only data source.
+      // For authenticated users, WS delivers data and polling stops.
       let cancelled = false;
+      let wsDelivered = false;
       const fetchRest = async () => {
-        if (cancelled) return;
-        if (client.getWsCached(ref.endpoint) !== undefined) return;
+        if (cancelled || wsDelivered) return;
         try {
           const result = await client.query(ref, resolved);
-          if (!cancelled && client.getWsCached(ref.endpoint) === undefined) setData(result);
+          if (!cancelled && !wsDelivered) setData(result);
         } catch { /* retry on next interval */ }
       };
       void fetchRest();
@@ -332,6 +334,7 @@ export function useQuery(ref: FunctionRef, args?: Record<string, any> | 'skip'):
         const val = client.getWsCached(ref.endpoint);
         if (val !== undefined) {
           setData(val);
+          wsDelivered = true;
           clearInterval(pollId);
         }
       });

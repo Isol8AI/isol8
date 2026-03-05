@@ -38,7 +38,11 @@ export default function Game() {
   const viewportRef = useRef<any>(null);
 
   if (!worldId || !engineId || !game) {
-    return null;
+    return (
+      <div className="flex items-center justify-center w-full h-full text-brown-300 font-body text-lg">
+        Loading town...
+      </div>
+    );
   }
   return (
     <>
