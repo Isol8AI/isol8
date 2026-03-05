@@ -13,7 +13,7 @@ from uuid import uuid4
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from models.billing import BillingAccount, UsageEvent
+from models.billing import UsageEvent
 from models.container import Container
 
 logger = logging.getLogger(__name__)
@@ -59,16 +59,13 @@ class UsagePoller:
     async def _poll_all_users(self) -> None:
         """Poll all active containers and sync their usage."""
         from core.containers import get_ecs_manager, get_gateway_pool
-        from core.services.usage_service import UsageService
 
         pool = get_gateway_pool()
         ecs = get_ecs_manager()
 
         async with self._db_factory() as db:
             # Get all running containers
-            result = await db.execute(
-                select(Container).where(Container.status == "running")
-            )
+            result = await db.execute(select(Container).where(Container.status == "running"))
             containers = result.scalars().all()
 
         if not containers:
@@ -88,7 +85,8 @@ class UsagePoller:
                 total_synced += synced
             except Exception:
                 logger.warning(
-                    "Usage poller: failed to sync user %s", container.user_id,
+                    "Usage poller: failed to sync user %s",
+                    container.user_id,
                     exc_info=True,
                 )
 
@@ -174,7 +172,9 @@ class UsagePoller:
                 except Exception as e:
                     logger.warning(
                         "Usage poller: failed to record session %s for user %s: %s",
-                        session_key, user_id, e,
+                        session_key,
+                        user_id,
+                        e,
                     )
 
             return synced
@@ -194,7 +194,4 @@ class UsagePoller:
             )
             .group_by(UsageEvent.session_id)
         )
-        return {
-            row.session_id: {"input": int(row.input), "output": int(row.output)}
-            for row in result.all()
-        }
+        return {row.session_id: {"input": int(row.input), "output": int(row.output)} for row in result.all()}
