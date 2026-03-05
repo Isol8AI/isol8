@@ -19,9 +19,9 @@ logger = logging.getLogger(__name__)
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 # Fallback pricing when model not found in pricing table.
-# Uses Opus pricing (most expensive) to avoid undercharging.
-FALLBACK_INPUT_COST = Decimal("0.000015")  # $15/1M tokens
-FALLBACK_OUTPUT_COST = Decimal("0.000075")  # $75/1M tokens
+# Uses Sonnet pricing as a reasonable middle ground.
+FALLBACK_INPUT_COST = Decimal("0.000003")  # $3/1M tokens
+FALLBACK_OUTPUT_COST = Decimal("0.000015")  # $15/1M tokens
 
 
 class UsageServiceError(Exception):

@@ -56,15 +56,15 @@ BEDROCK_PRICES = [
     {
         "model_id": "anthropic.claude-opus-4-6-v1",
         "display_name": "Claude Opus 4.6",
-        "input_cost_per_token": Decimal("0.000015"),
-        "output_cost_per_token": Decimal("0.000075"),
+        "input_cost_per_token": Decimal("0.000005"),
+        "output_cost_per_token": Decimal("0.000025"),
     },
     # Claude 4.5 family
     {
         "model_id": "anthropic.claude-opus-4-5-20251101-v1:0",
         "display_name": "Claude Opus 4.5",
-        "input_cost_per_token": Decimal("0.000015"),
-        "output_cost_per_token": Decimal("0.000075"),
+        "input_cost_per_token": Decimal("0.000005"),
+        "output_cost_per_token": Decimal("0.000025"),
     },
     {
         "model_id": "anthropic.claude-sonnet-4-5-20250929-v1:0",
