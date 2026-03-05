@@ -1,0 +1,115 @@
+"""Router for messaging channel management.
+
+Thin wrappers that send RPCs to the user's OpenClaw container
+for channel configuration (Telegram, Discord, WhatsApp).
+"""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+
+from core.auth import AuthContext, get_current_user
+from core.containers import get_gateway_pool
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+SUPPORTED_PROVIDERS = {"telegram", "discord", "whatsapp"}
+
+
+class TelegramConfigRequest(BaseModel):
+    bot_token: str
+
+
+class DiscordConfigRequest(BaseModel):
+    bot_token: str
+    guild_id: str
+
+
+async def _send_channel_rpc(user_id: str, method: str, params: dict) -> dict:
+    """Send an RPC to the user's container via the gateway pool."""
+    pool = get_gateway_pool()
+    return await pool.send_rpc(user_id, method, params)
+
+
+@router.get("")
+async def list_channels(auth: AuthContext = Depends(get_current_user)):
+    """List connected channels and their status."""
+    try:
+        result = await _send_channel_rpc(auth.user_id, "channels.status", {})
+        return {"channels": result}
+    except Exception as e:
+        logger.warning("Failed to get channel status for %s: %s", auth.user_id, e)
+        return {"channels": []}
+
+
+@router.post("/telegram")
+async def configure_telegram(
+    body: TelegramConfigRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Configure Telegram bot channel."""
+    result = await _send_channel_rpc(
+        auth.user_id,
+        "channels.configure",
+        {"provider": "telegram", "token": body.bot_token},
+    )
+    return {"status": "ok", "provider": "telegram", "result": result}
+
+
+@router.post("/discord")
+async def configure_discord(
+    body: DiscordConfigRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Configure Discord bot channel."""
+    result = await _send_channel_rpc(
+        auth.user_id,
+        "channels.configure",
+        {
+            "provider": "discord",
+            "token": body.bot_token,
+            "guild_id": body.guild_id,
+        },
+    )
+    return {"status": "ok", "provider": "discord", "result": result}
+
+
+@router.post("/whatsapp/pair")
+async def whatsapp_pair(auth: AuthContext = Depends(get_current_user)):
+    """Initiate WhatsApp QR code pairing."""
+    result = await _send_channel_rpc(
+        auth.user_id,
+        "channels.whatsapp.pair",
+        {},
+    )
+    return {"status": "pairing", "qr": result.get("qr"), "timeout": 60}
+
+
+@router.get("/whatsapp/qr")
+async def whatsapp_qr(auth: AuthContext = Depends(get_current_user)):
+    """Poll for current WhatsApp QR code."""
+    result = await _send_channel_rpc(
+        auth.user_id,
+        "channels.whatsapp.qr",
+        {},
+    )
+    return result
+
+
+@router.delete("/{provider}")
+async def disconnect_channel(
+    provider: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Disconnect a messaging channel."""
+    if provider not in SUPPORTED_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
+
+    await _send_channel_rpc(
+        auth.user_id,
+        "channels.disconnect",
+        {"provider": provider},
+    )
+    return {"status": "ok", "provider": provider}
