@@ -19,7 +19,7 @@ from core.auth import AuthContext
 from models.base import Base
 from models.user import User
 from models.audit_log import AuditLog
-from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
+from models.billing import ModelPricing, ToolPricing, BillingAccount, UsageEvent, UsageDaily
 from models.container import Container
 from models.town import TownAgent, TownInstance, TownState, TownConversation, TownRelationship
 from models.user_api_key import UserApiKey
@@ -74,6 +74,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(UsageEvent.__table__.delete())
         await cleanup_session.execute(UsageDaily.__table__.delete())
         await cleanup_session.execute(BillingAccount.__table__.delete())
+        await cleanup_session.execute(ToolPricing.__table__.delete())
         await cleanup_session.execute(ModelPricing.__table__.delete())
         await cleanup_session.execute(TownRelationship.__table__.delete())
         await cleanup_session.execute(TownConversation.__table__.delete())
