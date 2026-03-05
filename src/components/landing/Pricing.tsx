@@ -9,11 +9,11 @@ const plans = [
   {
     name: "Starter",
     price: 25,
-    description: "For individuals exploring the power of AI.",
+    description: "For individuals building their first pod.",
     features: [
-      "Personal AI container",
+      "1 personal pod",
       "Persistent memory & personality",
-      "1 free model included",
+      "Core skills included",
       "Pay-per-use premium models",
       "Standard support",
     ],
@@ -23,13 +23,13 @@ const plans = [
   {
     name: "Pro",
     price: 75,
-    description: "For professionals who need deep focus.",
+    description: "For power users who need the full toolkit.",
     features: [
       "Everything in Starter",
       "Higher usage budget",
-      "Access to all top-tier models",
+      "All premium skills & tools",
+      "All top-tier models",
       "Priority support",
-      "Advanced agent features",
     ],
     cta: "Upgrade to Pro",
     highlight: true,
@@ -46,7 +46,7 @@ export function Pricing() {
         <div className="text-center mb-16 space-y-6">
           <h2 className="text-4xl md:text-5xl font-host text-white">Pricing</h2>
           <p className="text-white/60 font-dm max-w-xl mx-auto">
-            Simple, transparent pricing. Pay a monthly fee for your container,
+            Simple, transparent pricing. Pay a monthly fee for your pod,
             plus usage-based billing for premium models.
           </p>
         </div>

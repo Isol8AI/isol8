@@ -27,8 +27,8 @@ const dmSans = DM_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "isol8 - AI Agents",
-  description: "Personal AI agents powered by OpenClaw.",
+  title: "isol8 - Your AI Pod",
+  description: "Your own isolated AI pod with persistent memory, custom personality, and skills that grow with you.",
 };
 
 export default function RootLayout({
