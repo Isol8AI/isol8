@@ -223,10 +223,12 @@ export function UsagePanel() {
   // --- Derived values ---
   const period = account?.current_period;
 
-  // Use estimated cost for budget if billing pipeline is empty
-  const billingHasData = (usage?.total_cost ?? 0) > 0;
-  const effectiveCost = billingHasData ? usage!.total_cost : sessionStats.estimatedBillable;
-  const effectiveRawCost = billingHasData ? effectiveCost / MARKUP : sessionStats.estimatedRawCost;
+  // Always use gateway-estimated costs (computed from live session tokens with
+  // accurate Bedrock pricing). The billing API lags behind (poller runs every
+  // 5 min) and uses DB pricing which may not have every model ID, so gateway
+  // estimates are more responsive and accurate for display.
+  const effectiveCost = sessionStats.estimatedBillable;
+  const effectiveRawCost = sessionStats.estimatedRawCost;
   const effectiveRevenue = effectiveCost - effectiveRawCost;
   const budgetTotal = period?.included_budget ?? 0;
   const budgetPercent = budgetTotal > 0 ? (effectiveCost / budgetTotal) * 100 : 0;
@@ -302,9 +304,9 @@ export function UsagePanel() {
                 style={{ width: `${Math.min(budgetPercent, 100)}%` }}
               />
             </div>
-            {!billingHasData && effectiveCost > 0 && (
+            {effectiveCost > 0 && (
               <p className="text-xs text-muted-foreground/60">
-                Based on estimated gateway token usage
+                Based on gateway session token usage
               </p>
             )}
           </div>
@@ -315,11 +317,6 @@ export function UsagePanel() {
       <div className="rounded-lg border border-border p-4 space-y-3">
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Cost Breakdown</h3>
-          {!billingHasData && effectiveCost > 0 && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-600">
-              Estimated
-            </span>
-          )}
         </div>
         <div className="space-y-1.5">
           <div className="flex items-center justify-between text-sm">
