@@ -2,11 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
-import { Plus, Bot, Trash2 } from "lucide-react";
+import { Bot, Trash2 } from "lucide-react";
 
-import { SubscriptionGate } from "@/components/chat/SubscriptionGate";
-import { ContainerGate } from "@/components/chat/ContainerGate";
-import { AgentCreateDialog } from "@/components/chat/AgentCreateDialog";
+import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
@@ -41,9 +39,8 @@ export function ChatLayout({
 }: ChatLayoutProps): React.ReactElement {
   const { isSignedIn } = useAuth();
   const api = useApi();
-  const { agents, defaultId, createAgent, deleteAgent } = useAgents();
+  const { agents, defaultId, deleteAgent } = useAgents();
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -66,10 +63,6 @@ export function ChatLayout({
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
-  }
-
-  async function handleCreateAgent(name: string): Promise<void> {
-    await createAgent(name);
   }
 
   async function handleDeleteAgent(agentId: string): Promise<void> {
@@ -119,17 +112,6 @@ export function ChatLayout({
 
           {activeView === "chat" ? (
             <>
-              {/* New Agent Button */}
-              <div className="px-3 py-2">
-                <Button
-                  className="w-full justify-start gap-2 bg-primary text-primary-foreground hover:bg-primary/90 font-medium transition-all shadow-lg shadow-primary/5"
-                  onClick={() => setCreateDialogOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                  New Agent
-                </Button>
-              </div>
-
               {/* Agent List */}
               <ScrollArea className="flex-1 px-3 py-2">
                 <div className="space-y-1">
@@ -167,12 +149,6 @@ export function ChatLayout({
                   ))}
                 </div>
               </ScrollArea>
-
-              <AgentCreateDialog
-                open={createDialogOpen}
-                onOpenChange={setCreateDialogOpen}
-                onCreateAgent={handleCreateAgent}
-              />
             </>
           ) : (
             <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
@@ -195,9 +171,7 @@ export function ChatLayout({
           </header>
 
           <div className="flex-1 min-h-0 pt-14 flex flex-col overflow-y-auto">
-            <SubscriptionGate>
-              <ContainerGate>{children}</ContainerGate>
-            </SubscriptionGate>
+            <ProvisioningStepper>{children}</ProvisioningStepper>
           </div>
         </main>
       </div>
