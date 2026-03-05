@@ -94,7 +94,7 @@ export const PixiGame = (props: {
       position: new PIXI.Point(centerX, centerY),
       scale: 1.2,
       time: 1500,
-      ease: ‘easeInOutSine’,
+      ease: 'easeInOutSine',
     });
   }, [width, height, tileDim]);
 
@@ -107,7 +107,7 @@ export const PixiGame = (props: {
       position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
       scale: 1.5,
       time: 800,
-      ease: ‘easeInOutSine’,
+      ease: 'easeInOutSine',
     });
   }, [humanPlayerId]);
 

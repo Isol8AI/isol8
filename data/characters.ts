@@ -40,31 +40,31 @@ export const Descriptions = [
 export const characters = [
   {
     name: 'c1',
-    textureUrl: '/assets/dreamyland-characters.png',
+    textureUrl: '/assets/town-characters.png',
     spritesheetData: c1SpritesheetData,
     speed: 0.1,
   },
   {
     name: 'c2',
-    textureUrl: '/assets/dreamyland-characters.png',
+    textureUrl: '/assets/town-characters.png',
     spritesheetData: c2SpritesheetData,
     speed: 0.1,
   },
   {
     name: 'c3',
-    textureUrl: '/assets/dreamyland-characters.png',
+    textureUrl: '/assets/town-characters.png',
     spritesheetData: c3SpritesheetData,
     speed: 0.1,
   },
   {
     name: 'c4',
-    textureUrl: '/assets/dreamyland-characters.png',
+    textureUrl: '/assets/town-characters.png',
     spritesheetData: c4SpritesheetData,
     speed: 0.1,
   },
   {
     name: 'c5',
-    textureUrl: '/assets/dreamyland-characters.png',
+    textureUrl: '/assets/town-characters.png',
     spritesheetData: c5SpritesheetData,
     speed: 0.1,
   },
