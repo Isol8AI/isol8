@@ -268,3 +268,83 @@ class TestStripeReporting:
         # Event should still be in DB
         assert event.id is not None
         assert event.stripe_meter_event_id is None
+
+
+class TestToolUsage:
+    """Test tool usage recording."""
+
+    @pytest.fixture
+    async def billing_account(self, db_session):
+        account = BillingAccount(
+            clerk_user_id="user_tool_usage",
+            stripe_customer_id="cus_tool_usage",
+        )
+        db_session.add(account)
+        await db_session.commit()
+        return account
+
+    @pytest.fixture
+    def service(self, db_session):
+        return UsageService(db_session)
+
+    @pytest.mark.asyncio
+    @patch("core.services.usage_service.stripe")
+    async def test_record_tool_usage(self, mock_stripe, service, billing_account, db_session):
+        """record_tool_usage creates a UsageEvent with usage_type=tool."""
+        event = await service.record_tool_usage(
+            billing_account_id=billing_account.id,
+            clerk_user_id="user_tool_usage",
+            tool_id="perplexity_search",
+            quantity=1,
+            total_cost=Decimal("0.005"),
+        )
+        assert event.usage_type == "tool"
+        assert event.tool_id == "perplexity_search"
+        assert event.quantity == 1
+        assert event.total_cost == Decimal("0.005")
+        assert event.input_tokens == 0
+        assert event.output_tokens == 0
+        assert event.source == "tool"
+
+    @pytest.mark.asyncio
+    @patch("core.services.usage_service.stripe")
+    async def test_record_tool_usage_byok_zero_billable(self, mock_stripe, service, billing_account, db_session):
+        """BYOK tool usage records with billable_amount=0."""
+        event = await service.record_tool_usage(
+            billing_account_id=billing_account.id,
+            clerk_user_id="user_tool_usage",
+            tool_id="elevenlabs_tts",
+            quantity=1500,
+            total_cost=Decimal("0.015"),
+            is_byok=True,
+        )
+        assert event.billable_amount == Decimal("0")
+        assert event.total_cost == Decimal("0.015")
+        # BYOK should not report to Stripe
+        mock_stripe.billing.MeterEvent.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("core.services.usage_service.stripe")
+    async def test_record_tool_usage_upserts_daily(self, mock_stripe, service, billing_account, db_session):
+        """Tool usage should create daily rollup."""
+        account_id = billing_account.id
+
+        await service.record_tool_usage(
+            billing_account_id=account_id,
+            clerk_user_id="user_tool_usage",
+            tool_id="perplexity_search",
+            quantity=1,
+            total_cost=Decimal("0.005"),
+        )
+
+        result = await db_session.execute(
+            select(UsageDaily).where(
+                UsageDaily.billing_account_id == account_id,
+                UsageDaily.usage_type == "tool",
+            )
+        )
+        daily = result.scalar_one()
+        assert daily.model_id == "perplexity_search"
+        assert daily.source == "tool"
+        assert daily.usage_type == "tool"
+        assert daily.request_count == 1

@@ -22,10 +22,12 @@ from core.services.town_simulation import TownSimulation
 from core.services.usage_poller import UsagePoller
 from routers import (
     billing,
+    channels,
     container_rpc,
     control_ui_proxy,
     debug,
     internal_credentials,
+    proxy,
     town,
     users,
     webhooks,
@@ -102,6 +104,14 @@ openapi_tags = [
     {
         "name": "control-ui",
         "description": "Proxy for the embedded OpenClaw control UI SPA.",
+    },
+    {
+        "name": "proxy",
+        "description": "Proxy for external tool APIs (Perplexity, etc.).",
+    },
+    {
+        "name": "channels",
+        "description": "Messaging channel management (Telegram, Discord, WhatsApp).",
     },
     {
         "name": "debug",
@@ -184,6 +194,12 @@ app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["cont
 
 # Control UI proxy (embedded OpenClaw control UI SPA)
 app.include_router(control_ui_proxy.router, prefix="/api/v1/control-ui", tags=["control-ui"])
+
+# Tool proxy (Perplexity search etc.)
+app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
+
+# Channel management (Telegram, Discord, WhatsApp)
+app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
