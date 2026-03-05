@@ -13,7 +13,38 @@ import { cn } from "@/lib/utils";
 
 const MARKUP = 1.4;
 
-// REST API types (from GET /billing/account and GET /billing/usage)
+// Bedrock pricing per token ($ per token, NOT per 1M tokens)
+const MODEL_PRICING: Record<string, { input: number; output: number }> = {
+  // Claude Opus 4.6 / 4.5: $15/$75 per 1M tokens
+  "us.anthropic.claude-opus-4-6-v1": { input: 15 / 1e6, output: 75 / 1e6 },
+  "us.anthropic.claude-opus-4-5-20251101-v1:0": { input: 15 / 1e6, output: 75 / 1e6 },
+  // Claude Sonnet 4.5: $3/$15 per 1M tokens
+  "us.anthropic.claude-sonnet-4-5-20250929-v1:0": { input: 3 / 1e6, output: 15 / 1e6 },
+  // Claude Haiku 4.5: $0.80/$4 per 1M tokens
+  "us.anthropic.claude-haiku-4-5-20251001-v1:0": { input: 0.8 / 1e6, output: 4 / 1e6 },
+};
+
+// Fallback: assume Sonnet pricing if model unknown
+const FALLBACK_PRICING = { input: 3 / 1e6, output: 15 / 1e6 };
+
+function getModelPricing(model: string): { input: number; output: number } {
+  // Try exact match first
+  if (MODEL_PRICING[model]) return MODEL_PRICING[model];
+  // Try stripping "amazon-bedrock/" prefix
+  const stripped = model.replace(/^amazon-bedrock\//, "");
+  if (MODEL_PRICING[stripped]) return MODEL_PRICING[stripped];
+  // Match by substring
+  for (const [key, pricing] of Object.entries(MODEL_PRICING)) {
+    if (model.includes(key) || key.includes(model)) return pricing;
+  }
+  // Guess by name
+  const lower = model.toLowerCase();
+  if (lower.includes("opus")) return { input: 15 / 1e6, output: 75 / 1e6 };
+  if (lower.includes("haiku")) return { input: 0.8 / 1e6, output: 4 / 1e6 };
+  return FALLBACK_PRICING;
+}
+
+// REST API types
 interface UsagePeriod {
   start: string;
   end: string;
@@ -35,17 +66,12 @@ interface ModelUsage {
   requests: number;
 }
 
-interface DailyUsage {
-  date: string;
-  cost: number;
-}
-
 interface UsageResponse {
   period: UsagePeriod;
   total_cost: number;
   total_requests: number;
   by_model: ModelUsage[];
-  by_day: DailyUsage[];
+  by_day: { date: string; cost: number }[];
 }
 
 // Gateway sessions.list types
@@ -72,10 +98,11 @@ interface SessionsListResponse {
 // Helpers
 // =============================================================================
 
-/** Shorten a model ID like "us.anthropic.claude-3-5-sonnet-20241022-v2:0" → "claude-3.5-sonnet" */
 function shortModelName(model: string): string {
-  const parts = model.split(".");
-  const last = parts[parts.length - 1] || model;
+  // Strip provider prefix
+  const stripped = model.replace(/^amazon-bedrock\//, "");
+  const parts = stripped.split(".");
+  const last = parts[parts.length - 1] || stripped;
   return last.replace(/-\d{8}.*$/, "").replace(/:.*$/, "");
 }
 
@@ -96,7 +123,7 @@ function formatTokens(n: number): string {
 export function UsagePanel() {
   const { get } = useApi();
 
-  // --- REST API data ---
+  // --- REST API data (billing pipeline — may be empty if pipeline broken) ---
   const [account, setAccount] = useState<BillingAccount | null>(null);
   const [usage, setUsage] = useState<UsageResponse | null>(null);
   const [billingLoading, setBillingLoading] = useState(true);
@@ -131,48 +158,78 @@ export function UsagePanel() {
     mutate: mutateSessions,
   } = useGatewayRpc<SessionsListResponse>("sessions.list");
 
-  // Aggregate session token data
+  // Aggregate session token data + compute estimated costs
   const sessionStats = useMemo(() => {
     const sessions = sessionsData?.sessions ?? [];
     let totalInput = 0;
     let totalOutput = 0;
     let totalTokens = 0;
-    const byAgent: Record<string, { input: number; output: number; total: number; sessions: number }> = {};
+    let estimatedRawCost = 0;
+
+    const byModel: Record<string, { input: number; output: number; total: number; cost: number; sessions: number }> = {};
+    const byAgent: Record<string, { input: number; output: number; total: number; cost: number; sessions: number }> = {};
 
     for (const s of sessions) {
       const inp = s.inputTokens ?? 0;
       const out = s.outputTokens ?? 0;
       const tot = s.totalTokens ?? (inp + out);
+      const pricing = getModelPricing(s.model || "");
+      const cost = inp * pricing.input + out * pricing.output;
+
       totalInput += inp;
       totalOutput += out;
       totalTokens += tot;
+      estimatedRawCost += cost;
 
+      // By model
+      const modelKey = s.model || "unknown";
+      if (!byModel[modelKey]) {
+        byModel[modelKey] = { input: 0, output: 0, total: 0, cost: 0, sessions: 0 };
+      }
+      byModel[modelKey].input += inp;
+      byModel[modelKey].output += out;
+      byModel[modelKey].total += tot;
+      byModel[modelKey].cost += cost;
+      byModel[modelKey].sessions += 1;
+
+      // By agent
       const agentKey = s.agentId || s.displayName || s.label || s.key;
       if (!byAgent[agentKey]) {
-        byAgent[agentKey] = { input: 0, output: 0, total: 0, sessions: 0 };
+        byAgent[agentKey] = { input: 0, output: 0, total: 0, cost: 0, sessions: 0 };
       }
       byAgent[agentKey].input += inp;
       byAgent[agentKey].output += out;
       byAgent[agentKey].total += tot;
+      byAgent[agentKey].cost += cost;
       byAgent[agentKey].sessions += 1;
     }
+
+    const estimatedBillable = estimatedRawCost * MARKUP;
+    const estimatedRevenue = estimatedBillable - estimatedRawCost;
 
     return {
       totalInput,
       totalOutput,
       totalTokens,
+      estimatedRawCost,
+      estimatedBillable,
+      estimatedRevenue,
       sessionCount: sessions.length,
-      byAgent: Object.entries(byAgent)
-        .sort(([, a], [, b]) => b.total - a.total),
+      byModel: Object.entries(byModel).sort(([, a], [, b]) => b.cost - a.cost),
+      byAgent: Object.entries(byAgent).sort(([, a], [, b]) => b.total - a.total),
     };
   }, [sessionsData]);
 
   // --- Derived values ---
   const period = account?.current_period;
-  const totalBillable = usage?.total_cost ?? 0;
-  const rawCost = totalBillable / MARKUP;
-  const platformFee = totalBillable - rawCost;
-  const budgetPercent = period?.percent_used ?? 0;
+
+  // Use estimated cost for budget if billing pipeline is empty
+  const billingHasData = (usage?.total_cost ?? 0) > 0;
+  const effectiveCost = billingHasData ? usage!.total_cost : sessionStats.estimatedBillable;
+  const effectiveRawCost = billingHasData ? effectiveCost / MARKUP : sessionStats.estimatedRawCost;
+  const effectiveRevenue = effectiveCost - effectiveRawCost;
+  const budgetTotal = period?.included_budget ?? 0;
+  const budgetPercent = budgetTotal > 0 ? (effectiveCost / budgetTotal) * 100 : 0;
 
   const handleRefresh = useCallback(() => {
     fetchBilling();
@@ -228,7 +285,7 @@ export function UsagePanel() {
             <div className="flex items-center justify-between text-sm">
               <span className="font-medium">Budget</span>
               <span className="text-muted-foreground">
-                {formatDollars(period.used)} / {formatDollars(period.included_budget)}
+                {formatDollars(effectiveCost)} / {formatDollars(budgetTotal)}
                 <span className="ml-2 text-xs">({budgetPercent.toFixed(1)}%)</span>
               </span>
             </div>
@@ -245,52 +302,52 @@ export function UsagePanel() {
                 style={{ width: `${Math.min(budgetPercent, 100)}%` }}
               />
             </div>
-            {period.overage > 0 && (
-              <p className="text-xs text-red-500">
-                Overage: {formatDollars(period.overage)}
+            {!billingHasData && effectiveCost > 0 && (
+              <p className="text-xs text-muted-foreground/60">
+                Based on estimated gateway token usage
               </p>
             )}
           </div>
         </>
       )}
 
-      {/* Cost Breakdown (from REST billing API) */}
-      {usage && (
-        <div className="rounded-lg border border-border p-4 space-y-3">
+      {/* Cost Breakdown */}
+      <div className="rounded-lg border border-border p-4 space-y-3">
+        <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium">Cost Breakdown</h3>
-          <div className="space-y-1.5">
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">LLM Cost (raw)</span>
-              <span className="font-mono">{formatDollars(rawCost, 4)}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Platform Fee (40%)</span>
-              <span className="font-mono">{formatDollars(platformFee, 4)}</span>
-            </div>
-            <div className="border-t border-border my-1" />
-            <div className="flex items-center justify-between text-sm font-medium">
-              <span>Total Billable</span>
-              <span className="font-mono">{formatDollars(totalBillable, 4)}</span>
-            </div>
-            <div className="flex items-center justify-between text-sm">
-              <span className="text-emerald-600">Your Revenue</span>
-              <span className="font-mono text-emerald-600">{formatDollars(platformFee, 4)}</span>
-            </div>
-          </div>
-          {totalBillable === 0 && (
-            <div className="text-xs text-yellow-600 bg-yellow-500/10 px-2 py-1.5 rounded">
-              No billing data recorded yet. Token counts from the gateway may not be reaching the billing pipeline.
-            </div>
+          {!billingHasData && effectiveCost > 0 && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-500/10 text-yellow-600">
+              Estimated
+            </span>
           )}
-          <div className="text-xs text-muted-foreground/60 pt-1">
-            {usage.total_requests.toLocaleString()} total requests
+        </div>
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">LLM Cost (raw)</span>
+            <span className="font-mono">{formatDollars(effectiveRawCost, 4)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-muted-foreground">Platform Fee (40%)</span>
+            <span className="font-mono">{formatDollars(effectiveRevenue, 4)}</span>
+          </div>
+          <div className="border-t border-border my-1" />
+          <div className="flex items-center justify-between text-sm font-medium">
+            <span>Total Billable</span>
+            <span className="font-mono">{formatDollars(effectiveCost, 4)}</span>
+          </div>
+          <div className="flex items-center justify-between text-sm">
+            <span className="text-emerald-600">Your Revenue</span>
+            <span className="font-mono text-emerald-600">{formatDollars(effectiveRevenue, 4)}</span>
           </div>
         </div>
-      )}
+        <div className="text-xs text-muted-foreground/60 pt-1">
+          {sessionStats.sessionCount} sessions · {formatTokens(sessionStats.totalTokens)} tokens
+        </div>
+      </div>
 
-      {/* Gateway Token Usage (from sessions.list) */}
+      {/* Token Breakdown */}
       <div className="rounded-lg border border-border p-4 space-y-3">
-        <h3 className="text-sm font-medium">Gateway Token Usage</h3>
+        <h3 className="text-sm font-medium">Token Usage</h3>
 
         {sessionsLoading && (
           <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -317,10 +374,6 @@ export function UsagePanel() {
               </div>
             </div>
 
-            <div className="text-[10px] text-muted-foreground/50">
-              {sessionStats.sessionCount} sessions
-            </div>
-
             {sessionStats.byAgent.length > 0 && (
               <div className="space-y-1">
                 <div className="text-xs text-muted-foreground font-medium">By Agent</div>
@@ -331,24 +384,18 @@ export function UsagePanel() {
                   >
                     <span className="truncate">{agent}</span>
                     <span className="text-muted-foreground flex-shrink-0 ml-2">
-                      {formatTokens(stats.total)} tokens · {stats.sessions} sessions
+                      {formatTokens(stats.total)} tokens · {formatDollars(stats.cost, 4)}
                     </span>
                   </div>
                 ))}
-              </div>
-            )}
-
-            {sessionStats.totalTokens === 0 && sessionStats.sessionCount === 0 && (
-              <div className="text-xs text-muted-foreground/60">
-                No session data. Start a conversation to see token usage.
               </div>
             )}
           </>
         )}
       </div>
 
-      {/* By Model table (from REST billing API) */}
-      {usage && usage.by_model.length > 0 && (
+      {/* By Model table */}
+      {sessionStats.byModel.length > 0 && (
         <div className="rounded-lg border border-border overflow-hidden">
           <div className="px-4 py-2 bg-muted/20 border-b border-border">
             <h3 className="text-sm font-medium">By Model</h3>
@@ -357,33 +404,32 @@ export function UsagePanel() {
             <thead>
               <tr className="border-b border-border text-muted-foreground">
                 <th className="text-left px-4 py-2 font-medium">Model</th>
-                <th className="text-right px-4 py-2 font-medium">Reqs</th>
-                <th className="text-right px-4 py-2 font-medium">Raw</th>
+                <th className="text-right px-4 py-2 font-medium">Sessions</th>
+                <th className="text-right px-4 py-2 font-medium">Tokens</th>
+                <th className="text-right px-4 py-2 font-medium">Raw Cost</th>
                 <th className="text-right px-4 py-2 font-medium">Billable</th>
               </tr>
             </thead>
             <tbody>
-              {[...usage.by_model]
-                .sort((a, b) => b.cost - a.cost)
-                .map((m) => {
-                  const modelRaw = m.cost / MARKUP;
-                  return (
-                    <tr key={m.model} className="border-b border-border/50 hover:bg-accent/30">
-                      <td className="px-4 py-2 font-mono truncate max-w-[200px]" title={m.model}>
-                        {shortModelName(m.model)}
-                      </td>
-                      <td className="px-4 py-2 text-right text-muted-foreground">
-                        {m.requests.toLocaleString()}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono text-muted-foreground">
-                        {formatDollars(modelRaw, 4)}
-                      </td>
-                      <td className="px-4 py-2 text-right font-mono">
-                        {formatDollars(m.cost, 4)}
-                      </td>
-                    </tr>
-                  );
-                })}
+              {sessionStats.byModel.map(([model, stats]) => (
+                <tr key={model} className="border-b border-border/50 hover:bg-accent/30">
+                  <td className="px-4 py-2 font-mono truncate max-w-[180px]" title={model}>
+                    {shortModelName(model)}
+                  </td>
+                  <td className="px-4 py-2 text-right text-muted-foreground">
+                    {stats.sessions}
+                  </td>
+                  <td className="px-4 py-2 text-right text-muted-foreground">
+                    {formatTokens(stats.total)}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono text-muted-foreground">
+                    {formatDollars(stats.cost, 4)}
+                  </td>
+                  <td className="px-4 py-2 text-right font-mono">
+                    {formatDollars(stats.cost * MARKUP, 4)}
+                  </td>
+                </tr>
+              ))}
             </tbody>
           </table>
         </div>
