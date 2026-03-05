@@ -22,6 +22,7 @@ from models.audit_log import AuditLog
 from models.billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
 from models.container import Container
 from models.town import TownAgent, TownInstance, TownState, TownConversation, TownRelationship
+from models.user_api_key import UserApiKey
 
 # Check TEST_DATABASE_URL first (explicit), then DATABASE_URL (CI sets this), then local Docker fallback
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL") or os.getenv(
@@ -81,6 +82,7 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
         await cleanup_session.execute(TownInstance.__table__.delete())
         await cleanup_session.execute(AuditLog.__table__.delete())
         await cleanup_session.execute(Container.__table__.delete())
+        await cleanup_session.execute(UserApiKey.__table__.delete())
         await cleanup_session.execute(User.__table__.delete())
         await cleanup_session.commit()
 

@@ -6,6 +6,7 @@ from .audit_log import AuditLog, AuditEventType
 from .billing import ModelPricing, BillingAccount, UsageEvent, UsageDaily
 from .container import Container
 from .town import TownAgent, TownState, TownConversation, TownRelationship
+from .user_api_key import UserApiKey
 
 __all__ = [
     "Base",
@@ -21,4 +22,5 @@ __all__ = [
     "TownState",
     "TownConversation",
     "TownRelationship",
+    "UserApiKey",
 ]
