@@ -35,6 +35,7 @@ export default function Game() {
   const { historicalTime, timeManager } = useHistoricalTime(worldState?.engine);
 
   const scrollViewRef = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<any>(null);
 
   if (!worldId || !engineId || !game) {
     return null;
@@ -56,9 +57,27 @@ export default function Game() {
                   height={height}
                   historicalTime={historicalTime}
                   setSelectedElement={setSelectedElement}
+                  viewportRef={viewportRef}
                 />
               </ConvexProvider>
             </Stage>
+          </div>
+          {/* Zoom controls */}
+          <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
+            <button
+              className="w-8 h-8 bg-clay-700/80 hover:bg-clay-600 text-brown-100 rounded text-lg font-bold"
+              onClick={() => {
+                const vp = viewportRef.current;
+                if (vp) vp.animate({ scale: Math.min(3.0, vp.scale.x * 1.3), time: 200 });
+              }}
+            >+</button>
+            <button
+              className="w-8 h-8 bg-clay-700/80 hover:bg-clay-600 text-brown-100 rounded text-lg font-bold"
+              onClick={() => {
+                const vp = viewportRef.current;
+                if (vp) vp.animate({ scale: Math.max(0.5, vp.scale.x / 1.3), time: 200 });
+              }}
+            >−</button>
           </div>
         </div>
         {/* Sidebar — fixed width */}

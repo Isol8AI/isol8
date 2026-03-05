@@ -23,10 +23,11 @@ export const PixiGame = (props: {
   width: number;
   height: number;
   setSelectedElement: SelectElement;
+  viewportRef: React.MutableRefObject<any>;
 }) => {
   // PIXI setup.
   const pixiApp = useApp();
-  const viewportRef = useRef<Viewport | undefined>();
+  const viewportRef = props.viewportRef;
 
   // Ctrl/Cmd + wheel = zoom (Google Maps convention)
   useEffect(() => {
