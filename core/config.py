@@ -27,8 +27,9 @@ class Settings(BaseSettings):
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
 
-    # Tool API Keys (passed to OpenClaw gateway)
-    BRAVE_API_KEY: str = os.getenv("BRAVE_API_KEY", "")
+    # Tool proxy (Perplexity search, etc.)
+    PERPLEXITY_API_KEY: str = os.getenv("PERPLEXITY_API_KEY", "")
+    PROXY_BASE_URL: str = os.getenv("PROXY_BASE_URL", "https://api.isol8.co/api/v1/proxy")
 
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"

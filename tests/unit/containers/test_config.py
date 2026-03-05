@@ -31,16 +31,42 @@ class TestWriteOpenclawConfig:
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert "eu-west-1" in bedrock["baseUrl"]
 
-    def test_brave_search_disabled_by_default(self):
-        """Brave search is disabled when no API key provided."""
-        config = json.loads(write_openclaw_config())
-        assert config["tools"]["web"]["search"]["enabled"] is False
+    def test_config_search_disabled_without_token(self):
+        """Search disabled when no gateway token."""
+        config = json.loads(write_openclaw_config(gateway_token=""))
+        search = config["tools"]["web"]["search"]
+        assert search["enabled"] is False
 
-    def test_brave_search_enabled_with_key(self):
-        """Brave search is enabled when API key is provided."""
-        config = json.loads(write_openclaw_config(brave_api_key="test-key"))
-        assert config["tools"]["web"]["search"]["enabled"] is True
-        assert config["tools"]["web"]["search"]["provider"] == "brave"
+    def test_config_uses_perplexity_proxy_for_search(self):
+        """Search uses Perplexity provider with proxy baseUrl."""
+        config = json.loads(
+            write_openclaw_config(
+                gateway_token="tok_abc123",
+            )
+        )
+        search = config["tools"]["web"]["search"]
+        assert search["enabled"] is True
+        assert search["provider"] == "perplexity"
+        assert search["perplexity"]["apiKey"] == "tok_abc123"
+        assert "proxy/search" in search["perplexity"]["baseUrl"]
+
+    def test_config_full_profile_denies_canvas_nodes(self):
+        """Tools profile is full and canvas/nodes are denied."""
+        config = json.loads(write_openclaw_config())
+        assert config["tools"]["profile"] == "full"
+        assert "canvas" in config["tools"]["deny"]
+        assert "nodes" in config["tools"]["deny"]
+
+    def test_config_edge_tts_enabled(self):
+        """Edge TTS provider is enabled."""
+        config = json.loads(write_openclaw_config())
+        assert config["tts"]["provider"] == "edge"
+        assert config["tts"]["edge"]["enabled"] is True
+
+    def test_config_image_understanding_enabled(self):
+        """Image understanding is enabled in media tools."""
+        config = json.loads(write_openclaw_config())
+        assert config["tools"]["media"]["image"]["enabled"] is True
 
     def test_gateway_mode_local(self):
         """Gateway mode is local with no auth when no token provided."""
@@ -138,7 +164,7 @@ class TestPatchOpenclawConfig:
         """Nested dicts are deep-merged."""
         base = {
             "tools": {
-                "web": {"search": {"enabled": False, "provider": "brave"}},
+                "web": {"search": {"enabled": False, "provider": "perplexity"}},
                 "media": {"image": {"enabled": False}},
             }
         }
@@ -149,7 +175,7 @@ class TestPatchOpenclawConfig:
         }
         result = patch_openclaw_config(base, patch)
         assert result["tools"]["web"]["search"]["enabled"] is True
-        assert result["tools"]["web"]["search"]["provider"] == "brave"  # preserved
+        assert result["tools"]["web"]["search"]["provider"] == "perplexity"  # preserved
         assert result["tools"]["media"]["image"]["enabled"] is False  # preserved
 
     def test_new_key_added(self):

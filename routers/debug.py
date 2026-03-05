@@ -66,8 +66,8 @@ async def provision_container(
         # Then write config to EFS (access point already created the dir)
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
-            brave_api_key=settings.BRAVE_API_KEY,
             gateway_token=gateway_token,
+            proxy_base_url=settings.PROXY_BASE_URL,
         )
         get_workspace().write_file(user_id, "openclaw.json", config_json)
 
@@ -112,8 +112,8 @@ async def redeploy_container(
     try:
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
-            brave_api_key=settings.BRAVE_API_KEY,
             gateway_token=container.gateway_token,
+            proxy_base_url=settings.PROXY_BASE_URL,
         )
         get_workspace().write_file(user_id, "openclaw.json", config_json)
 

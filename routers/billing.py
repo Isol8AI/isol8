@@ -236,8 +236,8 @@ async def handle_stripe_webhook(
                 # UID=1000-owned directory; container can read 644 files)
                 config_json = write_openclaw_config(
                     region=settings.AWS_REGION,
-                    brave_api_key=settings.BRAVE_API_KEY,
                     gateway_token=gateway_token,
+                    proxy_base_url=settings.PROXY_BASE_URL,
                 )
                 get_workspace().write_file(user_id, "openclaw.json", config_json)
 

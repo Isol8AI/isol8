@@ -11,17 +11,17 @@ import json
 
 def write_openclaw_config(
     region: str = "us-east-1",
-    brave_api_key: str = "",
     primary_model: str = "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
     gateway_token: str = "",
+    proxy_base_url: str = "https://api.isol8.co/api/v1/proxy",
 ) -> str:
     """Generate an openclaw.json config string for a user's container.
 
     Args:
         region: AWS region for Bedrock.
-        brave_api_key: Brave Search API key (optional).
         primary_model: Default model for agents.
         gateway_token: Auth token for the gateway HTTP API.
+        proxy_base_url: Base URL for the tool proxy (Perplexity search, etc.).
 
     Returns:
         JSON string of the openclaw.json config.
@@ -116,9 +116,12 @@ def write_openclaw_config(
             "deny": ["canvas", "nodes"],
             "web": {
                 "search": {
-                    "enabled": bool(brave_api_key),
-                    "provider": "brave",
-                    "apiKey": brave_api_key or None,
+                    "enabled": bool(gateway_token),
+                    "provider": "perplexity",
+                    "perplexity": {
+                        "apiKey": gateway_token,
+                        "baseUrl": f"{proxy_base_url}/search",
+                    },
                 },
                 "fetch": {"enabled": True},
             },
