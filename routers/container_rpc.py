@@ -144,6 +144,7 @@ async def container_status(
     return {
         "service_name": container.service_name,
         "status": container.status,
+        "substatus": container.substatus,
         "created_at": container.created_at.isoformat() if container.created_at else None,
         "updated_at": container.updated_at.isoformat() if container.updated_at else None,
         "region": settings.AWS_REGION,

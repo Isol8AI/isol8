@@ -112,14 +112,44 @@ def write_openclaw_config(
             },
         },
         "tools": {
+            "profile": "full",
+            "deny": ["canvas", "nodes"],
             "web": {
-                "search": {"enabled": bool(brave_api_key), "provider": "brave"},
+                "search": {
+                    "enabled": bool(brave_api_key),
+                    "provider": "brave",
+                    "apiKey": brave_api_key or None,
+                },
                 "fetch": {"enabled": True},
             },
             "media": {
-                "image": {"enabled": False},
+                "image": {"enabled": True},
                 "audio": {"enabled": False},
                 "video": {"enabled": False},
+            },
+        },
+        "tts": {
+            "provider": "edge",
+            "edge": {"enabled": True},
+        },
+        "hooks": {
+            "internal": {
+                "entries": {
+                    "command-logger": {"enabled": True},
+                    "session-memory": {"enabled": True},
+                },
+                "installs": {
+                    "command-logger": {
+                        "id": "bundled",
+                        "kind": "bundled",
+                        "label": "Bundled with OpenClaw",
+                    },
+                    "session-memory": {
+                        "id": "bundled",
+                        "kind": "bundled",
+                        "label": "Bundled with OpenClaw",
+                    },
+                },
             },
         },
         "browser": {"enabled": False},

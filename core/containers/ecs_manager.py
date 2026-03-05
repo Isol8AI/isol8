@@ -190,12 +190,12 @@ class EcsManager:
     async def create_user_service(self, user_id: str, gateway_token: str, db: AsyncSession) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
-        1. Creates a per-user EFS access point
-        2. Registers a per-user task definition revision
-        3. Creates the ECS service pointing to the per-user task def
-        4. Upserts the Container DB record
+        1. Upserts the Container DB record (status=provisioning) so frontend can poll
+        2. Creates a per-user EFS access point → substatus=efs_created
+        3. Registers a per-user task definition revision → substatus=task_registered
+        4. Creates the ECS service → substatus=service_created
 
-        On failure, rolls back created resources.
+        On failure, sets status=error, substatus=None, and rolls back AWS resources.
 
         Args:
             user_id: Clerk user ID.
@@ -212,12 +212,37 @@ class EcsManager:
         access_point_id = None
         task_def_arn = None
 
+        # Step 0: Upsert container record EARLY so frontend can start polling
+        result = await db.execute(select(Container).where(Container.user_id == user_id))
+        container = result.scalar_one_or_none()
+        if container:
+            container.service_name = service_name
+            container.gateway_token = gateway_token
+            container.status = "provisioning"
+            container.substatus = None
+        else:
+            container = Container(
+                user_id=user_id,
+                service_name=service_name,
+                gateway_token=gateway_token,
+                status="provisioning",
+                substatus=None,
+            )
+            db.add(container)
+        await db.commit()
+
         try:
             # Step 1: Create per-user EFS access point
             access_point_id = self._create_access_point(user_id)
+            container.access_point_id = access_point_id
+            container.substatus = "efs_created"
+            await db.commit()
 
             # Step 2: Register per-user task definition with that access point
             task_def_arn = self._register_task_definition(access_point_id)
+            container.task_definition_arn = task_def_arn
+            container.substatus = "task_registered"
+            await db.commit()
 
             # Step 3: Create ECS service with per-user task definition
             create_kwargs = dict(
@@ -239,15 +264,25 @@ class EcsManager:
             if settings.ENVIRONMENT != "prod":
                 create_kwargs["enableExecuteCommand"] = True
             self._ecs.create_service(**create_kwargs)
+            container.substatus = "service_created"
+            await db.commit()
         except EcsManagerError:
-            # Rollback already-created resources
+            # Mark container as error in DB
+            container.status = "error"
+            container.substatus = None
+            await db.commit()
+            # Rollback already-created AWS resources
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
             if access_point_id:
                 self._delete_access_point(access_point_id)
             raise
         except Exception as e:
-            # Rollback already-created resources
+            # Mark container as error in DB
+            container.status = "error"
+            container.substatus = None
+            await db.commit()
+            # Rollback already-created AWS resources
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
             if access_point_id:
@@ -259,27 +294,6 @@ class EcsManager:
                 e,
             )
             raise EcsManagerError(f"Failed to create ECS service: {e}", user_id)
-
-        # Step 4: Upsert container record
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container = result.scalar_one_or_none()
-        if container:
-            container.service_name = service_name
-            container.gateway_token = gateway_token
-            container.access_point_id = access_point_id
-            container.task_definition_arn = task_def_arn
-            container.status = "provisioning"
-        else:
-            container = Container(
-                user_id=user_id,
-                service_name=service_name,
-                gateway_token=gateway_token,
-                access_point_id=access_point_id,
-                task_definition_arn=task_def_arn,
-                status="provisioning",
-            )
-            db.add(container)
-        await db.commit()
 
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
@@ -514,6 +528,7 @@ class EcsManager:
 
         # Auto-transition provisioning → running once the task is reachable
         if container.status == "provisioning" and self.is_healthy(ip):
+            container.substatus = "gateway_healthy"
             container.status = "running"
             await db.commit()
             logger.info(

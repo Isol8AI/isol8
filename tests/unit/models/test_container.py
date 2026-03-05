@@ -171,6 +171,34 @@ class TestContainerModel:
         assert found.task_arn == "arn:aws:ecs:us-east-1:123456789:task/cluster/new-task"
 
     @pytest.mark.asyncio
+    async def test_container_substatus(self, db_session, test_user):
+        """Test substatus column can be set and read."""
+        container = Container(
+            user_id=test_user.id,
+            gateway_token="tok-substatus",
+            status="provisioning",
+            substatus="efs_created",
+        )
+        db_session.add(container)
+        await db_session.flush()
+
+        result = await db_session.execute(select(Container).where(Container.user_id == test_user.id))
+        found = result.scalar_one()
+        assert found.substatus == "efs_created"
+
+    @pytest.mark.asyncio
+    async def test_container_substatus_nullable(self, db_session, test_user):
+        """Test substatus defaults to None."""
+        container = Container(
+            user_id=test_user.id,
+            gateway_token="tok-sub-null",
+            status="running",
+        )
+        db_session.add(container)
+        await db_session.flush()
+        assert container.substatus is None
+
+    @pytest.mark.asyncio
     async def test_repr(self, db_session, test_user):
         """Test string representation includes ECS fields."""
         container = Container(

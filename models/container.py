@@ -68,6 +68,9 @@ class Container(Base):
         server_default="stopped",
     )
 
+    # Granular provisioning substatus for frontend stepper
+    substatus = Column(String, nullable=True, default=None)
+
     created_at = Column(
         DateTime(timezone=True),
         default=lambda: datetime.now(timezone.utc),
@@ -84,6 +87,12 @@ class Container(Base):
         CheckConstraint(
             "status IN ('provisioning', 'running', 'stopped', 'error')",
             name="chk_container_status",
+        ),
+        CheckConstraint(
+            "substatus IS NULL OR substatus IN ("
+            "'efs_created', 'task_registered', 'service_created', "
+            "'task_pending', 'gateway_healthy')",
+            name="chk_container_substatus",
         ),
         Index("idx_containers_status", "status"),
         Index("idx_containers_gateway_token", "gateway_token", unique=True),

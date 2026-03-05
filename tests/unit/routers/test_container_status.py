@@ -35,6 +35,7 @@ class TestContainerStatus:
         data = response.json()
         assert data["service_name"] == "openclaw-abc123"
         assert data["status"] == "running"
+        assert data["substatus"] is None
         assert data["region"] == "us-east-1"
         assert "created_at" in data
         assert "updated_at" in data
