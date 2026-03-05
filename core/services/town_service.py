@@ -210,17 +210,22 @@ class TownService:
         if existing:
             if not existing.is_active:
                 existing.is_active = True
-                existing.display_name = display_name
-                existing.personality_summary = personality_summary
-                existing.home_location = home_location
                 existing.last_active_at = datetime.now(timezone.utc)
-                # Update position too
-                state_result = await self.db.execute(select(TownState).where(TownState.agent_id == existing.id))
-                state = state_result.scalar_one_or_none()
-                if state:
-                    state.position_x = position_x
-                    state.position_y = position_y
-                await self.db.flush()
+            existing.display_name = display_name
+            existing.personality_summary = personality_summary
+            existing.home_location = home_location
+            # Always update position on seed (supports map changes across deploys)
+            state_result = await self.db.execute(select(TownState).where(TownState.agent_id == existing.id))
+            state = state_result.scalar_one_or_none()
+            if state:
+                state.position_x = position_x
+                state.position_y = position_y
+                state.target_x = None
+                state.target_y = None
+                state.speed = 0.0
+                state.current_activity = "idle"
+                state.location_state = "active"
+            await self.db.flush()
             return existing
 
         town_agent = TownAgent(

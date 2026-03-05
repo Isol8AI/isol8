@@ -128,8 +128,8 @@ class TestTownServiceSeedAgent:
         )
 
         assert agent1.id == agent2.id
-        # Display name unchanged since agent was already active
-        assert agent2.display_name == "Lucky"
+        # Seed always updates metadata and position (supports map/config changes)
+        assert agent2.display_name == "Lucky Updated"
 
     @pytest.mark.asyncio
     async def test_seed_agent_reactivates_inactive(self, service, db_session):
