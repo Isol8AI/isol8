@@ -82,7 +82,23 @@ export const PixiGame = (props: {
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
 
-  // Zoom on the user’s avatar when it is created
+  // On first load, smoothly zoom into the center of the town so observers
+  // can immediately see the action.
+  const hasAnimatedInitial = useRef(false);
+  useEffect(() => {
+    if (!viewportRef.current || hasAnimatedInitial.current) return;
+    hasAnimatedInitial.current = true;
+    const centerX = (width * tileDim) / 2;
+    const centerY = (height * tileDim) / 2;
+    viewportRef.current.animate({
+      position: new PIXI.Point(centerX, centerY),
+      scale: 1.2,
+      time: 1500,
+      ease: ‘easeInOutSine’,
+    });
+  }, [width, height, tileDim]);
+
+  // When a human player joins, zoom to center on them
   useEffect(() => {
     if (!viewportRef.current || humanPlayerId === undefined) return;
 
@@ -90,6 +106,8 @@ export const PixiGame = (props: {
     viewportRef.current.animate({
       position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
       scale: 1.5,
+      time: 800,
+      ease: ‘easeInOutSine’,
     });
   }, [humanPlayerId]);
 

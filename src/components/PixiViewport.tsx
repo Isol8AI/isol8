@@ -31,17 +31,24 @@ export default PixiComponent('Viewport', {
       viewportRef.current = viewport;
     }
     // Activate plugins
+    // Start centered on the world at a scale that fits the whole map
+    const fitScale = Math.min(
+      props.screenWidth / props.worldWidth,
+      props.screenHeight / props.worldHeight,
+    );
     viewport
       .drag()
       .pinch({})
-      .wheel()
-      .decelerate()
+      .wheel({ smooth: 5 })
+      .decelerate({ friction: 0.92 })
       .clamp({ direction: 'all', underflow: 'center' })
-      .setZoom(-10)
       .clampZoom({
-        minScale: Math.max(0.5, (0.9 * props.screenWidth) / props.worldWidth),
+        minScale: Math.max(0.5, fitScale * 0.9),
         maxScale: 3.0,
       });
+    // Center on the world and zoom to fit
+    viewport.moveCenter(props.worldWidth / 2, props.worldHeight / 2);
+    viewport.setZoom(fitScale);
     return viewport;
   },
   applyProps(viewport, oldProps: any, newProps: any) {
