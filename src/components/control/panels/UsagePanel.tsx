@@ -15,13 +15,13 @@ const MARKUP = 1.4;
 
 // Bedrock pricing per token ($ per token, NOT per 1M tokens)
 const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  // Claude Opus 4.6 / 4.5: $15/$75 per 1M tokens
-  "us.anthropic.claude-opus-4-6-v1": { input: 15 / 1e6, output: 75 / 1e6 },
-  "us.anthropic.claude-opus-4-5-20251101-v1:0": { input: 15 / 1e6, output: 75 / 1e6 },
+  // Claude Opus 4.6 / 4.5: $5/$25 per 1M tokens
+  "us.anthropic.claude-opus-4-6-v1": { input: 5 / 1e6, output: 25 / 1e6 },
+  "us.anthropic.claude-opus-4-5-20251101-v1:0": { input: 5 / 1e6, output: 25 / 1e6 },
   // Claude Sonnet 4.5: $3/$15 per 1M tokens
   "us.anthropic.claude-sonnet-4-5-20250929-v1:0": { input: 3 / 1e6, output: 15 / 1e6 },
-  // Claude Haiku 4.5: $0.80/$4 per 1M tokens
-  "us.anthropic.claude-haiku-4-5-20251001-v1:0": { input: 0.8 / 1e6, output: 4 / 1e6 },
+  // Claude Haiku 4.5: $1/$5 per 1M tokens
+  "us.anthropic.claude-haiku-4-5-20251001-v1:0": { input: 1 / 1e6, output: 5 / 1e6 },
 };
 
 // Fallback: assume Sonnet pricing if model unknown
@@ -39,8 +39,8 @@ function getModelPricing(model: string): { input: number; output: number } {
   }
   // Guess by name
   const lower = model.toLowerCase();
-  if (lower.includes("opus")) return { input: 15 / 1e6, output: 75 / 1e6 };
-  if (lower.includes("haiku")) return { input: 0.8 / 1e6, output: 4 / 1e6 };
+  if (lower.includes("opus")) return { input: 5 / 1e6, output: 25 / 1e6 };
+  if (lower.includes("haiku")) return { input: 1 / 1e6, output: 5 / 1e6 };
   return FALLBACK_PRICING;
 }
 
