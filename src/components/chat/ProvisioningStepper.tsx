@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Loader2,
@@ -36,70 +36,54 @@ export function ProvisioningStepper({
   const { isLoading: billingLoading, isSubscribed, createCheckout, refresh: refreshBilling } = useBilling();
   const justSubscribed = searchParams.get("subscription") === "success";
 
-  const [phase, setPhase] = useState<Phase>("payment");
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const urlCleanedRef = useRef(false);
 
-  // Poll billing every 2s until subscribed
-  const [billingPolling, setBillingPolling] = useState(false);
-
+  // Poll billing every 2s until subscribed (only after Stripe redirect)
+  const shouldPollBilling = justSubscribed && !isSubscribed && !billingLoading;
   useEffect(() => {
-    if (!justSubscribed || isSubscribed || billingLoading) return;
-    setBillingPolling(true);
+    if (!shouldPollBilling) return;
     const interval = setInterval(() => refreshBilling(), 2000);
     return () => clearInterval(interval);
-  }, [justSubscribed, isSubscribed, billingLoading, refreshBilling]);
+  }, [shouldPollBilling, refreshBilling]);
 
+  // Clean URL param once subscription confirmed
   useEffect(() => {
-    if (isSubscribed && billingPolling) {
-      setBillingPolling(false);
+    if (isSubscribed && justSubscribed && !urlCleanedRef.current) {
+      urlCleanedRef.current = true;
       window.history.replaceState({}, "", "/chat");
     }
-  }, [isSubscribed, billingPolling]);
+  }, [isSubscribed, justSubscribed]);
 
   // Poll container status every 3s once subscribed
-  const shouldPollContainer = isSubscribed && phase !== "ready";
+  const shouldPollContainer = isSubscribed;
   const { container, refresh: refreshContainer } = useContainerStatus({
     refreshInterval: shouldPollContainer ? 3000 : 0,
     enabled: shouldPollContainer,
   });
 
-  // Poll gateway health every 3s once container is running
-  const shouldPollGateway = phase === "gateway";
+  // Derive phase from state (no setState in effects)
+  const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
+
+  // Poll gateway health every 3s once container looks ready
+  const shouldPollGateway = isSubscribed && containerReady;
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
     shouldPollGateway ? "health" : null,
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
 
-  // Phase state machine
-  useEffect(() => {
-    if (!isSubscribed) {
-      setPhase("payment");
-      return;
-    }
-
-    if (!container) {
-      setPhase("container");
-      return;
-    }
-
-    if (container.status === "error") {
-      return;
-    }
-
-    if (container.status === "running" || container.substatus === "gateway_healthy") {
-      if (gatewayHealth) {
-        setPhase("ready");
-      } else {
-        setPhase("gateway");
-      }
-      return;
-    }
-
-    setPhase("container");
-  }, [isSubscribed, container, gatewayHealth]);
+  // Derive phase purely from data — no effects needed
+  const phase: Phase = useMemo(() => {
+    if (!isSubscribed) return "payment";
+    if (!container || (container.status === "provisioning" && !containerReady)) return "container";
+    if (container.status === "error") return "container";
+    if (containerReady && gatewayHealth) return "ready";
+    if (containerReady) return "gateway";
+    return "container";
+  }, [isSubscribed, container, containerReady, gatewayHealth]);
 
   // Timeout check
   useEffect(() => {
