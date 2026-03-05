@@ -63,6 +63,7 @@ export const Player = ({
       (a) => a.playerId === player.id && !!a.inProgressOperation,
     );
   const tileDim = game.worldMap.tileDim;
+  const characterScale = tileDim / 24;
   const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
   return (
     <>
@@ -82,6 +83,7 @@ export const Player = ({
         textureUrl={character.textureUrl}
         spritesheetData={character.spritesheetData}
         speed={character.speed}
+        scale={characterScale}
         onClick={() => {
           onClick({ kind: 'player', id: player.id });
         }}
