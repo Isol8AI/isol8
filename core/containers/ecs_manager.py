@@ -8,6 +8,7 @@ API.
 """
 
 import hashlib
+import json
 import logging
 import urllib.request
 import urllib.error
@@ -537,7 +538,82 @@ class EcsManager:
                 user_id,
             )
 
+            # One-time post-provisioning: install skill CLIs and skill-vetter
+            if container.gateway_token:
+                self._install_skill_prerequisites(ip, container.gateway_token)
+
         return container, ip
+
+    def _call_gateway_rpc(self, ip: str, gateway_token: str, method: str, params: dict) -> dict:
+        """Send a JSON-RPC request to the gateway.
+
+        Args:
+            ip: Task private IP.
+            gateway_token: Bearer token for auth.
+            method: RPC method name.
+            params: RPC parameters.
+
+        Returns:
+            Parsed JSON response, or empty dict on failure.
+        """
+        body = json.dumps({"method": method, "params": params}).encode()
+        req = urllib.request.Request(
+            f"http://{ip}:{GATEWAY_PORT}/rpc",
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {gateway_token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            logger.warning("Gateway RPC %s failed: %s", method, e)
+            return {}
+
+    def _install_skill_prerequisites(self, ip: str, gateway_token: str) -> None:
+        """Install mcporter + clawhub CLIs and skill-vetter skill.
+
+        Best-effort: logs failures but does not raise. Called once when a
+        container first transitions to running.
+        """
+        logger.info("Installing skill prerequisites on %s", ip)
+        try:
+            self._call_gateway_rpc(
+                ip,
+                gateway_token,
+                "skills.install",
+                {
+                    "name": "mcporter",
+                    "installId": "node",
+                    "timeoutMs": 120000,
+                },
+            )
+            self._call_gateway_rpc(
+                ip,
+                gateway_token,
+                "skills.install",
+                {
+                    "name": "clawhub",
+                    "installId": "node",
+                    "timeoutMs": 120000,
+                },
+            )
+            # Install skill-vetter from ClawHub for security vetting
+            self._call_gateway_rpc(
+                ip,
+                gateway_token,
+                "exec.run",
+                {
+                    "command": "clawhub",
+                    "args": ["install", "spclaudehome/skill-vetter", "--no-input"],
+                },
+            )
+            logger.info("Skill prerequisites installed on %s", ip)
+        except Exception as e:
+            logger.warning("Skill prerequisites install failed on %s: %s", ip, e)
 
     async def get_service_status(self, user_id: str, db: AsyncSession) -> Container | None:
         """Get the Container record for a user.

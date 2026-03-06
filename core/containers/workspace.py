@@ -63,6 +63,9 @@ class Workspace:
     def ensure_user_dir(self, user_id: str) -> Path:
         """Create the user workspace directory if it does not exist.
 
+        Also writes default config files (e.g. mcporter.json) if they
+        are not already present.
+
         Returns:
             The Path to the user's workspace directory.
 
@@ -78,6 +81,16 @@ class Workspace:
                 f"Failed to create user directory for {user_id}: {exc}",
                 user_id=user_id,
             ) from exc
+
+        # Write default mcporter config if not already present
+        mcporter_path = p / ".mcporter" / "mcporter.json"
+        if not mcporter_path.exists():
+            try:
+                mcporter_path.parent.mkdir(parents=True, exist_ok=True)
+                mcporter_path.write_text('{\n  "servers": {}\n}\n', encoding="utf-8")
+            except OSError as exc:
+                logger.warning("Failed to write default mcporter.json for %s: %s", user_id, exc)
+
         return p
 
     def list_agents(self, user_id: str) -> list[str]:

@@ -5,6 +5,7 @@ import json
 
 from core.containers.config import (
     write_openclaw_config,
+    write_mcporter_config,
     patch_openclaw_config,
     _deep_merge,
 )
@@ -146,6 +147,52 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert bedrock["auth"] == "aws-sdk"
+
+    def test_skills_allow_bundled(self):
+        """Skills section allows mcporter and clawhub."""
+        config = json.loads(write_openclaw_config())
+        assert "skills" in config
+        assert "mcporter" in config["skills"]["allowBundled"]
+        assert "clawhub" in config["skills"]["allowBundled"]
+
+    def test_skills_node_manager(self):
+        """Skills install uses npm as node manager."""
+        config = json.loads(write_openclaw_config())
+        assert config["skills"]["install"]["nodeManager"] == "npm"
+
+
+class TestWriteMcporterConfig:
+    """Test mcporter.json generation."""
+
+    def test_generates_valid_json(self):
+        """Config output is valid JSON."""
+        result = write_mcporter_config()
+        parsed = json.loads(result)
+        assert isinstance(parsed, dict)
+
+    def test_default_empty_servers(self):
+        """Default config has empty servers dict."""
+        config = json.loads(write_mcporter_config())
+        assert config["servers"] == {}
+
+    def test_custom_servers(self):
+        """Custom servers are included in output."""
+        servers = {
+            "github": {
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-github"],
+                "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_test"},
+            }
+        }
+        config = json.loads(write_mcporter_config(servers=servers))
+        assert "github" in config["servers"]
+        assert config["servers"]["github"]["command"] == "npx"
+        assert config["servers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_test"
+
+    def test_none_servers_returns_empty(self):
+        """None servers argument returns empty servers dict."""
+        config = json.loads(write_mcporter_config(servers=None))
+        assert config["servers"] == {}
 
 
 class TestPatchOpenclawConfig:

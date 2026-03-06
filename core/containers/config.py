@@ -138,6 +138,12 @@ def write_openclaw_config(
                 "video": {"enabled": False},
             },
         },
+        "skills": {
+            "allowBundled": ["mcporter", "clawhub"],
+            "install": {
+                "nodeManager": "npm",
+            },
+        },
         "hooks": {
             "internal": {
                 "entries": {
@@ -150,6 +156,19 @@ def write_openclaw_config(
         "update": {"checkOnStart": False},
     }
 
+    return json.dumps(config, indent=2)
+
+
+def write_mcporter_config(servers: dict | None = None) -> str:
+    """Generate a mcporter.json config string.
+
+    Args:
+        servers: Optional dict of server entries. Defaults to empty.
+
+    Returns:
+        JSON string of the mcporter config.
+    """
+    config = {"servers": servers or {}}
     return json.dumps(config, indent=2)
 
 

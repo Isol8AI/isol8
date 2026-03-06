@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth import AuthContext, get_current_user
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_openclaw_config
+from core.containers.config import write_mcporter_config, write_openclaw_config
 from core.containers.ecs_manager import EcsManagerError
 from core.database import get_db
 from models.container import Container
@@ -70,6 +70,7 @@ async def provision_container(
             proxy_base_url=settings.PROXY_BASE_URL,
         )
         get_workspace().write_file(user_id, "openclaw.json", config_json)
+        get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
 
         return {
             "status": "provisioned",

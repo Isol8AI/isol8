@@ -26,6 +26,7 @@ from routers import (
     container_rpc,
     control_ui_proxy,
     debug,
+    integrations,
     internal_credentials,
     proxy,
     settings_keys,
@@ -113,6 +114,10 @@ openapi_tags = [
     {
         "name": "channels",
         "description": "Messaging channel management (Telegram, Discord, WhatsApp).",
+    },
+    {
+        "name": "integrations",
+        "description": "MCP server and ClawHub integration management.",
     },
     {
         "name": "debug",
@@ -203,6 +208,9 @@ app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
 
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
+
+# Integrations (MCP servers, ClawHub)
+app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
