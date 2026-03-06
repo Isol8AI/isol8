@@ -30,20 +30,48 @@ export const PixiGame = (props: {
   const viewportRef = props.viewportRef;
 
   // Ctrl/Cmd + wheel = zoom (Google Maps convention)
+  // Also prevent all wheel events from propagating to stop browser back/forward gestures
   useEffect(() => {
     const canvas = pixiApp.view as HTMLCanvasElement;
     const onWheel = (e: WheelEvent) => {
-      if (!e.ctrlKey && !e.metaKey) return;
+      // Always prevent default on the canvas to stop browser back/forward navigation
       e.preventDefault();
+      if (!e.ctrlKey && !e.metaKey) return;
       const viewport = viewportRef.current;
       if (!viewport) return;
       const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-      const newScale = Math.min(3.0, Math.max(0.5, viewport.scale.x * zoomFactor));
+      const map = props.game.worldMap;
+      const fitScale = Math.min(
+        props.width / (map.width * map.tileDim),
+        props.height / (map.height * map.tileDim),
+      );
+      const newScale = Math.min(3.0, Math.max(fitScale, viewport.scale.x * zoomFactor));
       viewport.setZoom(newScale, true);
     };
     canvas.addEventListener('wheel', onWheel, { passive: false });
     return () => canvas.removeEventListener('wheel', onWheel);
-  }, [pixiApp]);
+  }, [pixiApp, props.width, props.height, props.game.worldMap]);
+
+  // Arrow keys pan the viewport
+  useEffect(() => {
+    const PAN_SPEED = 20;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+      let dx = 0, dy = 0;
+      switch (e.key) {
+        case 'ArrowUp': dy = -PAN_SPEED; break;
+        case 'ArrowDown': dy = PAN_SPEED; break;
+        case 'ArrowLeft': dx = -PAN_SPEED; break;
+        case 'ArrowRight': dx = PAN_SPEED; break;
+        default: return;
+      }
+      e.preventDefault();
+      viewport.moveCenter(viewport.center.x + dx, viewport.center.y + dy);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
   const humanPlayerId = [...props.game.world.players.values()].find(

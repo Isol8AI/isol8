@@ -41,7 +41,7 @@ export default PixiComponent('Viewport', {
       .decelerate({ friction: 0.97 })
       .clamp({ direction: 'all', underflow: 'center' })
       .clampZoom({
-        minScale: Math.max(0.5, fitScale * 0.9),
+        minScale: fitScale,
         maxScale: 3.0,
       });
     // Start at a zoom that shows detail (1.5x) rather than fitting entire map

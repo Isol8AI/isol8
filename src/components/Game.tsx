@@ -66,7 +66,7 @@ export default function Game() {
       {SHOW_DEBUG_UI && <DebugTimeManager timeManager={timeManager} width={200} height={100} />}
       <div className="flex w-full h-full">
         {/* Map area — fills remaining space */}
-        <div className="relative flex-1 overflow-hidden bg-brown-900" ref={gameWrapperRef}>
+        <div className="relative flex-1 overflow-hidden bg-brown-900 touch-none overscroll-none" ref={gameWrapperRef}>
           <div className="absolute inset-0">
             <Stage width={width} height={height} options={{ backgroundColor: 0x7ab5ff }}>
               <ConvexProvider client={convex}>
@@ -96,7 +96,7 @@ export default function Game() {
               className="w-8 h-8 bg-clay-700/80 hover:bg-clay-600 text-brown-100 rounded text-lg font-bold"
               onClick={() => {
                 const vp = viewportRef.current;
-                if (vp) vp.animate({ scale: Math.max(0.5, vp.scale.x / 1.3), time: 200 });
+                if (vp) vp.animate({ scale: Math.max(0.8, vp.scale.x / 1.3), time: 200 });
               }}
             >−</button>
           </div>
