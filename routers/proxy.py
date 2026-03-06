@@ -100,9 +100,10 @@ async def proxy_request(
             )
         except Exception:
             logger.exception("Failed to record proxy usage for user %s", container.user_id)
+            await db.rollback()
 
-        return Response(
-            content=upstream_resp.content,
-            status_code=upstream_resp.status_code,
-            media_type=upstream_resp.headers.get("content-type"),
-        )
+    return Response(
+        content=upstream_resp.content,
+        status_code=upstream_resp.status_code,
+        media_type=upstream_resp.headers.get("content-type"),
+    )
