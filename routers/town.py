@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +59,29 @@ _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.isol8.co/api/v1"
 def get_skill_service() -> TownSkillService:
     """FastAPI dependency for the TownSkillService."""
     return TownSkillService(efs_mount_path=_EFS_MOUNT_PATH)
+
+
+# ---------------------------------------------------------------------------
+# Token auth dependency for external OpenClaw agents
+# ---------------------------------------------------------------------------
+
+
+async def get_town_token_user(
+    authorization: str = Header(..., alias="Authorization"),
+    db: AsyncSession = Depends(get_db),
+) -> tuple:
+    """Validate a town_token from Authorization: Bearer <token>.
+    Returns (user_id, token) or raises 401.
+    """
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Bearer token")
+    token = authorization[7:]
+
+    service = TownService(db)
+    instance = await service.get_instance_by_token(token)
+    if not instance or not instance.is_active:
+        raise HTTPException(status_code=401, detail="Invalid or expired town token")
+    return instance.user_id, token
 
 
 # ---------------------------------------------------------------------------
@@ -936,6 +959,30 @@ async def get_apartment(
         )
 
     return ApartmentResponse(agents=agents, activity=[])
+
+
+@router.post("/instance")
+async def get_or_create_instance(
+    auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get existing instance or create a new one. Returns town_token."""
+    service = TownService(db)
+    instance = await service.get_active_instance(auth.user_id)
+
+    if not instance:
+        instance = await service.create_instance(auth.user_id)
+        await db.commit()
+
+    agents = await service.get_instance_agents(instance.id)
+
+    return {
+        "town_token": instance.town_token,
+        "apartment_unit": instance.apartment_unit,
+        "agents": [
+            {"agent_name": a.agent_name, "display_name": a.display_name, "character": a.character} for a in agents
+        ],
+    }
 
 
 @router.get("/conversations", response_model=TownConversationsListResponse)

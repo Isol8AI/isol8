@@ -254,6 +254,16 @@ class TownService:
     # Instance-based opt-in / opt-out
     # ------------------------------------------------------------------
 
+    async def get_instance_by_token(self, token: str) -> Optional[TownInstance]:
+        """Look up an active instance by its town_token."""
+        result = await self.db.execute(
+            select(TownInstance).where(
+                TownInstance.town_token == token,
+                TownInstance.is_active.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def get_active_instance(self, user_id: str) -> Optional[TownInstance]:
         """Return the user's active TownInstance, or None."""
         result = await self.db.execute(
