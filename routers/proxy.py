@@ -5,6 +5,7 @@ keeping real API keys server-side. Users authenticate with
 their gateway_token.
 """
 
+import json
 import logging
 from decimal import Decimal
 
@@ -76,6 +77,17 @@ async def proxy_request(
         # Forward request to upstream
         upstream_url = f"{UPSTREAM_URLS[service]}/{path}"
         body = await request.body()
+
+        # Rewrite model name for Perplexity — OpenClaw sends Bedrock model IDs
+        # but Perplexity only accepts its own models (sonar, sonar-pro, etc.)
+        if service == "search" and body:
+            try:
+                payload = json.loads(body)
+                if "model" in payload:
+                    payload["model"] = "sonar"
+                    body = json.dumps(payload).encode()
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             upstream_resp = await client.request(
