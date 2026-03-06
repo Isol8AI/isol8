@@ -53,6 +53,9 @@ async def delete_key(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Remove an API key and revert to Isol8-provided proxy."""
+    if tool_id not in SUPPORTED_TOOLS:
+        raise HTTPException(status_code=400, detail=f"Unsupported tool: {tool_id}")
+
     session_factory = get_session_factory()
     async with session_factory() as db:
         service = KeyService(db)
