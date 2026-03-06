@@ -39,6 +39,7 @@ DEFAULT_TOOL_COSTS = {
 @router.api_route(
     "/{service}/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE"],
+    include_in_schema=False,
 )
 async def proxy_request(
     service: str,
@@ -100,22 +101,31 @@ async def proxy_request(
                 },
             )
 
-        # Record usage (non-blocking - don't fail the request)
-        try:
-            usage_service = UsageService(db)
-            await usage_service.record_tool_usage(
-                billing_account_id=account.id,
-                clerk_user_id=container.user_id,
-                tool_id=f"perplexity_{service}",
-                quantity=1,
-                total_cost=DEFAULT_TOOL_COSTS.get(service, Decimal("0.005")),
-            )
-        except Exception:
-            logger.exception("Failed to record proxy usage for user %s", container.user_id)
-            await db.rollback()
+        # Record usage only on successful upstream response
+        if upstream_resp.is_success:
+            try:
+                usage_service = UsageService(db)
+                await usage_service.record_tool_usage(
+                    billing_account_id=account.id,
+                    clerk_user_id=container.user_id,
+                    tool_id=f"perplexity_{service}",
+                    quantity=1,
+                    total_cost=DEFAULT_TOOL_COSTS.get(service, Decimal("0.005")),
+                )
+            except Exception:
+                logger.exception("Failed to record proxy usage for user %s", container.user_id)
+                await db.rollback()
+
+    # Build response — only forward safe headers, never auth-related ones
+    safe_headers = {}
+    for key, value in upstream_resp.headers.items():
+        lower = key.lower()
+        if lower not in ("authorization", "www-authenticate", "set-cookie", "x-api-key"):
+            safe_headers[key] = value
 
     return Response(
         content=upstream_resp.content,
         status_code=upstream_resp.status_code,
         media_type=upstream_resp.headers.get("content-type"),
+        headers=safe_headers,
     )
