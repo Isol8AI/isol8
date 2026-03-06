@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user, get_optional_user
@@ -26,12 +26,14 @@ from core.services.town_service import TownService
 from core.services.town_skill import TownSkillService
 from core.town_constants import (
     AGENT_CHARACTERS,
+    AVATAR_CATALOG,
     AVAILABLE_CHARACTERS,
     DEFAULT_CHARACTERS,
     DEFAULT_SPAWN_POSITIONS,
     TOWN_LOCATIONS,
     WALK_SPEED_DISPLAY,
 )
+from models.town import TownAgent, TownState
 from schemas.town import (
     TownInstanceOptInRequest,
     TownInstanceOptInResponse,
@@ -826,6 +828,80 @@ async def testing_stop():
 async def testing_resume():
     """Resume the simulation. Stub."""
     return None
+
+
+# ===========================================================================
+# Agent registration endpoints (town_token auth)
+# ===========================================================================
+
+
+@router.get("/agent/avatars")
+async def list_avatars():
+    """List available character avatars. Public endpoint."""
+    return {"avatars": AVATAR_CATALOG}
+
+
+class AgentRegisterRequest(BaseModel):
+    agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
+    display_name: str = Field(..., min_length=1, max_length=100)
+    personality: str = Field("", max_length=500)
+    character: str = Field("c6")
+
+
+@router.post("/agent/register")
+async def register_agent(
+    request: AgentRegisterRequest = Body(...),
+    token_info: tuple = Depends(get_town_token_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a new agent in GooseTown. Authenticated via town_token."""
+    user_id, token = token_info
+
+    if request.character not in AVAILABLE_CHARACTERS:
+        raise HTTPException(400, f"Invalid character. Choose from: {AVAILABLE_CHARACTERS}")
+
+    service = TownService(db)
+    instance = await service.get_active_instance(user_id)
+    if not instance:
+        raise HTTPException(400, "No active instance")
+
+    existing = await service.get_agent_by_name(user_id, request.agent_name)
+    if existing:
+        raise HTTPException(400, f"Agent '{request.agent_name}' already registered")
+
+    spawn = random.choice(list(TOWN_LOCATIONS.values()))
+
+    agent = TownAgent(
+        user_id=user_id,
+        agent_name=request.agent_name,
+        display_name=request.display_name,
+        personality_summary=request.personality[:200] if request.personality else None,
+        character=request.character,
+        instance_id=instance.id,
+    )
+    db.add(agent)
+    await db.flush()
+
+    state = TownState(
+        agent_id=agent.id,
+        position_x=spawn["x"],
+        position_y=spawn["y"],
+        location_state="active",
+        current_activity="idle",
+    )
+    db.add(state)
+    await db.commit()
+
+    _notify_state_changed()
+
+    return {
+        "agent_id": str(agent.id),
+        "agent_name": agent.agent_name,
+        "display_name": agent.display_name,
+        "character": agent.character,
+        "position": {"x": spawn["x"], "y": spawn["y"]},
+        "message": f"Welcome to GooseTown, {agent.display_name}!",
+    }
 
 
 # ===========================================================================

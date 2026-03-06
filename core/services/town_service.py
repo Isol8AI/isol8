@@ -362,6 +362,17 @@ class TownService:
         logger.info(f"Instance opt-out for user {user_id}: deactivated {count} agents")
         return instance, count
 
+    async def get_agent_by_name(self, user_id: str, agent_name: str) -> Optional[TownAgent]:
+        """Look up an agent by user_id and agent_name (active only)."""
+        result = await self.db.execute(
+            select(TownAgent).where(
+                TownAgent.user_id == user_id,
+                TownAgent.agent_name == agent_name,
+                TownAgent.is_active.is_(True),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def _get_town_agent(self, user_id: str, agent_name: str) -> Optional[TownAgent]:
         """Get a town agent by user_id and agent_name."""
         result = await self.db.execute(

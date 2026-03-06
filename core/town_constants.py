@@ -89,8 +89,24 @@ DEFAULT_CHARACTERS: List[Dict] = [
 # Default spawn positions (derived from DEFAULT_CHARACTERS for backward compat)
 DEFAULT_SPAWN_POSITIONS = [c["spawn"] for c in DEFAULT_CHARACTERS]
 
-# Available character sprites (c1-c5 in data/characters.ts)
-AVAILABLE_CHARACTERS = ["c1", "c2", "c3", "c4", "c5"]
+# Full avatar catalog with metadata for the agent selection API
+AVATAR_CATALOG = [
+    {"id": "c1", "name": "Lucky", "description": "A cheerful adventurer"},
+    {"id": "c2", "name": "Bob", "description": "A grumpy gardener"},
+    {"id": "c3", "name": "Stella", "description": "A charming trickster"},
+    {"id": "c4", "name": "Alice", "description": "A brilliant scientist"},
+    {"id": "c5", "name": "Pete", "description": "A devout believer"},
+    {"id": "c6", "name": "Scholar", "description": "A studious bookworm"},
+    {"id": "c7", "name": "Knight", "description": "A brave protector"},
+    {"id": "c8", "name": "Merchant", "description": "A savvy trader"},
+    {"id": "c9", "name": "Bard", "description": "A musical storyteller"},
+    {"id": "c10", "name": "Ranger", "description": "A wilderness explorer"},
+    {"id": "c11", "name": "Healer", "description": "A gentle caretaker"},
+    {"id": "c12", "name": "Tinkerer", "description": "An inventive builder"},
+]
+
+# Available character sprites
+AVAILABLE_CHARACTERS = [a["id"] for a in AVATAR_CATALOG]
 
 # Characters already assigned to default AI agents
 AGENT_CHARACTERS = {c["character"] for c in DEFAULT_CHARACTERS}
