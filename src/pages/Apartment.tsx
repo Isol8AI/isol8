@@ -2,7 +2,7 @@ import { SignedIn, SignedOut } from '@clerk/clerk-react';
 import { ToastContainer } from 'react-toastify';
 import TownNav from '../components/TownNav.tsx';
 import ApartmentCard from '../components/ApartmentCard.tsx';
-import ActivityFeed from '../components/ActivityFeed.tsx';
+import ApartmentMap from '../components/ApartmentMap.tsx';
 import LoginButton from '../components/buttons/LoginButton.tsx';
 import { useApartment } from '../hooks/useApartment.ts';
 
@@ -49,34 +49,34 @@ function ApartmentContent() {
   const inactiveAgents = data.agents.filter((a) => !a.is_active);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 p-6 w-full max-w-7xl mx-auto">
-      {/* Left: Agent cards */}
-      <div className="flex-1">
-        <h2 className="font-display text-2xl text-brown-200 tracking-wider mb-4">
+    <div className="flex flex-col h-full">
+      {/* Apartment map view */}
+      <div className="flex-1 min-h-[400px] relative">
+        <ApartmentMap agents={data.agents} />
+      </div>
+
+      {/* Agent cards below */}
+      <div className="p-4 border-t border-clay-700 bg-clay-900/80">
+        <h2 className="font-display text-lg text-brown-200 tracking-wider mb-3">
           Your Agents ({activeAgents.length})
         </h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="flex gap-4 overflow-x-auto pb-2">
           {activeAgents.map((agent) => (
             <ApartmentCard key={agent.agent_id} agent={agent} />
           ))}
         </div>
         {inactiveAgents.length > 0 && (
-          <>
-            <h3 className="font-display text-lg text-clay-300 tracking-wider mt-6 mb-3">
+          <div className="mt-3">
+            <h3 className="font-display text-sm text-clay-300 tracking-wider mb-2">
               Inactive ({inactiveAgents.length})
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="flex gap-4 overflow-x-auto pb-2">
               {inactiveAgents.map((agent) => (
                 <ApartmentCard key={agent.agent_id} agent={agent} />
               ))}
             </div>
-          </>
+          </div>
         )}
-      </div>
-
-      {/* Right: Activity feed */}
-      <div className="lg:w-80 shrink-0">
-        <ActivityFeed events={data.activity} />
       </div>
     </div>
   );
