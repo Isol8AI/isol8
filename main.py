@@ -28,6 +28,7 @@ from routers import (
     debug,
     internal_credentials,
     proxy,
+    settings_keys,
     town,
     users,
     webhooks,
@@ -200,6 +201,8 @@ app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
 
 # Channel management (Telegram, Discord, WhatsApp)
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
+
+app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])

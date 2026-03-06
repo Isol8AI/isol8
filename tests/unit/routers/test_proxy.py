@@ -36,7 +36,11 @@ class TestProxyRouter:
     @pytest.mark.asyncio
     async def test_proxy_rejects_invalid_token(self, app, override_get_session_factory):
         """Proxy rejects requests with invalid gateway token."""
-        with patch("routers.proxy.get_session_factory", override_get_session_factory):
+        with (
+            patch("routers.proxy.get_session_factory", override_get_session_factory),
+            patch("routers.proxy.settings") as mock_settings,
+        ):
+            mock_settings.PERPLEXITY_API_KEY = "pk_test_key"
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
                     "/api/v1/proxy/search/chat/completions",
