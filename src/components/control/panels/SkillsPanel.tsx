@@ -11,11 +11,17 @@ import {
   Download,
   Eye,
   EyeOff,
+  Wrench,
+  Package,
+  Server,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import { McpServersTab } from "./McpServersTab";
+import { ClawHubTab } from "./ClawHubTab";
 
 // Map OpenClaw primaryEnv → backend tool_id for BYOK persistence
 const ENV_TO_TOOL_ID: Record<string, string> = {
@@ -24,6 +30,8 @@ const ENV_TO_TOOL_ID: Record<string, string> = {
   PERPLEXITY_API_KEY: "perplexity",
   FIRECRAWL_API_KEY: "firecrawl",
 };
+
+type SkillsPanelTab = "skills" | "mcp" | "clawhub";
 
 // --- Types matching OpenClaw skills.status response ---
 
@@ -89,9 +97,56 @@ function groupBySource(skills: SkillStatusEntry[]): { source: string; label: str
   return ordered;
 }
 
-// --- Main Panel ---
+// --- Tab definitions ---
+
+const TABS: { id: SkillsPanelTab; label: string; icon: typeof Wrench }[] = [
+  { id: "skills", label: "Skills", icon: Wrench },
+  { id: "mcp", label: "MCP Servers", icon: Server },
+  { id: "clawhub", label: "ClawHub", icon: Package },
+];
+
+// --- Main Panel (tabbed) ---
 
 export function SkillsPanel({ agentId }: { agentId?: string }) {
+  const [activeTab, setActiveTab] = useState<SkillsPanelTab>("skills");
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* Tab bar */}
+      <div className="flex border-b border-border px-2">
+        {TABS.map((tab) => {
+          const Icon = tab.icon;
+          return (
+            <button
+              key={tab.id}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2 -mb-px",
+                activeTab === tab.id
+                  ? "border-primary text-foreground"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <Icon className="h-3.5 w-3.5" />
+              {tab.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Tab content */}
+      <div className="flex-1 overflow-y-auto">
+        {activeTab === "skills" && <SkillsTab agentId={agentId} />}
+        {activeTab === "mcp" && <McpServersTab agentId={agentId} />}
+        {activeTab === "clawhub" && <ClawHubTab agentId={agentId} />}
+      </div>
+    </div>
+  );
+}
+
+// --- Skills Tab (original SkillsPanel content) ---
+
+function SkillsTab({ agentId }: { agentId?: string }) {
   const params = agentId ? { agentId } : {};
   const { data: raw, error, isLoading, mutate } = useGatewayRpc<SkillStatusReport | SkillStatusEntry[]>(
     "skills.status",
