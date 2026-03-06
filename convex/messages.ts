@@ -13,7 +13,7 @@ export const listMessages = query({
       .query('messages')
       .withIndex('conversationId', (q) => q.eq('worldId', args.worldId).eq('conversationId', args.conversationId))
       .collect();
-    const out = [];
+    const out: (typeof messages[number] & { authorName: string })[] = [];
     for (const message of messages) {
       const playerDescription = await ctx.db
         .query('playerDescriptions')

@@ -187,7 +187,7 @@ function agentPrompts(
   agent: { identity: string; plan: string } | null,
   otherAgent: { identity: string; plan: string } | null,
 ): string[] {
-  const prompt = [];
+  const prompt: string[] = [];
   if (agent) {
     prompt.push(`About you: ${agent.identity}`);
     prompt.push(`Your goals for the conversation: ${agent.plan}`);
@@ -202,7 +202,7 @@ function previousConversationPrompt(
   otherPlayer: { name: string },
   conversation: { created: number } | null,
 ): string[] {
-  const prompt = [];
+  const prompt: string[] = [];
   if (conversation) {
     const prev = new Date(conversation.created);
     const now = new Date();
@@ -216,7 +216,7 @@ function previousConversationPrompt(
 }
 
 function relatedMemoriesPrompt(memories: memory.Memory[]): string[] {
-  const prompt = [];
+  const prompt: string[] = [];
   if (memories.length > 0) {
     prompt.push(`Here are some related memories in decreasing relevance order:`);
     for (const memory of memories) {

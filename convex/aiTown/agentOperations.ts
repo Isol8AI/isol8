@@ -67,7 +67,7 @@ export const agentGenerateMessage = internalAction({
         completionFn = leaveConversationMessage;
         break;
       default:
-        assertNever(args.type);
+        assertNever(args.type as never);
     }
     const text = await completionFn(
       ctx,

@@ -42,3 +42,11 @@ dist
 
 convex-local*
 convex_local*
+
+# Python
+__pycache__/
+*.pyc
+
+# PixelLab source zips
+pixellab-sprites/*.zip
+pixellab-sprites/**/*.zip

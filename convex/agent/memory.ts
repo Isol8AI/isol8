@@ -191,34 +191,38 @@ export const rankAndTouchMemories = internalMutation({
   },
   handler: async (ctx, args) => {
     const ts = Date.now();
-    const relatedMemories = await asyncMap(args.candidates, async ({ _id }) => {
-      const memory = await ctx.db
-        .query('memories')
-        .withIndex('embeddingId', (q) => q.eq('embeddingId', _id))
-        .first();
-      if (!memory) throw new Error(`Memory for embedding ${_id} not found`);
-      return memory;
-    });
+    const relatedMemories = await asyncMap(
+      args.candidates as { _id: Id<'memoryEmbeddings'>; _score: number }[],
+      async ({ _id }: { _id: Id<'memoryEmbeddings'> }) => {
+        const memory = await ctx.db
+          .query('memories')
+          .withIndex('embeddingId', (q) => q.eq('embeddingId', _id))
+          .first();
+        if (!memory) throw new Error(`Memory for embedding ${_id} not found`);
+        return memory;
+      },
+    );
 
     // TODO: fetch <count> recent memories and <count> important memories
     // so we don't miss them in case they were a little less relevant.
-    const recencyScore = relatedMemories.map((memory) => {
+    const candidates = args.candidates as { _id: Id<'memoryEmbeddings'>; _score: number }[];
+    const recencyScore = relatedMemories.map((memory: Doc<'memories'>) => {
       const hoursSinceAccess = (ts - memory.lastAccess) / 1000 / 60 / 60;
       return 0.99 ** Math.floor(hoursSinceAccess);
     });
-    const relevanceRange = makeRange(args.candidates.map((c) => c._score));
-    const importanceRange = makeRange(relatedMemories.map((m) => m.importance));
+    const relevanceRange = makeRange(candidates.map((c) => c._score));
+    const importanceRange = makeRange(relatedMemories.map((m: Doc<'memories'>) => m.importance));
     const recencyRange = makeRange(recencyScore);
-    const memoryScores = relatedMemories.map((memory, idx) => ({
+    const memoryScores = relatedMemories.map((memory: Doc<'memories'>, idx: number) => ({
       memory,
       overallScore:
-        normalize(args.candidates[idx]._score, relevanceRange) +
+        normalize(candidates[idx]._score, relevanceRange) +
         normalize(memory.importance, importanceRange) +
         normalize(recencyScore[idx], recencyRange),
     }));
-    memoryScores.sort((a, b) => b.overallScore - a.overallScore);
+    memoryScores.sort((a: { overallScore: number }, b: { overallScore: number }) => b.overallScore - a.overallScore);
     const accessed = memoryScores.slice(0, args.n);
-    await asyncMap(accessed, async ({ memory }) => {
+    await asyncMap(accessed, async ({ memory }: { memory: Doc<'memories'> }) => {
       if (memory.lastAccess < ts - MEMORY_ACCESS_THROTTLE) {
         await ctx.db.patch(memory._id, { lastAccess: ts });
       }

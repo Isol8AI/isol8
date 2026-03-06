@@ -3,6 +3,8 @@ export const tilesetpath = "/assets/town-tileset.png"
 export const tiledim = 16
 export const screenxtiles = 96
 export const screenytiles = 64
+export const mapwidth = screenxtiles
+export const mapheight = screenytiles
 export const tilesetpxw = 512
 export const tilesetpxh = 3088
 

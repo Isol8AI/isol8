@@ -22,7 +22,7 @@ export async function fetchBatch(ctx: ActionCtx, texts: string[]) {
   for (const { index, embedding } of cacheResults) {
     results[index] = embedding;
   }
-  const toWrite = [];
+  const toWrite: { textHash: ArrayBufferLike; embedding: number[] }[] = [];
   if (cacheResults.length < texts.length) {
     const missingIndexes = [...results.keys()].filter((i) => !results[i]);
     const missingTexts = missingIndexes.map((i) => texts[i]);
@@ -72,7 +72,7 @@ export const getEmbeddingsByText = internalQuery({
     ctx,
     args,
   ): Promise<{ index: number; embeddingId: Id<'embeddingsCache'>; embedding: number[] }[]> => {
-    const out = [];
+    const out: { index: number; embeddingId: Id<'embeddingsCache'>; embedding: number[] }[] = [];
     for (let i = 0; i < args.textHashes.length; i++) {
       const textHash = args.textHashes[i];
       const result = await ctx.db
@@ -101,7 +101,7 @@ export const writeEmbeddings = internalMutation({
     ),
   },
   handler: async (ctx, args): Promise<Id<'embeddingsCache'>[]> => {
-    const ids = [];
+    const ids: Id<'embeddingsCache'>[] = [];
     for (const embedding of args.embeddings) {
       ids.push(await ctx.db.insert('embeddingsCache', embedding));
     }

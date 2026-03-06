@@ -63,7 +63,7 @@ export const Player = ({
       (a) => a.playerId === player.id && !!a.inProgressOperation,
     );
   const tileDim = game.worldMap.tileDim;
-  const characterScale = tileDim / 24;
+  const characterScale = tileDim / 32;
   const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
   return (
     <>
