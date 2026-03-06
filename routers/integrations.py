@@ -79,6 +79,7 @@ def _validate_servers(servers: dict) -> None:
 @router.get(
     "/integrations/mcp/servers",
     summary="List configured MCP servers",
+    description="Returns all MCP server entries from the user's mcporter.json config.",
     response_model=ServersResponse,
     operation_id="list_mcp_servers",
     tags=["integrations"],
@@ -93,6 +94,7 @@ async def list_mcp_servers(
 @router.put(
     "/integrations/mcp/servers",
     summary="Replace all MCP server configurations",
+    description="Replaces the entire servers dict in the user's mcporter.json config.",
     response_model=ServersResponse,
     operation_id="replace_mcp_servers",
     tags=["integrations"],
@@ -111,6 +113,7 @@ async def replace_mcp_servers(
 @router.patch(
     "/integrations/mcp/servers/{name}",
     summary="Add or update a single MCP server",
+    description="Adds or updates a single MCP server entry by name.",
     response_model=ServersResponse,
     operation_id="upsert_mcp_server",
     tags=["integrations"],
@@ -131,6 +134,7 @@ async def upsert_mcp_server(
 @router.delete(
     "/integrations/mcp/servers/{name}",
     summary="Remove an MCP server",
+    description="Removes an MCP server entry by name.",
     response_model=ServersResponse,
     operation_id="delete_mcp_server",
     tags=["integrations"],

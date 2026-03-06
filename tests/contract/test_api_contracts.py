@@ -111,6 +111,9 @@ schema = (
     .exclude(
         path_regex="^/api/v1/settings/",
     )
+    .exclude(
+        path_regex="^/api/v1/integrations/",
+    )
 )
 
 

@@ -159,10 +159,11 @@ class TestStripeWebhook:
         mock_ecs.create_user_service.assert_called_once()
 
         # Verify config written to EFS after service creation
-        mock_ws.write_file.assert_called_once()
-        write_args = mock_ws.write_file.call_args
-        assert write_args[0][0] == "user_webhook_test"
-        assert write_args[0][1] == "openclaw.json"
+        assert mock_ws.write_file.call_count == 2
+        # First call: openclaw.json, second call: mcporter.json
+        first_call = mock_ws.write_file.call_args_list[0]
+        assert first_call[0][0] == "user_webhook_test"
+        assert first_call[0][1] == "openclaw.json"
 
     @pytest.mark.asyncio
     @patch("routers.billing.get_ecs_manager")
