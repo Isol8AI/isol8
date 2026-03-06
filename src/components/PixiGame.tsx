@@ -1,17 +1,15 @@
 import * as PIXI from 'pixi.js';
 import { useApp } from '@pixi/react';
 import { Player, SelectElement } from './Player.tsx';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
 import PixiViewport from './PixiViewport.tsx';
-import { Viewport } from 'pixi-viewport';
 import { Id } from '../../convex/_generated/dataModel';
 import { useQuery } from 'convex/react';
 import { api } from '../../convex/_generated/api.js';
 import { useSendInput } from '../hooks/sendInput.ts';
 import { toastOnError } from '../toasts.ts';
 import { DebugPath } from './DebugPath.tsx';
-import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
 
@@ -52,27 +50,6 @@ export const PixiGame = (props: {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, [pixiApp, props.width, props.height, props.game.worldMap]);
 
-  // Arrow keys pan the viewport
-  useEffect(() => {
-    const PAN_SPEED = 20;
-    const onKeyDown = (e: KeyboardEvent) => {
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-      let dx = 0, dy = 0;
-      switch (e.key) {
-        case 'ArrowUp': dy = -PAN_SPEED; break;
-        case 'ArrowDown': dy = PAN_SPEED; break;
-        case 'ArrowLeft': dx = -PAN_SPEED; break;
-        case 'ArrowRight': dx = PAN_SPEED; break;
-        default: return;
-      }
-      e.preventDefault();
-      viewport.moveCenter(viewport.center.x + dx, viewport.center.y + dy);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
-
   const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
   const humanPlayerId = [...props.game.world.players.values()].find(
     (p) => p.human === humanTokenIdentifier,
@@ -80,50 +57,71 @@ export const PixiGame = (props: {
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
 
-  // Interaction for clicking on the world to navigate.
-  const dragStart = useRef<{ screenX: number; screenY: number } | null>(null);
-  const onMapPointerDown = (e: any) => {
-    // https://pixijs.download/dev/docs/PIXI.FederatedPointerEvent.html
-    dragStart.current = { screenX: e.screenX, screenY: e.screenY };
-  };
+  // Arrow keys move the human player (hold to walk continuously)
+  const keysHeld = useRef<Set<string>>(new Set());
+  const moveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [lastDestination, setLastDestination] = useState<{
-    x: number;
-    y: number;
-    t: number;
-  } | null>(null);
-  const onMapPointerUp = async (e: any) => {
-    if (dragStart.current) {
-      const { screenX, screenY } = dragStart.current;
-      dragStart.current = null;
-      const [dx, dy] = [screenX - e.screenX, screenY - e.screenY];
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist > 10) {
-        console.log(`Skipping navigation on drag event (${dist}px)`);
-        return;
+  useEffect(() => {
+    if (!humanPlayerId) return;
+
+    const MOVE_INTERVAL = 250; // ms between move commands while holding
+
+    const sendMove = () => {
+      if (!humanPlayerId || keysHeld.current.size === 0) return;
+
+      const hp = props.game.world.players.get(humanPlayerId);
+      if (!hp) return;
+
+      let dx = 0, dy = 0;
+      if (keysHeld.current.has('ArrowUp')) dy = -1;
+      if (keysHeld.current.has('ArrowDown')) dy = 1;
+      if (keysHeld.current.has('ArrowLeft')) dx = -1;
+      if (keysHeld.current.has('ArrowRight')) dx = 1;
+      if (dx === 0 && dy === 0) return;
+
+      const dest = {
+        x: Math.floor(hp.position.x) + dx,
+        y: Math.floor(hp.position.y) + dy,
+      };
+
+      // Clamp to map bounds
+      const { width, height } = props.game.worldMap;
+      dest.x = Math.max(0, Math.min(width - 1, dest.x));
+      dest.y = Math.max(0, Math.min(height - 1, dest.y));
+
+      void toastOnError(moveTo({ playerId: humanPlayerId, destination: dest }));
+    };
+
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+      e.preventDefault();
+      if (keysHeld.current.has(e.key)) return;
+      keysHeld.current.add(e.key);
+
+      sendMove();
+
+      if (!moveIntervalRef.current) {
+        moveIntervalRef.current = setInterval(sendMove, MOVE_INTERVAL);
       }
-    }
-    if (!humanPlayerId) {
-      return;
-    }
-    const viewport = viewportRef.current;
-    if (!viewport) {
-      return;
-    }
-    const gameSpacePx = viewport.toWorld(e.screenX, e.screenY);
-    const tileDim = props.game.worldMap.tileDim;
-    const gameSpaceTiles = {
-      x: gameSpacePx.x / tileDim,
-      y: gameSpacePx.y / tileDim,
     };
-    setLastDestination({ t: Date.now(), ...gameSpaceTiles });
-    const roundedTiles = {
-      x: Math.floor(gameSpaceTiles.x),
-      y: Math.floor(gameSpaceTiles.y),
+
+    const onKeyUp = (e: KeyboardEvent) => {
+      keysHeld.current.delete(e.key);
+      if (keysHeld.current.size === 0 && moveIntervalRef.current) {
+        clearInterval(moveIntervalRef.current);
+        moveIntervalRef.current = null;
+      }
     };
-    console.log(`Moving to ${JSON.stringify(roundedTiles)}`);
-    await toastOnError(moveTo({ playerId: humanPlayerId, destination: roundedTiles }));
-  };
+
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      if (moveIntervalRef.current) clearInterval(moveIntervalRef.current);
+    };
+  }, [humanPlayerId, props.game]);
+
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
 
@@ -165,11 +163,7 @@ export const PixiGame = (props: {
       worldHeight={height * tileDim}
       viewportRef={viewportRef}
     >
-      <PixiStaticMap
-        map={props.game.worldMap}
-        onpointerup={onMapPointerUp}
-        onpointerdown={onMapPointerDown}
-      />
+      <PixiStaticMap map={props.game.worldMap} />
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.
@@ -177,7 +171,6 @@ export const PixiGame = (props: {
             <DebugPath key={`path-${p.id}`} player={p} tileDim={tileDim} />
           ),
       )}
-      {lastDestination && <PositionIndicator destination={lastDestination} tileDim={tileDim} />}
       {players.map((p) => (
         <Player
           key={`player-${p.id}`}
