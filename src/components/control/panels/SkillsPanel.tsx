@@ -1,23 +1,118 @@
 "use client";
 
-import { useState } from "react";
-import { Loader2, RefreshCw, Sparkles, Search } from "lucide-react";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useState, useCallback } from "react";
+import {
+  Loader2,
+  RefreshCw,
+  Search,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  Eye,
+  EyeOff,
+} from "lucide-react";
+import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
-interface Skill {
+// --- Types matching OpenClaw skills.status response ---
+
+interface SkillInstallSpec {
+  id: string;
+  kind: string;
+  label: string;
+  bins: string[];
+}
+
+interface SkillStatusEntry {
   name: string;
-  enabled?: boolean;
-  builtin?: boolean;
-  description?: string;
+  description: string;
+  source: string;
+  skillKey: string;
+  emoji?: string;
+  primaryEnv?: string;
+  bundled?: boolean;
+  always: boolean;
+  disabled: boolean;
+  blockedByAllowlist: boolean;
+  eligible: boolean;
+  requirements: { bins: string[]; env: string[]; config: string[]; os: string[] };
+  missing: { bins: string[]; env: string[]; config: string[]; os: string[] };
+  install: SkillInstallSpec[];
   [key: string]: unknown;
 }
 
+interface SkillStatusReport {
+  workspaceDir?: string;
+  managedSkillsDir?: string;
+  skills: SkillStatusEntry[];
+}
+
+// --- Grouping ---
+
+const SOURCE_ORDER = ["openclaw-bundled", "openclaw-workspace", "openclaw-managed", "openclaw-extra"];
+const SOURCE_LABELS: Record<string, string> = {
+  "openclaw-bundled": "Built-in",
+  "openclaw-workspace": "Workspace",
+  "openclaw-managed": "Installed",
+  "openclaw-extra": "Extra",
+};
+
+function groupBySource(skills: SkillStatusEntry[]): { source: string; label: string; skills: SkillStatusEntry[] }[] {
+  const groups = new Map<string, SkillStatusEntry[]>();
+  for (const skill of skills) {
+    const src = skill.source || "other";
+    if (!groups.has(src)) groups.set(src, []);
+    groups.get(src)!.push(skill);
+  }
+  const ordered: { source: string; label: string; skills: SkillStatusEntry[] }[] = [];
+  for (const src of SOURCE_ORDER) {
+    const g = groups.get(src);
+    if (g?.length) {
+      ordered.push({ source: src, label: SOURCE_LABELS[src] || src, skills: g });
+      groups.delete(src);
+    }
+  }
+  for (const [src, g] of groups) {
+    if (g.length) ordered.push({ source: src, label: SOURCE_LABELS[src] || src, skills: g });
+  }
+  return ordered;
+}
+
+// --- Main Panel ---
+
 export function SkillsPanel({ agentId }: { agentId?: string }) {
   const params = agentId ? { agentId } : {};
-  const { data, error, isLoading, mutate } = useGatewayRpc<Skill[]>("skills.status", params);
+  const { data: raw, error, isLoading, mutate } = useGatewayRpc<SkillStatusReport | SkillStatusEntry[]>(
+    "skills.status",
+    params,
+  );
+  const callRpc = useGatewayRpcMutation();
   const [filter, setFilter] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+
+  // Normalize response: could be SkillStatusReport or raw array
+  const skills: SkillStatusEntry[] = Array.isArray(raw) ? raw : raw?.skills ?? [];
+
+  const filtered = filter
+    ? skills.filter(
+        (s) =>
+          s.name.toLowerCase().includes(filter.toLowerCase()) ||
+          s.description?.toLowerCase().includes(filter.toLowerCase()),
+      )
+    : skills;
+
+  const groups = groupBySource(filtered);
+
+  const toggleGroup = useCallback((source: string) => {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(source)) next.delete(source);
+      else next.add(source);
+      return next;
+    });
+  }, []);
 
   if (isLoading) {
     return (
@@ -38,13 +133,9 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
     );
   }
 
-  const skills = Array.isArray(data) ? data : [];
-  const filtered = filter
-    ? skills.filter((s) => s.name.toLowerCase().includes(filter.toLowerCase()))
-    : skills;
-
   return (
     <div className="p-6 space-y-4">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Skills ({skills.length})</h2>
         <Button variant="ghost" size="sm" onClick={() => mutate()}>
@@ -52,6 +143,7 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
         </Button>
       </div>
 
+      {/* Filter */}
       <div className="relative">
         <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
         <Input
@@ -62,17 +154,270 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
         />
       </div>
 
-      <div className="space-y-1">
-        {filtered.map((skill) => (
-          <div key={skill.name} className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50">
-            <Sparkles className="h-3 w-3 opacity-40 flex-shrink-0" />
-            <span className="text-sm truncate">{skill.name}</span>
-            {skill.builtin && (
-              <span className="text-[10px] text-muted-foreground/50 ml-auto">built-in</span>
+      {/* Grouped skill cards */}
+      {groups.length === 0 && (
+        <p className="text-sm text-muted-foreground">No skills found.</p>
+      )}
+
+      {groups.map((group) => {
+        const collapsed = collapsedGroups.has(group.source);
+        return (
+          <div key={group.source} className="space-y-2">
+            <button
+              className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+              onClick={() => toggleGroup(group.source)}
+            >
+              {collapsed ? (
+                <ChevronRight className="h-3 w-3" />
+              ) : (
+                <ChevronDown className="h-3 w-3" />
+              )}
+              {group.label} ({group.skills.length})
+            </button>
+
+            {!collapsed && (
+              <div className="space-y-2">
+                {group.skills.map((skill) => (
+                  <SkillCard
+                    key={skill.skillKey || skill.name}
+                    skill={skill}
+                    callRpc={callRpc}
+                    onRefresh={mutate}
+                  />
+                ))}
+              </div>
             )}
           </div>
-        ))}
+        );
+      })}
+    </div>
+  );
+}
+
+// --- Skill Card ---
+
+function SkillCard({
+  skill,
+  callRpc,
+  onRefresh,
+}: {
+  skill: SkillStatusEntry;
+  callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
+  onRefresh: () => void;
+}) {
+  const [toggleLoading, setToggleLoading] = useState(false);
+  const [apiKey, setApiKey] = useState("");
+  const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [saveLoading, setSaveLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "success" | "error">("idle");
+  const [installLoading, setInstallLoading] = useState<string | null>(null);
+
+  const hasMissing =
+    (skill.missing?.bins?.length ?? 0) > 0 ||
+    (skill.missing?.env?.length ?? 0) > 0 ||
+    (skill.missing?.config?.length ?? 0) > 0;
+
+  const handleToggle = async () => {
+    setToggleLoading(true);
+    try {
+      await callRpc("skills.update", {
+        skillKey: skill.skillKey || skill.name,
+        enabled: skill.disabled,
+      });
+      onRefresh();
+    } catch (err) {
+      console.error("Failed to toggle skill:", err);
+    } finally {
+      setToggleLoading(false);
+    }
+  };
+
+  const handleSaveKey = async () => {
+    if (!apiKey.trim()) return;
+    setSaveLoading(true);
+    setSaveStatus("idle");
+    try {
+      await callRpc("skills.update", {
+        skillKey: skill.skillKey || skill.name,
+        apiKey: apiKey.trim(),
+      });
+      setSaveStatus("success");
+      setApiKey("");
+      onRefresh();
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    } catch (err) {
+      console.error("Failed to save API key:", err);
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    } finally {
+      setSaveLoading(false);
+    }
+  };
+
+  const handleInstall = async (spec: SkillInstallSpec) => {
+    setInstallLoading(spec.id);
+    try {
+      await callRpc("skills.install", {
+        name: skill.name,
+        installId: spec.id,
+        timeoutMs: 120000,
+      });
+      onRefresh();
+    } catch (err) {
+      console.error("Failed to install:", err);
+    } finally {
+      setInstallLoading(null);
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-border p-4 space-y-3 bg-card/30">
+      {/* Row 1: Name + Toggle */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            {skill.emoji && <span className="text-base flex-shrink-0">{skill.emoji}</span>}
+            <h3 className="text-sm font-medium truncate">{skill.name}</h3>
+          </div>
+          {skill.description && (
+            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+              {skill.description}
+            </p>
+          )}
+        </div>
+
+        <Button
+          variant={skill.disabled ? "outline" : "secondary"}
+          size="sm"
+          className="flex-shrink-0 text-xs"
+          onClick={handleToggle}
+          disabled={toggleLoading || skill.always}
+        >
+          {toggleLoading ? (
+            <Loader2 className="h-3 w-3 animate-spin" />
+          ) : skill.disabled ? (
+            "Enable"
+          ) : (
+            "Disable"
+          )}
+        </Button>
       </div>
+
+      {/* Row 2: Badges */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">
+          {SOURCE_LABELS[skill.source] || skill.source}
+        </span>
+        {skill.eligible ? (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/10 text-green-500">
+            eligible
+          </span>
+        ) : (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-500/10 text-orange-500">
+            blocked
+          </span>
+        )}
+        {skill.disabled && (
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-orange-500/10 text-orange-500">
+            disabled
+          </span>
+        )}
+      </div>
+
+      {/* Row 3: Missing dependencies */}
+      {hasMissing && (
+        <div className="space-y-1">
+          {(skill.missing?.bins?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-orange-400">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              <span>Missing bin: {skill.missing.bins.join(", ")}</span>
+            </div>
+          )}
+          {(skill.missing?.env?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-orange-400">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              <span>Missing env: {skill.missing.env.join(", ")}</span>
+            </div>
+          )}
+          {(skill.missing?.config?.length ?? 0) > 0 && (
+            <div className="flex items-center gap-1.5 text-xs text-orange-400">
+              <AlertTriangle className="h-3 w-3 flex-shrink-0" />
+              <span>Missing config: {skill.missing.config.join(", ")}</span>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Row 4: Install buttons */}
+      {skill.install?.length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {skill.install.map((spec) => (
+            <Button
+              key={spec.id}
+              variant="outline"
+              size="sm"
+              className="text-xs gap-1.5"
+              onClick={() => handleInstall(spec)}
+              disabled={installLoading !== null}
+            >
+              {installLoading === spec.id ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Download className="h-3 w-3" />
+              )}
+              {spec.label || `Install via ${spec.kind}`}
+            </Button>
+          ))}
+        </div>
+      )}
+
+      {/* Row 5: API key input */}
+      {skill.primaryEnv && (
+        <div className="space-y-1.5">
+          <label className="text-xs text-muted-foreground">API key</label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <Input
+                type={apiKeyVisible ? "text" : "password"}
+                placeholder={skill.primaryEnv}
+                className="h-8 text-xs pr-8 font-mono"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSaveKey();
+                }}
+              />
+              <button
+                type="button"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                onClick={() => setApiKeyVisible(!apiKeyVisible)}
+              >
+                {apiKeyVisible ? (
+                  <EyeOff className="h-3.5 w-3.5" />
+                ) : (
+                  <Eye className="h-3.5 w-3.5" />
+                )}
+              </button>
+            </div>
+            <Button
+              size="sm"
+              className="text-xs flex-shrink-0"
+              onClick={handleSaveKey}
+              disabled={saveLoading || !apiKey.trim()}
+            >
+              {saveLoading ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : saveStatus === "success" ? (
+                "Saved!"
+              ) : saveStatus === "error" ? (
+                "Failed"
+              ) : (
+                "Save key"
+              )}
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
