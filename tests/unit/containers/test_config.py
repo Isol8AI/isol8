@@ -57,11 +57,10 @@ class TestWriteOpenclawConfig:
         assert "canvas" in config["tools"]["deny"]
         assert "nodes" in config["tools"]["deny"]
 
-    def test_config_edge_tts_enabled(self):
-        """Edge TTS provider is enabled."""
+    def test_no_root_tts_key(self):
+        """TTS config is not at root level (OpenClaw doesn't support it there)."""
         config = json.loads(write_openclaw_config())
-        assert config["tts"]["provider"] == "edge"
-        assert config["tts"]["edge"]["enabled"] is True
+        assert "tts" not in config
 
     def test_config_image_understanding_enabled(self):
         """Image understanding is enabled in media tools."""

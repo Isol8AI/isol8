@@ -27,6 +27,20 @@ def write_openclaw_config(
         JSON string of the openclaw.json config.
     """
     auth = {"mode": "token", "token": gateway_token} if gateway_token else {"mode": "none"}
+
+    # Build search config — Perplexity via our proxy
+    if gateway_token:
+        search_config = {
+            "enabled": True,
+            "provider": "perplexity",
+            "perplexity": {
+                "apiKey": gateway_token,
+                "baseUrl": f"{proxy_base_url}/search",
+            },
+        }
+    else:
+        search_config = {"enabled": False}
+
     config = {
         "gateway": {
             "mode": "local",
@@ -115,14 +129,7 @@ def write_openclaw_config(
             "profile": "full",
             "deny": ["canvas", "nodes"],
             "web": {
-                "search": {
-                    "enabled": bool(gateway_token),
-                    "provider": "perplexity",
-                    "perplexity": {
-                        "apiKey": gateway_token,
-                        "baseUrl": f"{proxy_base_url}/search",
-                    },
-                },
+                "search": search_config,
                 "fetch": {"enabled": True},
             },
             "media": {
@@ -131,27 +138,11 @@ def write_openclaw_config(
                 "video": {"enabled": False},
             },
         },
-        "tts": {
-            "provider": "edge",
-            "edge": {"enabled": True},
-        },
         "hooks": {
             "internal": {
                 "entries": {
                     "command-logger": {"enabled": True},
                     "session-memory": {"enabled": True},
-                },
-                "installs": {
-                    "command-logger": {
-                        "id": "bundled",
-                        "kind": "bundled",
-                        "label": "Bundled with OpenClaw",
-                    },
-                    "session-memory": {
-                        "id": "bundled",
-                        "kind": "bundled",
-                        "label": "Bundled with OpenClaw",
-                    },
                 },
             },
         },
