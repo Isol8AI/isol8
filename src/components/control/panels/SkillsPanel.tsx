@@ -13,8 +13,17 @@ import {
   EyeOff,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+
+// Map OpenClaw primaryEnv → backend tool_id for BYOK persistence
+const ENV_TO_TOOL_ID: Record<string, string> = {
+  ELEVENLABS_API_KEY: "elevenlabs",
+  OPENAI_API_KEY: "openai_tts",
+  PERPLEXITY_API_KEY: "perplexity",
+  FIRECRAWL_API_KEY: "firecrawl",
+};
 
 // --- Types matching OpenClaw skills.status response ---
 
@@ -89,6 +98,7 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
     params,
   );
   const callRpc = useGatewayRpcMutation();
+  const api = useApi();
   const [filter, setFilter] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
 
@@ -182,6 +192,7 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
                     key={skill.skillKey || skill.name}
                     skill={skill}
                     callRpc={callRpc}
+                    api={api}
                     onRefresh={mutate}
                   />
                 ))}
@@ -199,10 +210,12 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
 function SkillCard({
   skill,
   callRpc,
+  api,
   onRefresh,
 }: {
   skill: SkillStatusEntry;
   callRpc: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
+  api: ReturnType<typeof useApi>;
   onRefresh: () => void;
 }) {
   const [toggleLoading, setToggleLoading] = useState(false);
@@ -241,6 +254,17 @@ function SkillCard({
         skillKey: skill.skillKey || skill.name,
         apiKey: apiKey.trim(),
       });
+
+      // Persist key in backend for BYOK billing tracking
+      const toolId = skill.primaryEnv ? ENV_TO_TOOL_ID[skill.primaryEnv] : null;
+      if (toolId) {
+        try {
+          await api.put(`/settings/keys/${toolId}`, { api_key: apiKey.trim() });
+        } catch (err) {
+          console.warn("BYOK key persistence failed (non-critical):", err);
+        }
+      }
+
       setSaveStatus("success");
       setApiKey("");
       onRefresh();
