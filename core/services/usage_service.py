@@ -267,7 +267,7 @@ class UsageService:
                 return
 
             stripe.billing.MeterEvent.create(
-                event_name="llm_usage",
+                event_name="llm_token_usage",
                 payload={
                     "stripe_customer_id": stripe_customer_id,
                     "value": str(value),
