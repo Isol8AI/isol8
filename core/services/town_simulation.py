@@ -20,6 +20,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from core.town_constants import TOWN_LOCATIONS
+from core.apartment_constants import APARTMENT_SPOTS, RESIDENTIAL_TOWN_COORDS
 from core.services.town_pathfinding import find_path
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,8 @@ class TownSimulation:
         self._mgmt_client_failed = False
         # A* precomputed paths: agent_id -> list of (x, y) waypoints remaining
         self._agent_paths: Dict[str, List[Tuple[int, int]]] = {}
+        # Pending cross-context destinations: agent_id -> final destination name
+        self._pending_destinations: Dict[str, str] = {}
         # Tick counter for periodic world updates
         self._tick_count: int = 0
 
@@ -160,11 +163,13 @@ class TownSimulation:
                 if tx is not None and ty is not None:
                     # Compute A* path if we don't have one for this agent
                     if agent_id not in self._agent_paths:
+                        location_context = agent_state.get("location_context", "apartment")
                         path = find_path(
                             agent_state["position_x"],
                             agent_state["position_y"],
                             tx,
                             ty,
+                            context=location_context,
                         )
                         if path and len(path) > 1:
                             # Skip the first waypoint (current position)
@@ -224,11 +229,40 @@ class TownSimulation:
                             update["current_location"] = agent_state["target_location"]
                             update["target_location"] = None
 
+                        # Check for pending cross-context transition
+                        pending = self._pending_destinations.pop(agent_id, None)
+                        if pending:
+                            cur_context = agent_state.get("location_context", "apartment")
+                            if cur_context == "apartment":
+                                # Arrived at exit -> transition to town
+                                update["location_context"] = "town"
+                                update["position_x"] = RESIDENTIAL_TOWN_COORDS["x"]
+                                update["position_y"] = RESIDENTIAL_TOWN_COORDS["y"]
+                                town_dest = TOWN_LOCATIONS.get(pending)
+                                if town_dest:
+                                    update["target_x"] = float(town_dest["x"])
+                                    update["target_y"] = float(town_dest["y"])
+                                    update["target_location"] = pending
+                                    update["current_activity"] = "walking"
+                                    update["speed"] = AGENT_SPEED
+                            else:
+                                # Arrived at residential -> transition to apartment
+                                update["location_context"] = "apartment"
+                                update["position_x"] = float(APARTMENT_SPOTS["exit"]["x"])
+                                update["position_y"] = float(APARTMENT_SPOTS["exit"]["y"])
+                                apt_dest = APARTMENT_SPOTS.get(pending)
+                                if apt_dest:
+                                    update["target_x"] = float(apt_dest["x"])
+                                    update["target_y"] = float(apt_dest["y"])
+                                    update["target_location"] = pending
+                                    update["current_activity"] = "walking"
+                                    update["speed"] = AGENT_SPEED
+
                         # Handle going_home -> sleeping transition
-                        if location_state == "going_home":
+                        if location_state == "going_home" and not pending:
                             update["location_state"] = "sleeping"
                             logger.debug("Agent %s arrived home, now sleeping", agent_name)
-                        else:
+                        elif not pending:
                             # Push "arrived" event to connected agent
                             events_to_push.append(
                                 (
@@ -251,30 +285,44 @@ class TownSimulation:
                 if location_state == "active" and not ws_manager.is_agent_connected(agent_name):
                     heartbeat = agent_state["last_heartbeat_at"]
                     if heartbeat is None or (now - heartbeat) > INACTIVE_TIMEOUT:
-                        home_loc = agent_state["home_location"] or "apartment"
-                        home_coords = TOWN_LOCATIONS.get(home_loc, TOWN_LOCATIONS.get("apartment"))
-                        if home_coords:
-                            self._agent_paths.pop(agent_id, None)
+                        cur_context = agent_state.get("location_context", "apartment")
+                        self._agent_paths.pop(agent_id, None)
+                        if cur_context == "town":
+                            # In town -> walk to residential, then transition to apartment
+                            self._pending_destinations[agent_id] = "bed_1"
                             await service.update_agent_state(
                                 agent_id,
                                 location_state="going_home",
-                                target_x=home_coords["x"],
-                                target_y=home_coords["y"],
-                                target_location=home_loc,
+                                target_x=RESIDENTIAL_TOWN_COORDS["x"],
+                                target_y=RESIDENTIAL_TOWN_COORDS["y"],
+                                target_location="home",
                                 current_activity="walking",
                                 speed=AGENT_SPEED,
                             )
-                            logger.info(
-                                "Agent %s inactive for >5min, sending home",
-                                agent_name,
+                        else:
+                            # Already in apartment -> walk to bed
+                            await service.update_agent_state(
+                                agent_id,
+                                location_state="going_home",
+                                target_x=float(APARTMENT_SPOTS["bed_1"]["x"]),
+                                target_y=float(APARTMENT_SPOTS["bed_1"]["y"]),
+                                target_location="bed_1",
+                                current_activity="walking",
+                                speed=AGENT_SPEED,
                             )
+                        logger.info(
+                            "Agent %s inactive for >5min, sending home",
+                            agent_name,
+                        )
 
             # --- Proximity detection ---
             current_nearby = set()
             active_states = [
                 s
                 for s in states
-                if (s["location_state"] or "active") != "sleeping" and s["current_conversation_id"] is None
+                if (s["location_state"] or "active") != "sleeping"
+                and s["current_conversation_id"] is None
+                and s.get("location_context", "apartment") == "town"
             ]
 
             for i, a in enumerate(active_states):
@@ -418,6 +466,7 @@ class TownSimulation:
                         round(agent_state["position_y"], 1),
                     ],
                     "current_location": agent_state.get("current_location"),
+                    "location_context": agent_state.get("location_context", "apartment"),
                     "mood": agent_state.get("mood"),
                     "energy": agent_state.get("energy"),
                     "activity": agent_state.get("current_activity", "idle"),

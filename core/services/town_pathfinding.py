@@ -32,6 +32,7 @@ def _load_objmap() -> List[List[int]]:
 
 # Module-level cache
 _objmap: Optional[List[List[int]]] = None
+_apartment_objmap: Optional[List[List[int]]] = None
 
 
 def get_objmap() -> List[List[int]]:
@@ -42,9 +43,22 @@ def get_objmap() -> List[List[int]]:
     return _objmap
 
 
-def is_walkable(x: int, y: int) -> bool:
+def get_apartment_objmap() -> List[List[int]]:
+    """Get the cached apartment objmap grid (indexed as [x][y])."""
+    global _apartment_objmap
+    if _apartment_objmap is None:
+        from core.apartment_constants import get_apartment_objmap_xy
+
+        _apartment_objmap = get_apartment_objmap_xy()
+    return _apartment_objmap
+
+
+def is_walkable(x: int, y: int, context: str = "town") -> bool:
     """Check if a tile coordinate is walkable."""
-    objmap = get_objmap()
+    if context == "apartment":
+        objmap = get_apartment_objmap()
+    else:
+        objmap = get_objmap()
     if not objmap:
         return True  # No map data, allow all movement
     if x < 0 or x >= len(objmap):
@@ -60,6 +74,7 @@ def find_path(
     end_x: float,
     end_y: float,
     max_iterations: int = 5000,
+    context: str = "town",
 ) -> Optional[List[Point]]:
     """Find a path from start to end using A* on the tile grid.
 
@@ -76,14 +91,14 @@ def find_path(
     ex, ey = round(end_x), round(end_y)
 
     # If start or end is blocked, snap to nearest walkable tile
-    if not is_walkable(sx, sy):
-        snapped = _nearest_walkable(sx, sy)
+    if not is_walkable(sx, sy, context):
+        snapped = _nearest_walkable(sx, sy, context=context)
         if snapped is None:
             return None
         sx, sy = snapped
 
-    if not is_walkable(ex, ey):
-        snapped = _nearest_walkable(ex, ey)
+    if not is_walkable(ex, ey, context):
+        snapped = _nearest_walkable(ex, ey, context=context)
         if snapped is None:
             return None
         ex, ey = snapped
@@ -118,7 +133,7 @@ def find_path(
 
         for dx, dy in directions:
             nx, ny = cx + dx, cy + dy
-            if not is_walkable(nx, ny):
+            if not is_walkable(nx, ny, context):
                 continue
 
             new_g = g_score[(cx, cy)] + 1
@@ -142,14 +157,14 @@ def find_path(
     return None
 
 
-def _nearest_walkable(x: int, y: int, radius: int = 10) -> Optional[Point]:
+def _nearest_walkable(x: int, y: int, radius: int = 10, context: str = "town") -> Optional[Point]:
     """Find the nearest walkable tile within a radius."""
     best = None
     best_dist = float("inf")
     for dx in range(-radius, radius + 1):
         for dy in range(-radius, radius + 1):
             nx, ny = x + dx, y + dy
-            if is_walkable(nx, ny):
+            if is_walkable(nx, ny, context):
                 dist = abs(dx) + abs(dy)
                 if dist < best_dist:
                     best_dist = dist

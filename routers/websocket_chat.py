@@ -400,7 +400,10 @@ async def ws_message(
                 str(instance.id),
             )
 
-            # Send initial state
+            # Send initial state with apartment spots and town locations
+            from core.apartment_constants import APARTMENT_SPOTS
+            from core.town_constants import TOWN_LOCATIONS
+
             management_api.send_message(
                 x_connection_id,
                 {
@@ -412,10 +415,18 @@ async def ws_message(
                         "location": state.current_location,
                         "position": {"x": state.position_x, "y": state.position_y},
                         "location_state": state.location_state,
+                        "location_context": getattr(state, "location_context", "apartment"),
                         "mood": state.mood,
                         "energy": state.energy,
                         "activity": state.current_activity,
                     },
+                    "apartment": {
+                        "spots": {
+                            spot_id: {"room": spot["room"], "label": spot["label"]}
+                            for spot_id, spot in APARTMENT_SPOTS.items()
+                        }
+                    },
+                    "town": {"locations": {loc_id: {"label": loc["label"]} for loc_id, loc in TOWN_LOCATIONS.items()}},
                 },
             )
 
@@ -454,24 +465,63 @@ async def ws_message(
 
             if action == "move":
                 from core.town_constants import TOWN_LOCATIONS
+                from core.apartment_constants import APARTMENT_SPOTS, RESIDENTIAL_TOWN_COORDS
 
                 dest = body.get("destination")
-                if dest not in TOWN_LOCATIONS:
+                location_context = state.location_context or "apartment"
+
+                # Get simulation reference for pending destinations and path clearing
+                import main as _main_module
+
+                sim = _main_module._town_simulation
+
+                if dest in APARTMENT_SPOTS:
+                    if location_context == "apartment":
+                        spot = APARTMENT_SPOTS[dest]
+                        state.target_x = float(spot["x"])
+                        state.target_y = float(spot["y"])
+                        state.target_location = dest
+                    else:
+                        # In town -> walk to residential first
+                        state.target_x = RESIDENTIAL_TOWN_COORDS["x"]
+                        state.target_y = RESIDENTIAL_TOWN_COORDS["y"]
+                        state.target_location = "home"
+                        if sim:
+                            sim._pending_destinations[state.agent_id] = dest
+                    state.current_activity = "walking"
+                    state.location_state = "active"
+                    state.speed = 0.6
+                elif dest in TOWN_LOCATIONS:
+                    if location_context == "town":
+                        loc = TOWN_LOCATIONS[dest]
+                        state.target_x = float(loc["x"])
+                        state.target_y = float(loc["y"])
+                        state.target_location = dest
+                    else:
+                        # In apartment -> walk to exit first
+                        exit_spot = APARTMENT_SPOTS["exit"]
+                        state.target_x = float(exit_spot["x"])
+                        state.target_y = float(exit_spot["y"])
+                        state.target_location = "exit"
+                        if sim:
+                            sim._pending_destinations[state.agent_id] = dest
+                    state.current_activity = "walking"
+                    state.location_state = "active"
+                    state.speed = 0.6
+                else:
                     management_api.send_message(
                         x_connection_id,
                         {
                             "type": "town_event",
                             "event": "error",
-                            "message": f"Unknown location: {dest}",
+                            "message": f"Unknown destination: {dest}",
                         },
                     )
                     return Response(status_code=200)
-                loc = TOWN_LOCATIONS[dest]
-                state.target_x = float(loc["x"])
-                state.target_y = float(loc["y"])
-                state.current_activity = "walking"
-                state.location_state = "active"
-                state.speed = 0.6
+
+                # Clear stale A* path so simulation recomputes
+                if sim:
+                    sim._agent_paths.pop(state.agent_id, None)
             elif action == "idle":
                 state.current_activity = body.get("activity", "idle")
                 state.target_x = None

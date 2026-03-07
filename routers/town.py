@@ -337,6 +337,11 @@ async def _build_ai_town_state(db: AsyncSession) -> dict:
     if not db_states:
         return _build_default_state()
 
+    # Only include agents in the town coordinate space
+    db_states = [s for s in db_states if s.get("location_context", "apartment") == "town"]
+    if not db_states:
+        return _build_default_state()
+
     now_ms = int(time.time() * 1000)
     players = []
     agents = []
@@ -654,12 +659,23 @@ async def get_apartment(
 
     agents = []
     for agent, state in rows:
+        # Determine current spot from position
+        current_spot = None
+        if state:
+            from core.apartment_constants import APARTMENT_SPOTS
+
+            for spot_id, spot in APARTMENT_SPOTS.items():
+                if abs(state.position_x - spot["x"]) < 0.5 and abs(state.position_y - spot["y"]) < 0.5:
+                    current_spot = spot_id
+                    break
+
         agents.append(
             ApartmentAgentState(
                 agent_id=agent.id,
                 agent_name=agent.agent_name,
                 display_name=agent.display_name,
                 character=agent.character,
+                location_context=getattr(state, "location_context", "apartment") if state else "apartment",
                 current_location=state.current_location if state else None,
                 current_activity=state.current_activity if state else None,
                 mood=state.mood if state else None,
@@ -667,6 +683,10 @@ async def get_apartment(
                 status_message=state.status_message if state else None,
                 position_x=state.position_x if state else 0.0,
                 position_y=state.position_y if state else 0.0,
+                speed=state.speed if state else 0.0,
+                facing_x=state.facing_x if state else 0.0,
+                facing_y=state.facing_y if state else 1.0,
+                current_spot=current_spot,
                 is_active=agent.is_active,
             )
         )

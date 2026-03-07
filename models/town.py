@@ -92,6 +92,7 @@ class TownState(Base):
     last_decision_at = Column(DateTime(timezone=True), nullable=True)
     last_conversation_at = Column(DateTime(timezone=True), nullable=True)
     location_state = Column(String(20), default="sleeping")
+    location_context = Column(String(20), default="apartment")
     target_x = Column(Float, nullable=True)
     target_y = Column(Float, nullable=True)
     facing_x = Column(Float, default=0.0)

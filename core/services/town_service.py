@@ -46,9 +46,9 @@ class TownService:
                 return existing
             return existing
 
-        from core.town_constants import TOWN_LOCATIONS
+        from core.apartment_constants import APARTMENT_SPOTS
 
-        apartment = TOWN_LOCATIONS["apartment"]
+        bedroom = APARTMENT_SPOTS["bed_1"]
 
         town_agent = TownAgent(
             user_id=user_id,
@@ -63,9 +63,10 @@ class TownService:
 
         state = TownState(
             agent_id=town_agent.id,
-            position_x=apartment["x"],
-            position_y=apartment["y"],
-            current_location="apartment",
+            position_x=float(bedroom["x"]),
+            position_y=float(bedroom["y"]),
+            current_location="bedroom",
+            location_context="apartment",
         )
         self.db.add(state)
         await self.db.flush()
@@ -117,6 +118,7 @@ class TownService:
                 "position_x": state.position_x,
                 "position_y": state.position_y,
                 "location_state": state.location_state,
+                "location_context": state.location_context,
                 "speed": state.speed,
                 "facing_x": state.facing_x,
                 "facing_y": state.facing_y,
@@ -358,9 +360,9 @@ class TownService:
         instance = await self.create_instance(user_id)
         created_agents = []
 
-        from core.town_constants import TOWN_LOCATIONS
+        from core.apartment_constants import APARTMENT_SPOTS
 
-        apartment = TOWN_LOCATIONS["apartment"]
+        bedroom = APARTMENT_SPOTS["bed_1"]
 
         for agent_data in agents_data:
             agent = TownAgent(
@@ -376,10 +378,11 @@ class TownService:
 
             state = TownState(
                 agent_id=agent.id,
-                position_x=apartment["x"],
-                position_y=apartment["y"],
-                current_location="apartment",
+                position_x=float(bedroom["x"]),
+                position_y=float(bedroom["y"]),
+                current_location="bedroom",
                 location_state="active",
+                location_context="apartment",
             )
             self.db.add(state)
             await self.db.flush()

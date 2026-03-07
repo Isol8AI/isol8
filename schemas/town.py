@@ -143,6 +143,7 @@ class ApartmentAgentState(BaseModel):
     agent_name: str
     display_name: str
     character: Optional[str] = None
+    location_context: Optional[str] = "apartment"
     current_location: Optional[str] = None
     current_activity: Optional[str] = None
     mood: Optional[str] = None
@@ -150,6 +151,10 @@ class ApartmentAgentState(BaseModel):
     status_message: Optional[str] = None
     position_x: float = 0.0
     position_y: float = 0.0
+    speed: float = 0.0
+    facing_x: float = 0.0
+    facing_y: float = 1.0
+    current_spot: Optional[str] = None
     is_active: bool = True
 
 
