@@ -310,7 +310,7 @@ async def upload_files(
         if len(data) > MAX_FILE_SIZE:
             raise HTTPException(
                 status_code=400,
-                detail=f"File '{f.filename}' exceeds {MAX_FILE_SIZE // (1024*1024)}MB limit.",
+                detail=f"File '{f.filename}' exceeds {MAX_FILE_SIZE // (1024 * 1024)}MB limit.",
             )
 
         safe_name = _sanitize_filename(f.filename or "upload")

@@ -59,7 +59,7 @@ async def init_models(reset: bool = False):
                 # Fix agents missing location_context (column added after rows existed)
                 print("Fixing apartment agent data...")
                 await conn.execute(
-                    text("UPDATE town_state SET location_context = 'apartment' " "WHERE location_context IS NULL")
+                    text("UPDATE town_state SET location_context = 'apartment' WHERE location_context IS NULL")
                 )
                 # Fix agents with apartment context but town-scale positions
                 await conn.execute(
