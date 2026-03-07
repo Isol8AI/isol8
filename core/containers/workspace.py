@@ -163,6 +163,31 @@ class Workspace:
                 user_id=user_id,
             ) from exc
 
+    def write_bytes(self, user_id: str, path: str, data: bytes) -> None:
+        """Write binary data into a user's workspace.
+
+        Creates parent directories as needed.
+
+        Args:
+            user_id: The user whose workspace to write into.
+            path: Relative path within the user's workspace directory.
+            data: Binary content to write.
+
+        Raises:
+            WorkspaceError: If the path escapes the user directory or a
+                filesystem error occurs.
+        """
+        resolved = self._resolve_user_file(user_id, path)
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_bytes(data)
+        except OSError as exc:
+            logger.error("Failed to write %r for %s: %s", path, user_id, exc)
+            raise WorkspaceError(
+                f"Failed to write {path!r} for {user_id}: {exc}",
+                user_id=user_id,
+            ) from exc
+
     def delete_file(self, user_id: str, path: str) -> None:
         """Delete a file from a user's workspace.
 

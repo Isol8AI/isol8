@@ -13,17 +13,18 @@ RPC calls: receive connect.challenge → send connect with auth token
 import asyncio
 import json
 import logging
+import re
 import uuid
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 from websockets import connect as ws_connect
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
-from core.containers import get_ecs_manager
+from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import GATEWAY_PORT
 from core.database import get_db
 
@@ -248,3 +249,74 @@ async def container_rpc(
         raise HTTPException(status_code=502, detail="Gateway RPC call failed")
 
     return {"result": result}
+
+
+# ---------------------------------------------------------------------------
+# File upload
+# ---------------------------------------------------------------------------
+
+MAX_FILE_SIZE = 10 * 1024 * 1024  # 10 MB per file
+MAX_FILES_PER_REQUEST = 10
+SAFE_FILENAME_RE = re.compile(r"^[\w\-. ]+$")
+
+
+def _sanitize_filename(name: str) -> str:
+    """Return a safe filename, stripping path components and invalid chars."""
+    # Take only the basename (no directory traversal)
+    base = name.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    if not base or not SAFE_FILENAME_RE.match(base):
+        # Replace unsafe chars
+        base = re.sub(r"[^\w\-. ]", "_", base) or "upload"
+    return base
+
+
+@router.post(
+    "/files",
+    summary="Upload files to the user's agent workspace",
+    description=(
+        "Uploads one or more files to the user's workspace on EFS. "
+        "Files are placed in the `uploads/` directory and are accessible "
+        "to the user's OpenClaw agent. Max 10MB per file, 10 files per request."
+    ),
+    operation_id="upload_files",
+    responses={
+        400: {"description": "File too large or too many files"},
+        404: {"description": "No container for this user"},
+    },
+)
+async def upload_files(
+    files: List[UploadFile] = File(..., description="Files to upload"),
+    auth: AuthContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if len(files) > MAX_FILES_PER_REQUEST:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many files. Maximum {MAX_FILES_PER_REQUEST} per request.",
+        )
+
+    # Verify user has a container
+    ecs_manager = get_ecs_manager()
+    container = await ecs_manager.get_service_status(auth.user_id, db)
+    if not container:
+        raise HTTPException(status_code=404, detail="No container found")
+
+    workspace = get_workspace()
+    workspace.ensure_user_dir(auth.user_id)
+
+    uploaded = []
+    for f in files:
+        data = await f.read()
+        if len(data) > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{f.filename}' exceeds {MAX_FILE_SIZE // (1024*1024)}MB limit.",
+            )
+
+        safe_name = _sanitize_filename(f.filename or "upload")
+        dest_path = f"uploads/{safe_name}"
+        workspace.write_bytes(auth.user_id, dest_path, data)
+        uploaded.append({"filename": safe_name, "path": dest_path, "size": len(data)})
+        logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), auth.user_id)
+
+    return {"uploaded": uploaded}
