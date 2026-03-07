@@ -379,6 +379,7 @@ class TownService:
                 position_x=apartment["x"],
                 position_y=apartment["y"],
                 current_location="apartment",
+                location_state="active",
             )
             self.db.add(state)
             await self.db.flush()
