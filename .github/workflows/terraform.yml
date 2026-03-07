@@ -88,6 +88,7 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
             -out=tfplan-dev \
             -no-color
         continue-on-error: true
@@ -178,6 +179,7 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
             -out=tfplan-staging \
             -no-color
         continue-on-error: true
@@ -268,6 +270,7 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
             -out=tfplan-prod \
             -no-color
         continue-on-error: true
