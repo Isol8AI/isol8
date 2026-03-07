@@ -224,11 +224,8 @@ def _notify_state_changed():
         loop.create_task(_async_notify_viewers())
         return
     except RuntimeError:
+        # No event loop — skip push, REST polling will fill in
         pass
-
-    # No event loop — sync fallback
-    message = _build_ws_message()
-    _push_to_viewers(message)
 
 
 async def _async_notify_viewers():
@@ -239,7 +236,8 @@ async def _async_notify_viewers():
     try:
         message = await _build_ws_message_async()
     except Exception:
-        message = _build_ws_message()
+        logger.debug("Failed to build async WS message, skipping push")
+        return
     _push_to_viewers(message)
 
 
@@ -272,7 +270,8 @@ def add_town_viewer(connection_id: str):
         try:
             msg = await _build_ws_message_async()
         except Exception:
-            msg = _build_ws_message()
+            logger.debug("Failed to build initial WS message, skipping")
+            return
         try:
             mgmt.send_message(connection_id, msg)
         except ManagementApiClientError:
@@ -282,11 +281,8 @@ def add_town_viewer(connection_id: str):
         loop = asyncio.get_running_loop()
         loop.create_task(_send_initial())
     except RuntimeError:
-        # No event loop — sync fallback
-        try:
-            mgmt.send_message(connection_id, _build_ws_message())
-        except ManagementApiClientError:
-            _town_viewer_connections.discard(connection_id)
+        # No event loop — skip initial push, REST polling will fill in
+        pass
 
 
 def remove_town_viewer(connection_id: str):
