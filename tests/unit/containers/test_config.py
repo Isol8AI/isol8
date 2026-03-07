@@ -148,12 +148,11 @@ class TestWriteOpenclawConfig:
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert bedrock["auth"] == "aws-sdk"
 
-    def test_skills_allow_bundled(self):
-        """Skills section allows mcporter and clawhub."""
+    def test_skills_no_allowlist(self):
+        """Skills section has no allowBundled (all bundled skills allowed)."""
         config = json.loads(write_openclaw_config())
         assert "skills" in config
-        assert "mcporter" in config["skills"]["allowBundled"]
-        assert "clawhub" in config["skills"]["allowBundled"]
+        assert "allowBundled" not in config["skills"]
 
     def test_skills_node_manager(self):
         """Skills install uses npm as node manager."""

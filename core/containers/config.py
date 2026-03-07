@@ -139,7 +139,6 @@ def write_openclaw_config(
             },
         },
         "skills": {
-            "allowBundled": ["mcporter", "clawhub"],
             "install": {
                 "nodeManager": "npm",
             },
