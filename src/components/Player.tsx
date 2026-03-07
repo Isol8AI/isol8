@@ -1,94 +1,63 @@
 import { Character } from './Character.tsx';
-import { orientationDegrees } from '../../convex/util/geometry.ts';
 import { characters } from '../../data/characters.ts';
 import { toast } from 'react-toastify';
-import { Player as ServerPlayer } from '../../convex/aiTown/player.ts';
-import { GameId } from '../../convex/aiTown/ids.ts';
-import { Id } from '../../convex/_generated/dataModel';
-import { Location, locationFields, playerLocation } from '../../convex/aiTown/location.ts';
-import { useHistoricalValue } from '../hooks/useHistoricalValue.ts';
-import { PlayerDescription } from '../../convex/aiTown/playerDescription.ts';
-import { WorldMap } from '../../convex/aiTown/worldMap.ts';
-import { ServerGame } from '../hooks/serverGame.ts';
-
-export type SelectElement = (element?: { kind: 'player'; id: GameId<'players'> }) => void;
+import type { TownGameState, TownPlayer } from '../types/town';
 
 const logged = new Set<string>();
 
+function orientationDegrees(dx: number, dy: number): number {
+  if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
+    return 90; // default: face down
+  }
+  const twoPi = 2 * Math.PI;
+  const radians = (Math.atan2(dy, dx) + twoPi) % twoPi;
+  return (radians / twoPi) * 360;
+}
+
 export const Player = ({
   game,
-  isViewer,
   player,
   onClick,
-  historicalTime,
+  tileDim,
 }: {
-  game: ServerGame;
-  isViewer: boolean;
-  player: ServerPlayer;
-
-  onClick: SelectElement;
-  historicalTime?: number;
+  game: TownGameState;
+  player: TownPlayer;
+  onClick: (playerId: string) => void;
+  tileDim: number;
 }) => {
-  const playerCharacter = game.playerDescriptions.get(player.id)?.character;
-  if (!playerCharacter) {
-    throw new Error(`Player ${player.id} has no character`);
-  }
-  const character = characters.find((c) => c.name === playerCharacter);
+  const playerDesc = game.playerDescriptions.get(player.id);
+  const characterId = playerDesc?.character ?? 'c6';
+  const character = characters.find((c) => c.name === characterId);
 
-  const locationBuffer = game.world.historicalLocations?.get(player.id);
-  const historicalLocation = useHistoricalValue<Location>(
-    locationFields,
-    historicalTime,
-    playerLocation(player),
-    locationBuffer,
-  );
   if (!character) {
-    if (!logged.has(playerCharacter)) {
-      logged.add(playerCharacter);
-      toast.error(`Unknown character ${playerCharacter}`);
+    if (!logged.has(characterId)) {
+      logged.add(characterId);
+      toast.error(`Unknown character ${characterId}`);
     }
     return null;
   }
 
-  if (!historicalLocation) {
-    return null;
-  }
-
-  const isSpeaking = !![...game.world.conversations.values()].find(
-    (c) => c.isTyping?.playerId === player.id,
+  const isSpeaking = game.speechBubbles.some(
+    (sb) => sb.speaker === playerDesc?.name,
   );
-  const isThinking =
-    !isSpeaking &&
-    !![...game.world.agents.values()].find(
-      (a) => a.playerId === player.id && !!a.inProgressOperation,
-    );
-  const tileDim = game.worldMap.tileDim;
+
   // Scale up characters to match the chunky pixel art map style
   const characterScale = (tileDim / 32) * 2.5;
-  const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
+
   return (
-    <>
-      <Character
-        x={historicalLocation.x * tileDim + tileDim / 2}
-        y={historicalLocation.y * tileDim + tileDim / 2}
-        orientation={orientationDegrees(historicalFacing)}
-        isMoving={historicalLocation.speed > 0}
-        isThinking={isThinking}
-        isSpeaking={isSpeaking}
-        emoji={
-          player.activity && player.activity.until > (historicalTime ?? Date.now())
-            ? player.activity?.emoji
-            : undefined
-        }
-        isViewer={isViewer}
-        textureUrl={character.textureUrl}
-        spritesheetData={character.spritesheetData}
-        speed={character.speed}
-        scale={characterScale}
-        onClick={() => {
-          onClick({ kind: 'player', id: player.id });
-        }}
-      />
-    </>
+    <Character
+      x={player.position.x * tileDim + tileDim / 2}
+      y={player.position.y * tileDim + tileDim / 2}
+      orientation={orientationDegrees(player.facing.dx, player.facing.dy)}
+      isMoving={player.speed > 0}
+      isThinking={false}
+      isSpeaking={isSpeaking}
+      isViewer={false}
+      textureUrl={character.textureUrl}
+      spritesheetData={character.spritesheetData}
+      speed={character.speed}
+      scale={characterScale}
+      onClick={() => onClick(player.id)}
+    />
   );
 };

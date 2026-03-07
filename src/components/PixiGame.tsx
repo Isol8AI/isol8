@@ -1,38 +1,39 @@
 import * as PIXI from 'pixi.js';
-import { useApp } from '@pixi/react';
-import { Player, SelectElement } from './Player.tsx';
+import { useApp, Text } from '@pixi/react';
+import { Player } from './Player.tsx';
 import { useEffect, useRef } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
 import PixiViewport from './PixiViewport.tsx';
-import { Id } from '../../convex/_generated/dataModel';
-import { useQuery } from 'convex/react';
-import { api } from '../../convex/_generated/api.js';
-import { useSendInput } from '../hooks/sendInput.ts';
-import { toastOnError } from '../toasts.ts';
-import { DebugPath } from './DebugPath.tsx';
-import { SHOW_DEBUG_UI } from './Game.tsx';
-import { ServerGame } from '../hooks/serverGame.ts';
+import type { TownGameState } from '../types/town';
+import { useTownGame } from './TownProvider.tsx';
+
+// Location labels to render on the map
+const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
+  { label: 'Town Plaza', x: 49, y: 33 },
+  { label: 'Cafe', x: 32, y: 34 },
+  { label: 'Library', x: 38, y: 21 },
+  { label: 'Town Hall', x: 62, y: 28 },
+  { label: 'Apartment', x: 37, y: 41 },
+  { label: 'Barn', x: 60, y: 36 },
+  { label: 'Shop', x: 47, y: 48 },
+  { label: 'Residential', x: 53, y: 40 },
+];
 
 export const PixiGame = (props: {
-  worldId: Id<'worlds'>;
-  engineId: Id<'engines'>;
-  game: ServerGame;
-  historicalTime: number | undefined;
+  game: TownGameState;
   width: number;
   height: number;
-  setSelectedElement: SelectElement;
+  setSelectedPlayerId: (id?: string) => void;
   viewportRef: React.MutableRefObject<any>;
 }) => {
-  // PIXI setup.
   const pixiApp = useApp();
   const viewportRef = props.viewportRef;
+  const { lerpPlayers } = useTownGame();
 
-  // Ctrl/Cmd + wheel = zoom (Google Maps convention)
-  // Also prevent all wheel events from propagating to stop browser back/forward gestures
+  // Ctrl/Cmd + wheel = zoom
   useEffect(() => {
     const canvas = pixiApp.view as HTMLCanvasElement;
     const onWheel = (e: WheelEvent) => {
-      // Always prevent default on the canvas to stop browser back/forward navigation
       e.preventDefault();
       if (!e.ctrlKey && !e.metaKey) return;
       const viewport = viewportRef.current;
@@ -50,83 +51,9 @@ export const PixiGame = (props: {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, [pixiApp, props.width, props.height, props.game.worldMap]);
 
-  const humanTokenIdentifier = useQuery(api.world.userStatus, { worldId: props.worldId }) ?? null;
-  const humanPlayerId = [...props.game.world.players.values()].find(
-    (p) => p.human === humanTokenIdentifier,
-  )?.id;
-
-  const moveTo = useSendInput(props.engineId, 'moveTo');
-
-  // Arrow keys move the human player (hold to walk continuously)
-  const keysHeld = useRef<Set<string>>(new Set());
-  const moveIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  useEffect(() => {
-    if (!humanPlayerId) return;
-
-    const MOVE_INTERVAL = 250; // ms between move commands while holding
-
-    const sendMove = () => {
-      if (!humanPlayerId || keysHeld.current.size === 0) return;
-
-      const hp = props.game.world.players.get(humanPlayerId);
-      if (!hp) return;
-
-      let dx = 0, dy = 0;
-      if (keysHeld.current.has('ArrowUp')) dy = -1;
-      if (keysHeld.current.has('ArrowDown')) dy = 1;
-      if (keysHeld.current.has('ArrowLeft')) dx = -1;
-      if (keysHeld.current.has('ArrowRight')) dx = 1;
-      if (dx === 0 && dy === 0) return;
-
-      const dest = {
-        x: Math.floor(hp.position.x) + dx,
-        y: Math.floor(hp.position.y) + dy,
-      };
-
-      // Clamp to map bounds
-      const { width, height } = props.game.worldMap;
-      dest.x = Math.max(0, Math.min(width - 1, dest.x));
-      dest.y = Math.max(0, Math.min(height - 1, dest.y));
-
-      void toastOnError(moveTo({ playerId: humanPlayerId, destination: dest }));
-    };
-
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
-      e.preventDefault();
-      if (keysHeld.current.has(e.key)) return;
-      keysHeld.current.add(e.key);
-
-      sendMove();
-
-      if (!moveIntervalRef.current) {
-        moveIntervalRef.current = setInterval(sendMove, MOVE_INTERVAL);
-      }
-    };
-
-    const onKeyUp = (e: KeyboardEvent) => {
-      keysHeld.current.delete(e.key);
-      if (keysHeld.current.size === 0 && moveIntervalRef.current) {
-        clearInterval(moveIntervalRef.current);
-        moveIntervalRef.current = null;
-      }
-    };
-
-    window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    return () => {
-      window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      if (moveIntervalRef.current) clearInterval(moveIntervalRef.current);
-    };
-  }, [humanPlayerId, props.game]);
-
   const { width, height, tileDim } = props.game.worldMap;
-  const players = [...props.game.world.players.values()];
 
-  // On first load, smoothly zoom into the center of the town so observers
-  // can immediately see the action.
+  // On first load, smoothly zoom into the center of the town
   const hasAnimatedInitial = useRef(false);
   useEffect(() => {
     if (!viewportRef.current || hasAnimatedInitial.current) return;
@@ -141,18 +68,8 @@ export const PixiGame = (props: {
     });
   }, [width, height, tileDim]);
 
-  // When a human player joins, zoom to center on them
-  useEffect(() => {
-    if (!viewportRef.current || humanPlayerId === undefined) return;
-
-    const humanPlayer = props.game.world.players.get(humanPlayerId)!;
-    viewportRef.current.animate({
-      position: new PIXI.Point(humanPlayer.position.x * tileDim, humanPlayer.position.y * tileDim),
-      scale: 1.5,
-      time: 800,
-      ease: 'easeInOutSine',
-    });
-  }, [humanPlayerId]);
+  // Use lerp-interpolated positions for smooth movement
+  const interpolatedPlayers = lerpPlayers();
 
   return (
     <PixiViewport
@@ -164,21 +81,34 @@ export const PixiGame = (props: {
       viewportRef={viewportRef}
     >
       <PixiStaticMap map={props.game.worldMap} />
-      {players.map(
-        (p) =>
-          // Only show the path for the human player in non-debug mode.
-          (SHOW_DEBUG_UI || p.id === humanPlayerId) && (
-            <DebugPath key={`path-${p.id}`} player={p} tileDim={tileDim} />
-          ),
-      )}
-      {players.map((p) => (
+      {/* Location labels */}
+      {LOCATION_LABELS.map((loc) => (
+        <Text
+          key={loc.label}
+          text={loc.label}
+          x={loc.x * tileDim + tileDim / 2}
+          y={loc.y * tileDim - tileDim * 0.8}
+          anchor={{ x: 0.5, y: 1 }}
+          style={
+            new PIXI.TextStyle({
+              fontFamily: 'Arial',
+              fontSize: 11,
+              fill: '#ffffff',
+              stroke: '#000000',
+              strokeThickness: 3,
+              fontWeight: 'bold',
+            })
+          }
+        />
+      ))}
+      {/* Players with smooth interpolation */}
+      {interpolatedPlayers.map((p) => (
         <Player
           key={`player-${p.id}`}
           game={props.game}
           player={p}
-          isViewer={p.id === humanPlayerId}
-          onClick={props.setSelectedElement}
-          historicalTime={props.historicalTime}
+          onClick={(id) => props.setSelectedPlayerId(id)}
+          tileDim={tileDim}
         />
       ))}
     </PixiViewport>

@@ -5,14 +5,14 @@ import App from './App.tsx';
 import './index.css';
 import 'uplot/dist/uPlot.min.css';
 import 'react-toastify/dist/ReactToastify.css';
-import ConvexClientProvider from './components/ConvexClientProvider.tsx';
+import TownProvider from './components/TownProvider.tsx';
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <BrowserRouter basename="/ai-town">
-      <ConvexClientProvider>
+      <TownProvider>
         <App />
-      </ConvexClientProvider>
+      </TownProvider>
     </BrowserRouter>
   </React.StrictMode>,
 );

@@ -1,6 +1,6 @@
 import { PixiComponent, applyDefaultProps } from '@pixi/react';
 import * as PIXI from 'pixi.js';
-import { WorldMap } from '../../convex/aiTown/worldMap';
+import type { WorldMap } from '../types/town';
 
 const BACKGROUND_URL = '/assets/town-background.png';
 
@@ -53,7 +53,6 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
     container.x = 0;
     container.y = 0;
 
-    // Set the hit area manually to ensure `pointerdown` events are delivered to this container.
     container.interactive = true;
     container.hitArea = new PIXI.Rectangle(0, 0, mapWidthPx, mapHeightPx);
 
