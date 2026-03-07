@@ -63,7 +63,8 @@ export const Player = ({
       (a) => a.playerId === player.id && !!a.inProgressOperation,
     );
   const tileDim = game.worldMap.tileDim;
-  const characterScale = tileDim / 32;
+  // Scale up characters to match the chunky pixel art map style
+  const characterScale = (tileDim / 32) * 2.5;
   const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
   return (
     <>
