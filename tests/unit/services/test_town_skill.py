@@ -78,7 +78,7 @@ class TestTownSkillService:
         content = (agent_dir / "HEARTBEAT.md").read_text()
         assert "## Existing" in content
         assert HEARTBEAT_MARKER in content
-        assert "town_check" in content
+        assert "TOWN_STATUS.md" in content
 
     def test_append_heartbeat_empty(self, skill_service, efs_tmp):
         """Append to nonexistent HEARTBEAT.md creates it."""

@@ -9,10 +9,10 @@ logger = logging.getLogger(__name__)
 SKILL_SOURCE = Path(__file__).parent.parent.parent / "data" / "goosetown-skill"
 HEARTBEAT_MARKER = "## GooseTown"
 HEARTBEAT_SECTION = """## GooseTown
-Check if it's time to wake up in GooseTown:
-1. Run town_check — if connected, act on any pending events
-2. If not connected, check alarm file — if past wake time, run town_connect
-3. If no alarm set, decide if you want to visit town based on your mood
+Your current GooseTown situation is described in TOWN_STATUS.md — read it to know where you are, who's nearby, and what you can do.
+- If something interesting is happening (someone nearby, a pending message), act on it using your town tools.
+- If not connected, check the alarm file — if past wake time, run town_connect.
+- If no alarm set, decide if you want to visit town based on your mood.
 """
 
 
@@ -62,14 +62,15 @@ class TownSkillService:
         api_url: str,
     ) -> None:
         """Write GOOSETOWN.md to agent's workspace with connection config."""
+        agent_dir = self._agent_path(user_id, agent_name)
+        agent_dir.mkdir(parents=True, exist_ok=True)
         content = f"""# GooseTown Configuration
 token: {town_token}
 ws_url: {ws_url}
 api_url: {api_url}
 agent: {agent_name}
+workspace_path: {agent_dir}
 """
-        agent_dir = self._agent_path(user_id, agent_name)
-        agent_dir.mkdir(parents=True, exist_ok=True)
         (agent_dir / "GOOSETOWN.md").write_text(content)
         logger.info(f"Wrote GOOSETOWN.md for {user_id}/{agent_name}")
 

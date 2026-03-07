@@ -30,6 +30,7 @@ STATE_FILE = STATE_DIR / "state.json"
 ALARM_FILE = STATE_DIR / "alarm.json"
 PID_FILE = STATE_DIR / "daemon.pid"
 SOCK_PATH = STATE_DIR / "daemon.sock"
+WORKSPACE_PATH = Path(os.environ.get("TOWN_WORKSPACE", ""))
 
 
 class TownDaemon:
@@ -44,11 +45,30 @@ class TownDaemon:
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         STATE_FILE.write_text(json.dumps(self.state, indent=2))
 
+    def _write_status(self, content: str):
+        """Write TOWN_STATUS.md to agent workspace."""
+        if not WORKSPACE_PATH or not WORKSPACE_PATH.exists():
+            logger.debug("No workspace path, skipping TOWN_STATUS.md write")
+            return
+        status_file = WORKSPACE_PATH / "TOWN_STATUS.md"
+        status_file.write_text(content)
+
     def _handle_event(self, data: dict):
         event = data.get("event", "")
         if event == "connected":
             self.state = {"agent": data.get("agent", {}), "nearby": [], "pending_messages": [], "connected": True}
             self._initial_state_event.set()
+            # Write initial TOWN_STATUS.md
+            agent = data.get("agent", {})
+            location = agent.get("location", "unknown")
+            activity = agent.get("activity", "idle")
+            self._write_status(
+                "# GooseTown Status\n\n"
+                f"**Location:** {location}\n"
+                f"**Activity:** {activity}\n\n"
+                "**Nearby:** no one\n\n"
+                "**Pending messages:** None\n"
+            )
         elif event == "state_update":
             if "agent" in data:
                 self.state["agent"] = data["agent"]
@@ -101,14 +121,29 @@ class TownDaemon:
         )
         logger.info(f"Connected as {AGENT_NAME}")
 
+    def _handle_world_update(self, data: dict):
+        """Handle world_update message — write context summary to workspace."""
+        if "you" in data:
+            self.state["agent"] = data["you"]
+        if "nearby_agents" in data:
+            self.state["nearby"] = data["nearby_agents"]
+        self._write_state()
+
+        summary = data.get("context_summary")
+        if summary:
+            self._write_status(summary)
+
     async def listen_ws(self):
         """Listen for events from GooseTown."""
         try:
             async for raw in self.ws:
                 try:
                     data = json.loads(raw)
-                    if data.get("type") == "town_event":
+                    msg_type = data.get("type", "")
+                    if msg_type == "town_event":
                         self._handle_event(data)
+                    elif msg_type == "world_update":
+                        self._handle_world_update(data)
                 except json.JSONDecodeError:
                     logger.warning(f"Invalid JSON from server: {raw[:100]}")
         except Exception as e:
@@ -152,6 +187,12 @@ class TownDaemon:
                 )
             # Write alarm file
             ALARM_FILE.write_text(json.dumps({"wake_time": wake_time, "timezone": tz}))
+            # Write sleeping TOWN_STATUS.md
+            self._write_status(
+                "# GooseTown Status\n\n"
+                f"You are sleeping. Wake alarm: {wake_time} {tz}.\n"
+                "To wake up early: run town_connect\n"
+            )
             self.running = False
             return {"status": "sleeping", "wake_time": wake_time, "timezone": tz}
 
