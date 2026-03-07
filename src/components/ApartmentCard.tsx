@@ -120,7 +120,7 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
       {/* Action: view in town */}
       <div className="flex justify-end mt-1">
         <Link
-          to="/"
+          to={`/?focus=${encodeURIComponent(agent.display_name)}`}
           className="font-body text-xs text-clay-300 hover:text-brown-200 transition-colors"
         >
           View in town &rarr;

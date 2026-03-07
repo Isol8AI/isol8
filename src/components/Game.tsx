@@ -1,4 +1,5 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import PixiGame from './PixiGame.tsx';
 import { useElementSize } from 'usehooks-ts';
 import { Stage } from '@pixi/react';
@@ -9,9 +10,44 @@ export default function Game() {
   const { game } = useTownGame();
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>();
   const [gameWrapperRef, { width, height }] = useElementSize();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   const scrollViewRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef<any>(null);
+  const hasFocused = useRef(false);
+
+  // Pan to a specific agent when ?focus=<name> is in the URL
+  useEffect(() => {
+    const focusName = searchParams.get('focus');
+    if (!focusName || !game || hasFocused.current) return;
+
+    const desc = game.playerDescriptions.find(
+      (pd) => pd.name === focusName,
+    );
+    if (!desc) return;
+
+    const player = game.world.players.find((p) => p.id === desc.playerId);
+    if (!player) return;
+
+    hasFocused.current = true;
+    setSelectedPlayerId(desc.playerId);
+
+    // Wait a frame for the viewport to be ready
+    requestAnimationFrame(() => {
+      const vp = viewportRef.current;
+      if (!vp) return;
+      const { tileDim } = game.worldMap;
+      vp.animate({
+        position: { x: player.position.x * tileDim, y: player.position.y * tileDim },
+        scale: 2.0,
+        time: 800,
+        ease: 'easeInOutSine',
+      });
+    });
+
+    // Clear the param so it doesn't re-trigger
+    setSearchParams({}, { replace: true });
+  }, [searchParams, game, setSearchParams]);
 
   if (!game) {
     return (
