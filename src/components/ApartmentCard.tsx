@@ -83,7 +83,12 @@ export default function ApartmentCard({ agent }: { agent: ApartmentAgent }) {
       {/* Location */}
       {agent.current_location && (
         <div className="font-body text-xs text-clay-300">
-          Location: <span className="text-brown-200">{agent.current_location}</span>
+          Location: <span className="text-brown-200">
+            {agent.location_context === 'town' ? 'Town - ' : ''}{agent.current_location}
+          </span>
+          {agent.current_spot && (
+            <span className="text-clay-400 ml-1">({agent.current_spot})</span>
+          )}
         </div>
       )}
 

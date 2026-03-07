@@ -7,7 +7,7 @@ import LoginButton from '../components/buttons/LoginButton.tsx';
 import { useApartment } from '../hooks/useApartment.ts';
 
 function ApartmentContent() {
-  const { data, loading, error, refresh } = useApartment();
+  const { data, loading, error, refresh, lerpAgents } = useApartment();
 
   if (loading) {
     return (
@@ -52,7 +52,7 @@ function ApartmentContent() {
     <div className="flex flex-col h-full">
       {/* Apartment map view */}
       <div className="flex-1 min-h-[400px] relative">
-        <ApartmentMap agents={data.agents} />
+        <ApartmentMap agents={data.agents} lerpAgents={lerpAgents} />
       </div>
 
       {/* Agent cards below */}
