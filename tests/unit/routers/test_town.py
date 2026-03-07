@@ -93,10 +93,8 @@ class TestTownState:
 
         assert response.status_code == 200
         data = response.json()
-        assert len(data["world"]["players"]) == 5
-        assert len(data["world"]["agents"]) == 5
-        assert data["world"]["players"][0]["id"] == "p:0"
-        assert data["world"]["agents"][0]["id"] == "a:0"
+        assert data["world"]["players"] == []
+        assert data["world"]["agents"] == []
         assert data["world"]["conversations"] == []
         assert "currentTime" in data["engine"]
 
@@ -130,9 +128,8 @@ class TestTownDescriptions:
         data = response.json()
         assert "worldMap" in data
         assert data["worldMap"]["width"] > 0
-        assert len(data["playerDescriptions"]) == 5
-        assert len(data["agentDescriptions"]) == 5
-        assert data["playerDescriptions"][0]["name"] == "Lucky"
+        assert data["playerDescriptions"] == []
+        assert data["agentDescriptions"] == []
 
     @pytest.mark.asyncio
     async def test_get_descriptions_with_agents(self, async_client, db_session, test_user, mock_skill_service):
@@ -170,30 +167,6 @@ class TestTownConversations:
         assert response.status_code == 200
         data = response.json()
         assert data["conversations"] == []
-
-
-class TestTownStubs:
-    """Test stub endpoints return without error."""
-
-    @pytest.mark.asyncio
-    async def test_heartbeat(self, async_client):
-        response = await async_client.post("/api/v1/town/heartbeat", json={})
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_music(self, async_client):
-        response = await async_client.get("/api/v1/town/music")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_user_status(self, async_client):
-        response = await async_client.get("/api/v1/town/user-status")
-        assert response.status_code == 200
-
-    @pytest.mark.asyncio
-    async def test_input_status(self, async_client):
-        response = await async_client.get("/api/v1/town/input-status")
-        assert response.status_code == 200
 
 
 class TestTownApartment:

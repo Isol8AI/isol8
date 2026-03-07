@@ -2,7 +2,7 @@
 
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from uuid import UUID
 
@@ -46,20 +46,26 @@ class TownService:
                 return existing
             return existing
 
+        from core.town_constants import TOWN_LOCATIONS
+
+        apartment = TOWN_LOCATIONS["apartment"]
+
         town_agent = TownAgent(
             user_id=user_id,
             agent_name=agent_name,
             display_name=display_name,
             personality_summary=personality_summary,
             avatar_config=avatar_config,
+            home_location="apartment",
         )
         self.db.add(town_agent)
         await self.db.flush()
 
         state = TownState(
             agent_id=town_agent.id,
-            position_x=0.0,
-            position_y=0.0,
+            position_x=apartment["x"],
+            position_y=apartment["y"],
+            current_location="apartment",
         )
         self.db.add(state)
         await self.db.flush()
@@ -100,6 +106,7 @@ class TownService:
                 "user_id": agent.user_id,
                 "display_name": agent.display_name,
                 "agent_name": agent.agent_name,
+                "character": agent.character,
                 "personality_summary": agent.personality_summary,
                 "home_location": agent.home_location,
                 "current_location": state.current_location,
@@ -192,6 +199,28 @@ class TownService:
         )
         return list(result.scalars().all())
 
+    async def get_recent_speech(self, since_seconds: float = 5.0) -> list[dict]:
+        """Get chat messages from the last N seconds for speech bubbles."""
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=since_seconds)
+        result = await self.db.execute(
+            select(TownConversation)
+            .where(TownConversation.updated_at >= cutoff)
+            .order_by(TownConversation.updated_at.desc())
+            .limit(10)
+        )
+        speeches = []
+        for conv in result.scalars().all():
+            if conv.public_log:
+                last_msg = conv.public_log[-1]
+                speeches.append(
+                    {
+                        "speaker": last_msg.get("speaker", "Unknown"),
+                        "text": last_msg.get("text", "")[:100],
+                        "conversation_id": str(conv.id),
+                    }
+                )
+        return speeches
+
     async def seed_agent(
         self,
         user_id: str,
@@ -200,7 +229,7 @@ class TownService:
         personality_summary: Optional[str] = None,
         position_x: float = 0.0,
         position_y: float = 0.0,
-        home_location: str = "home",
+        home_location: str = "apartment",
     ) -> TownAgent:
         """Seed a default agent directly.
 
@@ -329,12 +358,17 @@ class TownService:
         instance = await self.create_instance(user_id)
         created_agents = []
 
+        from core.town_constants import TOWN_LOCATIONS
+
+        apartment = TOWN_LOCATIONS["apartment"]
+
         for agent_data in agents_data:
             agent = TownAgent(
                 user_id=user_id,
                 agent_name=agent_data.agent_name,
                 display_name=agent_data.display_name,
                 personality_summary=agent_data.personality_summary,
+                home_location="apartment",
                 instance_id=instance.id,
             )
             self.db.add(agent)
@@ -342,8 +376,9 @@ class TownService:
 
             state = TownState(
                 agent_id=agent.id,
-                position_x=0.0,
-                position_y=0.0,
+                position_x=apartment["x"],
+                position_y=apartment["y"],
+                current_location="apartment",
             )
             self.db.add(state)
             await self.db.flush()

@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from core.town_constants import TOWN_LOCATIONS, SYSTEM_USER_ID
+from core.town_constants import TOWN_LOCATIONS
 from core.services.town_simulation import (
     TownSimulation,
     TICK_INTERVAL,
@@ -102,7 +102,7 @@ class TestTownSimulation:
 
 def _make_agent_state(
     agent_name="test_agent",
-    user_id=SYSTEM_USER_ID,
+    user_id="test_user",
     position_x=10.0,
     position_y=10.0,
     target_x=None,
@@ -483,120 +483,6 @@ class TestTickInactiveDetection:
         calls = mock_service.update_agent_state.call_args_list
         going_home_calls = [c for c in calls if c[1].get("location_state") == "going_home"]
         assert len(going_home_calls) == 0
-
-    @pytest.mark.asyncio
-    async def test_system_agents_not_sent_home(self):
-        """System agents should never be sent home for inactivity."""
-        sim, db_session = _make_simulation()
-        agent_state = _make_agent_state(
-            agent_name="lucky",
-            user_id=SYSTEM_USER_ID,
-            location_state="active",
-            last_heartbeat_at=None,
-            current_activity="idle",
-        )
-
-        mock_service = AsyncMock()
-        mock_service.get_town_state = AsyncMock(return_value=[agent_state])
-        mock_service.update_agent_state = AsyncMock()
-
-        mock_ws = MagicMock()
-        mock_ws.is_agent_connected = MagicMock(return_value=False)
-        mock_ws.get_agent_connection_id = MagicMock(return_value=None)
-
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
-                "core.services.town_service.TownService",
-                return_value=mock_service,
-            ):
-                await sim._tick()
-
-        calls = mock_service.update_agent_state.call_args_list
-        going_home_calls = [c for c in calls if c[1].get("location_state") == "going_home"]
-        assert len(going_home_calls) == 0
-
-
-class TestTickSystemAgentAutoAssign:
-    """Test that system agents auto-pick destinations but user agents do not."""
-
-    @pytest.mark.asyncio
-    async def test_system_agent_picks_destination(self):
-        """Idle system agent should auto-pick a random destination."""
-        sim, db_session = _make_simulation()
-        agent_state = _make_agent_state(
-            agent_name="lucky",
-            user_id=SYSTEM_USER_ID,
-            location_state="active",
-            current_activity="idle",
-            last_decision_at=None,
-        )
-
-        mock_service = AsyncMock()
-        mock_service.get_town_state = AsyncMock(return_value=[agent_state])
-        mock_service.update_agent_state = AsyncMock()
-
-        mock_ws = MagicMock()
-        mock_ws.is_agent_connected = MagicMock(return_value=False)
-        mock_ws.get_agent_connection_id = MagicMock(return_value=None)
-
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
-                "core.services.town_service.TownService",
-                return_value=mock_service,
-            ):
-                await sim._tick()
-
-        calls = mock_service.update_agent_state.call_args_list
-        # Should have a call setting target_x/target_y
-        assign_calls = [c for c in calls if "target_x" in c[1]]
-        assert len(assign_calls) == 1
-        kwargs = assign_calls[0][1]
-        assert kwargs["target_x"] is not None
-        assert kwargs["target_y"] is not None
-        assert kwargs["current_activity"] == "walking"
-
-    @pytest.mark.asyncio
-    async def test_user_agent_does_not_auto_pick_destination(self):
-        """Idle user agent should NOT auto-pick a destination."""
-        sim, db_session = _make_simulation()
-        agent_state = _make_agent_state(
-            agent_name="user_agent",
-            user_id="user_123",
-            location_state="active",
-            current_activity="idle",
-            last_decision_at=None,
-            # Recent heartbeat so won't be sent home
-            last_heartbeat_at=datetime.now(timezone.utc),
-        )
-
-        mock_service = AsyncMock()
-        mock_service.get_town_state = AsyncMock(return_value=[agent_state])
-        mock_service.update_agent_state = AsyncMock()
-
-        mock_ws = MagicMock()
-        mock_ws.is_agent_connected = MagicMock(return_value=True)
-        mock_ws.get_agent_connection_id = MagicMock(return_value="conn_123")
-
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
-                "core.services.town_service.TownService",
-                return_value=mock_service,
-            ):
-                await sim._tick()
-
-        # Should NOT have any calls assigning targets
-        calls = mock_service.update_agent_state.call_args_list
-        assign_calls = [c for c in calls if "target_x" in c[1]]
-        assert len(assign_calls) == 0
 
 
 class TestTickProximityDetection:

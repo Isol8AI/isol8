@@ -19,11 +19,7 @@ import random
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
-from core.town_constants import (
-    DEFAULT_CHARACTERS,
-    SYSTEM_USER_ID,
-    TOWN_LOCATIONS,
-)
+from core.town_constants import TOWN_LOCATIONS
 from core.services.town_pathfinding import find_path
 
 logger = logging.getLogger(__name__)
@@ -35,6 +31,7 @@ DECISION_COOLDOWN = 10.0  # seconds idle before picking new destination
 CONVERSATION_COOLDOWN = 120.0  # seconds between conversations
 PROXIMITY_THRESHOLD = 3.0  # tiles to be "nearby"
 INACTIVE_TIMEOUT = timedelta(minutes=5)  # send home after 5min without heartbeat
+WORLD_UPDATE_INTERVAL = 5  # Push world_update every N ticks (N * TICK_INTERVAL seconds)
 
 
 class TownSimulation:
@@ -58,6 +55,8 @@ class TownSimulation:
         self._mgmt_client_failed = False
         # A* precomputed paths: agent_id -> list of (x, y) waypoints remaining
         self._agent_paths: Dict[str, List[Tuple[int, int]]] = {}
+        # Tick counter for periodic world updates
+        self._tick_count: int = 0
 
     def _get_mgmt_client(self):
         """Lazily create ManagementApiClient. Returns None if unavailable."""
@@ -86,7 +85,6 @@ class TownSimulation:
         if self._running:
             return
         self._running = True
-        await self._seed_default_agents()
         self._task = asyncio.create_task(self._run_loop())
         logger.info("GooseTown simulation started")
 
@@ -104,28 +102,6 @@ class TownSimulation:
     def set_notify_fn(self, fn: Callable):
         """Set the WebSocket push callback (called after state changes)."""
         self._notify_fn = fn
-
-    async def _seed_default_agents(self):
-        """Seed default agents into the DB if they don't already exist."""
-        from core.services.town_service import TownService
-
-        try:
-            async with self._db_factory() as db:
-                service = TownService(db)
-                for agent in DEFAULT_CHARACTERS:
-                    await service.seed_agent(
-                        user_id=SYSTEM_USER_ID,
-                        agent_name=agent["agent_name"],
-                        display_name=agent["name"],
-                        personality_summary=agent["identity"][:200],
-                        position_x=agent["spawn"]["x"],
-                        position_y=agent["spawn"]["y"],
-                        home_location=agent["home"],
-                    )
-                await db.commit()
-            logger.info(f"Seeded {len(DEFAULT_CHARACTERS)} default agents")
-        except Exception as e:
-            logger.error(f"Failed to seed default agents: {e}", exc_info=True)
 
     async def _run_loop(self):
         """Main simulation tick loop."""
@@ -168,7 +144,6 @@ class TownSimulation:
                 agent_id = agent_state["agent_id"]
                 agent_name = agent_state["agent_name"]
                 location_state = agent_state["location_state"] or "active"
-                user_id = agent_state["user_id"]
 
                 # Skip sleeping agents entirely
                 if location_state == "sleeping":
@@ -272,35 +247,8 @@ class TownSimulation:
 
                     await service.update_agent_state(agent_id, **update)
 
-                # --- No target: auto-assign for system agents only ---
-                elif (
-                    user_id == SYSTEM_USER_ID
-                    and agent_state["current_activity"] == "idle"
-                    and location_state == "active"
-                ):
-                    last_decision = agent_state.get("last_decision_at")
-                    if not last_decision or (now - last_decision).total_seconds() > DECISION_COOLDOWN:
-                        target_loc = self._pick_random_location(exclude=agent_state["current_location"])
-                        target_coords = TOWN_LOCATIONS.get(target_loc)
-                        if target_coords:
-                            # Clear any stale path so A* recomputes
-                            self._agent_paths.pop(agent_id, None)
-                            await service.update_agent_state(
-                                agent_id,
-                                target_x=target_coords["x"],
-                                target_y=target_coords["y"],
-                                target_location=target_loc,
-                                current_activity="walking",
-                                speed=AGENT_SPEED,
-                                last_decision_at=now,
-                            )
-
                 # --- Inactive detection: send home if no heartbeat for 5min ---
-                if (
-                    location_state == "active"
-                    and user_id != SYSTEM_USER_ID
-                    and not ws_manager.is_agent_connected(agent_name)
-                ):
+                if location_state == "active" and not ws_manager.is_agent_connected(agent_name):
                     heartbeat = agent_state["last_heartbeat_at"]
                     if heartbeat is None or (now - heartbeat) > INACTIVE_TIMEOUT:
                         home_loc = agent_state["home_location"] or "apartment"
@@ -377,6 +325,11 @@ class TownSimulation:
         # --- Push events to connected agents ---
         self._push_agent_events(ws_manager, events_to_push)
 
+        # --- World update push (every N ticks) ---
+        self._tick_count += 1
+        if self._tick_count % WORLD_UPDATE_INTERVAL == 0:
+            self._push_world_updates(ws_manager, states)
+
         # Push updated state to WebSocket viewers
         if self._notify_fn:
             try:
@@ -408,6 +361,84 @@ class TownSimulation:
                 mgmt.send_message(connection_id, payload)
             except Exception as e:
                 logger.debug("Failed to push event to agent %s: %s", agent_name, e)
+
+    def _push_world_updates(self, ws_manager, states):
+        """Push world_update to each connected agent with full world context."""
+        mgmt = self._get_mgmt_client()
+        if mgmt is None:
+            return
+
+        # Build location occupancy map
+        location_agents: dict[str, list[str]] = {}
+        for s in states:
+            loc = s.get("current_location")
+            if loc:
+                location_agents.setdefault(loc, []).append(s.get("display_name", s["agent_name"]))
+
+        for agent_state in states:
+            agent_name = agent_state["agent_name"]
+            conn_id = ws_manager.get_agent_connection_id(agent_name)
+            if conn_id is None:
+                continue
+
+            if (agent_state.get("location_state") or "active") == "sleeping":
+                continue
+
+            nearby = []
+            for other in states:
+                if other["agent_name"] == agent_name:
+                    continue
+                if (other.get("location_state") or "active") == "sleeping":
+                    continue
+                dist = self._calculate_distance(
+                    agent_state["position_x"],
+                    agent_state["position_y"],
+                    other["position_x"],
+                    other["position_y"],
+                )
+                if dist <= PROXIMITY_THRESHOLD * 2:
+                    nearby.append(
+                        {
+                            "name": other.get("display_name", other["agent_name"]),
+                            "agent_name": other["agent_name"],
+                            "position": [
+                                round(other["position_x"], 1),
+                                round(other["position_y"], 1),
+                            ],
+                            "activity": other.get("current_activity", "idle"),
+                            "distance": round(dist, 1),
+                        }
+                    )
+
+            payload = {
+                "type": "world_update",
+                "you": {
+                    "position": [
+                        round(agent_state["position_x"], 1),
+                        round(agent_state["position_y"], 1),
+                    ],
+                    "current_location": agent_state.get("current_location"),
+                    "mood": agent_state.get("mood"),
+                    "energy": agent_state.get("energy"),
+                    "activity": agent_state.get("current_activity", "idle"),
+                },
+                "nearby_agents": nearby,
+                "locations": [
+                    {
+                        "name": loc_data["label"],
+                        "id": loc_id,
+                        "position": [loc_data["x"], loc_data["y"]],
+                        "agents_here": location_agents.get(loc_id, []),
+                    }
+                    for loc_id, loc_data in TOWN_LOCATIONS.items()
+                ],
+                "active_conversations": [],
+            }
+
+            try:
+                mgmt.send_message(conn_id, payload)
+            except Exception as e:
+                logger.debug("Failed to push world_update to %s: %s", agent_name, e)
 
     def _pick_random_location(self, exclude: Optional[str] = None) -> str:
         """Pick a random town location, excluding current."""
