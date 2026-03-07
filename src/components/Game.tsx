@@ -21,16 +21,20 @@ export default function Game() {
     const focusName = searchParams.get('focus');
     if (!focusName || !game || hasFocused.current) return;
 
-    const desc = game.playerDescriptions.find(
-      (pd) => pd.name === focusName,
-    );
-    if (!desc) return;
+    let matchedPlayerId: string | undefined;
+    for (const [playerId, pd] of game.playerDescriptions) {
+      if (pd.name === focusName) {
+        matchedPlayerId = playerId;
+        break;
+      }
+    }
+    if (!matchedPlayerId) return;
 
-    const player = game.world.players.find((p) => p.id === desc.playerId);
+    const player = game.world.players.find((p) => p.id === matchedPlayerId);
     if (!player) return;
 
     hasFocused.current = true;
-    setSelectedPlayerId(desc.playerId);
+    setSelectedPlayerId(matchedPlayerId);
 
     // Wait a frame for the viewport to be ready
     requestAnimationFrame(() => {
