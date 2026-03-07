@@ -485,10 +485,78 @@ class TownSimulation:
                 "active_conversations": [],
             }
 
+            # Generate context summary for agent's TOWN_STATUS.md
+            payload["context_summary"] = self._build_context_summary(agent_state, nearby)
+
             try:
                 mgmt.send_message(conn_id, payload)
             except Exception as e:
                 logger.debug("Failed to push world_update to %s: %s", agent_name, e)
+
+    @staticmethod
+    def _build_context_summary(
+        agent_state: dict,
+        nearby: list[dict],
+        pending_messages: list | None = None,
+    ) -> str:
+        """Build a markdown context summary for an agent's TOWN_STATUS.md."""
+        from core.apartment_constants import APARTMENT_ROOMS, APARTMENT_SPOTS
+
+        location_context = agent_state.get("location_context", "apartment")
+        current_location = agent_state.get("current_location", "unknown")
+        activity = agent_state.get("current_activity", "idle")
+        mood = agent_state.get("mood") or "neutral"
+        energy = agent_state.get("energy")
+        energy_str = f"{energy}%" if energy is not None else "unknown"
+
+        # Resolve location label and activities
+        if location_context == "town":
+            loc_data = TOWN_LOCATIONS.get(current_location, {})
+            loc_label = loc_data.get("label", current_location)
+            activities = loc_data.get("activities", ["walk around", "chat with nearby agents"])
+        else:
+            # In apartment — find room from spot or use location directly
+            spot_data = APARTMENT_SPOTS.get(current_location, {})
+            room_name = spot_data.get("room", current_location) if spot_data else current_location
+            room_data = APARTMENT_ROOMS.get(room_name, {})
+            loc_label = room_data.get("label", current_location)
+            activities = room_data.get("activities", ["relax", "chat with roommates"])
+
+        context_label = "town" if location_context == "town" else "apartment"
+
+        lines = [
+            "# GooseTown Status",
+            "",
+            f"**Location:** {loc_label} ({context_label})",
+            f"**Activity:** {activity}",
+            f"**Mood:** {mood} | **Energy:** {energy_str}",
+            "",
+        ]
+
+        # Nearby agents
+        if nearby:
+            lines.append("**Nearby:**")
+            for n in nearby:
+                name = n.get("name", n.get("agent_name", "someone"))
+                dist = n.get("distance", "?")
+                n_activity = n.get("activity", "idle")
+                lines.append(f"- {name} ({dist} tiles away, {n_activity})")
+        else:
+            lines.append("**Nearby:** no one")
+        lines.append("")
+
+        # Available activities
+        lines.append(f"**Available here:** {', '.join(activities)}")
+        lines.append("")
+
+        # Pending messages
+        msg_count = len(pending_messages) if pending_messages else 0
+        if msg_count > 0:
+            lines.append(f"**Pending messages:** {msg_count} — run town_check to read them")
+        else:
+            lines.append("**Pending messages:** None")
+
+        return "\n".join(lines)
 
     def _pick_random_location(self, exclude: Optional[str] = None) -> str:
         """Pick a random town location, excluding current."""
