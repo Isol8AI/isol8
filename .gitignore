@@ -50,3 +50,6 @@ __pycache__/
 # PixelLab source zips
 pixellab-sprites/*.zip
 pixellab-sprites/**/*.zip
+
+# Map editor
+map-editor/godot-tilemap-mcp/node_modules/

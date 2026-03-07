@@ -2,48 +2,26 @@ import { PixiComponent, applyDefaultProps } from '@pixi/react';
 import * as PIXI from 'pixi.js';
 import { WorldMap } from '../../convex/aiTown/worldMap';
 
+const BACKGROUND_URL = '/assets/town-background.png';
+
 export const PixiStaticMap = PixiComponent('StaticMap', {
   create: (props: { map: WorldMap; [k: string]: any }) => {
     const map = props.map;
-    const numxtiles = Math.floor(map.tileSetDimX / map.tileDim);
-    const numytiles = Math.floor(map.tileSetDimY / map.tileDim);
-    const bt = PIXI.BaseTexture.from(map.tileSetUrl, {
-      scaleMode: PIXI.SCALE_MODES.NEAREST,
-    });
-
-    const tiles: PIXI.Texture[] = [];
-    for (let x = 0; x < numxtiles; x++) {
-      for (let y = 0; y < numytiles; y++) {
-        tiles[x + y * numxtiles] = new PIXI.Texture(
-          bt,
-          new PIXI.Rectangle(x * map.tileDim, y * map.tileDim, map.tileDim, map.tileDim),
-        );
-      }
-    }
     const screenxtiles = map.bgTiles[0].length;
     const screenytiles = map.bgTiles[0][0].length;
+    const mapWidthPx = screenxtiles * map.tileDim;
+    const mapHeightPx = screenytiles * map.tileDim;
 
     const container = new PIXI.Container();
-    const allLayers = [...map.bgTiles, ...map.objectTiles];
 
-    // blit bg & object layers of map onto canvas
-    for (let i = 0; i < screenxtiles * screenytiles; i++) {
-      const x = i % screenxtiles;
-      const y = Math.floor(i / screenxtiles);
-      const xPx = x * map.tileDim;
-      const yPx = y * map.tileDim;
-
-      // Add all layers of backgrounds.
-      for (const layer of allLayers) {
-        const tileIndex = layer[x][y];
-        // Some layers may not have tiles at this location.
-        if (tileIndex === -1) continue;
-        const ctile = new PIXI.Sprite(tiles[tileIndex]);
-        ctile.x = xPx;
-        ctile.y = yPx;
-        container.addChild(ctile);
-      }
-    }
+    // Render the pre-converted pixel art background as a single sprite
+    const bgTexture = PIXI.BaseTexture.from(BACKGROUND_URL, {
+      scaleMode: PIXI.SCALE_MODES.NEAREST,
+    });
+    const bgSprite = new PIXI.Sprite(new PIXI.Texture(bgTexture));
+    bgSprite.width = mapWidthPx;
+    bgSprite.height = mapHeightPx;
+    container.addChild(bgSprite);
 
     // Subtle water shimmer effect using displacement filter
     const noiseCanvas = document.createElement('canvas');
@@ -61,8 +39,8 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
       const displacementTexture = PIXI.Texture.from(noiseCanvas);
       const displacementSprite = new PIXI.Sprite(displacementTexture);
       displacementSprite.texture.baseTexture.wrapMode = PIXI.WRAP_MODES.REPEAT;
-      displacementSprite.width = screenxtiles * map.tileDim;
-      displacementSprite.height = screenytiles * map.tileDim;
+      displacementSprite.width = mapWidthPx;
+      displacementSprite.height = mapHeightPx;
       container.addChild(displacementSprite);
       const displacementFilter = new PIXI.DisplacementFilter(displacementSprite, 1.5);
       container.filters = [displacementFilter];
@@ -77,12 +55,7 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
 
     // Set the hit area manually to ensure `pointerdown` events are delivered to this container.
     container.interactive = true;
-    container.hitArea = new PIXI.Rectangle(
-      0,
-      0,
-      screenxtiles * map.tileDim,
-      screenytiles * map.tileDim,
-    );
+    container.hitArea = new PIXI.Rectangle(0, 0, mapWidthPx, mapHeightPx);
 
     return container;
   },
