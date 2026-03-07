@@ -320,13 +320,14 @@ class TownSimulation:
             active_states = [
                 s
                 for s in states
-                if (s["location_state"] or "active") != "sleeping"
-                and s["current_conversation_id"] is None
-                and s.get("location_context", "apartment") == "town"
+                if (s["location_state"] or "active") != "sleeping" and s["current_conversation_id"] is None
             ]
 
             for i, a in enumerate(active_states):
                 for b in active_states[i + 1 :]:
+                    # Only compare agents in the same coordinate space
+                    if a.get("location_context", "apartment") != b.get("location_context", "apartment"):
+                        continue
                     dist = self._calculate_distance(
                         a["position_x"],
                         a["position_y"],
