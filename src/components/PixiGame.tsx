@@ -1,5 +1,5 @@
 import * as PIXI from 'pixi.js';
-import { useApp, Text } from '@pixi/react';
+import { useApp, PixiComponent } from '@pixi/react';
 import { Player } from './Player.tsx';
 import { useEffect, useRef } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
@@ -7,7 +7,7 @@ import PixiViewport from './PixiViewport.tsx';
 import type { TownGameState } from '../types/town';
 import { useTownGame } from './TownProvider.tsx';
 
-// Location labels to render on the map
+// Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
   { label: 'Town Plaza', x: 49, y: 33 },
   { label: 'Cafe', x: 32, y: 34 },
@@ -18,6 +18,45 @@ const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
   { label: 'Shop', x: 47, y: 48 },
   { label: 'Residential', x: 53, y: 40 },
 ];
+
+const HoverLabel = PixiComponent('HoverLabel', {
+  create: (props: { label: string; x: number; y: number; tileDim: number }) => {
+    const container = new PIXI.Container();
+    const { label, x, y, tileDim } = props;
+
+    // Invisible hit area for hover detection
+    const hitArea = new PIXI.Graphics();
+    hitArea.beginFill(0xffffff, 0.001);
+    hitArea.drawRect(-tileDim * 1.5, -tileDim * 1.5, tileDim * 3, tileDim * 3);
+    hitArea.endFill();
+    hitArea.interactive = true;
+    hitArea.cursor = 'pointer';
+    container.addChild(hitArea);
+
+    // Label text, hidden by default
+    const text = new PIXI.Text(label, {
+      fontFamily: 'Arial',
+      fontSize: 11,
+      fill: '#ffffff',
+      stroke: '#000000',
+      strokeThickness: 3,
+      fontWeight: 'bold',
+    });
+    text.anchor.set(0.5, 1);
+    text.y = -tileDim * 0.8;
+    text.visible = false;
+    container.addChild(text);
+
+    hitArea.on('pointerover', () => { text.visible = true; });
+    hitArea.on('pointerout', () => { text.visible = false; });
+
+    container.x = x * tileDim + tileDim / 2;
+    container.y = y * tileDim + tileDim / 2;
+
+    return container;
+  },
+  applyProps: () => {},
+});
 
 export const PixiGame = (props: {
   game: TownGameState;
@@ -81,24 +120,14 @@ export const PixiGame = (props: {
       viewportRef={viewportRef}
     >
       <PixiStaticMap map={props.game.worldMap} />
-      {/* Location labels */}
+      {/* Location labels (hover-only) */}
       {LOCATION_LABELS.map((loc) => (
-        <Text
+        <HoverLabel
           key={loc.label}
-          text={loc.label}
-          x={loc.x * tileDim + tileDim / 2}
-          y={loc.y * tileDim - tileDim * 0.8}
-          anchor={{ x: 0.5, y: 1 }}
-          style={
-            new PIXI.TextStyle({
-              fontFamily: 'Arial',
-              fontSize: 11,
-              fill: '#ffffff',
-              stroke: '#000000',
-              strokeThickness: 3,
-              fontWeight: 'bold',
-            })
-          }
+          label={loc.label}
+          x={loc.x}
+          y={loc.y}
+          tileDim={tileDim}
         />
       ))}
       {/* Players with smooth interpolation */}
