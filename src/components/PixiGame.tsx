@@ -4,8 +4,7 @@ import { Player } from './Player.tsx';
 import { useEffect, useRef } from 'react';
 import { PixiStaticMap } from './PixiStaticMap.tsx';
 import PixiViewport from './PixiViewport.tsx';
-import type { TownGameState } from '../types/town';
-import { useTownGame } from './TownProvider.tsx';
+import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
@@ -64,10 +63,11 @@ export const PixiGame = (props: {
   height: number;
   setSelectedPlayerId: (id?: string) => void;
   viewportRef: React.MutableRefObject<any>;
+  lerpPlayers: () => TownPlayer[];
 }) => {
   const pixiApp = useApp();
   const viewportRef = props.viewportRef;
-  const { lerpPlayers } = useTownGame();
+  const { lerpPlayers } = props;
 
   // Ctrl/Cmd + wheel = zoom
   useEffect(() => {
@@ -110,14 +110,6 @@ export const PixiGame = (props: {
   // Use lerp-interpolated positions for smooth movement
   const interpolatedPlayers = lerpPlayers();
 
-  // Debug: log player counts to diagnose rendering
-  console.log('[PixiGame] game.world.players:', props.game.world.players.length, 'lerp:', interpolatedPlayers.length);
-
-  // Use game.world.players directly as fallback if lerp is empty
-  const playersToRender = interpolatedPlayers.length > 0
-    ? interpolatedPlayers
-    : props.game.world.players;
-
   return (
     <PixiViewport
       app={pixiApp}
@@ -138,8 +130,8 @@ export const PixiGame = (props: {
           tileDim={tileDim}
         />
       ))}
-      {/* Players */}
-      {playersToRender.map((p) => (
+      {/* Players with smooth interpolation */}
+      {interpolatedPlayers.map((p) => (
         <Player
           key={`player-${p.id}`}
           game={props.game}

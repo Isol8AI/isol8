@@ -2,9 +2,6 @@ import { Character } from './Character.tsx';
 import { characters } from '../../data/characters.ts';
 import { toast } from 'react-toastify';
 import type { TownGameState, TownPlayer } from '../types/town';
-import { Graphics } from '@pixi/react';
-import * as PIXI from 'pixi.js';
-import { useCallback } from 'react';
 
 const logged = new Set<string>();
 
@@ -46,34 +43,21 @@ export const Player = ({
 
   // Scale up characters to match the chunky pixel art map style
   const characterScale = (tileDim / 32) * 2.5;
-  const px = player.position.x * tileDim + tileDim / 2;
-  const py = player.position.y * tileDim + tileDim / 2;
-
-  // Debug marker — bright red circle at agent position
-  const drawDebug = useCallback((g: PIXI.Graphics) => {
-    g.clear();
-    g.beginFill(0xff0000);
-    g.drawCircle(0, 0, tileDim);
-    g.endFill();
-  }, [tileDim]);
 
   return (
-    <>
-      <Graphics draw={drawDebug} x={px} y={py} />
-      <Character
-        x={px}
-        y={py}
-        orientation={orientationDegrees(player.facing.dx, player.facing.dy)}
-        isMoving={player.speed > 0}
-        isThinking={false}
-        isSpeaking={isSpeaking}
-        isViewer={false}
-        textureUrl={character.textureUrl}
-        spritesheetData={character.spritesheetData}
-        speed={character.speed}
-        scale={characterScale}
-        onClick={() => onClick(player.id)}
-      />
-    </>
+    <Character
+      x={player.position.x * tileDim + tileDim / 2}
+      y={player.position.y * tileDim + tileDim / 2}
+      orientation={orientationDegrees(player.facing.dx, player.facing.dy)}
+      isMoving={player.speed > 0}
+      isThinking={false}
+      isSpeaking={isSpeaking}
+      isViewer={false}
+      textureUrl={character.textureUrl}
+      spritesheetData={character.spritesheetData}
+      speed={character.speed}
+      scale={characterScale}
+      onClick={() => onClick(player.id)}
+    />
   );
 };

@@ -7,7 +7,7 @@ import PlayerDetails from './PlayerDetails.tsx';
 import { useTownGame } from './TownProvider.tsx';
 
 export default function Game() {
-  const { game } = useTownGame();
+  const { game, lerpPlayers } = useTownGame();
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>();
   const [gameWrapperRef, { width, height }] = useElementSize();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -73,6 +73,7 @@ export default function Game() {
               height={height}
               setSelectedPlayerId={setSelectedPlayerId}
               viewportRef={viewportRef}
+              lerpPlayers={lerpPlayers}
             />
           </Stage>
         </div>
