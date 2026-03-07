@@ -316,7 +316,10 @@ async def upload_files(
         safe_name = _sanitize_filename(f.filename or "upload")
         dest_path = f"uploads/{safe_name}"
         workspace.write_bytes(auth.user_id, dest_path, data)
-        uploaded.append({"filename": safe_name, "path": dest_path, "size": len(data)})
+        # The agent's working dir is $HOME (/home/node) but EFS is mounted
+        # at $HOME/.openclaw, so the agent path is .openclaw/uploads/filename
+        agent_path = f".openclaw/{dest_path}"
+        uploaded.append({"filename": safe_name, "path": agent_path, "size": len(data)})
         logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), auth.user_id)
 
     return {"uploaded": uploaded}

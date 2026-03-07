@@ -55,7 +55,7 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
             body = resp.json()
             assert len(body["uploaded"]) == 1
             assert body["uploaded"][0]["filename"] == "test.txt"
-            assert body["uploaded"][0]["path"] == "uploads/test.txt"
+            assert body["uploaded"][0]["path"] == ".openclaw/uploads/test.txt"
             assert body["uploaded"][0]["size"] == 11
 
             mock_workspace.write_bytes.assert_called_once_with("user_123", "uploads/test.txt", b"hello world")
