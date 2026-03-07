@@ -46,11 +46,12 @@ export default function ApartmentMap({ agents, lerpAgents }: Props) {
     height > 0 ? height / APT_HEIGHT : 1,
   );
 
+  // Show agents in apartment context
   const apartmentAgents = interpolated.filter(
     (a) => a.location_context === 'apartment' && a.is_active,
   );
 
-  const characterScale = (TILE_DIM / 32) * 2.0;
+  const characterScale = (TILE_DIM / 32) * 0.8;
 
   return (
     <div ref={containerRef} className="w-full h-full">
