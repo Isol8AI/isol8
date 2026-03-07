@@ -158,7 +158,7 @@ resource "aws_ecs_task_definition" "openclaw" {
       workingDirectory = "/home/node"
       command = [
         "sh", "-c",
-        "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter clawhub 2>/dev/null; GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v$${GH_VER}/gh_$${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_$${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
+        "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter clawhub 2>/dev/null; GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v$${GH_VER}/gh_$${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_$${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null; wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH; clawhub install markdown-converter --no-input 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
       ]
 
       portMappings = [
@@ -189,7 +189,7 @@ resource "aws_ecs_task_definition" "openclaw" {
         },
         {
           name  = "PATH"
-          value = "/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          value = "/home/node/.local/bin:/home/node/.npm-global/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         },
         {
           name  = "AWS_REGION"
