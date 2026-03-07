@@ -675,7 +675,7 @@ async def get_apartment(
                 agent_name=agent.agent_name,
                 display_name=agent.display_name,
                 character=agent.character,
-                location_context=getattr(state, "location_context", "apartment") if state else "apartment",
+                location_context=state.location_context if state else "apartment",
                 current_location=state.current_location if state else None,
                 current_activity=state.current_activity if state else None,
                 mood=state.mood if state else None,
