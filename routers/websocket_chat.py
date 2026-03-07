@@ -151,11 +151,38 @@ async def ws_disconnect(
     except Exception:
         pass
 
-    # Clean up town agent connection if active
+    # Clean up town agent connection if active — set agent to sleeping
     try:
         from core.services.town_agent_ws import get_town_agent_ws_manager
 
-        get_town_agent_ws_manager().unregister(x_connection_id)
+        ws_manager = get_town_agent_ws_manager()
+        agent_conn = ws_manager.get_by_connection(x_connection_id)
+        if agent_conn:
+            ws_manager.unregister(x_connection_id)
+            # Set agent to sleeping in DB since their WS is gone
+            try:
+                from core.database import get_session_factory
+                from models.town import TownState
+                from sqlalchemy import update
+                from uuid import UUID
+
+                async_session = get_session_factory()
+                async with async_session() as session:
+                    await session.execute(
+                        update(TownState)
+                        .where(TownState.agent_id == UUID(agent_conn.agent_id))
+                        .values(
+                            location_state="sleeping",
+                            speed=0.0,
+                            target_x=None,
+                            target_y=None,
+                            current_activity="sleeping",
+                        )
+                    )
+                    await session.commit()
+                logger.info("Agent %s set to sleeping on disconnect", agent_conn.agent_name)
+            except Exception as e:
+                logger.warning("Failed to set agent sleeping on disconnect: %s", e)
     except Exception:
         pass
 
@@ -349,11 +376,11 @@ async def ws_message(
                     agent_id=agent.id,
                     position_x=home_loc["x"],
                     position_y=home_loc["y"],
-                    location_state="entering",
+                    location_state="active",
                 )
                 session.add(state)
             else:
-                state.location_state = "entering"
+                state.location_state = "active"
 
             from datetime import datetime, timezone as tz
 
