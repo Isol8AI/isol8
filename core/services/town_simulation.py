@@ -17,13 +17,14 @@ import logging
 import math
 import random
 from datetime import datetime, timezone, timedelta
-from typing import Callable, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 
 from core.town_constants import (
     DEFAULT_CHARACTERS,
     SYSTEM_USER_ID,
     TOWN_LOCATIONS,
 )
+from core.services.town_pathfinding import find_path
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,8 @@ class TownSimulation:
         # Lazy-initialized management API client for pushing events to agents
         self._mgmt_client = None
         self._mgmt_client_failed = False
+        # A* precomputed paths: agent_id -> list of (x, y) waypoints remaining
+        self._agent_paths: Dict[str, List[Tuple[int, int]]] = {}
 
     def _get_mgmt_client(self):
         """Lazily create ManagementApiClient. Returns None if unavailable."""
@@ -175,18 +178,49 @@ class TownSimulation:
                 if agent_state["current_conversation_id"] is not None:
                     continue
 
-                # --- Movement toward target_x/target_y ---
+                # --- Movement toward target_x/target_y using A* paths ---
                 tx = agent_state["target_x"]
                 ty = agent_state["target_y"]
 
                 if tx is not None and ty is not None:
-                    new_x, new_y, arrived = self._move_toward(
-                        agent_state["position_x"],
-                        agent_state["position_y"],
-                        tx,
-                        ty,
-                        AGENT_SPEED,
-                    )
+                    # Compute A* path if we don't have one for this agent
+                    if agent_id not in self._agent_paths:
+                        path = find_path(
+                            agent_state["position_x"],
+                            agent_state["position_y"],
+                            tx,
+                            ty,
+                        )
+                        if path and len(path) > 1:
+                            # Skip the first waypoint (current position)
+                            self._agent_paths[agent_id] = path[1:]
+                        elif path and len(path) == 1:
+                            self._agent_paths[agent_id] = path
+                        else:
+                            # No path found — move straight as fallback
+                            logger.debug("No A* path for %s, using straight line", agent_name)
+                            self._agent_paths[agent_id] = [(round(tx), round(ty))]
+
+                    # Follow the next waypoint in the path
+                    waypoints = self._agent_paths.get(agent_id, [])
+                    if waypoints:
+                        wp_x, wp_y = float(waypoints[0][0]), float(waypoints[0][1])
+                        new_x, new_y, wp_arrived = self._move_toward(
+                            agent_state["position_x"],
+                            agent_state["position_y"],
+                            wp_x,
+                            wp_y,
+                            AGENT_SPEED,
+                        )
+
+                        if wp_arrived:
+                            waypoints.pop(0)
+
+                        arrived = wp_arrived and len(waypoints) == 0
+                    else:
+                        new_x = agent_state["position_x"]
+                        new_y = agent_state["position_y"]
+                        arrived = True
 
                     # Compute facing direction from movement delta
                     dx = new_x - agent_state["position_x"]
@@ -208,6 +242,7 @@ class TownSimulation:
                         update["target_y"] = None
                         update["speed"] = 0.0
                         update["current_activity"] = "idle"
+                        self._agent_paths.pop(agent_id, None)
 
                         # Set current_location from target_location if provided
                         if agent_state["target_location"]:
@@ -248,6 +283,8 @@ class TownSimulation:
                         target_loc = self._pick_random_location(exclude=agent_state["current_location"])
                         target_coords = TOWN_LOCATIONS.get(target_loc)
                         if target_coords:
+                            # Clear any stale path so A* recomputes
+                            self._agent_paths.pop(agent_id, None)
                             await service.update_agent_state(
                                 agent_id,
                                 target_x=target_coords["x"],
@@ -269,6 +306,7 @@ class TownSimulation:
                         home_loc = agent_state["home_location"] or "apartment"
                         home_coords = TOWN_LOCATIONS.get(home_loc, TOWN_LOCATIONS.get("apartment"))
                         if home_coords:
+                            self._agent_paths.pop(agent_id, None)
                             await service.update_agent_state(
                                 agent_id,
                                 location_state="going_home",
