@@ -11,8 +11,8 @@ import {
   Download,
   Eye,
   EyeOff,
+  ExternalLink,
   Wrench,
-  Package,
   Server,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
@@ -21,7 +21,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { McpServersTab } from "./McpServersTab";
-import { ClawHubTab } from "./ClawHubTab";
 
 // Map OpenClaw primaryEnv → backend tool_id for BYOK persistence
 const ENV_TO_TOOL_ID: Record<string, string> = {
@@ -31,7 +30,7 @@ const ENV_TO_TOOL_ID: Record<string, string> = {
   FIRECRAWL_API_KEY: "firecrawl",
 };
 
-type SkillsPanelTab = "skills" | "mcp" | "clawhub";
+type SkillsPanelTab = "skills" | "mcp";
 
 // --- Types matching OpenClaw skills.status response ---
 
@@ -102,7 +101,6 @@ function groupBySource(skills: SkillStatusEntry[]): { source: string; label: str
 const TABS: { id: SkillsPanelTab; label: string; icon: typeof Wrench }[] = [
   { id: "skills", label: "Skills", icon: Wrench },
   { id: "mcp", label: "MCP Servers", icon: Server },
-  { id: "clawhub", label: "ClawHub", icon: Package },
 ];
 
 // --- Main Panel (tabbed) ---
@@ -138,7 +136,6 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
       <div className="flex-1 overflow-y-auto">
         {activeTab === "skills" && <SkillsTab agentId={agentId} />}
         {activeTab === "mcp" && <McpServersTab agentId={agentId} />}
-        {activeTab === "clawhub" && <ClawHubTab agentId={agentId} />}
       </div>
     </div>
   );
@@ -203,10 +200,28 @@ function SkillsTab({ agentId }: { agentId?: string }) {
       {/* Header */}
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-semibold">Skills ({skills.length})</h2>
-        <Button variant="ghost" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" onClick={() => mutate()}>
+            <RefreshCw className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 text-xs"
+            onClick={() => window.open("https://clawhub.ai", "_blank")}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            ClawHub
+          </Button>
+        </div>
       </div>
+      <p className="text-xs text-muted-foreground">
+        Discover more skills on{" "}
+        <a href="https://clawhub.ai" target="_blank" rel="noopener noreferrer" className="underline">
+          clawhub.ai
+        </a>
+        . Ask your agent to install them with <code className="text-[11px] bg-muted px-1 rounded">clawhub install &lt;slug&gt;</code>.
+      </p>
 
       {/* Filter */}
       <div className="relative">
