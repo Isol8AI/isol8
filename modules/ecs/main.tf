@@ -158,7 +158,7 @@ resource "aws_ecs_task_definition" "openclaw" {
       workingDirectory = "/home/node"
       command = [
         "sh", "-c",
-        "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
+        "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter clawhub 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
       ]
 
       portMappings = [
