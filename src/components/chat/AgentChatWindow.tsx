@@ -62,9 +62,9 @@ export function AgentChatWindow({
           try {
             const result = await api.uploadFiles(files);
             const fileList = result.uploaded
-              .map((f) => `- ${f.filename} (${f.path})`)
+              .map((f) => `- ${f.filename} → ${f.path}`)
               .join("\n");
-            const fileNotice = `[Uploaded files to workspace:\n${fileList}]\n\n`;
+            const fileNotice = `[The user uploaded files to your workspace. You can read them at these paths:\n${fileList}]\n\n`;
             message = fileNotice + message;
           } catch (err) {
             console.error("Upload failed:", err);
