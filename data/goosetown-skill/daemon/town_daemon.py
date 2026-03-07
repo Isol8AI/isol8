@@ -38,6 +38,7 @@ class TownDaemon:
         self.running = True
         self.ws = None
         self._initial_state_event = asyncio.Event()
+        self._arrived_event = asyncio.Event()
 
     def _write_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -62,6 +63,7 @@ class TownDaemon:
                 self.state["agent"]["activity"] = "idle"
                 if "location" in data:
                     self.state["agent"]["location"] = data["location"]
+            self._arrived_event.set()
         elif event == "act_ok":
             pass  # Action acknowledged
         elif event == "sleep_ok":
@@ -122,10 +124,18 @@ class TownDaemon:
 
         elif action == "act":
             payload = cmd.get("payload", {})
-            if self.ws:
-                await self.ws.send(json.dumps({"type": "town_agent_act", **payload}))
-                return {"status": "ok", "action": payload.get("action")}
-            return {"error": "not connected"}
+            if not self.ws:
+                return {"error": "not connected"}
+            await self.ws.send(json.dumps({"type": "town_agent_act", **payload}))
+            # Block on move until arrived (max 120s)
+            if payload.get("action") == "move":
+                self._arrived_event.clear()
+                try:
+                    await asyncio.wait_for(self._arrived_event.wait(), timeout=120.0)
+                except asyncio.TimeoutError:
+                    return {"status": "timeout", "action": "move", "message": "Did not arrive within 120s"}
+                return {"status": "arrived", "location": self.state.get("agent", {}).get("location")}
+            return {"status": "ok", "action": payload.get("action")}
 
         elif action == "sleep":
             wake_time = cmd.get("wake_time", "")
