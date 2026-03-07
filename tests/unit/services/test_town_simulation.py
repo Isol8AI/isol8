@@ -125,6 +125,7 @@ def _make_agent_state(
     last_decision_at=None,
     last_conversation_at=None,
     agent_id=None,
+    location_context="town",
 ):
     """Helper to construct an agent state dict matching get_town_state() output."""
     return {
@@ -142,6 +143,7 @@ def _make_agent_state(
         "position_x": position_x,
         "position_y": position_y,
         "location_state": location_state,
+        "location_context": location_context,
         "speed": speed,
         "facing_x": facing_x,
         "facing_y": facing_y,
@@ -410,8 +412,11 @@ class TestTickInactiveDetection:
         assert len(going_home_calls) == 1
         kwargs = going_home_calls[0][1]
         assert kwargs["location_state"] == "going_home"
-        assert kwargs["target_x"] == TOWN_LOCATIONS["apartment"]["x"]
-        assert kwargs["target_y"] == TOWN_LOCATIONS["apartment"]["y"]
+        # Town agents go to residential first (pending transition to apartment)
+        from core.apartment_constants import RESIDENTIAL_TOWN_COORDS
+
+        assert kwargs["target_x"] == RESIDENTIAL_TOWN_COORDS["x"]
+        assert kwargs["target_y"] == RESIDENTIAL_TOWN_COORDS["y"]
 
     @pytest.mark.asyncio
     async def test_inactive_user_agent_with_null_heartbeat_sent_home(self):

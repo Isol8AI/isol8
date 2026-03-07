@@ -76,7 +76,8 @@ class TestTownServiceState:
         states = await service.get_town_state()
         assert len(states) == 1
         assert states[0]["display_name"] == "Luna"
-        assert states[0]["position_x"] == 0.0
+        assert states[0]["position_x"] == 9.0  # bed_1 x coord
+        assert states[0]["location_context"] == "apartment"
 
 
 class TestTownServiceSeedAgent:

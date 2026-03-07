@@ -270,11 +270,18 @@ class TestOptInOptOutRoundTrip:
 
     @pytest.mark.asyncio
     async def test_agents_appear_in_state_after_opt_in(self, async_client, db_session, test_user, mock_skill_service):
-        """After opt-in, agents appear in GET /state."""
+        """After opt-in, agents appear in GET /state (once moved to town context)."""
         await async_client.post(
             "/api/v1/town/opt-in",
             json=_opt_in_payload(("luna", "Luna"), ("sol", "Sol")),
         )
+
+        # Agents spawn in apartment context; move to town so they appear in /state
+        from sqlalchemy import update
+        from models.town import TownState
+
+        await db_session.execute(update(TownState).values(location_context="town"))
+        await db_session.commit()
 
         response = await async_client.get("/api/v1/town/state")
         assert response.status_code == 200
@@ -289,10 +296,22 @@ class TestOptInOptOutRoundTrip:
             "/api/v1/town/opt-in",
             json=_opt_in_payload(("luna", "Luna")),
         )
+
+        # Move to town context first so we can verify disappearance
+        from sqlalchemy import update
+        from models.town import TownState
+
+        await db_session.execute(update(TownState).values(location_context="town"))
+        await db_session.commit()
+
+        # Verify agent appears
+        response = await async_client.get("/api/v1/town/state")
+        assert len(response.json()["world"]["players"]) == 1
+
         await async_client.post("/api/v1/town/opt-out")
 
         response = await async_client.get("/api/v1/town/state")
         assert response.status_code == 200
         data = response.json()
-        # With no active agents, falls back to DEFAULT_CHARACTERS (5)
-        assert len(data["world"]["players"]) == 5
+        # With no active agents, returns empty defaults
+        assert len(data["world"]["players"]) == 0

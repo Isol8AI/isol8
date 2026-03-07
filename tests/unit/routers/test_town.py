@@ -105,6 +105,13 @@ class TestTownState:
             json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
         )
 
+        # Agents spawn in apartment; move to town context so they appear in /state
+        from sqlalchemy import update
+        from models.town import TownState
+
+        await db_session.execute(update(TownState).values(location_context="town"))
+        await db_session.commit()
+
         response = await async_client.get("/api/v1/town/state")
 
         assert response.status_code == 200
@@ -145,6 +152,13 @@ class TestTownDescriptions:
                 ]
             },
         )
+
+        # Agents spawn in apartment; move to town context so they appear in /descriptions
+        from sqlalchemy import update
+        from models.town import TownState
+
+        await db_session.execute(update(TownState).values(location_context="town"))
+        await db_session.commit()
 
         response = await async_client.get("/api/v1/town/descriptions")
 
