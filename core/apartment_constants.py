@@ -11,10 +11,26 @@ APARTMENT_HEIGHT = 8
 
 # Room definitions
 APARTMENT_ROOMS: Dict[str, Dict] = {
-    "office": {"label": "Office", "description": "Work area with desks"},
-    "kitchen": {"label": "Kitchen", "description": "Kitchen and dining area"},
-    "living_room": {"label": "Living Room", "description": "Couches and TV"},
-    "bedroom": {"label": "Bedroom", "description": "Beds for sleeping"},
+    "office": {
+        "label": "Office",
+        "description": "Work area with desks",
+        "activities": ["work at desk", "check computer", "write notes"],
+    },
+    "kitchen": {
+        "label": "Kitchen",
+        "description": "Kitchen and dining area",
+        "activities": ["cook a meal", "eat at the table", "read a book from the bookshelf"],
+    },
+    "living_room": {
+        "label": "Living Room",
+        "description": "Couches and TV",
+        "activities": ["watch TV", "relax on the couch", "chat with roommates"],
+    },
+    "bedroom": {
+        "label": "Bedroom",
+        "description": "Beds for sleeping",
+        "activities": ["take a nap", "rest", "go to sleep"],
+    },
 }
 
 # Named spots agents can target directly

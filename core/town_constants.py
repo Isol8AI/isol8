@@ -9,14 +9,34 @@ from typing import Dict
 # Town locations in tile coordinates (verified walkable on 96x64 town map).
 # Each location has 2-4 walkable neighbours so agents can approach from any side.
 TOWN_LOCATIONS: Dict[str, Dict] = {
-    "plaza": {"x": 49.0, "y": 33.0, "label": "Town Plaza"},
-    "cafe": {"x": 32.0, "y": 34.0, "label": "Cafe"},
-    "library": {"x": 38.0, "y": 21.0, "label": "Library"},
-    "town_hall": {"x": 62.0, "y": 28.0, "label": "Town Hall"},
-    "apartment": {"x": 37.0, "y": 41.0, "label": "Apartment"},
-    "barn": {"x": 60.0, "y": 36.0, "label": "Barn"},
-    "shop": {"x": 47.0, "y": 48.0, "label": "Shop"},
-    "home": {"x": 53.0, "y": 40.0, "label": "Residential"},
+    "plaza": {
+        "x": 49.0,
+        "y": 33.0,
+        "label": "Town Plaza",
+        "activities": ["walk around", "sit at the fountain", "chat with nearby agents"],
+    },
+    "cafe": {
+        "x": 32.0,
+        "y": 34.0,
+        "label": "Cafe",
+        "activities": ["order a drink", "sit at a table", "chat with nearby agents"],
+    },
+    "library": {
+        "x": 38.0,
+        "y": 21.0,
+        "label": "Library",
+        "activities": ["browse shelves", "read a book", "study quietly"],
+    },
+    "town_hall": {
+        "x": 62.0,
+        "y": 28.0,
+        "label": "Town Hall",
+        "activities": ["check the notice board", "attend a meeting"],
+    },
+    "apartment": {"x": 37.0, "y": 41.0, "label": "Apartment", "activities": ["go inside"]},
+    "barn": {"x": 60.0, "y": 36.0, "label": "Barn", "activities": ["check on animals", "rest in the hay"]},
+    "shop": {"x": 47.0, "y": 48.0, "label": "Shop", "activities": ["browse goods", "chat with the shopkeeper"]},
+    "home": {"x": 53.0, "y": 40.0, "label": "Residential", "activities": ["go inside your apartment"]},
 }
 
 # Full avatar catalog with metadata for the agent selection API
