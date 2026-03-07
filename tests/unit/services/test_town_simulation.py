@@ -192,15 +192,21 @@ class TestTickMovement:
         mock_ws.is_agent_connected = MagicMock(return_value=False)
         mock_ws.get_agent_connection_id = MagicMock(return_value=None)
 
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
+        with (
+            patch(
+                "core.services.town_simulation.TownSimulation._get_ws_manager",
+                return_value=mock_ws,
+            ),
+            patch(
+                "core.services.town_simulation.find_path",
+                return_value=[(10, 10), (20, 10)],
+            ),
+            patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
-            ):
-                await sim._tick()
+            ),
+        ):
+            await sim._tick()
 
         # Should have been called to update position
         mock_service.update_agent_state.assert_called()
@@ -232,15 +238,21 @@ class TestTickMovement:
         mock_ws.is_agent_connected = MagicMock(return_value=False)
         mock_ws.get_agent_connection_id = MagicMock(return_value=None)
 
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
+        with (
+            patch(
+                "core.services.town_simulation.TownSimulation._get_ws_manager",
+                return_value=mock_ws,
+            ),
+            patch(
+                "core.services.town_simulation.find_path",
+                return_value=[(20, 10)],
+            ),
+            patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
-            ):
-                await sim._tick()
+            ),
+        ):
+            await sim._tick()
 
         call_kwargs = mock_service.update_agent_state.call_args_list[0]
         update_kwargs = call_kwargs[1]
@@ -756,15 +768,21 @@ class TestTickArrivedEventPush:
         mock_ws.is_agent_connected = MagicMock(return_value=True)
         mock_ws.get_agent_connection_id = MagicMock(return_value="conn_user")
 
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
+        with (
+            patch(
+                "core.services.town_simulation.TownSimulation._get_ws_manager",
+                return_value=mock_ws,
+            ),
+            patch(
+                "core.services.town_simulation.find_path",
+                return_value=[(20, 10)],
+            ),
+            patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
-            ):
-                await sim._tick()
+            ),
+        ):
+            await sim._tick()
 
         # Should have pushed an "arrived" event
         arrived_calls = [c for c in mock_mgmt.send_message.call_args_list if c[0][1].get("event") == "arrived"]
@@ -803,15 +821,21 @@ class TestTickArrivedEventPush:
         mock_ws.is_agent_connected = MagicMock(return_value=True)
         mock_ws.get_agent_connection_id = MagicMock(return_value="conn_user")
 
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
+        with (
+            patch(
+                "core.services.town_simulation.TownSimulation._get_ws_manager",
+                return_value=mock_ws,
+            ),
+            patch(
+                "core.services.town_simulation.find_path",
+                return_value=[(10, 8)],
+            ),
+            patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
-            ):
-                await sim._tick()
+            ),
+        ):
+            await sim._tick()
 
         # No "arrived" event (sleeping transition, not an arrival event)
         arrived_calls = [c for c in mock_mgmt.send_message.call_args_list if c[0][1].get("event") == "arrived"]
@@ -841,15 +865,21 @@ class TestTickFacingDirection:
         mock_ws.is_agent_connected = MagicMock(return_value=False)
         mock_ws.get_agent_connection_id = MagicMock(return_value=None)
 
-        with patch(
-            "core.services.town_simulation.TownSimulation._get_ws_manager",
-            return_value=mock_ws,
-        ):
-            with patch(
+        with (
+            patch(
+                "core.services.town_simulation.TownSimulation._get_ws_manager",
+                return_value=mock_ws,
+            ),
+            patch(
+                "core.services.town_simulation.find_path",
+                return_value=[(10, 10), (20, 10)],
+            ),
+            patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
-            ):
-                await sim._tick()
+            ),
+        ):
+            await sim._tick()
 
         call_kwargs = mock_service.update_agent_state.call_args_list[0]
         update_kwargs = call_kwargs[1]
