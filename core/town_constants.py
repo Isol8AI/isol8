@@ -9,14 +9,14 @@ from typing import Dict, List
 # Town locations in tile coordinates (verified walkable on 96x64 town map).
 # Each location has 2-4 walkable neighbours so agents can approach from any side.
 TOWN_LOCATIONS: Dict[str, Dict] = {
-    "plaza": {"x": 48.0, "y": 30.0, "label": "Town Plaza"},
-    "cafe": {"x": 20.0, "y": 28.0, "label": "Cafe"},
-    "library": {"x": 46.0, "y": 10.0, "label": "Library"},
-    "town_hall": {"x": 72.0, "y": 10.0, "label": "Town Hall"},
-    "apartment": {"x": 20.0, "y": 44.0, "label": "Apartment"},
-    "barn": {"x": 68.0, "y": 26.0, "label": "Barn"},
-    "shop": {"x": 48.0, "y": 46.0, "label": "Shop"},
-    "home": {"x": 66.0, "y": 44.0, "label": "Residential"},
+    "plaza": {"x": 49.0, "y": 33.0, "label": "Town Plaza"},
+    "cafe": {"x": 32.0, "y": 34.0, "label": "Cafe"},
+    "library": {"x": 38.0, "y": 21.0, "label": "Library"},
+    "town_hall": {"x": 62.0, "y": 28.0, "label": "Town Hall"},
+    "apartment": {"x": 37.0, "y": 41.0, "label": "Apartment"},
+    "barn": {"x": 60.0, "y": 36.0, "label": "Barn"},
+    "shop": {"x": 47.0, "y": 48.0, "label": "Shop"},
+    "home": {"x": 53.0, "y": 40.0, "label": "Residential"},
 }
 
 # Default characters for the town (same data used by both simulation and router)
@@ -31,7 +31,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "through the galaxy on whatever ship will take him."
         ),
         "plan": "You want to hear all the gossip.",
-        "spawn": {"x": 20.0, "y": 28.0},
+        "spawn": {"x": 32.0, "y": 34.0},
         "home": "cafe",
     },
     {
@@ -44,7 +44,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "out of the conversation as quickly as possible."
         ),
         "plan": "You want to avoid people as much as possible.",
-        "spawn": {"x": 66.0, "y": 44.0},
+        "spawn": {"x": 53.0, "y": 40.0},
         "home": "home",
     },
     {
@@ -56,7 +56,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "She's incredibly charming and not afraid to use her charm."
         ),
         "plan": "You want to take advantage of others as much as possible.",
-        "spawn": {"x": 20.0, "y": 44.0},
+        "spawn": {"x": 37.0, "y": 41.0},
         "home": "apartment",
     },
     {
@@ -68,7 +68,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "has discovered mysteries of the universe no one else can understand."
         ),
         "plan": "You want to figure out how the world works.",
-        "spawn": {"x": 46.0, "y": 10.0},
+        "spawn": {"x": 38.0, "y": 21.0},
         "home": "library",
     },
     {
@@ -81,7 +81,7 @@ DEFAULT_CHARACTERS: List[Dict] = [
             "up his deep faith."
         ),
         "plan": "You want to convert everyone to your religion.",
-        "spawn": {"x": 48.0, "y": 30.0},
+        "spawn": {"x": 49.0, "y": 33.0},
         "home": "plaza",
     },
 ]
