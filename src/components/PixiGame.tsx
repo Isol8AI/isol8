@@ -110,6 +110,14 @@ export const PixiGame = (props: {
   // Use lerp-interpolated positions for smooth movement
   const interpolatedPlayers = lerpPlayers();
 
+  // Debug: log player counts to diagnose rendering
+  console.log('[PixiGame] game.world.players:', props.game.world.players.length, 'lerp:', interpolatedPlayers.length);
+
+  // Use game.world.players directly as fallback if lerp is empty
+  const playersToRender = interpolatedPlayers.length > 0
+    ? interpolatedPlayers
+    : props.game.world.players;
+
   return (
     <PixiViewport
       app={pixiApp}
@@ -130,8 +138,8 @@ export const PixiGame = (props: {
           tileDim={tileDim}
         />
       ))}
-      {/* Players with smooth interpolation */}
-      {interpolatedPlayers.map((p) => (
+      {/* Players */}
+      {playersToRender.map((p) => (
         <Player
           key={`player-${p.id}`}
           game={props.game}
