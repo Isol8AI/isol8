@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.town_token import sign_town_token
 from models.town import TownAgent, TownInstance, TownState, TownConversation, TownRelationship
 
 logger = logging.getLogger(__name__)
@@ -275,15 +276,20 @@ class TownService:
         return result.scalar_one_or_none()
 
     async def create_instance(self, user_id: str) -> TownInstance:
-        """Create a new TownInstance with unique apartment_unit and token."""
+        """Create a new TownInstance with unique apartment_unit and signed token."""
         max_unit = await self.db.execute(select(func.max(TownInstance.apartment_unit)))
         current_max = max_unit.scalar() or 0
+        # Use a temporary random ID, then replace with signed token after flush
+        temp_token = secrets.token_urlsafe(32)
         instance = TownInstance(
             user_id=user_id,
             apartment_unit=current_max + 1,
-            town_token=secrets.token_urlsafe(32),
+            town_token=temp_token,
         )
         self.db.add(instance)
+        await self.db.flush()
+        # Now sign with the real instance ID
+        instance.town_token = sign_town_token(user_id, str(instance.id))
         await self.db.flush()
         return instance
 
