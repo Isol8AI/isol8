@@ -266,6 +266,9 @@ module "websocket_api" {
   # Clerk configuration for JWT validation
   clerk_jwks_url = var.clerk_jwks_url
   clerk_issuer   = var.clerk_issuer
+
+  # Shared secret for HMAC-signed town agent tokens
+  town_token_secret = var.town_token_secret
 }
 
 # -----------------------------------------------------------------------------
@@ -342,6 +345,9 @@ module "ec2" {
   # WebSocket
   ws_connections_table  = module.websocket_api.connections_table_name
   ws_management_api_url = module.websocket_api.management_api_url
+
+  # GooseTown
+  town_token_secret = var.town_token_secret
 
   # Stripe billing
   stripe_starter_fixed_price_id = var.stripe_starter_fixed_price_id

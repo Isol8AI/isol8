@@ -121,6 +121,12 @@ variable "clerk_jwks_url" {
   type        = string
 }
 
+variable "town_token_secret" {
+  description = "Shared HMAC secret for signing/verifying GooseTown agent tokens"
+  type        = string
+  sensitive   = true
+}
+
 variable "clerk_secret_key" {
   description = "Clerk secret key for server-side API calls"
   type        = string

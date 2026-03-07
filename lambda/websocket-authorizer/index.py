@@ -1,10 +1,17 @@
 """
 Lambda authorizer for WebSocket API Gateway.
 
-Validates Clerk JWT tokens passed via query parameter on WebSocket $connect.
+Validates two token types:
+1. Clerk JWTs — for browser/frontend WebSocket connections
+2. HMAC-signed town tokens — for AI agent WebSocket connections
+
 Returns authorization context (user_id, org_id) for API Gateway to forward to backend.
 """
 
+import base64
+import hashlib
+import hmac
+import json
 import os
 import logging
 from typing import Any
@@ -18,6 +25,9 @@ logger.setLevel(logging.INFO)
 # Clerk configuration from environment
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
 CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
+
+# Shared secret for HMAC-signed town tokens
+TOWN_TOKEN_SECRET = os.environ.get("TOWN_TOKEN_SECRET", "")
 
 # Cache JWKS client (reused across invocations)
 _jwks_client = None
@@ -57,13 +67,60 @@ def generate_policy(principal_id: str, effect: str, resource: str, context: dict
     return policy
 
 
+def _b64url_decode(s: str) -> bytes:
+    """Decode base64url without padding."""
+    padding = 4 - len(s) % 4
+    if padding != 4:
+        s += "=" * padding
+    return base64.urlsafe_b64decode(s)
+
+
+def verify_town_token(token: str) -> dict | None:
+    """Verify an HMAC-signed town token.
+
+    Format: <payload_b64url>.<signature_b64url>
+    Returns payload dict {"uid": ..., "iid": ...} if valid, None otherwise.
+    """
+    if not TOWN_TOKEN_SECRET:
+        return None
+
+    parts = token.split(".")
+    # Town tokens have exactly 2 dot-separated parts; JWTs have 3
+    if len(parts) != 2:
+        return None
+
+    payload_b64, sig_b64 = parts
+    try:
+        expected_sig = hmac.new(
+            TOWN_TOKEN_SECRET.encode(), payload_b64.encode(), hashlib.sha256
+        ).digest()
+        actual_sig = _b64url_decode(sig_b64)
+    except Exception:
+        return None
+
+    if not hmac.compare_digest(expected_sig, actual_sig):
+        return None
+
+    try:
+        payload = json.loads(_b64url_decode(payload_b64))
+        if "uid" not in payload or "iid" not in payload:
+            return None
+        return payload
+    except Exception:
+        return None
+
+
 def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
 
+    Accepts:
+    - Clerk JWTs (3 dot-separated parts) for browser connections
+    - HMAC-signed town tokens (2 dot-separated parts) for agent connections
+
     Args:
         event: API Gateway authorizer event containing:
-            - queryStringParameters: {token: "jwt..."}
+            - queryStringParameters: {token: "..."}
             - methodArn: Resource ARN for policy
         context: Lambda context (unused)
 
@@ -83,6 +140,22 @@ def handler(event: dict, context: Any) -> dict:
         logger.warning("No token provided in query parameters")
         return generate_policy("unauthorized", "Deny", method_arn)
 
+    # --- Try HMAC-signed town token first (2-part format) ---
+    town_payload = verify_town_token(token)
+    if town_payload is not None:
+        user_id = town_payload["uid"]
+        logger.info(f"Town token authorized: user_id={user_id}")
+        return generate_policy(
+            principal_id=user_id,
+            effect="Allow",
+            resource=method_arn,
+            context={
+                "userId": user_id,
+                "orgId": "",
+            }
+        )
+
+    # --- Fall back to Clerk JWT (3-part format) ---
     try:
         # Get signing key from JWKS
         jwks_client = get_jwks_client()

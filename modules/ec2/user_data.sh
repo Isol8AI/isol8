@@ -13,6 +13,7 @@ FRONTEND_URL="${frontend_url}"
 TOWN_FRONTEND_URL="${town_frontend_url}"
 WS_CONNECTIONS_TABLE="${ws_connections_table}"
 WS_MANAGEMENT_API_URL="${ws_management_api_url}"
+TOWN_TOKEN_SECRET="${town_token_secret}"
 
 # Logging
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
@@ -107,6 +108,7 @@ STRIPE_METERED_PRICE_ID=${stripe_metered_price_id}
 STRIPE_METER_ID=${stripe_meter_id}
 FRONTEND_URL=$FRONTEND_URL
 PERPLEXITY_API_KEY=$PERPLEXITY_API_KEY
+TOWN_TOKEN_SECRET=$TOWN_TOKEN_SECRET
 PROXY_BASE_URL=https://${domain_name}/api/v1/proxy
 CONTAINER_EXECUTION_ROLE_ARN=${container_execution_role_arn}
 ECS_CLUSTER_ARN=${ecs_cluster_arn}

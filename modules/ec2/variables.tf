@@ -108,6 +108,13 @@ variable "ws_management_api_url" {
   default     = ""
 }
 
+variable "town_token_secret" {
+  description = "Shared HMAC secret for signing/verifying GooseTown agent tokens"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # Stripe billing
 variable "stripe_starter_fixed_price_id" {
   description = "Stripe Price ID for Starter plan monthly fee"

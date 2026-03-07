@@ -60,6 +60,12 @@ variable "clerk_issuer" {
   type        = string
 }
 
+variable "town_token_secret" {
+  description = "Shared HMAC secret for signing/verifying GooseTown agent tokens"
+  type        = string
+  sensitive   = true
+}
+
 # -----------------------------------------------------------------------------
 # Lambda Configuration
 # -----------------------------------------------------------------------------
