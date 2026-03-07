@@ -1043,11 +1043,17 @@ async def get_or_create_instance(
     db: AsyncSession = Depends(get_db),
 ):
     """Get existing instance or create a new one. Returns town_token."""
+    from core.town_token import sign_town_token
+
     service = TownService(db)
     instance = await service.get_active_instance(auth.user_id)
 
     if not instance:
         instance = await service.create_instance(auth.user_id)
+        await db.commit()
+    elif "." not in instance.town_token:
+        # Re-sign legacy unsigned tokens
+        instance.town_token = sign_town_token(auth.user_id, str(instance.id))
         await db.commit()
 
     agents = await service.get_instance_agents(instance.id)
