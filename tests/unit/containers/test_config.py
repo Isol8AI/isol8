@@ -119,12 +119,7 @@ class TestWriteOpenclawConfig:
         """Memory search uses local GGUF embeddings."""
         config = json.loads(write_openclaw_config())
         mem = config["agents"]["defaults"]["memorySearch"]
-        assert mem["enabled"] is True
-        assert mem["provider"] == "local"
-        assert "gguf" in mem["local"]["modelPath"].lower()
-        assert mem["fallback"] == "none"
-        assert "memory" in mem["sources"]
-        assert "sessions" in mem["sources"]
+        assert mem["enabled"] is False
 
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
@@ -147,6 +142,32 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert bedrock["auth"] == "aws-sdk"
+
+    def test_memory_lancedb_plugin_enabled(self):
+        """memory-lancedb plugin is configured with embedding proxy."""
+        config = json.loads(write_openclaw_config(gateway_token="tok_abc"))
+        plugins = config["plugins"]
+        assert plugins["slots"]["memory"] == "memory-lancedb"
+        entry = plugins["entries"]["memory-lancedb"]
+        assert entry["enabled"] is True
+        embed = entry["config"]["embedding"]
+        assert embed["apiKey"] == "tok_abc"
+        assert "proxy/embeddings" in embed["baseUrl"]
+        assert embed["dimensions"] == 1024
+
+    def test_memory_lancedb_auto_capture_enabled(self):
+        """memory-lancedb has autoCapture and autoRecall enabled."""
+        config = json.loads(write_openclaw_config(gateway_token="tok_abc"))
+        entry = config["plugins"]["entries"]["memory-lancedb"]
+        assert entry["config"]["autoCapture"] is True
+        assert entry["config"]["autoRecall"] is True
+
+    def test_memory_lancedb_disabled_without_token(self):
+        """memory-lancedb not enabled without gateway token."""
+        config = json.loads(write_openclaw_config(gateway_token=""))
+        plugins = config["plugins"]
+        entry = plugins["entries"]["memory-lancedb"]
+        assert entry["enabled"] is False
 
     def test_skills_no_allowlist(self):
         """Skills section has no allowBundled (all bundled skills allowed)."""

@@ -115,13 +115,7 @@ def write_openclaw_config(
                     "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0": {"alias": "Haiku 4.5"},
                 },
                 "memorySearch": {
-                    "enabled": True,
-                    "provider": "local",
-                    "local": {
-                        "modelPath": "hf:ggml-org/embeddinggemma-300m-qat-q8_0-GGUF/embeddinggemma-300m-qat-Q8_0.gguf",
-                    },
-                    "fallback": "none",
-                    "sources": ["memory", "sessions"],
+                    "enabled": False,
                 },
             },
         },
@@ -148,6 +142,27 @@ def write_openclaw_config(
                 "entries": {
                     "command-logger": {"enabled": True},
                     "session-memory": {"enabled": True},
+                },
+            },
+        },
+        "plugins": {
+            "slots": {
+                "memory": "memory-lancedb" if gateway_token else "memory-core",
+            },
+            "entries": {
+                "memory-lancedb": {
+                    "enabled": bool(gateway_token),
+                    "config": {
+                        "embedding": {
+                            "apiKey": gateway_token or "disabled",
+                            "model": "titan-embed-v2",
+                            "baseUrl": f"{proxy_base_url}/embeddings",
+                            "dimensions": 1024,
+                        },
+                        "autoCapture": True,
+                        "autoRecall": True,
+                        "captureMaxChars": 2000,
+                    },
                 },
             },
         },

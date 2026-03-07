@@ -9,7 +9,9 @@ import json
 import logging
 from decimal import Decimal
 
+import boto3
 import httpx
+from botocore.config import Config as BotoConfig
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 
@@ -34,6 +36,112 @@ UPSTREAM_KEY_SETTINGS = {
 DEFAULT_TOOL_COSTS = {
     "search": Decimal("0.005"),
 }
+
+# Bedrock Titan Embed v2: $0.00002 per 1K input tokens
+EMBEDDING_COST_PER_TOKEN = Decimal("0.00000002")
+EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
+EMBEDDING_DIMENSIONS = 1024
+
+_bedrock_client = None
+
+
+def _get_bedrock_client():
+    global _bedrock_client
+    if _bedrock_client is None:
+        _bedrock_client = boto3.client(
+            "bedrock-runtime",
+            region_name=settings.AWS_REGION,
+            config=BotoConfig(
+                read_timeout=30,
+                connect_timeout=10,
+                retries={"max_attempts": 2},
+            ),
+        )
+    return _bedrock_client
+
+
+async def _call_bedrock_embed(text: str) -> dict:
+    """Call Bedrock Titan Embed v2 and return the response dict."""
+    client = _get_bedrock_client()
+    body = json.dumps(
+        {
+            "inputText": text,
+            "dimensions": EMBEDDING_DIMENSIONS,
+            "normalize": True,
+        }
+    )
+    response = client.invoke_model(
+        modelId=EMBEDDING_MODEL_ID,
+        contentType="application/json",
+        accept="application/json",
+        body=body,
+    )
+    return json.loads(response["body"].read())
+
+
+@router.post("/embeddings/embeddings", include_in_schema=False)
+async def proxy_embeddings(request: Request):
+    """OpenAI-compatible embeddings endpoint backed by Bedrock Titan."""
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization")
+    token = auth_header[7:]
+
+    session_factory = get_session_factory()
+    async with session_factory() as db:
+        result = await db.execute(select(Container).where(Container.gateway_token == token))
+        container = result.scalar_one_or_none()
+        if not container:
+            raise HTTPException(status_code=401, detail="Invalid gateway token")
+
+        result = await db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == container.user_id))
+        account = result.scalar_one_or_none()
+        if not account:
+            raise HTTPException(status_code=403, detail="No billing account")
+
+        body = await request.json()
+        input_data = body.get("input", "")
+        texts = input_data if isinstance(input_data, list) else [input_data]
+
+        embeddings = []
+        total_tokens = 0
+
+        for i, text in enumerate(texts):
+            result = await _call_bedrock_embed(text)
+            embeddings.append(
+                {
+                    "object": "embedding",
+                    "index": i,
+                    "embedding": result["embedding"],
+                }
+            )
+            total_tokens += result.get("inputTextTokenCount", 0)
+
+        # Record usage
+        try:
+            usage_service = UsageService(db)
+            cost = EMBEDDING_COST_PER_TOKEN * total_tokens
+            await usage_service.record_tool_usage(
+                billing_account_id=account.id,
+                clerk_user_id=container.user_id,
+                tool_id="bedrock_embeddings",
+                quantity=total_tokens,
+                total_cost=cost,
+                source="embeddings",
+            )
+        except Exception:
+            logger.exception("Failed to record embedding usage for user %s", container.user_id)
+            await db.rollback()
+
+        return {
+            "object": "list",
+            "data": embeddings,
+            "model": body.get("model", "titan-embed-v2"),
+            "usage": {
+                "prompt_tokens": total_tokens,
+                "total_tokens": total_tokens,
+            },
+        }
 
 
 @router.api_route(
