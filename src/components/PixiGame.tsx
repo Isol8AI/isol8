@@ -8,11 +8,11 @@ import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
-  { label: 'Plaza', x: 42, y: 22 },        // area center of (32,22)→(52,34)
-  { label: 'Library', x: 40, y: 11 },       // entrance point
-  { label: 'Cafe', x: 10, y: 17 },          // entrance point
-  { label: 'Activity Center', x: 65, y: 12 }, // entrance point
-  { label: 'Residence', x: 69, y: 24 },     // spawn point / entrance
+  { label: 'Plaza', x: 40, y: 22 },          // area, label above bounds
+  { label: 'Library', x: 40, y: 11 },        // label on building, agents walk to (40,13)
+  { label: 'Cafe', x: 10, y: 15 },           // label on building, agents walk to (10,17)
+  { label: 'Activity Center', x: 65, y: 8 }, // label on building, agents walk to (65,10)
+  { label: 'Residence', x: 69, y: 22 },      // label on building, agents walk to (69,25)
 ];
 
 const HoverLabel = PixiComponent('HoverLabel', {
@@ -111,9 +111,9 @@ export const PixiGame = (props: {
   useEffect(() => {
     if (!viewportRef.current || hasAnimatedInitial.current) return;
     hasAnimatedInitial.current = true;
-    // Focus on Residence spawn point (69, 24)
+    // Focus on Residence spawn point (69, 25)
     const focusX = 69 * tileDim;
-    const focusY = 24 * tileDim;
+    const focusY = 25 * tileDim;
     viewportRef.current.animate({
       position: new PIXI.Point(focusX, focusY),
       scale: 1.5,
