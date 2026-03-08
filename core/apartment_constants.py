@@ -63,7 +63,7 @@ APARTMENT_OBJMAP: List[List[int]] = [
 ]
 
 # Residential coords on town grid (where apartment entrance is)
-RESIDENTIAL_TOWN_COORDS = {"x": 69.0, "y": 24.0}
+RESIDENTIAL_TOWN_COORDS = {"x": 69.0, "y": 25.0}
 
 
 def get_apartment_objmap_xy() -> List[List[int]]:

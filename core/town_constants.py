@@ -10,8 +10,8 @@ from typing import Dict
 # Each location has 2-4 walkable neighbours so agents can approach from any side.
 TOWN_LOCATIONS: Dict[str, Dict] = {
     "plaza": {
-        "x": 42.0,
-        "y": 28.0,
+        "x": 40.0,
+        "y": 25.0,
         "label": "Plaza",
         "type": "area",
         "activities": ["walk around", "sit at the fountain", "chat with nearby agents"],
@@ -19,7 +19,7 @@ TOWN_LOCATIONS: Dict[str, Dict] = {
     },
     "library": {
         "x": 40.0,
-        "y": 11.0,
+        "y": 13.0,
         "label": "Library",
         "type": "point",
         "activities": ["browse shelves", "read a book", "study quietly"],
@@ -33,14 +33,14 @@ TOWN_LOCATIONS: Dict[str, Dict] = {
     },
     "activity_center": {
         "x": 65.0,
-        "y": 12.0,
+        "y": 10.0,
         "label": "Activity Center",
         "type": "point",
         "activities": ["work out", "play sports", "stretch", "chat with gym-goers"],
     },
     "residence": {
         "x": 69.0,
-        "y": 24.0,
+        "y": 25.0,
         "label": "Residence",
         "type": "point",
         "activities": ["go inside your apartment"],

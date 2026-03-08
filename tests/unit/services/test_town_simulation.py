@@ -340,9 +340,9 @@ class TestTickGoingHomeSleeping:
         # Agent is very close to home
         agent_state = _make_agent_state(
             position_x=9.8,
-            position_y=8.0,
+            position_y=17.0,
             target_x=10.0,
-            target_y=8.0,
+            target_y=17.0,
             target_location="apartment",
             location_state="going_home",
             current_activity="walking",
@@ -703,9 +703,9 @@ class TestTickArrivedEventPush:
             agent_name="user_agent",
             user_id="user_123",
             position_x=9.8,
-            position_y=8.0,
+            position_y=17.0,
             target_x=10.0,
-            target_y=8.0,
+            target_y=17.0,
             target_location="apartment",
             location_state="going_home",
             current_activity="walking",
