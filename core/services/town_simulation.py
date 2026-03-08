@@ -152,6 +152,28 @@ class TownSimulation:
                 agent_name = agent_state["agent_name"]
                 location_state = agent_state["location_state"] or "active"
 
+                # --- Wake alarm: wake sleeping agents whose alarm has fired ---
+                if location_state == "sleeping" and ws_manager.is_agent_connected(agent_name):
+                    wake_at = agent_state.get("wake_at")
+                    if wake_at and now >= wake_at:
+                        await service.update_agent_state(
+                            agent_id,
+                            location_state="active",
+                            wake_at=None,
+                            wake_timezone=None,
+                        )
+                        events_to_push.append(
+                            (
+                                agent_name,
+                                {
+                                    "type": "town_event",
+                                    "event": "wake",
+                                    "message": "Your alarm went off. You just woke up in GooseTown.",
+                                },
+                            )
+                        )
+                        logger.info("Agent %s alarm fired, waking up", agent_name)
+
                 # Skip sleeping agents entirely
                 if location_state == "sleeping":
                     continue

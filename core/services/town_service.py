@@ -129,6 +129,8 @@ class TownService:
                 "status_message": state.status_message,
                 "last_decision_at": state.last_decision_at,
                 "last_conversation_at": state.last_conversation_at,
+                "wake_at": state.wake_at,
+                "wake_timezone": state.wake_timezone,
             }
             for agent, state in rows
         ]

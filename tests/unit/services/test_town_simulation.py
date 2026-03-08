@@ -144,6 +144,8 @@ def _make_agent_state(
     last_conversation_at=None,
     agent_id=None,
     location_context="town",
+    wake_at=None,
+    wake_timezone=None,
 ):
     """Helper to construct an agent state dict matching get_town_state() output."""
     return {
@@ -172,6 +174,8 @@ def _make_agent_state(
         "status_message": status_message,
         "last_decision_at": last_decision_at,
         "last_conversation_at": last_conversation_at,
+        "wake_at": wake_at,
+        "wake_timezone": wake_timezone,
     }
 
 
@@ -1047,3 +1051,81 @@ class TestNotifyViewers:
                 await sim._tick()
 
         notify_mock.assert_called_once()
+
+
+class TestWakeAlarm:
+    """Test wake alarm checking in simulation tick."""
+
+    @pytest.mark.asyncio
+    async def test_sleeping_agent_wakes_when_alarm_fires(self):
+        """Agent with wake_at in the past should be woken up."""
+        sim, db_session = _make_simulation()
+        past_alarm = datetime.now(timezone.utc) - timedelta(minutes=1)
+        agent_state = _make_agent_state(
+            agent_name="sleepy",
+            location_state="sleeping",
+            wake_at=past_alarm,
+            wake_timezone="America/New_York",
+        )
+
+        mock_service = AsyncMock()
+        mock_service.get_town_state = AsyncMock(return_value=[agent_state])
+        mock_service.update_agent_state = AsyncMock()
+
+        mock_ws = MagicMock()
+        mock_ws.is_agent_connected = MagicMock(return_value=True)
+        mock_ws.get_agent_connection_id = MagicMock(return_value=None)
+
+        with patch(
+            "core.services.town_simulation.TownSimulation._get_ws_manager",
+            return_value=mock_ws,
+        ):
+            with patch(
+                "core.services.town_service.TownService",
+                return_value=mock_service,
+            ):
+                await sim._tick()
+
+        # Should have been called to wake the agent
+        calls = mock_service.update_agent_state.call_args_list
+        wake_calls = [c for c in calls if c[1].get("location_state") == "active"]
+        assert len(wake_calls) == 1
+        kwargs = wake_calls[0][1]
+        assert kwargs["location_state"] == "active"
+        assert kwargs["wake_at"] is None
+        assert kwargs["wake_timezone"] is None
+
+    @pytest.mark.asyncio
+    async def test_sleeping_agent_stays_asleep_when_alarm_in_future(self):
+        """Agent with wake_at in the future should stay sleeping."""
+        sim, db_session = _make_simulation()
+        future_alarm = datetime.now(timezone.utc) + timedelta(hours=1)
+        agent_state = _make_agent_state(
+            agent_name="sleepy",
+            location_state="sleeping",
+            wake_at=future_alarm,
+            wake_timezone="America/New_York",
+        )
+
+        mock_service = AsyncMock()
+        mock_service.get_town_state = AsyncMock(return_value=[agent_state])
+        mock_service.update_agent_state = AsyncMock()
+
+        mock_ws = MagicMock()
+        mock_ws.is_agent_connected = MagicMock(return_value=True)
+        mock_ws.get_agent_connection_id = MagicMock(return_value=None)
+
+        with patch(
+            "core.services.town_simulation.TownSimulation._get_ws_manager",
+            return_value=mock_ws,
+        ):
+            with patch(
+                "core.services.town_service.TownService",
+                return_value=mock_service,
+            ):
+                await sim._tick()
+
+        # Should NOT have been called to wake the agent
+        calls = mock_service.update_agent_state.call_args_list
+        wake_calls = [c for c in calls if c[1].get("location_state") == "active"]
+        assert len(wake_calls) == 0
