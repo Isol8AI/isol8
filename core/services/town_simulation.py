@@ -316,7 +316,7 @@ class TownSimulation:
                                 location_state="going_home",
                                 target_x=RESIDENTIAL_TOWN_COORDS["x"],
                                 target_y=RESIDENTIAL_TOWN_COORDS["y"],
-                                target_location="home",
+                                target_location="residence",
                                 current_activity="walking",
                                 speed=AGENT_SPEED,
                             )
