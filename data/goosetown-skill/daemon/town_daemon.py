@@ -32,12 +32,77 @@ PID_FILE = STATE_DIR / "daemon.pid"
 SOCK_PATH = STATE_DIR / "daemon.sock"
 WORKSPACE_PATH = Path(os.environ.get("TOWN_WORKSPACE", ""))
 
+GATEWAY_PORT = os.environ.get("GATEWAY_PORT", "18789")
+GATEWAY_TOKEN = os.environ.get("GATEWAY_TOKEN", "")
+
+
+class GatewayRPC:
+    """WebSocket RPC client for local OpenClaw Gateway."""
+
+    def __init__(self):
+        self.ws = None
+        self._req_counter = 0
+        self._pending: dict[str, asyncio.Future] = {}
+
+    async def connect(self):
+        try:
+            import websockets
+        except ImportError:
+            raise ImportError("websockets package not installed")
+
+        url = f"ws://localhost:{GATEWAY_PORT}"
+        self.ws = await websockets.connect(url, ping_interval=30, ping_timeout=10)
+        hello = {"type": "hello"}
+        if GATEWAY_TOKEN:
+            hello["token"] = GATEWAY_TOKEN
+        await self.ws.send(json.dumps(hello))
+        resp = json.loads(await self.ws.recv())
+        if resp.get("type") != "hello-ok":
+            raise ConnectionError(f"Gateway auth failed: {resp}")
+        logger.info("Connected to local OpenClaw Gateway RPC")
+
+    async def send_agent_message(self, message: str, thinking: str = "low") -> dict:
+        self._req_counter += 1
+        req_id = f"think-{self._req_counter}"
+        req = {
+            "type": "req",
+            "id": req_id,
+            "method": "agent",
+            "params": {"message": message, "thinking": thinking},
+        }
+        future = asyncio.get_event_loop().create_future()
+        self._pending[req_id] = future
+        await self.ws.send(json.dumps(req))
+        try:
+            return await asyncio.wait_for(future, timeout=120.0)
+        except asyncio.TimeoutError:
+            self._pending.pop(req_id, None)
+            return {"error": "timeout"}
+
+    async def listen(self):
+        async for raw in self.ws:
+            try:
+                data = json.loads(raw)
+                if data.get("type") == "res":
+                    req_id = data.get("id")
+                    future = self._pending.pop(req_id, None)
+                    if future and not future.done():
+                        future.set_result(data)
+            except json.JSONDecodeError:
+                pass
+
+    async def close(self):
+        if self.ws:
+            await self.ws.close()
+
 
 class TownDaemon:
     def __init__(self):
         self.state: dict = {}
         self.running = True
         self.ws = None
+        self._thinking = False
+        self._gateway: GatewayRPC | None = None
         self._initial_state_event = asyncio.Event()
         self._arrived_event = asyncio.Event()
 
@@ -86,6 +151,10 @@ class TownDaemon:
             self._arrived_event.set()
         elif event == "act_ok":
             pass  # Action acknowledged
+        elif event == "wake":
+            logger.info("Wake alarm fired, triggering agent")
+            message = data.get("message", "You just woke up in GooseTown. What do you want to do?")
+            asyncio.create_task(self._think(f"[GooseTown Wake]\n{message}"))
         elif event == "sleep_ok":
             self.running = False
         elif event == "error":
@@ -121,6 +190,22 @@ class TownDaemon:
         )
         logger.info(f"Connected as {AGENT_NAME}")
 
+    async def _think(self, prompt: str):
+        if not self._gateway or not self._gateway.ws:
+            return
+        self._thinking = True
+        try:
+            result = await self._gateway.send_agent_message(
+                f"[GooseTown]\n{prompt}",
+                thinking="low",
+            )
+            if not result.get("ok"):
+                logger.warning(f"Think failed: {result.get('error', 'unknown')}")
+        except Exception as e:
+            logger.warning(f"Think error: {e}")
+        finally:
+            self._thinking = False
+
     def _handle_world_update(self, data: dict):
         """Handle world_update message — write context summary to workspace."""
         if "you" in data:
@@ -132,6 +217,13 @@ class TownDaemon:
         summary = data.get("context_summary")
         if summary:
             self._write_status(summary)
+
+        if data.get("think") and not self._thinking:
+            prompt = (
+                summary
+                + "\n\nDecide what to do next. You can: move to another location, chat with someone nearby, do an activity here, or go to sleep if you're tired."
+            )
+            asyncio.create_task(self._think(prompt))
 
     async def listen_ws(self):
         """Listen for events from GooseTown."""
@@ -259,14 +351,24 @@ class TownDaemon:
             print(json.dumps(self.state))
             sys.stdout.flush()
 
+            # Connect to local OpenClaw Gateway RPC
+            self._gateway = GatewayRPC()
+            try:
+                await self._gateway.connect()
+            except Exception as e:
+                logger.warning(f"Could not connect to local OpenClaw gateway: {e}")
+                self._gateway = None
+
             # Run WS listener and socket server concurrently
-            await asyncio.gather(
-                self.listen_ws(),
-                self.run_socket_server(),
-            )
+            tasks = [self.listen_ws(), self.run_socket_server()]
+            if self._gateway:
+                tasks.append(self._gateway.listen())
+            await asyncio.gather(*tasks)
         finally:
             if self.ws:
                 await self.ws.close()
+            if self._gateway:
+                await self._gateway.close()
             PID_FILE.unlink(missing_ok=True)
             logger.info("Daemon stopped")
 
@@ -278,14 +380,26 @@ def main():
 
     daemon = TownDaemon()
 
-    # Handle shutdown signals gracefully
     def shutdown(sig, frame):
         daemon.running = False
 
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    asyncio.run(daemon.run())
+    async def run_forever():
+        backoff = 5
+        while daemon.running:
+            try:
+                await daemon.run()
+                break  # clean exit (agent slept)
+            except Exception as e:
+                logger.error(f"Daemon crashed: {e}, restarting in {backoff}s")
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60)
+            else:
+                backoff = 5  # reset after successful reconnect
+
+    asyncio.run(run_forever())
 
 
 if __name__ == "__main__":
