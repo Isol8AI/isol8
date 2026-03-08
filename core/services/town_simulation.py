@@ -26,7 +26,7 @@ from core.services.town_pathfinding import find_path
 logger = logging.getLogger(__name__)
 
 TICK_INTERVAL = 2.0  # seconds between simulation ticks
-AGENT_SPEED = 0.6  # tiles per tick (~0.3 tiles/sec, natural walking pace)
+AGENT_SPEED = 1.2  # tiles per tick (~0.6 tiles/sec)
 ARRIVAL_THRESHOLD = 0.5  # tiles to consider "arrived"
 DECISION_COOLDOWN = 10.0  # seconds idle before picking new destination
 CONVERSATION_COOLDOWN = 120.0  # seconds between conversations

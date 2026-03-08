@@ -65,6 +65,3 @@ AVATAR_CATALOG = [
 
 # Available character sprites
 AVAILABLE_CHARACTERS = [a["id"] for a in AVATAR_CATALOG]
-
-# Walk speed reported to the frontend for interpolation (tiles/tick at 2s ticks)
-WALK_SPEED_DISPLAY = 0.6
