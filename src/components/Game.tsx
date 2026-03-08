@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import PixiGame from './PixiGame.tsx';
 import { useElementSize } from 'usehooks-ts';
@@ -10,6 +10,8 @@ export default function Game() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>();
   const [gameWrapperRef, { width, height }] = useElementSize();
   const [searchParams, setSearchParams] = useSearchParams();
+  const [tileCoords, setTileCoords] = useState<{ x: number; y: number } | null>(null);
+  const [mousePos, setMousePos] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
 
   const viewportRef = useRef<any>(null);
   const hasFocused = useRef(false);
@@ -49,6 +51,25 @@ export default function Game() {
     setSearchParams({}, { replace: true });
   }, [searchParams, game, setSearchParams]);
 
+  // Convert screen mouse position to tile coordinates via the viewport transform
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      const vp = viewportRef.current;
+      if (!vp || !game) return;
+      const rect = e.currentTarget.getBoundingClientRect();
+      const screenX = e.clientX - rect.left;
+      const screenY = e.clientY - rect.top;
+      setMousePos({ x: e.clientX, y: e.clientY });
+      // Transform screen coords to world coords using viewport
+      const worldX = (screenX - vp.x) / vp.scale.x;
+      const worldY = (screenY - vp.y) / vp.scale.y;
+      const tileX = Math.floor(worldX / game.worldMap.tileDim);
+      const tileY = Math.floor(worldY / game.worldMap.tileDim);
+      setTileCoords({ x: tileX, y: tileY });
+    },
+    [game],
+  );
+
   if (!game) {
     return (
       <div className="flex items-center justify-center w-full h-full text-brown-300 font-body text-lg">
@@ -59,7 +80,12 @@ export default function Game() {
 
   return (
     <>
-      <div className="absolute inset-0" ref={gameWrapperRef}>
+      <div
+        className="absolute inset-0"
+        ref={gameWrapperRef}
+        onMouseMove={handleMouseMove}
+        onMouseLeave={() => setTileCoords(null)}
+      >
         <Stage width={width} height={height} options={{ backgroundColor: 0x7ab5ff }}>
           <PixiGame
             game={game}
@@ -71,6 +97,15 @@ export default function Game() {
           />
         </Stage>
       </div>
+      {/* Tile coordinate overlay */}
+      {tileCoords && (
+        <div
+          className="fixed z-50 pointer-events-none bg-black/80 text-white text-xs font-mono px-2 py-1 rounded"
+          style={{ left: mousePos.x + 16, top: mousePos.y - 8 }}
+        >
+          ({tileCoords.x}, {tileCoords.y})
+        </div>
+      )}
       {/* Zoom controls */}
       <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
         <button
