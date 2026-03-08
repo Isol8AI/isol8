@@ -1,72 +1,6 @@
 """Tests for GooseTown router endpoints."""
 
 import pytest
-from unittest.mock import MagicMock
-
-from core.services.town_skill import TownSkillService
-from routers.town import get_skill_service
-
-
-@pytest.fixture
-def mock_skill_service(app):
-    """Override get_skill_service with a no-op mock."""
-    mock_svc = MagicMock(spec=TownSkillService)
-    app.dependency_overrides[get_skill_service] = lambda: mock_svc
-    yield mock_svc
-    app.dependency_overrides.pop(get_skill_service, None)
-
-
-class TestTownOptIn:
-    """Test POST /api/v1/town/opt-in (instance-based)."""
-
-    @pytest.mark.asyncio
-    async def test_opt_in_success(self, async_client, db_session, test_user, mock_skill_service):
-        response = await async_client.post(
-            "/api/v1/town/opt-in",
-            json={
-                "agents": [
-                    {
-                        "agent_name": "luna",
-                        "display_name": "Luna the Dreamer",
-                        "personality_summary": "A curious bookworm",
-                    }
-                ]
-            },
-        )
-
-        assert response.status_code == 201
-        data = response.json()
-        assert "instance_id" in data
-        assert "town_token" in data
-        assert data["apartment_unit"] == 1
-        assert len(data["agents"]) == 1
-        assert data["agents"][0]["agent_name"] == "luna"
-        assert data["agents"][0]["display_name"] == "Luna the Dreamer"
-        assert data["agents"][0]["is_active"] is True
-
-
-class TestTownOptOut:
-    """Test POST /api/v1/town/opt-out (instance-based)."""
-
-    @pytest.mark.asyncio
-    async def test_opt_out_success(self, async_client, db_session, test_user, mock_skill_service):
-        await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
-        )
-
-        response = await async_client.post("/api/v1/town/opt-out")
-
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "opted_out"
-        assert data["deactivated_agents"] == 1
-
-    @pytest.mark.asyncio
-    async def test_opt_out_not_found(self, async_client, test_user, mock_skill_service):
-        response = await async_client.post("/api/v1/town/opt-out")
-
-        assert response.status_code == 404
 
 
 class TestTownStatus:
@@ -99,10 +33,17 @@ class TestTownState:
         assert "currentTime" in data["engine"]
 
     @pytest.mark.asyncio
-    async def test_get_state_with_agents(self, async_client, db_session, test_user, mock_skill_service):
+    async def test_get_state_with_agents(self, async_client, db_session, test_user):
+        # Create instance via the instance endpoint
+        inst_resp = await async_client.post("/api/v1/town/instance")
+        assert inst_resp.status_code == 200
+        token = inst_resp.json()["town_token"]
+
+        # Register an agent
         await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
+            "/api/v1/town/agent/register",
+            json={"agent_name": "luna", "display_name": "Luna"},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         # Agents spawn in apartment; move to town context so they appear in /state
@@ -139,18 +80,20 @@ class TestTownDescriptions:
         assert data["agentDescriptions"] == []
 
     @pytest.mark.asyncio
-    async def test_get_descriptions_with_agents(self, async_client, db_session, test_user, mock_skill_service):
+    async def test_get_descriptions_with_agents(self, async_client, db_session, test_user):
+        # Create instance and register agent
+        inst_resp = await async_client.post("/api/v1/town/instance")
+        assert inst_resp.status_code == 200
+        token = inst_resp.json()["town_token"]
+
         await async_client.post(
-            "/api/v1/town/opt-in",
+            "/api/v1/town/agent/register",
             json={
-                "agents": [
-                    {
-                        "agent_name": "luna",
-                        "display_name": "Luna",
-                        "personality_summary": "A dreamer",
-                    }
-                ]
+                "agent_name": "luna",
+                "display_name": "Luna",
+                "personality": "A dreamer",
             },
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         # Agents spawn in apartment; move to town context so they appear in /descriptions
@@ -186,18 +129,15 @@ class TestTownConversations:
 class TestAgentRegister:
     """Test POST /api/v1/town/agent/register (town_token auth)."""
 
-    async def _get_town_token(self, async_client, mock_skill_service):
-        """Opt-in and return the town_token."""
-        resp = await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agents": [{"agent_name": "seed", "display_name": "Seed Agent"}]},
-        )
-        assert resp.status_code == 201
+    async def _get_town_token(self, async_client):
+        """Create an instance and return the town_token."""
+        resp = await async_client.post("/api/v1/town/instance")
+        assert resp.status_code == 200
         return resp.json()["town_token"]
 
     @pytest.mark.asyncio
-    async def test_register_success(self, async_client, db_session, test_user, mock_skill_service):
-        token = await self._get_town_token(async_client, mock_skill_service)
+    async def test_register_success(self, async_client, db_session, test_user):
+        token = await self._get_town_token(async_client)
 
         response = await async_client.post(
             "/api/v1/town/agent/register",
@@ -222,8 +162,8 @@ class TestAgentRegister:
         assert "Welcome" in data["message"]
 
     @pytest.mark.asyncio
-    async def test_register_duplicate_name(self, async_client, db_session, test_user, mock_skill_service):
-        token = await self._get_town_token(async_client, mock_skill_service)
+    async def test_register_duplicate_name(self, async_client, db_session, test_user):
+        token = await self._get_town_token(async_client)
 
         # Register first agent
         await async_client.post(
@@ -243,7 +183,7 @@ class TestAgentRegister:
         assert "already registered" in response.json()["detail"]
 
     @pytest.mark.asyncio
-    async def test_register_invalid_token(self, async_client, db_session, test_user, mock_skill_service):
+    async def test_register_invalid_token(self, async_client, db_session, test_user):
         response = await async_client.post(
             "/api/v1/town/agent/register",
             json={"agent_name": "atlas", "display_name": "Atlas"},
@@ -257,7 +197,7 @@ class TestTownApartment:
     """Test GET /api/v1/town/apartment."""
 
     @pytest.mark.asyncio
-    async def test_apartment_empty(self, async_client, db_session, test_user, mock_skill_service):
+    async def test_apartment_empty(self, async_client, db_session, test_user):
         response = await async_client.get("/api/v1/town/apartment")
         assert response.status_code == 200
         data = response.json()
@@ -265,10 +205,16 @@ class TestTownApartment:
         assert data["activity"] == []
 
     @pytest.mark.asyncio
-    async def test_apartment_with_agents(self, async_client, db_session, test_user, mock_skill_service):
+    async def test_apartment_with_agents(self, async_client, db_session, test_user):
+        # Create instance and register agent
+        inst_resp = await async_client.post("/api/v1/town/instance")
+        assert inst_resp.status_code == 200
+        token = inst_resp.json()["town_token"]
+
         await async_client.post(
-            "/api/v1/town/opt-in",
-            json={"agents": [{"agent_name": "luna", "display_name": "Luna"}]},
+            "/api/v1/town/agent/register",
+            json={"agent_name": "luna", "display_name": "Luna"},
+            headers={"Authorization": f"Bearer {token}"},
         )
 
         response = await async_client.get("/api/v1/town/apartment")

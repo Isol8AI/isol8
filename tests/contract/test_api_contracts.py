@@ -100,9 +100,6 @@ schema = (
         path_regex="^/api/v1/debug/",
     )
     .exclude(
-        path_regex="^/api/v1/town/opt-in",
-    )
-    .exclude(
         path_regex="^/api/v1/channels/",
     )
     .exclude(

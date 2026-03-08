@@ -1,7 +1,7 @@
 """GooseTown API endpoints.
 
 Serves two sets of endpoints:
-1. Isol8-native endpoints (opt-in/out, isol8-format state) — authenticated
+1. Isol8-native endpoints (apartment, instance, registration) — authenticated
 2. AI Town-compatible endpoints (status, state, descriptions, etc.) — public,
    return plain dicts matching AI Town's TypeScript class constructors
 """
@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,16 +21,11 @@ from core.auth import AuthContext, get_current_user
 from core.database import get_db
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
 from core.services.town_service import TownService
-from core.services.town_skill import TownSkillService
 from core.town_constants import (
     AVATAR_CATALOG,
 )
 from models.town import TownAgent, TownState
 from schemas.town import (
-    TownInstanceOptInRequest,
-    TownInstanceOptInResponse,
-    TownInstanceOptInAgentResponse,
-    TownInstanceOptOutResponse,
     ApartmentAgentState,
     ApartmentResponse,
     TownConversationResponse,
@@ -41,18 +36,8 @@ from schemas.town import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# Skill service dependency
-# ---------------------------------------------------------------------------
-
-_EFS_MOUNT_PATH = os.environ.get("EFS_MOUNT_PATH", "/var/lib/isol8/efs")
 _TOWN_WS_URL = os.environ.get("TOWN_WS_URL", "wss://ws-dev.isol8.co")
 _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.isol8.co/api/v1")
-
-
-def get_skill_service() -> TownSkillService:
-    """FastAPI dependency for the TownSkillService."""
-    return TownSkillService(efs_mount_path=_EFS_MOUNT_PATH)
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +304,7 @@ def _build_default_state() -> dict:
 async def _build_ai_town_state(db: AsyncSession) -> dict:
     """Build AI Town-compatible world state from the database.
 
-    Only includes agents registered via opt-in. No default/system agents.
+    Only includes agents registered via the per-agent registration flow.
     """
     try:
         service = TownService(db)
@@ -583,93 +568,6 @@ async def register_agent(
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
-
-
-@router.post("/opt-in", response_model=TownInstanceOptInResponse, status_code=status.HTTP_201_CREATED)
-async def opt_in(
-    request: TownInstanceOptInRequest,
-    auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    skill_service: TownSkillService = Depends(get_skill_service),
-):
-    """Register a user instance with agents in GooseTown."""
-    service = TownService(db)
-
-    try:
-        instance, agents = await service.opt_in_instance(
-            user_id=auth.user_id,
-            agents_data=request.agents,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-
-    await db.commit()
-
-    # Install skill (non-fatal if it fails)
-    try:
-        skill_service.install_skill(auth.user_id)
-        for agent in agents:
-            skill_service.write_agent_config(
-                auth.user_id,
-                agent.agent_name,
-                town_token=instance.town_token,
-                ws_url=_TOWN_WS_URL,
-                api_url=_TOWN_API_URL,
-            )
-            skill_service.append_heartbeat(auth.user_id, agent.agent_name)
-    except Exception:
-        logger.warning(f"Failed to install GooseTown skill for {auth.user_id}", exc_info=True)
-
-    return TownInstanceOptInResponse(
-        instance_id=instance.id,
-        apartment_unit=instance.apartment_unit,
-        town_token=instance.town_token,
-        agents=[
-            TownInstanceOptInAgentResponse(
-                agent_name=a.agent_name,
-                display_name=a.display_name,
-                personality_summary=a.personality_summary,
-                is_active=a.is_active,
-            )
-            for a in agents
-        ],
-    )
-
-
-@router.post("/opt-out", response_model=TownInstanceOptOutResponse)
-async def opt_out(
-    auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-    skill_service: TownSkillService = Depends(get_skill_service),
-):
-    """Remove a user instance and all agents from GooseTown."""
-    service = TownService(db)
-    instance, count = await service.opt_out_instance(user_id=auth.user_id)
-
-    if not instance:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="No active GooseTown instance found",
-        )
-
-    await db.commit()
-
-    # Uninstall skill (non-fatal if it fails)
-    try:
-        # Get all agents (including just-deactivated ones) for cleanup
-        from sqlalchemy import select
-        from models.town import TownAgent
-
-        result = await db.execute(select(TownAgent).where(TownAgent.instance_id == instance.id))
-        all_agents = list(result.scalars().all())
-        for agent in all_agents:
-            skill_service.remove_agent_config(auth.user_id, agent.agent_name)
-            skill_service.strip_heartbeat(auth.user_id, agent.agent_name)
-        skill_service.uninstall_skill(auth.user_id)
-    except Exception:
-        logger.warning(f"Failed to uninstall GooseTown skill for {auth.user_id}", exc_info=True)
-
-    return TownInstanceOptOutResponse(status="opted_out", deactivated_agents=count)
 
 
 @router.get("/apartment", response_model=ApartmentResponse)
