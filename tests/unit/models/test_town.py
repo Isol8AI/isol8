@@ -106,6 +106,27 @@ class TestTownAgentModel:
         await db_session.rollback()
 
     @pytest.mark.asyncio
+    async def test_town_agent_has_pixellab_character_id(self, db_session):
+        """TownAgent should have a nullable pixellab_character_id column."""
+        from models.town import TownInstance
+
+        instance = TownInstance(user_id="user_pxl", apartment_unit=99, town_token="tok_pxl")
+        db_session.add(instance)
+        await db_session.flush()
+
+        agent = TownAgent(
+            user_id="user_pxl",
+            agent_name="pixel_test",
+            display_name="Pixel Test",
+            instance_id=instance.id,
+        )
+        db_session.add(agent)
+        await db_session.flush()
+
+        assert hasattr(agent, "pixellab_character_id")
+        assert agent.pixellab_character_id is None
+
+    @pytest.mark.asyncio
     async def test_different_users_same_agent_name(self, db_session, test_user, other_user):
         agent1 = TownAgent(user_id=test_user.id, agent_name="luna", display_name="Luna A")
         agent2 = TownAgent(user_id=other_user.id, agent_name="luna", display_name="Luna B")
