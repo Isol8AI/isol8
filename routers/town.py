@@ -530,6 +530,43 @@ async def register_agent(
 
     _notify_state_changed()
 
+    # Trigger PixelLab sprite generation in background
+    if request.appearance:
+        from core.config import settings
+
+        if settings.pixellab_api_key:
+            import asyncio
+            from core.database import get_session_factory
+
+            _agent_id = agent.id  # capture before session closes
+
+            async def _generate_sprite():
+                try:
+                    from core.services.pixellab_service import PixelLabService
+
+                    pxl = PixelLabService(api_key=settings.pixellab_api_key)
+                    char_id = await pxl.create_character(
+                        description=request.appearance,
+                        name=request.display_name,
+                    )
+                    # Store character ID
+                    session_factory = get_session_factory()
+                    async with session_factory() as session:
+                        from sqlalchemy import update
+                        from models.town import TownAgent as TA
+
+                        await session.execute(
+                            update(TA).where(TA.id == _agent_id).values(pixellab_character_id=char_id)
+                        )
+                        await session.commit()
+                    # Queue animations
+                    await pxl.generate_all_animations(char_id)
+                    logger.info(f"PixelLab character {char_id} created for {agent.agent_name}")
+                except Exception as e:
+                    logger.warning(f"PixelLab sprite generation failed: {e}")
+
+            asyncio.create_task(_generate_sprite())
+
     return {
         "agent_id": str(agent.id),
         "agent_name": agent.agent_name,
