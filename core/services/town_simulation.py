@@ -33,6 +33,7 @@ CONVERSATION_COOLDOWN = 120.0  # seconds between conversations
 PROXIMITY_THRESHOLD = 3.0  # tiles to be "nearby"
 INACTIVE_TIMEOUT = timedelta(minutes=5)  # send home after 5min without heartbeat
 WORLD_UPDATE_INTERVAL = 5  # Push world_update every N ticks (N * TICK_INTERVAL seconds)
+THINK_INTERVAL = 15.0  # seconds between autonomous think pings per agent
 
 
 class TownSimulation:
@@ -60,6 +61,8 @@ class TownSimulation:
         self._pending_destinations: Dict[str, str] = {}
         # Tick counter for periodic world updates
         self._tick_count: int = 0
+        # Per-agent timestamps for autonomous think pings
+        self._last_think_at: Dict[str, float] = {}
 
     def _get_mgmt_client(self):
         """Lazily create ManagementApiClient. Returns None if unavailable."""

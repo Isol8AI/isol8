@@ -13,6 +13,7 @@ from core.services.town_simulation import (
     AGENT_SPEED,
     DECISION_COOLDOWN,
     INACTIVE_TIMEOUT,
+    THINK_INTERVAL,
 )
 
 
@@ -47,6 +48,23 @@ class TestTownSimulationConstants:
 
     def test_inactive_timeout_is_5_minutes(self):
         assert INACTIVE_TIMEOUT == timedelta(minutes=5)
+
+
+class TestThinkPingConstants:
+    """Test THINK_INTERVAL constant."""
+
+    def test_think_interval_is_15_seconds(self):
+        assert THINK_INTERVAL == 15.0
+
+
+class TestThinkPingTracking:
+    """Test per-agent think tracking initialization."""
+
+    def test_simulation_tracks_last_think_at(self):
+        sim = TownSimulation.__new__(TownSimulation)
+        sim.__init__(db_factory=MagicMock(), notify_fn=None)
+        assert hasattr(sim, "_last_think_at")
+        assert isinstance(sim._last_think_at, dict)
 
 
 class TestTownSimulation:
