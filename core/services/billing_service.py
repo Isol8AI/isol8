@@ -77,29 +77,6 @@ class BillingService:
             account = result.scalar_one()
         return account
 
-    async def create_customer_for_org(self, clerk_org_id: str, org_name: str) -> BillingAccount:
-        """Create Stripe customer + billing account for an organization.
-
-        Idempotent: returns existing account if already created.
-        """
-        existing = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_org_id == clerk_org_id))
-        account = existing.scalar_one_or_none()
-        if account:
-            return account
-
-        customer = stripe.Customer.create(
-            name=org_name,
-            metadata={"clerk_org_id": clerk_org_id},
-        )
-
-        account = BillingAccount(
-            clerk_org_id=clerk_org_id,
-            stripe_customer_id=customer.id,
-        )
-        self.db.add(account)
-        await self.db.commit()
-        return account
-
     async def create_checkout_session(self, billing_account: BillingAccount, tier: str) -> str:
         """Create a Stripe Checkout session for subscribing to a plan.
 

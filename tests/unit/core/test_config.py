@@ -63,9 +63,9 @@ class TestBillingConfig:
 
     def test_billing_plan_budgets_defined(self):
         """Plan budget constants should be defined."""
-        from core.config import PLAN_BUDGETS, FREE_TIER_LIMIT
+        from core.config import PLAN_BUDGETS
 
         assert "free" in PLAN_BUDGETS
         assert "starter" in PLAN_BUDGETS
         assert "pro" in PLAN_BUDGETS
-        assert FREE_TIER_LIMIT == 2_000_000
+        assert PLAN_BUDGETS["free"] == 2_000_000

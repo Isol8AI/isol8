@@ -7,7 +7,7 @@ import pytest
 from fastapi import HTTPException
 from jose import jwt
 
-from core.auth import AuthContext, _jwks_cache, get_current_user, require_org_admin, require_org_context
+from core.auth import AuthContext, _jwks_cache, get_current_user
 
 TEST_ISSUER = "https://test.clerk.accounts.dev"
 
@@ -107,54 +107,6 @@ class TestAuthContext:
         """is_org_admin returns False when no role is set."""
         ctx = AuthContext(user_id="user_123", org_id="org_456")
         assert ctx.is_org_admin is False
-
-
-class TestRequireOrgContext:
-    """Tests for require_org_context dependency."""
-
-    @pytest.mark.asyncio
-    async def test_require_org_context_raises_without_org(self):
-        """require_org_context raises 403 when no org context."""
-        ctx = AuthContext(user_id="user_123")
-        with pytest.raises(HTTPException) as exc_info:
-            await require_org_context(ctx)
-        assert exc_info.value.status_code == 403
-        assert "active organization context" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_require_org_context_passes_with_org(self):
-        """require_org_context returns auth context when org is present."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456")
-        result = await require_org_context(ctx)
-        assert result == ctx
-
-
-class TestRequireOrgAdmin:
-    """Tests for require_org_admin dependency."""
-
-    @pytest.mark.asyncio
-    async def test_require_org_admin_raises_for_member(self):
-        """require_org_admin raises 403 for non-admin roles."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456", org_role="org:member")
-        with pytest.raises(HTTPException) as exc_info:
-            await require_org_admin(ctx)
-        assert exc_info.value.status_code == 403
-        assert "admin privileges" in exc_info.value.detail
-
-    @pytest.mark.asyncio
-    async def test_require_org_admin_passes_for_admin(self):
-        """require_org_admin returns auth context for admin role."""
-        ctx = AuthContext(user_id="user_123", org_id="org_456", org_role="org:admin")
-        result = await require_org_admin(ctx)
-        assert result == ctx
-
-    @pytest.mark.asyncio
-    async def test_require_org_admin_raises_without_org_context(self):
-        """require_org_admin raises 403 when no org context."""
-        ctx = AuthContext(user_id="user_123")
-        with pytest.raises(HTTPException) as exc_info:
-            await require_org_admin(ctx)
-        assert exc_info.value.status_code == 403
 
 
 class TestGetCurrentUser:

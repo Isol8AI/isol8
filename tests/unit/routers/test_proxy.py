@@ -50,13 +50,18 @@ class TestProxyRouter:
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
-    async def test_proxy_rejects_missing_auth(self, app):
+    async def test_proxy_rejects_missing_auth(self, app, override_get_session_factory):
         """Proxy rejects requests without authorization header."""
-        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-            resp = await client.post(
-                "/api/v1/proxy/search/chat/completions",
-                json={"messages": [{"role": "user", "content": "test"}]},
-            )
+        with (
+            patch("routers.proxy.get_session_factory", override_get_session_factory),
+            patch("routers.proxy.settings") as mock_settings,
+        ):
+            mock_settings.PERPLEXITY_API_KEY = "pk_test_key"
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/proxy/search/chat/completions",
+                    json={"messages": [{"role": "user", "content": "test"}]},
+                )
         assert resp.status_code == 401
 
     @pytest.mark.asyncio
@@ -146,3 +151,28 @@ class TestProxyRouter:
                     json={"messages": [{"role": "user", "content": "test"}]},
                 )
         assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_proxy_rejects_over_budget(
+        self, app, override_get_session_factory, db_session, container, billing_account
+    ):
+        """Proxy rejects requests when user exceeds plan budget."""
+        with (
+            patch("routers.proxy.get_session_factory", override_get_session_factory),
+            patch("routers.proxy.settings") as mock_settings,
+            patch("routers.proxy.UsageService") as mock_usage_cls,
+        ):
+            mock_settings.PERPLEXITY_API_KEY = "pk_test_key"
+            # Simulate budget exceeded: free tier is 2_000_000 microdollars
+            mock_usage = MagicMock()
+            mock_usage.get_monthly_billable = AsyncMock(return_value=3_000_000)
+            mock_usage_cls.return_value = mock_usage
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/proxy/search/chat/completions",
+                    headers={"Authorization": f"Bearer {container.gateway_token}"},
+                    json={"messages": [{"role": "user", "content": "test"}]},
+                )
+        assert resp.status_code == 429
+        assert "budget exceeded" in resp.json()["detail"].lower()

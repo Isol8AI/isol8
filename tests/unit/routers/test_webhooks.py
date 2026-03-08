@@ -160,19 +160,42 @@ class TestWebhookVerification:
     """Tests for webhook signature verification."""
 
     @pytest.mark.asyncio
-    async def test_verification_skipped_without_secret(self):
-        """Skips verification when CLERK_WEBHOOK_SECRET is not set."""
+    async def test_verification_skipped_without_secret_in_dev(self):
+        """Skips verification when CLERK_WEBHOOK_SECRET is not set in dev environments."""
         from routers.webhooks import verify_webhook
         from unittest.mock import MagicMock
 
-        mock_request = MagicMock()
-        mock_request.body = AsyncMock(return_value=b'{"type": "test", "data": {}}')
+        for env in ["", "dev", "test", "local"]:
+            mock_request = MagicMock()
+            mock_request.body = AsyncMock(return_value=b'{"type": "test", "data": {}}')
 
-        with patch("routers.webhooks.settings") as mock_settings:
-            mock_settings.CLERK_WEBHOOK_SECRET = None
+            with patch("routers.webhooks.settings") as mock_settings:
+                mock_settings.CLERK_WEBHOOK_SECRET = None
+                mock_settings.ENVIRONMENT = env
 
-            payload = await verify_webhook(mock_request, None, None, None)
-            assert payload["type"] == "test"
+                payload = await verify_webhook(mock_request, None, None, None)
+                assert payload["type"] == "test", f"Expected bypass for ENVIRONMENT={env!r}"
+
+    @pytest.mark.asyncio
+    async def test_verification_rejects_missing_secret_in_production(self):
+        """Returns 500 when CLERK_WEBHOOK_SECRET is not set in non-dev environments."""
+        from routers.webhooks import verify_webhook
+        from fastapi import HTTPException
+        from unittest.mock import MagicMock
+
+        for env in ["staging", "prod", "production", "unknown"]:
+            mock_request = MagicMock()
+            mock_request.body = AsyncMock(return_value=b'{"type": "test", "data": {}}')
+
+            with patch("routers.webhooks.settings") as mock_settings:
+                mock_settings.CLERK_WEBHOOK_SECRET = None
+                mock_settings.ENVIRONMENT = env
+
+                with pytest.raises(HTTPException) as exc_info:
+                    await verify_webhook(mock_request, None, None, None)
+
+                assert exc_info.value.status_code == 500, f"Expected 500 for ENVIRONMENT={env!r}"
+                assert "not configured" in exc_info.value.detail
 
     @pytest.mark.asyncio
     async def test_verification_fails_without_headers(self):

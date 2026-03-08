@@ -34,20 +34,6 @@ class TestBillingServiceCreateCustomer:
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.stripe")
-    async def test_create_customer_for_org(self, mock_stripe, service, db_session):
-        """Should create Stripe customer and billing account for org."""
-        mock_stripe.Customer.create.return_value = MagicMock(id="cus_org_456")
-
-        account = await service.create_customer_for_org(
-            clerk_org_id="org_new_456",
-            org_name="Test Org",
-        )
-
-        assert account.clerk_org_id == "org_new_456"
-        assert account.stripe_customer_id == "cus_org_456"
-
-    @pytest.mark.asyncio
-    @patch("core.services.billing_service.stripe")
     async def test_create_customer_idempotent(self, mock_stripe, service, db_session):
         """Should return existing account if already created."""
         # Create first

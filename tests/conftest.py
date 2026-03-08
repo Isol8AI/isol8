@@ -288,4 +288,5 @@ def mock_settings():
         mock.DATABASE_URL = TEST_DATABASE_URL
         mock.PROJECT_NAME = "Isol8 Test"
         mock.API_V1_STR = "/api/v1"
+        mock.ENCRYPTION_KEY = "dGVzdC1lbmNyeXB0aW9uLWtleS0xMjM0NTY3OA=="
         yield mock

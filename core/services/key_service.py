@@ -6,6 +6,7 @@ from typing import Optional
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.encryption import decrypt, encrypt
 from models.user_api_key import UserApiKey
 
 logger = logging.getLogger(__name__)
@@ -48,14 +49,14 @@ class KeyService:
         )
         existing = result.scalar_one_or_none()
         if existing:
-            existing.encrypted_key = api_key  # TODO: encrypt with KMS
+            existing.encrypted_key = encrypt(api_key)
             await self.db.flush()
             return existing
 
         key = UserApiKey(
             user_id=user_id,
             tool_id=tool_id,
-            encrypted_key=api_key,  # TODO: encrypt with KMS
+            encrypted_key=encrypt(api_key),
         )
         self.db.add(key)
         await self.db.flush()
@@ -93,4 +94,4 @@ class KeyService:
             )
         )
         key = result.scalar_one_or_none()
-        return key.encrypted_key if key else None  # TODO: decrypt with KMS
+        return decrypt(key.encrypted_key) if key else None

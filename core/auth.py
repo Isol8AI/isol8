@@ -171,20 +171,6 @@ async def get_current_user(
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 
 
-async def require_org_context(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
-    """Dependency that requires an active organization context."""
-    if not auth.is_org_context:
-        raise HTTPException(status_code=403, detail="This action requires an active organization context")
-    return auth
-
-
-async def require_org_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
-    """Dependency that requires org admin role."""
-    if not auth.is_org_admin:
-        raise HTTPException(status_code=403, detail="This action requires organization admin privileges")
-    return auth
-
-
 async def get_optional_user(
     credentials: HTTPAuthorizationCredentials | None = Depends(security_optional),
 ) -> AuthContext | None:
@@ -197,6 +183,13 @@ async def get_optional_user(
 
     try:
         payload = await _decode_token(credentials.credentials)
-        return AuthContext(user_id=payload["sub"])
+        org = _extract_org_claims(payload)
+        return AuthContext(
+            user_id=payload["sub"],
+            org_id=org["org_id"],
+            org_role=org["org_role"],
+            org_slug=org["org_slug"],
+            org_permissions=org["org_permissions"],
+        )
     except Exception:
         return None

@@ -35,16 +35,6 @@ class TestUsageTrackingIntegration:
         await db_session.commit()
         return account
 
-    @pytest.fixture
-    async def org_billing_account(self, db_session):
-        account = BillingAccount(
-            clerk_org_id="org_test_456",
-            stripe_customer_id="cus_track_org",
-        )
-        db_session.add(account)
-        await db_session.commit()
-        return account
-
     @pytest.mark.asyncio
     @patch("core.services.usage_service.stripe")
     async def test_record_usage_for_personal_chat(self, mock_stripe, db_session, model_pricing, user_billing_account):
@@ -71,30 +61,6 @@ class TestUsageTrackingIntegration:
         assert event.output_tokens == 200
         assert event.source == "chat"
         assert event.session_id == "sess_123"
-
-    @pytest.mark.asyncio
-    @patch("core.services.usage_service.stripe")
-    async def test_record_usage_for_org_chat(self, mock_stripe, db_session, model_pricing, org_billing_account):
-        """Should resolve org billing account and record usage for org chat."""
-        usage_service = UsageService(db_session)
-
-        # Simulate the org context pattern
-        account = await usage_service.get_billing_account_for_org("org_test_456")
-        assert account is not None
-        assert account.id == org_billing_account.id
-
-        event = await usage_service.record_usage(
-            billing_account_id=account.id,
-            clerk_user_id="user_test_123",
-            model_id="us.anthropic.claude-3-5-sonnet-20241022-v2:0",
-            input_tokens=50,
-            output_tokens=150,
-            source="chat",
-            session_id="sess_org_456",
-        )
-
-        assert event.billing_account_id == org_billing_account.id
-        assert event.source == "chat"
 
     @pytest.mark.asyncio
     @patch("core.services.usage_service.stripe")

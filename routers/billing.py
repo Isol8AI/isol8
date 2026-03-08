@@ -38,11 +38,7 @@ router = APIRouter()
 async def _get_billing_account(auth: AuthContext, db: AsyncSession) -> BillingAccount:
     """Resolve billing account from auth context."""
     usage_service = UsageService(db)
-    if auth.is_org_context and auth.org_id:
-        account = await usage_service.get_billing_account_for_org(auth.org_id)
-    else:
-        account = await usage_service.get_billing_account_for_user(auth.user_id)
-    return account
+    return await usage_service.get_billing_account_for_user(auth.user_id)
 
 
 @router.get(

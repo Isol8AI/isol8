@@ -73,6 +73,9 @@ class Settings(BaseSettings):
     STRIPE_METER_ID: str = os.getenv("STRIPE_METER_ID", "")
     BILLING_MARKUP: float = float(os.getenv("BILLING_MARKUP", "1.4"))
 
+    # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
+    ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
+
     @field_validator("CLERK_ISSUER")
     @classmethod
     def validate_clerk_issuer(cls, v: str) -> str:
@@ -93,8 +96,6 @@ PLAN_BUDGETS = {
     "starter": 25_000_000,  # $25
     "pro": 75_000_000,  # $75
 }
-
-FREE_TIER_LIMIT = PLAN_BUDGETS["free"]
 
 # Fallback models used when Bedrock discovery is unavailable (e.g., local dev without AWS creds).
 FALLBACK_MODELS = [

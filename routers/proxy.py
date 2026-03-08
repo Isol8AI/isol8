@@ -14,8 +14,9 @@ import httpx
 from botocore.config import Config as BotoConfig
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from core.config import settings
+from core.config import settings, PLAN_BUDGETS
 from core.database import get_session_factory
 from core.services.usage_service import UsageService
 from models.billing import BillingAccount
@@ -41,6 +42,52 @@ DEFAULT_TOOL_COSTS = {
 EMBEDDING_COST_PER_TOKEN = Decimal("0.00000002")
 EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
 EMBEDDING_DIMENSIONS = 1024
+
+
+async def _authenticate_and_check_budget(
+    request: Request,
+    db: AsyncSession,
+) -> tuple[Container, BillingAccount]:
+    """Validate gateway token and enforce budget before proxying.
+
+    Returns (container, billing_account) on success.
+    Raises HTTPException on auth failure or budget exceeded.
+    """
+    auth_header = request.headers.get("authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid authorization")
+    token = auth_header[7:]
+
+    result = await db.execute(select(Container).where(Container.gateway_token == token))
+    container = result.scalar_one_or_none()
+    if not container:
+        raise HTTPException(status_code=401, detail="Invalid gateway token")
+
+    result = await db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == container.user_id))
+    account = result.scalar_one_or_none()
+    if not account:
+        raise HTTPException(status_code=403, detail="No billing account")
+
+    # Enforce budget: block requests when monthly usage exceeds plan budget.
+    # Free tier and fixed-price tiers have hard caps; usage_only (pay-as-you-go) has no cap.
+    budget = PLAN_BUDGETS.get(account.plan_tier)
+    if budget is not None:
+        usage_service = UsageService(db)
+        monthly_usage = await usage_service.get_monthly_billable(account.id)
+        if monthly_usage >= budget:
+            logger.warning(
+                "Budget exceeded for user %s: %d / %d microdollars",
+                container.user_id,
+                monthly_usage,
+                budget,
+            )
+            raise HTTPException(
+                status_code=429,
+                detail="Monthly usage budget exceeded. Upgrade your plan to continue.",
+            )
+
+    return container, account
+
 
 _bedrock_client = None
 
@@ -82,22 +129,9 @@ async def _call_bedrock_embed(text: str) -> dict:
 @router.post("/embeddings/embeddings", include_in_schema=False)
 async def proxy_embeddings(request: Request):
     """OpenAI-compatible embeddings endpoint backed by Bedrock Titan."""
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization")
-    token = auth_header[7:]
-
     session_factory = get_session_factory()
     async with session_factory() as db:
-        result = await db.execute(select(Container).where(Container.gateway_token == token))
-        container = result.scalar_one_or_none()
-        if not container:
-            raise HTTPException(status_code=401, detail="Invalid gateway token")
-
-        result = await db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == container.user_id))
-        account = result.scalar_one_or_none()
-        if not account:
-            raise HTTPException(status_code=403, detail="No billing account")
+        container, account = await _authenticate_and_check_budget(request, db)
 
         body = await request.json()
         input_data = body.get("input", "")
@@ -155,12 +189,6 @@ async def proxy_request(
     request: Request,
 ):
     """Forward request to upstream API with Isol8's key."""
-    # Extract token from header
-    auth_header = request.headers.get("authorization", "")
-    if not auth_header.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid authorization")
-    token = auth_header[7:]
-
     if service not in UPSTREAM_URLS:
         raise HTTPException(status_code=404, detail=f"Unknown proxy service: {service}")
 
@@ -171,17 +199,7 @@ async def proxy_request(
 
     session_factory = get_session_factory()
     async with session_factory() as db:
-        # Validate gateway token
-        result = await db.execute(select(Container).where(Container.gateway_token == token))
-        container = result.scalar_one_or_none()
-        if not container:
-            raise HTTPException(status_code=401, detail="Invalid gateway token")
-
-        # Get billing account
-        result = await db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == container.user_id))
-        account = result.scalar_one_or_none()
-        if not account:
-            raise HTTPException(status_code=403, detail="No billing account")
+        container, account = await _authenticate_and_check_budget(request, db)
 
         # Forward request to upstream
         upstream_url = f"{UPSTREAM_URLS[service]}/{path}"

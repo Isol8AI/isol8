@@ -77,11 +77,6 @@ class UsageService:
         result = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == clerk_user_id))
         return result.scalar_one_or_none()
 
-    async def get_billing_account_for_org(self, clerk_org_id: str) -> Optional[BillingAccount]:
-        """Fetch billing account for an organization."""
-        result = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_org_id == clerk_org_id))
-        return result.scalar_one_or_none()
-
     async def record_usage(
         self,
         billing_account_id: UUID,
@@ -159,69 +154,6 @@ class UsageService:
 
         return event
 
-    async def record_tool_usage(
-        self,
-        billing_account_id: UUID,
-        clerk_user_id: str,
-        tool_id: str,
-        quantity: int,
-        total_cost: Decimal,
-        source: str = "tool",
-        session_id: Optional[str] = None,
-        agent_id: Optional[str] = None,
-        is_byok: bool = False,
-    ) -> UsageEvent:
-        """Record a non-LLM tool usage event.
-
-        For BYOK calls, tracks usage at $0 billable for dashboard visibility.
-        """
-        account = await self.get_billing_account(billing_account_id)
-        if not account:
-            raise UsageServiceError(f"Billing account {billing_account_id} not found")
-
-        markup = account.markup_multiplier
-        billable = Decimal("0") if is_byok else total_cost * markup
-
-        today = date.today()
-        event = UsageEvent(
-            billing_account_id=billing_account_id,
-            clerk_user_id=clerk_user_id,
-            model_id=tool_id,
-            input_tokens=0,
-            output_tokens=0,
-            input_cost=Decimal("0"),
-            output_cost=Decimal("0"),
-            total_cost=total_cost,
-            billable_amount=billable,
-            source=source,
-            usage_type="tool",
-            tool_id=tool_id,
-            quantity=quantity,
-            session_id=session_id,
-            agent_id=agent_id,
-            month_partition=today.strftime("%Y-%m"),
-        )
-        self.db.add(event)
-
-        await self._upsert_daily_rollup(
-            billing_account_id=billing_account_id,
-            day=today,
-            model_id=tool_id,
-            source=source,
-            input_tokens=0,
-            output_tokens=0,
-            total_cost=total_cost,
-            billable=billable,
-            usage_type="tool",
-        )
-
-        await self.db.commit()
-
-        if not is_byok and billable > 0:
-            await self._report_to_stripe(account.stripe_customer_id, billable, event)
-
-        return event
-
     async def _upsert_daily_rollup(
         self,
         billing_account_id: UUID,
@@ -232,7 +164,6 @@ class UsageService:
         output_tokens: int,
         total_cost: Decimal,
         billable: Decimal,
-        usage_type: str = "llm",
     ) -> None:
         """Insert or update the daily usage rollup row."""
         stmt = pg_insert(UsageDaily).values(
@@ -240,7 +171,6 @@ class UsageService:
             date=day,
             model_id=model_id,
             source=source,
-            usage_type=usage_type,
             total_input_tokens=input_tokens,
             total_output_tokens=output_tokens,
             total_cost=total_cost,
@@ -267,7 +197,7 @@ class UsageService:
                 return
 
             stripe.billing.MeterEvent.create(
-                event_name="llm_token_usage",
+                event_name="llm_usage",
                 payload={
                     "stripe_customer_id": stripe_customer_id,
                     "value": str(value),

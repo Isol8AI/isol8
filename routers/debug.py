@@ -24,6 +24,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+async def require_non_production() -> None:
+    """Dependency that blocks access in production environments."""
+    if settings.ENVIRONMENT == "prod":
+        raise HTTPException(status_code=403, detail="Not available in production")
+
+
 @router.post(
     "/provision",
     summary="Provision container (dev only)",
@@ -32,6 +38,7 @@ router = APIRouter()
         "Only available in non-production environments for local testing."
     ),
     operation_id="debug_provision_container",
+    dependencies=[Depends(require_non_production)],
     responses={
         403: {"description": "Not available in production"},
         409: {"description": "Container already running"},
@@ -42,9 +49,6 @@ async def provision_container(
     auth: AuthContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if settings.ENVIRONMENT == "prod":
-        raise HTTPException(status_code=403, detail="Not available in production")
-
     user_id = auth.user_id
 
     # Check for existing service
@@ -90,6 +94,7 @@ async def provision_container(
         "a new ECS deployment so the gateway picks up the changes."
     ),
     operation_id="debug_redeploy_container",
+    dependencies=[Depends(require_non_production)],
     responses={
         403: {"description": "Not available in production"},
         404: {"description": "No container found"},
@@ -100,9 +105,6 @@ async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if settings.ENVIRONMENT == "prod":
-        raise HTTPException(status_code=403, detail="Not available in production")
-
     user_id = auth.user_id
 
     result = await db.execute(select(Container).where(Container.user_id == user_id))
@@ -135,6 +137,7 @@ async def redeploy_container(
     summary="Remove container (dev only)",
     description="Removes the user's ECS Fargate service. Dev only.",
     operation_id="debug_remove_container",
+    dependencies=[Depends(require_non_production)],
     responses={
         403: {"description": "Not available in production"},
         404: {"description": "No container found"},
@@ -144,9 +147,6 @@ async def remove_container(
     auth: AuthContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    if settings.ENVIRONMENT == "prod":
-        raise HTTPException(status_code=403, detail="Not available in production")
-
     user_id = auth.user_id
 
     try:
