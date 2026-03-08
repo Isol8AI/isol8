@@ -29,22 +29,39 @@ const HoverLabel = PixiComponent('HoverLabel', {
     hitArea.cursor = 'pointer';
     container.addChild(hitArea);
 
-    // Label text using the display font, hidden by default
+    // Label group (background box + text), hidden by default
+    const labelGroup = new PIXI.Container();
+    labelGroup.visible = false;
+
     const text = new PIXI.Text(label, {
       fontFamily: 'Upheaval Pro',
       fontSize: 14,
-      fill: '#e8d5b7',       // brown-200 tone
-      stroke: '#1a1410',     // dark outline
-      strokeThickness: 4,
+      fill: '#1a1410',
       letterSpacing: 1,
     });
-    text.anchor.set(0.5, 1);
-    text.y = -tileDim * 1.2;
-    text.visible = false;
-    container.addChild(text);
+    text.anchor.set(0.5, 0.5);
 
-    hitArea.on('pointerover', () => { text.visible = true; });
-    hitArea.on('pointerout', () => { text.visible = false; });
+    // White rounded box behind text
+    const padX = 8;
+    const padY = 4;
+    const bg = new PIXI.Graphics();
+    bg.beginFill(0xffffff, 0.92);
+    bg.drawRoundedRect(
+      -text.width / 2 - padX,
+      -text.height / 2 - padY,
+      text.width + padX * 2,
+      text.height + padY * 2,
+      4,
+    );
+    bg.endFill();
+
+    labelGroup.addChild(bg);
+    labelGroup.addChild(text);
+    labelGroup.y = -tileDim * 1.5;
+    container.addChild(labelGroup);
+
+    hitArea.on('pointerover', () => { labelGroup.visible = true; });
+    hitArea.on('pointerout', () => { labelGroup.visible = false; });
 
     container.x = x * tileDim + tileDim / 2;
     container.y = y * tileDim + tileDim / 2;
