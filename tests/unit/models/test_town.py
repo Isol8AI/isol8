@@ -173,6 +173,22 @@ class TestTownStateModel:
         assert state.current_conversation_id is None
         assert state.last_heartbeat_at is None
 
+    @pytest.mark.asyncio
+    async def test_town_state_has_wake_fields(self, db_session, test_user):
+        """TownState should have wake_at and wake_timezone columns."""
+        agent = TownAgent(user_id=test_user.id, agent_name="wake_test", display_name="WakeTest")
+        db_session.add(agent)
+        await db_session.flush()
+
+        state = TownState(agent_id=agent.id, position_x=0.0, position_y=0.0)
+        db_session.add(state)
+        await db_session.flush()
+
+        assert hasattr(state, "wake_at")
+        assert hasattr(state, "wake_timezone")
+        assert state.wake_at is None
+        assert state.wake_timezone is None
+
 
 class TestTownConversationModel:
     """Test TownConversation database model."""

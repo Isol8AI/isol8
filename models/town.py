@@ -100,6 +100,8 @@ class TownState(Base):
     speed = Column(Float, default=0.0)
     current_conversation_id = Column(UUID(as_uuid=True), nullable=True)
     last_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    wake_at = Column(DateTime(timezone=True), nullable=True)
+    wake_timezone = Column(String(50), nullable=True)
 
     __table_args__ = (Index("idx_town_state_agent", "agent_id"),)
 
