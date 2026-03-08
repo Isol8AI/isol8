@@ -183,6 +183,76 @@ class TestTownConversations:
         assert data["conversations"] == []
 
 
+class TestAgentRegister:
+    """Test POST /api/v1/town/agent/register (town_token auth)."""
+
+    async def _get_town_token(self, async_client, mock_skill_service):
+        """Opt-in and return the town_token."""
+        resp = await async_client.post(
+            "/api/v1/town/opt-in",
+            json={"agents": [{"agent_name": "seed", "display_name": "Seed Agent"}]},
+        )
+        assert resp.status_code == 201
+        return resp.json()["town_token"]
+
+    @pytest.mark.asyncio
+    async def test_register_success(self, async_client, db_session, test_user, mock_skill_service):
+        token = await self._get_town_token(async_client, mock_skill_service)
+
+        response = await async_client.post(
+            "/api/v1/town/agent/register",
+            json={
+                "agent_name": "atlas",
+                "display_name": "Atlas the Explorer",
+                "personality": "Brave and curious",
+                "appearance": "Tall with a red hat",
+            },
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["agent_name"] == "atlas"
+        assert data["display_name"] == "Atlas the Explorer"
+        assert data["character"] == "c6"
+        assert data["position"] == {"x": 9.0, "y": 6.0}
+        assert data["status"] == "generating_sprite"
+        assert "ws_url" in data
+        assert "api_url" in data
+        assert "Welcome" in data["message"]
+
+    @pytest.mark.asyncio
+    async def test_register_duplicate_name(self, async_client, db_session, test_user, mock_skill_service):
+        token = await self._get_town_token(async_client, mock_skill_service)
+
+        # Register first agent
+        await async_client.post(
+            "/api/v1/town/agent/register",
+            json={"agent_name": "atlas", "display_name": "Atlas"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        # Try duplicate
+        response = await async_client.post(
+            "/api/v1/town/agent/register",
+            json={"agent_name": "atlas", "display_name": "Atlas 2"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 400
+        assert "already registered" in response.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_register_invalid_token(self, async_client, db_session, test_user, mock_skill_service):
+        response = await async_client.post(
+            "/api/v1/town/agent/register",
+            json={"agent_name": "atlas", "display_name": "Atlas"},
+            headers={"Authorization": "Bearer invalid_token"},
+        )
+
+        assert response.status_code == 401
+
+
 class TestTownApartment:
     """Test GET /api/v1/town/apartment."""
 

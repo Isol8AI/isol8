@@ -24,8 +24,6 @@ from core.services.town_service import TownService
 from core.services.town_skill import TownSkillService
 from core.town_constants import (
     AVATAR_CATALOG,
-    AVAILABLE_CHARACTERS,
-    TOWN_LOCATIONS,
 )
 from models.town import TownAgent, TownState
 from schemas.town import (
@@ -480,7 +478,7 @@ class AgentRegisterRequest(BaseModel):
     agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
     display_name: str = Field(..., min_length=1, max_length=100)
     personality: str = Field("", max_length=500)
-    character: str = Field("c6")
+    appearance: str = Field("", max_length=500)
 
 
 @router.post("/agent/register")
@@ -490,10 +488,9 @@ async def register_agent(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new agent in GooseTown. Authenticated via town_token."""
-    user_id, token = token_info
+    from core.apartment_constants import APARTMENT_SPOTS
 
-    if request.character not in AVAILABLE_CHARACTERS:
-        raise HTTPException(400, f"Invalid character. Choose from: {AVAILABLE_CHARACTERS}")
+    user_id, token = token_info
 
     service = TownService(db)
     instance = await service.get_active_instance(user_id)
@@ -504,16 +501,16 @@ async def register_agent(
     if existing:
         raise HTTPException(400, f"Agent '{request.agent_name}' already registered")
 
-    # Always spawn at the apartment
-    apartment = TOWN_LOCATIONS["apartment"]
+    # Spawn at apartment bed
+    spawn = APARTMENT_SPOTS["bed_1"]
 
     agent = TownAgent(
         user_id=user_id,
         agent_name=request.agent_name,
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
-        character=request.character,
-        home_location="apartment",
+        character="c6",
+        home_location="residence",
         instance_id=instance.id,
     )
     db.add(agent)
@@ -521,9 +518,10 @@ async def register_agent(
 
     state = TownState(
         agent_id=agent.id,
-        position_x=apartment["x"],
-        position_y=apartment["y"],
-        current_location="apartment",
+        position_x=spawn["x"],
+        position_y=spawn["y"],
+        current_location="bedroom",
+        location_context="apartment",
         location_state="active",
         current_activity="idle",
     )
@@ -537,7 +535,10 @@ async def register_agent(
         "agent_name": agent.agent_name,
         "display_name": agent.display_name,
         "character": agent.character,
-        "position": {"x": apartment["x"], "y": apartment["y"]},
+        "position": {"x": float(spawn["x"]), "y": float(spawn["y"])},
+        "status": "generating_sprite",
+        "ws_url": _TOWN_WS_URL,
+        "api_url": _TOWN_API_URL,
         "message": f"Welcome to GooseTown, {agent.display_name}!",
     }
 
