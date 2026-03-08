@@ -8,14 +8,11 @@ import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
-  { label: 'Town Plaza', x: 49, y: 33 },
-  { label: 'Cafe', x: 32, y: 34 },
-  { label: 'Library', x: 38, y: 21 },
-  { label: 'Town Hall', x: 62, y: 28 },
-  { label: 'Apartment', x: 37, y: 41 },
-  { label: 'Barn', x: 60, y: 36 },
-  { label: 'Shop', x: 47, y: 48 },
-  { label: 'Residential', x: 53, y: 40 },
+  { label: 'Plaza', x: 42, y: 22 },        // area center of (32,22)→(52,34)
+  { label: 'Library', x: 40, y: 11 },       // entrance point
+  { label: 'Cafe', x: 10, y: 17 },          // entrance point
+  { label: 'Activity Center', x: 65, y: 12 }, // entrance point
+  { label: 'Residence', x: 69, y: 24 },     // spawn point / entrance
 ];
 
 const HoverLabel = PixiComponent('HoverLabel', {
@@ -26,23 +23,23 @@ const HoverLabel = PixiComponent('HoverLabel', {
     // Invisible hit area for hover detection
     const hitArea = new PIXI.Graphics();
     hitArea.beginFill(0xffffff, 0.001);
-    hitArea.drawRect(-tileDim * 1.5, -tileDim * 1.5, tileDim * 3, tileDim * 3);
+    hitArea.drawRect(-tileDim * 2, -tileDim * 2, tileDim * 4, tileDim * 4);
     hitArea.endFill();
     hitArea.interactive = true;
     hitArea.cursor = 'pointer';
     container.addChild(hitArea);
 
-    // Label text, hidden by default
+    // Label text using the display font, hidden by default
     const text = new PIXI.Text(label, {
-      fontFamily: 'Arial',
-      fontSize: 11,
-      fill: '#ffffff',
-      stroke: '#000000',
-      strokeThickness: 3,
-      fontWeight: 'bold',
+      fontFamily: 'Upheaval Pro',
+      fontSize: 14,
+      fill: '#e8d5b7',       // brown-200 tone
+      stroke: '#1a1410',     // dark outline
+      strokeThickness: 4,
+      letterSpacing: 1,
     });
     text.anchor.set(0.5, 1);
-    text.y = -tileDim * 0.8;
+    text.y = -tileDim * 1.2;
     text.visible = false;
     container.addChild(text);
 
@@ -92,15 +89,16 @@ export const PixiGame = (props: {
 
   const { width, height, tileDim } = props.game.worldMap;
 
-  // On first load, smoothly zoom into the center of the town
+  // On first load, smoothly zoom into the Residence
   const hasAnimatedInitial = useRef(false);
   useEffect(() => {
     if (!viewportRef.current || hasAnimatedInitial.current) return;
     hasAnimatedInitial.current = true;
-    const centerX = (width * tileDim) / 2;
-    const centerY = (height * tileDim) / 2;
+    // Focus on Residence spawn point (69, 24)
+    const focusX = 69 * tileDim;
+    const focusY = 24 * tileDim;
     viewportRef.current.animate({
-      position: new PIXI.Point(centerX, centerY),
+      position: new PIXI.Point(focusX, focusY),
       scale: 1.5,
       time: 1500,
       ease: 'easeInOutSine',
