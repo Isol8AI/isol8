@@ -229,8 +229,29 @@ class TownSimulation:
                             update["current_location"] = agent_state["target_location"]
                             update["target_location"] = None
 
+                        # Scatter within location bounds (town only, not during transitions or going_home)
+                        arrived_location = update.get("current_location", agent_state.get("current_location"))
+                        arrived_context = agent_state.get("location_context", "apartment")
+                        if (
+                            arrived_context == "town"
+                            and arrived_location in TOWN_LOCATIONS
+                            and location_state != "going_home"
+                        ):
+                            occupied = []
+                            for other in states:
+                                if other["agent_id"] != agent_id and other.get("current_location") == arrived_location:
+                                    occupied.append((other["position_x"], other["position_y"]))
+                            scatter = self._pick_scatter_point(arrived_location, exclude_positions=occupied)
+                            if scatter and (scatter[0] != new_x or scatter[1] != new_y):
+                                update["target_x"] = scatter[0]
+                                update["target_y"] = scatter[1]
+                                update["target_location"] = None
+                                update["current_activity"] = "walking"
+                                update["speed"] = AGENT_SPEED
+                                arrived = False
+
                         # Check for pending cross-context transition
-                        pending = self._pending_destinations.pop(agent_id, None)
+                        pending = self._pending_destinations.pop(agent_id, None) if arrived else None
                         if pending:
                             cur_context = agent_state.get("location_context", "apartment")
                             if cur_context == "apartment":
@@ -259,10 +280,10 @@ class TownSimulation:
                                     update["speed"] = AGENT_SPEED
 
                         # Handle going_home -> sleeping transition
-                        if location_state == "going_home" and not pending:
+                        if arrived and location_state == "going_home" and not pending:
                             update["location_state"] = "sleeping"
                             logger.debug("Agent %s arrived home, now sleeping", agent_name)
-                        elif not pending:
+                        elif arrived and not pending:
                             # Push "arrived" event to connected agent
                             events_to_push.append(
                                 (
@@ -562,6 +583,32 @@ class TownSimulation:
         """Pick a random town location, excluding current."""
         choices = [loc for loc in TOWN_LOCATIONS if loc != exclude]
         return random.choice(choices)
+
+    @staticmethod
+    def _pick_scatter_point(
+        location_id: str,
+        exclude_positions: list[tuple[float, float]] | None = None,
+    ) -> tuple[float, float] | None:
+        """Pick a random walkable tile within a location's bounds, avoiding occupied positions."""
+        from core.services.town_pathfinding import is_walkable
+
+        loc = TOWN_LOCATIONS.get(location_id)
+        if not loc or "bounds" not in loc:
+            return None
+
+        bounds = loc["bounds"]
+        candidates = []
+        for x in range(bounds["x1"], bounds["x2"] + 1):
+            for y in range(bounds["y1"], bounds["y2"] + 1):
+                if is_walkable(x, y, context="town"):
+                    if exclude_positions and (float(x), float(y)) in exclude_positions:
+                        continue
+                    candidates.append((float(x), float(y)))
+
+        if not candidates:
+            return None
+
+        return random.choice(candidates)
 
     @staticmethod
     def _calculate_distance(x1: float, y1: float, x2: float, y2: float) -> float:

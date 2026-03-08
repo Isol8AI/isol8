@@ -253,6 +253,10 @@ class TestTickMovement:
                 "core.services.town_service.TownService",
                 return_value=mock_service,
             ),
+            patch(
+                "core.services.town_simulation.TownSimulation._pick_scatter_point",
+                return_value=None,
+            ),
         ):
             await sim._tick()
 
@@ -671,6 +675,10 @@ class TestTickArrivedEventPush:
             patch(
                 "core.services.town_service.TownService",
                 return_value=mock_service,
+            ),
+            patch(
+                "core.services.town_simulation.TownSimulation._pick_scatter_point",
+                return_value=None,
             ),
         ):
             await sim._tick()
