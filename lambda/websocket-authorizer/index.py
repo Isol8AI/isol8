@@ -141,6 +141,8 @@ def handler(event: dict, context: Any) -> dict:
         return generate_policy("unauthorized", "Deny", method_arn)
 
     # --- Try HMAC-signed town token first (2-part format) ---
+    dot_count = token.count(".")
+    logger.info(f"Token has {dot_count} dot(s), length={len(token)}, first_20={token[:20]}")
     town_payload = verify_town_token(token)
     if town_payload is not None:
         user_id = town_payload["uid"]

@@ -161,6 +161,20 @@ variable "perplexity_api_key" {
   default     = ""
 }
 
+variable "encryption_key" {
+  description = "Fernet encryption key for BYOK API key encryption at rest"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
+variable "pixellab_api_key" {
+  description = "PixelLab API key for AI-generated pixel art sprites"
+  type        = string
+  sensitive   = true
+  default     = ""
+}
+
 # Stripe billing configuration (non-secret price IDs)
 variable "stripe_starter_fixed_price_id" {
   description = "Stripe Price ID for Starter plan ($25/mo)"

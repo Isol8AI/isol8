@@ -82,6 +82,16 @@ PERPLEXITY_API_KEY=$(aws secretsmanager get-secret-value \
     --secret-id "$${SECRETS_ARN_PREFIX}perplexity_api_key" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
+ENCRYPTION_KEY=$(aws secretsmanager get-secret-value \
+    --region "$REGION" \
+    --secret-id "$${SECRETS_ARN_PREFIX}encryption_key" \
+    --query 'SecretString' --output text 2>/dev/null || echo "")
+
+PIXELLAB_API_KEY=$(aws secretsmanager get-secret-value \
+    --region "$REGION" \
+    --secret-id "$${SECRETS_ARN_PREFIX}pixellab_api_key" \
+    --query 'SecretString' --output text 2>/dev/null || echo "")
+
 # -----------------------------------------------------------------------------
 # Create environment file
 # -----------------------------------------------------------------------------
@@ -108,6 +118,8 @@ STRIPE_METERED_PRICE_ID=${stripe_metered_price_id}
 STRIPE_METER_ID=${stripe_meter_id}
 FRONTEND_URL=$FRONTEND_URL
 PERPLEXITY_API_KEY=$PERPLEXITY_API_KEY
+ENCRYPTION_KEY=$ENCRYPTION_KEY
+PIXELLAB_API_KEY=$PIXELLAB_API_KEY
 TOWN_TOKEN_SECRET=$TOWN_TOKEN_SECRET
 PROXY_BASE_URL=https://${domain_name}/api/v1/proxy
 CONTAINER_EXECUTION_ROLE_ARN=${container_execution_role_arn}

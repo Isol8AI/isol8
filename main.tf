@@ -66,6 +66,8 @@ module "secrets" {
     stripe_secret_key     = var.stripe_secret_key
     stripe_webhook_secret = var.stripe_webhook_secret
     perplexity_api_key    = var.perplexity_api_key
+    encryption_key        = var.encryption_key
+    pixellab_api_key      = var.pixellab_api_key
   }
 }
 

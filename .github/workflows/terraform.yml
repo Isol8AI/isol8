@@ -88,7 +88,9 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="pixellab_api_key=${{ secrets.PIXELLAB_API_KEY }}" \
             -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
+            -var="encryption_key=${{ secrets.ENCRYPTION_KEY }}" \
             -out=tfplan-dev \
             -no-color
         continue-on-error: true
@@ -179,7 +181,9 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="pixellab_api_key=${{ secrets.PIXELLAB_API_KEY }}" \
             -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
+            -var="encryption_key=${{ secrets.ENCRYPTION_KEY }}" \
             -out=tfplan-staging \
             -no-color
         continue-on-error: true
@@ -270,7 +274,9 @@ jobs:
             -var="clerk_secret_key=${{ secrets.CLERK_SECRET_KEY }}" \
             -var="clerk_webhook_secret=${{ secrets.CLERK_WEBHOOK_SECRET }}" \
             -var="perplexity_api_key=${{ secrets.PERPLEXITY_API_KEY }}" \
+            -var="pixellab_api_key=${{ secrets.PIXELLAB_API_KEY }}" \
             -var="town_token_secret=${{ secrets.TOWN_TOKEN_SECRET }}" \
+            -var="encryption_key=${{ secrets.ENCRYPTION_KEY }}" \
             -out=tfplan-prod \
             -no-color
         continue-on-error: true
