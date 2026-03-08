@@ -16,6 +16,7 @@ import asyncio
 import logging
 import math
 import random
+import time
 from datetime import datetime, timezone, timedelta
 from typing import Callable, Dict, List, Optional, Set, Tuple
 
@@ -511,6 +512,16 @@ class TownSimulation:
 
             # Generate context summary for agent's TOWN_STATUS.md
             payload["context_summary"] = self._build_context_summary(agent_state, nearby)
+
+            # Add think ping if enough time has elapsed and agent is idle
+            now_ts = time.time()
+            last_think = self._last_think_at.get(agent_name, 0)
+            is_walking = agent_state.get("target_x") is not None
+            is_sleeping = (agent_state.get("location_state") or "active") == "sleeping"
+
+            if (now_ts - last_think >= THINK_INTERVAL) and not is_walking and not is_sleeping:
+                payload["think"] = True
+                self._last_think_at[agent_name] = now_ts
 
             try:
                 mgmt.send_message(conn_id, payload)

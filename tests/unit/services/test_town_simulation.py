@@ -874,6 +874,121 @@ class TestPushAgentEvents:
         sim._mgmt_client.send_message.assert_not_called()
 
 
+class TestWorldUpdateThinkFlag:
+    """Test that world_update payloads include think: True when appropriate."""
+
+    def _make_sim_with_mgmt(self):
+        """Create a TownSimulation with a mocked mgmt client for _push_world_updates tests."""
+        sim = TownSimulation.__new__(TownSimulation)
+        sim._mgmt_client = MagicMock()
+        sim._mgmt_client.send_message = MagicMock(return_value=True)
+        sim._mgmt_client_failed = False
+        sim._last_think_at = {}
+        sim._nearby_pairs = set()
+        return sim
+
+    def test_world_update_includes_think_true_after_interval(self):
+        """When 15s+ since last think and agent is idle, payload should have think: True."""
+        sim = self._make_sim_with_mgmt()
+        agent = _make_agent_state(
+            agent_name="alice",
+            position_x=10.0,
+            position_y=10.0,
+            target_x=None,
+            target_y=None,
+            location_state="active",
+            current_activity="idle",
+        )
+        # Last think was 20 seconds ago
+        import time
+
+        sim._last_think_at["alice"] = time.time() - 20.0
+
+        mock_ws = MagicMock()
+        mock_ws.get_agent_connection_id = MagicMock(return_value="conn_alice")
+
+        sim._push_world_updates(mock_ws, [agent])
+
+        call_args = sim._mgmt_client.send_message.call_args_list
+        assert len(call_args) == 1
+        payload = call_args[0][0][1]
+        assert payload.get("think") is True
+
+    def test_world_update_no_think_when_recently_thought(self):
+        """When <15s since last think, no think flag."""
+        sim = self._make_sim_with_mgmt()
+        agent = _make_agent_state(
+            agent_name="alice",
+            position_x=10.0,
+            position_y=10.0,
+            target_x=None,
+            target_y=None,
+            location_state="active",
+            current_activity="idle",
+        )
+        import time
+
+        sim._last_think_at["alice"] = time.time() - 5.0  # Only 5 seconds ago
+
+        mock_ws = MagicMock()
+        mock_ws.get_agent_connection_id = MagicMock(return_value="conn_alice")
+
+        sim._push_world_updates(mock_ws, [agent])
+
+        call_args = sim._mgmt_client.send_message.call_args_list
+        assert len(call_args) == 1
+        payload = call_args[0][0][1]
+        assert "think" not in payload
+
+    def test_no_think_when_agent_is_walking(self):
+        """When agent has target_x set, no think flag."""
+        sim = self._make_sim_with_mgmt()
+        agent = _make_agent_state(
+            agent_name="alice",
+            position_x=10.0,
+            position_y=10.0,
+            target_x=20.0,
+            target_y=10.0,
+            location_state="active",
+            current_activity="walking",
+        )
+        # Last think was 20 seconds ago — would qualify if not walking
+        import time
+
+        sim._last_think_at["alice"] = time.time() - 20.0
+
+        mock_ws = MagicMock()
+        mock_ws.get_agent_connection_id = MagicMock(return_value="conn_alice")
+
+        sim._push_world_updates(mock_ws, [agent])
+
+        call_args = sim._mgmt_client.send_message.call_args_list
+        assert len(call_args) == 1
+        payload = call_args[0][0][1]
+        assert "think" not in payload
+
+    def test_no_think_when_agent_is_sleeping(self):
+        """When location_state is 'sleeping', no think flag (sleeping agents are skipped)."""
+        sim = self._make_sim_with_mgmt()
+        agent = _make_agent_state(
+            agent_name="alice",
+            position_x=10.0,
+            position_y=10.0,
+            target_x=None,
+            target_y=None,
+            location_state="sleeping",
+            current_activity="idle",
+        )
+
+        mock_ws = MagicMock()
+        mock_ws.get_agent_connection_id = MagicMock(return_value="conn_alice")
+
+        sim._push_world_updates(mock_ws, [agent])
+
+        # Sleeping agents are skipped entirely in _push_world_updates, so no message sent
+        sim._mgmt_client.send_message.assert_not_called()
+
+
 class TestNotifyViewers:
     """Test that _notify_fn is called after tick."""
 
