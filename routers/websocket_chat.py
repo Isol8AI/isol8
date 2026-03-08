@@ -477,10 +477,37 @@ async def ws_message(
 
                 if dest in APARTMENT_SPOTS:
                     if location_context == "apartment":
+                        # Check occupancy and fallback to available spot in same room
+                        final_dest = dest
                         spot = APARTMENT_SPOTS[dest]
+
+                        from core.services.town_service import TownService
+
+                        town_svc = TownService(session)
+                        all_states = await town_svc.get_town_state()
+                        occupied_spots = {
+                            s["current_location"]
+                            for s in all_states
+                            if s["agent_id"] != state.agent_id
+                            and s.get("location_context") == "apartment"
+                            and s.get("current_location")
+                        }
+
+                        if dest in occupied_spots:
+                            target_room = spot.get("room")
+                            for spot_id, spot_data in APARTMENT_SPOTS.items():
+                                if (
+                                    spot_data.get("room") == target_room
+                                    and spot_id not in occupied_spots
+                                    and spot_id != dest
+                                ):
+                                    final_dest = spot_id
+                                    spot = APARTMENT_SPOTS[final_dest]
+                                    break
+
                         state.target_x = float(spot["x"])
                         state.target_y = float(spot["y"])
-                        state.target_location = dest
+                        state.target_location = final_dest
                     else:
                         # In town -> walk to residential first
                         state.target_x = RESIDENTIAL_TOWN_COORDS["x"]
