@@ -6,7 +6,6 @@ Security Note:
 - Membership deletion triggers org key revocation
 """
 
-import json
 import logging
 from typing import Optional
 
@@ -32,22 +31,15 @@ async def verify_webhook(
     """Verify Clerk webhook signature and return payload."""
     body = await request.body()
 
-    # Environments where it's safe to skip webhook verification for local dev convenience
-    _DEV_ENVIRONMENTS = {"", "dev", "test", "local"}
-
     if not settings.CLERK_WEBHOOK_SECRET:
-        if settings.ENVIRONMENT not in _DEV_ENVIRONMENTS:
-            logger.error(
-                "CLERK_WEBHOOK_SECRET is not configured in '%s' environment — rejecting webhook. "
-                "Set CLERK_WEBHOOK_SECRET to enable Clerk webhook verification.",
-                settings.ENVIRONMENT,
-            )
-            raise HTTPException(
-                status_code=500,
-                detail="Webhook signature verification is not configured",
-            )
-        logger.warning("CLERK_WEBHOOK_SECRET not configured - skipping verification in dev")
-        return json.loads(body)
+        logger.error(
+            "CLERK_WEBHOOK_SECRET is not configured — rejecting webhook. "
+            "Set the CLERK_WEBHOOK_SECRET environment variable.",
+        )
+        raise HTTPException(
+            status_code=500,
+            detail="Webhook signature verification is not configured",
+        )
 
     if not all([svix_id, svix_timestamp, svix_signature]):
         raise HTTPException(status_code=400, detail="Missing svix headers for webhook verification")

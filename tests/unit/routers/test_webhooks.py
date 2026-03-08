@@ -160,30 +160,13 @@ class TestWebhookVerification:
     """Tests for webhook signature verification."""
 
     @pytest.mark.asyncio
-    async def test_verification_skipped_without_secret_in_dev(self):
-        """Skips verification when CLERK_WEBHOOK_SECRET is not set in dev environments."""
-        from routers.webhooks import verify_webhook
-        from unittest.mock import MagicMock
-
-        for env in ["", "dev", "test", "local"]:
-            mock_request = MagicMock()
-            mock_request.body = AsyncMock(return_value=b'{"type": "test", "data": {}}')
-
-            with patch("routers.webhooks.settings") as mock_settings:
-                mock_settings.CLERK_WEBHOOK_SECRET = None
-                mock_settings.ENVIRONMENT = env
-
-                payload = await verify_webhook(mock_request, None, None, None)
-                assert payload["type"] == "test", f"Expected bypass for ENVIRONMENT={env!r}"
-
-    @pytest.mark.asyncio
-    async def test_verification_rejects_missing_secret_in_production(self):
-        """Returns 500 when CLERK_WEBHOOK_SECRET is not set in non-dev environments."""
+    async def test_verification_rejects_missing_secret(self):
+        """Returns 500 when CLERK_WEBHOOK_SECRET is not set in any environment."""
         from routers.webhooks import verify_webhook
         from fastapi import HTTPException
         from unittest.mock import MagicMock
 
-        for env in ["staging", "prod", "production", "unknown"]:
+        for env in ["", "dev", "test", "local", "staging", "prod"]:
             mock_request = MagicMock()
             mock_request.body = AsyncMock(return_value=b'{"type": "test", "data": {}}')
 
