@@ -31,14 +31,14 @@ BEDROCK_PRICES = [
     {
         "model_id": "meta.llama3-3-70b-instruct-v1:0",
         "display_name": "Llama 3.3 70B",
-        "input_cost_per_token": Decimal("0.00000099"),
-        "output_cost_per_token": Decimal("0.00000099"),
+        "input_cost_per_token": Decimal("0.00000072"),
+        "output_cost_per_token": Decimal("0.00000072"),
     },
     {
         "model_id": "meta.llama3-1-70b-instruct-v1:0",
         "display_name": "Llama 3.1 70B",
-        "input_cost_per_token": Decimal("0.00000099"),
-        "output_cost_per_token": Decimal("0.00000099"),
+        "input_cost_per_token": Decimal("0.00000072"),
+        "output_cost_per_token": Decimal("0.00000072"),
     },
     {
         "model_id": "amazon.nova-pro-v1:0",
@@ -89,34 +89,34 @@ BEDROCK_PRICES = [
     {
         "model_id": "openai.gpt-oss-120b-1:0",
         "display_name": "GPT-OSS 120B",
-        "input_cost_per_token": Decimal("0.000000039"),
-        "output_cost_per_token": Decimal("0.00000019"),
+        "input_cost_per_token": Decimal("0.00000015"),
+        "output_cost_per_token": Decimal("0.0000006"),
     },
     {
         "model_id": "openai.gpt-oss-20b-1:0",
         "display_name": "GPT-OSS 20B",
-        "input_cost_per_token": Decimal("0.00000003"),
-        "output_cost_per_token": Decimal("0.00000014"),
+        "input_cost_per_token": Decimal("0.00000007"),
+        "output_cost_per_token": Decimal("0.00000015"),
     },
     # Qwen3 (Alibaba)
     {
         "model_id": "qwen.qwen3-235b-a22b-2507-v1:0",
         "display_name": "Qwen3 235B",
-        "input_cost_per_token": Decimal("0.00000080"),
-        "output_cost_per_token": Decimal("0.0000032"),
+        "input_cost_per_token": Decimal("0.00000022"),
+        "output_cost_per_token": Decimal("0.00000088"),
     },
     {
         "model_id": "qwen.qwen3-32b-v1:0",
         "display_name": "Qwen3 32B",
-        "input_cost_per_token": Decimal("0.00000020"),
-        "output_cost_per_token": Decimal("0.00000080"),
+        "input_cost_per_token": Decimal("0.00000015"),
+        "output_cost_per_token": Decimal("0.0000006"),
     },
     # Mistral
     {
         "model_id": "mistral.mistral-large-2512-v1:0",
         "display_name": "Mistral Large 3",
-        "input_cost_per_token": Decimal("0.000002"),
-        "output_cost_per_token": Decimal("0.000006"),
+        "input_cost_per_token": Decimal("0.0000005"),
+        "output_cost_per_token": Decimal("0.0000015"),
     },
 ]
 
