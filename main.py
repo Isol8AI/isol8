@@ -27,7 +27,6 @@ from routers import (
     control_ui_proxy,
     debug,
     integrations,
-    internal_credentials,
     proxy,
     settings_keys,
     town,
@@ -214,9 +213,6 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-# Internal credential vending (ECS-compatible, hidden from OpenAPI)
-app.include_router(internal_credentials.router, prefix="/internal")
 
 # GooseTown routes
 app.include_router(town.router, prefix="/api/v1/town", tags=["town"])
