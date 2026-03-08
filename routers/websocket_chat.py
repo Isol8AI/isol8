@@ -942,12 +942,34 @@ async def ws_message(
             )
             state = result.scalar_one_or_none()
             if state:
-                home_loc = TOWN_LOCATIONS.get("apartment", {"x": 10.0, "y": 8.0})
+                from core.services.town_simulation import AGENT_SPEED
+
+                home_loc = TOWN_LOCATIONS.get("residence", {"x": 69.0, "y": 25.0})
                 state.target_x = float(home_loc["x"])
                 state.target_y = float(home_loc["y"])
                 state.current_activity = "going_home"
                 state.location_state = "going_home"
-                state.speed = 0.6
+                state.speed = AGENT_SPEED
+
+                # Parse optional wake alarm from the message body
+                wake_time_str = body.get("wake_time")
+                wake_tz_str = body.get("timezone", "UTC")
+                if wake_time_str:
+                    import zoneinfo
+                    from datetime import datetime, timedelta, timezone
+
+                    try:
+                        tz_info = zoneinfo.ZoneInfo(wake_tz_str)
+                        now_local = datetime.now(tz_info)
+                        hour, minute = map(int, wake_time_str.split(":"))
+                        wake_local = now_local.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                        if wake_local <= now_local:
+                            wake_local += timedelta(days=1)
+                        state.wake_at = wake_local.astimezone(timezone.utc)
+                        state.wake_timezone = wake_tz_str
+                    except Exception as e:
+                        logger.warning(f"Failed to parse wake time: {e}")
+
                 await session.commit()
 
         ws_manager.unregister(x_connection_id)
