@@ -98,13 +98,26 @@ FREE_TIER_LIMIT = PLAN_BUDGETS["free"]
 
 # Fallback models used when Bedrock discovery is unavailable (e.g., local dev without AWS creds).
 FALLBACK_MODELS = [
-    {"id": "us.anthropic.claude-3-5-sonnet-20241022-v2:0", "name": "Claude 3.5 Sonnet"},
-    {"id": "us.anthropic.claude-3-5-haiku-20241022-v1:0", "name": "Claude 3.5 Haiku"},
-    {"id": "us.anthropic.claude-3-opus-20240229-v1:0", "name": "Claude 3 Opus"},
+    # Claude
+    {"id": "us.anthropic.claude-opus-4-6-v1", "name": "Claude Opus 4.6"},
+    {"id": "us.anthropic.claude-opus-4-5-20251101-v1:0", "name": "Claude Opus 4.5"},
+    {"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "name": "Claude Sonnet 4.5"},
+    {"id": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "name": "Claude Haiku 4.5"},
+    # DeepSeek
+    {"id": "us.deepseek.r1-v1:0", "name": "DeepSeek R1"},
+    # Meta
     {"id": "us.meta.llama3-3-70b-instruct-v1:0", "name": "Llama 3.3 70B"},
-    {"id": "us.meta.llama3-1-70b-instruct-v1:0", "name": "Llama 3.1 70B"},
+    # Amazon
     {"id": "us.amazon.nova-pro-v1:0", "name": "Amazon Nova Pro"},
     {"id": "us.amazon.nova-lite-v1:0", "name": "Amazon Nova Lite"},
+    # OpenAI (GPT-OSS)
+    {"id": "us.openai.gpt-oss-120b-1:0", "name": "GPT-OSS 120B"},
+    {"id": "us.openai.gpt-oss-20b-1:0", "name": "GPT-OSS 20B"},
+    # Qwen
+    {"id": "us.qwen.qwen3-235b-a22b-2507-v1:0", "name": "Qwen3 235B"},
+    {"id": "us.qwen.qwen3-32b-v1:0", "name": "Qwen3 32B"},
+    # Mistral
+    {"id": "us.mistral.mistral-large-2512-v1:0", "name": "Mistral Large 3"},
 ]
 
 

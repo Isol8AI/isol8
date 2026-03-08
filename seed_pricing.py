@@ -78,6 +78,46 @@ BEDROCK_PRICES = [
         "input_cost_per_token": Decimal("0.000001"),
         "output_cost_per_token": Decimal("0.000005"),
     },
+    # DeepSeek
+    {
+        "model_id": "deepseek.r1-v1:0",
+        "display_name": "DeepSeek R1",
+        "input_cost_per_token": Decimal("0.00000135"),
+        "output_cost_per_token": Decimal("0.0000054"),
+    },
+    # OpenAI GPT-OSS (open weight)
+    {
+        "model_id": "openai.gpt-oss-120b-1:0",
+        "display_name": "GPT-OSS 120B",
+        "input_cost_per_token": Decimal("0.000000039"),
+        "output_cost_per_token": Decimal("0.00000019"),
+    },
+    {
+        "model_id": "openai.gpt-oss-20b-1:0",
+        "display_name": "GPT-OSS 20B",
+        "input_cost_per_token": Decimal("0.00000003"),
+        "output_cost_per_token": Decimal("0.00000014"),
+    },
+    # Qwen3 (Alibaba)
+    {
+        "model_id": "qwen.qwen3-235b-a22b-2507-v1:0",
+        "display_name": "Qwen3 235B",
+        "input_cost_per_token": Decimal("0.00000080"),
+        "output_cost_per_token": Decimal("0.0000032"),
+    },
+    {
+        "model_id": "qwen.qwen3-32b-v1:0",
+        "display_name": "Qwen3 32B",
+        "input_cost_per_token": Decimal("0.00000020"),
+        "output_cost_per_token": Decimal("0.00000080"),
+    },
+    # Mistral
+    {
+        "model_id": "mistral.mistral-large-2512-v1:0",
+        "display_name": "Mistral Large 3",
+        "input_cost_per_token": Decimal("0.000002"),
+        "output_cost_per_token": Decimal("0.000006"),
+    },
 ]
 
 

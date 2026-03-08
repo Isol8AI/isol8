@@ -62,6 +62,7 @@ def write_openclaw_config(
                     "api": "bedrock-converse-stream",
                     "auth": "aws-sdk",
                     "models": [
+                        # --- Claude (Anthropic) ---
                         {
                             "id": "us.anthropic.claude-opus-4-6-v1",
                             "name": "Claude Opus 4.6",
@@ -98,6 +99,93 @@ def write_openclaw_config(
                             "input": ["text", "image"],
                             "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                         },
+                        # --- DeepSeek ---
+                        {
+                            "id": "us.deepseek.r1-v1:0",
+                            "name": "DeepSeek R1",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        # --- Meta Llama ---
+                        {
+                            "id": "us.meta.llama3-3-70b-instruct-v1:0",
+                            "name": "Llama 3.3 70B",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": False,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        # --- Amazon Nova ---
+                        {
+                            "id": "us.amazon.nova-pro-v1:0",
+                            "name": "Amazon Nova Pro",
+                            "contextWindow": 300000,
+                            "maxTokens": 5120,
+                            "reasoning": False,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        {
+                            "id": "us.amazon.nova-lite-v1:0",
+                            "name": "Amazon Nova Lite",
+                            "contextWindow": 300000,
+                            "maxTokens": 5120,
+                            "reasoning": False,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        # --- OpenAI (GPT-OSS open weight) ---
+                        {
+                            "id": "us.openai.gpt-oss-120b-1:0",
+                            "name": "GPT-OSS 120B",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        {
+                            "id": "us.openai.gpt-oss-20b-1:0",
+                            "name": "GPT-OSS 20B",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        # --- Qwen (Alibaba) ---
+                        {
+                            "id": "us.qwen.qwen3-235b-a22b-2507-v1:0",
+                            "name": "Qwen3 235B",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        {
+                            "id": "us.qwen.qwen3-32b-v1:0",
+                            "name": "Qwen3 32B",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": True,
+                            "input": ["text"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
+                        # --- Mistral ---
+                        {
+                            "id": "us.mistral.mistral-large-2512-v1:0",
+                            "name": "Mistral Large 3",
+                            "contextWindow": 128000,
+                            "maxTokens": 8192,
+                            "reasoning": False,
+                            "input": ["text", "image"],
+                            "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
+                        },
                     ],
                 },
             },
@@ -109,10 +197,26 @@ def write_openclaw_config(
                     "primary": primary_model,
                 },
                 "models": {
+                    # Claude
                     primary_model: {"alias": "Opus 4.6"},
                     "amazon-bedrock/us.anthropic.claude-opus-4-5-20251101-v1:0": {"alias": "Opus 4.5"},
                     "amazon-bedrock/us.anthropic.claude-sonnet-4-5-20250929-v1:0": {"alias": "Sonnet 4.5"},
                     "amazon-bedrock/us.anthropic.claude-haiku-4-5-20251001-v1:0": {"alias": "Haiku 4.5"},
+                    # DeepSeek
+                    "amazon-bedrock/us.deepseek.r1-v1:0": {"alias": "DeepSeek R1"},
+                    # Meta
+                    "amazon-bedrock/us.meta.llama3-3-70b-instruct-v1:0": {"alias": "Llama 3.3 70B"},
+                    # Amazon
+                    "amazon-bedrock/us.amazon.nova-pro-v1:0": {"alias": "Nova Pro"},
+                    "amazon-bedrock/us.amazon.nova-lite-v1:0": {"alias": "Nova Lite"},
+                    # OpenAI (GPT-OSS)
+                    "amazon-bedrock/us.openai.gpt-oss-120b-1:0": {"alias": "GPT-OSS 120B"},
+                    "amazon-bedrock/us.openai.gpt-oss-20b-1:0": {"alias": "GPT-OSS 20B"},
+                    # Qwen
+                    "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
+                    "amazon-bedrock/us.qwen.qwen3-32b-v1:0": {"alias": "Qwen3 32B"},
+                    # Mistral
+                    "amazon-bedrock/us.mistral.mistral-large-2512-v1:0": {"alias": "Mistral Large 3"},
                 },
                 "memorySearch": {
                     "enabled": False,
