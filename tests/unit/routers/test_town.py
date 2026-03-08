@@ -205,6 +205,60 @@ class TestTownApartment:
         assert data["activity"] == []
 
     @pytest.mark.asyncio
+    async def test_apartment_agent_without_state(self, async_client, db_session, test_user):
+        """Agent with no TownState row should not cause 500."""
+        from models.town import TownAgent
+
+        agent = TownAgent(
+            user_id="user_test_123",
+            agent_name="orphan",
+            display_name="Orphan Agent",
+        )
+        db_session.add(agent)
+        await db_session.flush()
+
+        response = await async_client.get("/api/v1/town/apartment")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["agents"]) == 1
+        assert data["agents"][0]["agent_name"] == "orphan"
+        # Defaults should be used when state is None
+        assert data["agents"][0]["energy"] == 100
+        assert data["agents"][0]["position_x"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_apartment_agent_with_null_state_fields(self, async_client, db_session, test_user):
+        """Agent with TownState that has NULL optional fields should not cause 500."""
+        from models.town import TownAgent
+
+        agent = TownAgent(
+            user_id="user_test_123",
+            agent_name="nullish",
+            display_name="Nullish Agent",
+        )
+        db_session.add(agent)
+        await db_session.flush()
+
+        # Create state with NULL values for fields that have Python defaults but
+        # are nullable in DB (speed, facing_x, facing_y)
+        from sqlalchemy import text
+
+        await db_session.execute(
+            text(
+                "INSERT INTO town_state (id, agent_id, position_x, position_y, energy, speed, facing_x, facing_y) "
+                "VALUES (gen_random_uuid(), :agent_id, 2.0, 6.0, 100, NULL, NULL, NULL)"
+            ),
+            {"agent_id": agent.id},
+        )
+        await db_session.flush()
+
+        response = await async_client.get("/api/v1/town/apartment")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["agents"]) == 1
+        assert data["agents"][0]["agent_name"] == "nullish"
+
+    @pytest.mark.asyncio
     async def test_apartment_with_agents(self, async_client, db_session, test_user):
         # Create instance and register agent
         inst_resp = await async_client.post("/api/v1/town/instance")

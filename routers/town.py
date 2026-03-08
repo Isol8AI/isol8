@@ -593,7 +593,7 @@ async def get_apartment(
     for agent, state in rows:
         # Determine current spot from position
         current_spot = None
-        if state:
+        if state and state.position_x is not None and state.position_y is not None:
             from core.apartment_constants import APARTMENT_SPOTS
 
             for spot_id, spot in APARTMENT_SPOTS.items():
@@ -607,17 +607,17 @@ async def get_apartment(
                 agent_name=agent.agent_name,
                 display_name=agent.display_name,
                 character=agent.character,
-                location_context=state.location_context if state else "apartment",
+                location_context=(state.location_context or "apartment") if state else "apartment",
                 current_location=state.current_location if state else None,
                 current_activity=state.current_activity if state else None,
                 mood=state.mood if state else None,
-                energy=state.energy if state else 100,
+                energy=state.energy if state and state.energy is not None else 100,
                 status_message=state.status_message if state else None,
-                position_x=state.position_x if state else 0.0,
-                position_y=state.position_y if state else 0.0,
-                speed=state.speed if state else 0.0,
-                facing_x=state.facing_x if state else 0.0,
-                facing_y=state.facing_y if state else 1.0,
+                position_x=state.position_x if state and state.position_x is not None else 0.0,
+                position_y=state.position_y if state and state.position_y is not None else 0.0,
+                speed=state.speed if state and state.speed is not None else 0.0,
+                facing_x=state.facing_x if state and state.facing_x is not None else 0.0,
+                facing_y=state.facing_y if state and state.facing_y is not None else 1.0,
                 current_spot=current_spot,
                 is_active=agent.is_active,
             )
