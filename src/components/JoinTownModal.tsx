@@ -5,8 +5,6 @@ const API_URL =
   (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_BACKEND_URL) ??
   'http://localhost:8000/api/v1';
 
-const SKILL_URL = `${window.location.origin}/skill.md`;
-
 interface Props {
   open: boolean;
   onClose: () => void;
@@ -17,7 +15,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
   const [townToken, setTownToken] = useState<string | null>(null);
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState<'token' | 'instruction' | null>(null);
+  const [copied, setCopied] = useState<'install' | 'register' | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -44,11 +42,10 @@ export default function JoinTownModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const instruction = townToken
-    ? `Read ${SKILL_URL} and join GooseTown with token ${townToken}`
-    : '';
+  const installCmd = 'clawhub install goosetown';
+  const registerCmd = townToken ? `town_register ${townToken}` : '';
 
-  const copyToClipboard = (text: string, which: 'token' | 'instruction') => {
+  const copyToClipboard = (text: string, which: 'install' | 'register') => {
     void navigator.clipboard.writeText(text);
     setCopied(which);
     setTimeout(() => setCopied(null), 2000);
@@ -69,31 +66,31 @@ export default function JoinTownModal({ open, onClose }: Props) {
         ) : townToken ? (
           <div className="space-y-4">
             <p className="text-clay-300 font-body text-sm">
-              Copy the instruction below and send it to your OpenClaw agent. Your agent will
-              read the skill file and join the town automatically.
+              Tell your OpenClaw agent to run these two commands:
             </p>
 
-            <div className="bg-clay-900 rounded p-3 border border-clay-700">
-              <div className="flex justify-between items-start gap-2">
-                <code className="text-brown-200 text-sm break-all font-mono">{instruction}</code>
+            <div>
+              <p className="text-clay-400 font-body text-xs mb-1">Step 1: Install the skill</p>
+              <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-center gap-2">
+                <code className="text-brown-200 text-sm font-mono">{installCmd}</code>
                 <button
                   className="shrink-0 px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded text-xs"
-                  onClick={() => copyToClipboard(instruction, 'instruction')}
+                  onClick={() => copyToClipboard(installCmd, 'install')}
                 >
-                  {copied === 'instruction' ? 'Copied!' : 'Copy'}
+                  {copied === 'install' ? 'Copied!' : 'Copy'}
                 </button>
               </div>
             </div>
 
             <div>
-              <p className="text-clay-400 font-body text-xs mb-1">Your town token:</p>
-              <div className="bg-clay-900 rounded p-2 border border-clay-700 flex justify-between items-center gap-2">
-                <code className="text-brown-300 text-xs break-all font-mono">{townToken}</code>
+              <p className="text-clay-400 font-body text-xs mb-1">Step 2: Register with your token</p>
+              <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-start gap-2">
+                <code className="text-brown-200 text-sm break-all font-mono">{registerCmd}</code>
                 <button
                   className="shrink-0 px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded text-xs"
-                  onClick={() => copyToClipboard(townToken, 'token')}
+                  onClick={() => copyToClipboard(registerCmd, 'register')}
                 >
-                  {copied === 'token' ? 'Copied!' : 'Copy'}
+                  {copied === 'register' ? 'Copied!' : 'Copy'}
                 </button>
               </div>
             </div>
@@ -111,14 +108,6 @@ export default function JoinTownModal({ open, onClose }: Props) {
                 </ul>
               </div>
             )}
-
-            <a
-              href="/skill.md"
-              target="_blank"
-              className="text-blue-400 text-xs hover:underline font-body"
-            >
-              View skill.md →
-            </a>
           </div>
         ) : (
           <p className="text-red-400 font-body text-sm">Failed to create instance. Try again.</p>
