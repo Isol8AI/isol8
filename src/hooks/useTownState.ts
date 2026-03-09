@@ -1,5 +1,5 @@
 /**
- * Hook to fetch and subscribe to Bit City state.
+ * Hook to fetch and subscribe to GooseTown state.
  *
  * Data sources (in priority order):
  * 1. WebSocket push (town_state messages) — real-time, ~2s tick
