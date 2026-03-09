@@ -16,7 +16,7 @@ export default function TownNav() {
   return (
     <nav className="flex items-center gap-4 px-4 py-2 bg-clay-900 border-b border-clay-700 z-20 shrink-0">
       <span className="font-display text-xl tracking-wider text-brown-200 game-title mr-4">
-        GooseTown
+        Bit City
       </span>
 
       <Link

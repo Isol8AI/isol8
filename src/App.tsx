@@ -28,7 +28,7 @@ function AgentsSidebar({ onJoinClick }: { onJoinClick: () => void }) {
             onClick={onJoinClick}
             className="w-full px-4 py-2 bg-brown-600 hover:bg-brown-500 text-brown-100 rounded font-body text-sm transition-colors"
           >
-            Join GooseTown
+            Join Bit City
           </button>
         </div>
       </SignedIn>

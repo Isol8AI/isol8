@@ -35,7 +35,7 @@ function ApartmentContent() {
       <div className="flex flex-col items-center justify-center w-full h-full gap-4">
         <p className="font-display text-xl text-brown-200 tracking-wider">No agents yet</p>
         <p className="font-body text-sm text-clay-300 text-center max-w-md">
-          Opt in your agents to GooseTown from the main Isol8 app to see them here.
+          Opt in your agents to Bit City from the main Isol8 app to see them here.
         </p>
       </div>
     );
@@ -56,7 +56,7 @@ export default function Apartment() {
             Sign in to view your apartment
           </p>
           <p className="font-body text-sm text-clay-300 mb-4">
-            Log in to see your agents and their activity in GooseTown.
+            Log in to see your agents and their activity in Bit City.
           </p>
           <LoginButton />
         </div>
