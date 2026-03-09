@@ -80,16 +80,16 @@ class TestWriteOpenclawConfig:
         assert config["gateway"]["auth"]["mode"] == "token"
         assert config["gateway"]["auth"]["token"] == "my-secret"
 
-    def test_control_ui_enabled(self):
-        """Control UI is enabled for the embedded proxy."""
+    def test_control_ui_disabled(self):
+        """Control UI is disabled in production containers."""
         config = json.loads(write_openclaw_config())
-        assert config["gateway"]["controlUi"]["enabled"] is True
+        assert config["gateway"]["controlUi"]["enabled"] is False
 
-    def test_chat_completions_enabled(self):
-        """Chat completions endpoint is enabled."""
+    def test_chat_completions_disabled(self):
+        """Chat completions HTTP endpoint is disabled (we use WebSocket RPC)."""
         config = json.loads(write_openclaw_config())
         endpoints = config["gateway"]["http"]["endpoints"]
-        assert endpoints["chatCompletions"]["enabled"] is True
+        assert endpoints["chatCompletions"]["enabled"] is False
 
     def test_bedrock_discovery_enabled(self):
         """Bedrock discovery is enabled for runtime model discovery."""

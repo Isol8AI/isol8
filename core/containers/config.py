@@ -46,12 +46,11 @@ def write_openclaw_config(
             "mode": "local",
             "auth": auth,
             "controlUi": {
-                "enabled": True,
-                "dangerouslyAllowHostHeaderOriginFallback": True,
+                "enabled": False,
             },
             "http": {
                 "endpoints": {
-                    "chatCompletions": {"enabled": True},
+                    "chatCompletions": {"enabled": False},
                 },
             },
         },

@@ -12,7 +12,6 @@ from typing import Any, Optional
 
 from core.containers.ecs_manager import EcsManager, EcsManagerError
 from core.containers.workspace import Workspace, WorkspaceError
-from core.containers.http_client import GatewayHttpClient, GatewayRequestError
 
 # GatewayConnectionPool is imported lazily in get_gateway_pool() to avoid
 # circular import: connection_pool → core.containers.ecs_manager → this __init__
@@ -101,8 +100,6 @@ __all__ = [
     "EcsManagerError",
     "Workspace",
     "WorkspaceError",
-    "GatewayHttpClient",
-    "GatewayRequestError",
     "GatewayConnectionPool",
     "get_ecs_manager",
     "get_gateway_pool",
