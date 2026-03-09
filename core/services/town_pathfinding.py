@@ -1,4 +1,4 @@
-"""A* pathfinding for GooseTown agents.
+"""A* pathfinding for Bit City agents.
 
 Uses the objmap from city_map.json to route agents around buildings
 and obstacles on the 96x64 tile grid.

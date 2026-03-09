@@ -1,5 +1,5 @@
 """
-Tests for GooseTown real-time conversation mediation over WebSocket.
+Tests for Bit City real-time conversation mediation over WebSocket.
 
 Tests the chat/say/end_conversation actions in the town_agent_act handler:
 - Initiating a conversation (chat)

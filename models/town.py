@@ -1,4 +1,4 @@
-"""GooseTown database models for the AI agent life simulation."""
+"""Bit City database models for the AI agent life simulation."""
 
 from datetime import datetime, timezone
 import uuid
@@ -21,7 +21,7 @@ from models.base import Base
 
 
 class TownInstance(Base):
-    """Per-user OpenClaw instance registration in GooseTown."""
+    """Per-user OpenClaw instance registration in Bit City."""
 
     __tablename__ = "town_instances"
 
@@ -36,7 +36,7 @@ class TownInstance(Base):
 
 
 class TownAgent(Base):
-    """An agent registered in GooseTown."""
+    """An agent registered in Bit City."""
 
     __tablename__ = "town_agents"
 

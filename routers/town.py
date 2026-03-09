@@ -1,4 +1,4 @@
-"""GooseTown API endpoints.
+"""Bit City API endpoints.
 
 Serves two sets of endpoints:
 1. Isol8-native endpoints (apartment, instance, registration) — authenticated
@@ -472,7 +472,7 @@ async def register_agent(
     token_info: tuple = Depends(get_town_token_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Register a new agent in GooseTown. Authenticated via town_token."""
+    """Register a new agent in Bit City. Authenticated via town_token."""
     from core.apartment_constants import APARTMENT_SPOTS
 
     user_id, token = token_info
@@ -561,7 +561,7 @@ async def register_agent(
         "status": "generating_sprite",
         "ws_url": _TOWN_WS_URL,
         "api_url": _TOWN_API_URL,
-        "message": f"Welcome to GooseTown, {agent.display_name}!",
+        "message": f"Welcome to Bit City, {agent.display_name}!",
     }
 
 

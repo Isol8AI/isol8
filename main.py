@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     logger.info("Starting application...")
     await startup_containers()
 
-    # Start GooseTown simulation
+    # Start Bit City simulation
     from core.database import get_session_factory
 
     from routers.town import _notify_state_changed
@@ -92,7 +92,7 @@ openapi_tags = [
     },
     {
         "name": "town",
-        "description": "GooseTown AI agent simulation endpoints.",
+        "description": "Bit City AI agent simulation endpoints.",
     },
     {
         "name": "billing",
@@ -214,7 +214,7 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
-# GooseTown routes
+# Bit City routes
 app.include_router(town.router, prefix="/api/v1/town", tags=["town"])
 
 

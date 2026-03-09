@@ -1,4 +1,4 @@
-"""Track WebSocket connections for GooseTown agents.
+"""Track WebSocket connections for Bit City agents.
 
 Maps API Gateway connection IDs to agent info, enabling the simulation
 to push events to specific agents over WebSocket.

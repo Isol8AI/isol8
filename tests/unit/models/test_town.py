@@ -1,4 +1,4 @@
-"""Tests for GooseTown database models."""
+"""Tests for Bit City database models."""
 
 import pytest
 

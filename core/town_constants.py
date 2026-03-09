@@ -1,4 +1,4 @@
-"""Shared constants for the GooseTown simulation.
+"""Shared constants for the Bit City simulation.
 
 Extracted here to avoid circular imports between routers/town.py and
 core/services/town_simulation.py.
