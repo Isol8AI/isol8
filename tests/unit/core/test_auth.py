@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from jose import jwt
+import jwt
 
 from core.auth import AuthContext, _jwks_cache, get_current_user
 
@@ -151,7 +151,8 @@ class TestGetCurrentUser:
 
             assert isinstance(result, AuthContext)
             assert result.user_id == "user_123"
-            mock_decode.assert_called_once()
+            # jwt.decode is called twice: once for unverified claims (debug), once for actual decode
+            assert mock_decode.call_count == 2
 
     @pytest.mark.asyncio
     async def test_expired_token_raises_401(self, mock_credentials, valid_jwks):
@@ -187,7 +188,7 @@ class TestGetCurrentUser:
             mock_settings.CLERK_AUDIENCE = None
             mock_client_class.return_value = create_mock_httpx_client(valid_jwks)
             mock_header.return_value = {"kid": "test-key-id", "alg": "RS256"}
-            mock_decode.side_effect = jwt.JWTClaimsError("Invalid claims")
+            mock_decode.side_effect = jwt.InvalidAudienceError("Invalid claims")
 
             with pytest.raises(HTTPException) as exc_info:
                 await get_current_user(mock_credentials)

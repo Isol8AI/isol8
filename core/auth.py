@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
 import httpx
+import jwt
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import jwt
 
 from core.config import settings
 
@@ -105,9 +105,10 @@ async def _decode_token(token: str) -> dict:
     if not rsa_key:
         raise HTTPException(status_code=401, detail="Invalid token headers")
 
+    public_key = jwt.PyJWK(rsa_key).key
     return jwt.decode(
         token,
-        rsa_key,
+        public_key,
         algorithms=["RS256"],
         audience=settings.CLERK_AUDIENCE,
         issuer=settings.CLERK_ISSUER,
@@ -138,7 +139,7 @@ async def get_current_user(
         token = credentials.credentials
         # Diagnostic: log unverified claims to trace auth failures (DEBUG only)
         try:
-            unverified = jwt.get_unverified_claims(token)
+            unverified = jwt.decode(token, options={"verify_signature": False}, algorithms=["RS256"])
             logger.debug(
                 "JWT claims: iss=%s sub=%s aud=%s", unverified.get("iss"), unverified.get("sub"), unverified.get("aud")
             )
@@ -158,7 +159,7 @@ async def get_current_user(
     except jwt.ExpiredSignatureError:
         logger.warning("AUTH FAIL: JWT expired")
         raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.JWTClaimsError as e:
+    except (jwt.InvalidAudienceError, jwt.InvalidIssuerError, jwt.MissingRequiredClaimError) as e:
         logger.warning("AUTH FAIL: JWT claims error: %s", e)
         raise HTTPException(status_code=401, detail="Invalid claims")
     except httpx.HTTPError as e:

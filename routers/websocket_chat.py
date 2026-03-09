@@ -9,6 +9,7 @@ API Gateway WebSocket converts WebSocket frames into HTTP POST requests:
 Responses are pushed via Management API, not returned in HTTP response body.
 """
 
+import asyncio
 import logging
 import secrets
 import uuid as _uuid
@@ -28,24 +29,29 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["websocket"])
 
 
-# Singleton instances (created lazily)
+# Singleton instances (created lazily with async lock for thread safety)
 _connection_service: Optional[ConnectionService] = None
 _management_api_client: Optional[ManagementApiClient] = None
+_singleton_lock = asyncio.Lock()
 
 
-def get_connection_service() -> ConnectionService:
-    """Get or create ConnectionService singleton."""
+async def get_connection_service() -> ConnectionService:
+    """Get or create ConnectionService singleton (async-safe)."""
     global _connection_service
     if _connection_service is None:
-        _connection_service = ConnectionService()
+        async with _singleton_lock:
+            if _connection_service is None:
+                _connection_service = ConnectionService()
     return _connection_service
 
 
-def get_management_api_client() -> ManagementApiClient:
-    """Get or create ManagementApiClient singleton."""
+async def get_management_api_client() -> ManagementApiClient:
+    """Get or create ManagementApiClient singleton (async-safe)."""
     global _management_api_client
     if _management_api_client is None:
-        _management_api_client = ManagementApiClient()
+        async with _singleton_lock:
+            if _management_api_client is None:
+                _management_api_client = ManagementApiClient()
     return _management_api_client
 
 
@@ -54,14 +60,14 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     return db_get_session_factory()
 
 
-def _send_connect_challenge(connection_id: str) -> None:
+async def _send_connect_challenge(connection_id: str) -> None:
     """Send OpenClaw connect.challenge to a newly connected client.
 
     The control UI SPA expects this event before sending its connect
     handshake.  The chat frontend ignores it (no ``type`` field).
     """
     try:
-        management_api = get_management_api_client()
+        management_api = await get_management_api_client()
         management_api.send_message(
             connection_id,
             {
@@ -98,7 +104,7 @@ async def ws_connect(
 
     logger.info("WebSocket connect: connection_id=%s, user_id=%s", x_connection_id, x_user_id)
 
-    connection_service = get_connection_service()
+    connection_service = await get_connection_service()
     connection_service.store_connection(
         connection_id=x_connection_id,
         user_id=x_user_id,
@@ -135,7 +141,7 @@ async def ws_disconnect(
 
     # Unregister from gateway connection pool
     try:
-        connection_service = get_connection_service()
+        connection_service = await get_connection_service()
         connection = connection_service.get_connection(x_connection_id)
         if connection:
             pool = get_gateway_pool()
@@ -187,7 +193,7 @@ async def ws_disconnect(
         pass
 
     try:
-        connection_service = get_connection_service()
+        connection_service = await get_connection_service()
         connection_service.delete_connection(x_connection_id)
     except ConnectionServiceError as e:
         logger.warning("Failed to delete connection %s: %s", x_connection_id, e)
@@ -216,7 +222,7 @@ async def ws_message(
     if not x_connection_id:
         raise HTTPException(status_code=400, detail="Missing x-connection-id header")
 
-    connection_service = get_connection_service()
+    connection_service = await get_connection_service()
     connection = connection_service.get_connection(x_connection_id)
 
     if not connection:
@@ -226,7 +232,7 @@ async def ws_message(
     msg_type = body.get("type")
 
     if msg_type == "ping":
-        management_api = get_management_api_client()
+        management_api = await get_management_api_client()
         management_api.send_message(x_connection_id, {"type": "pong"})
         return Response(status_code=200)
 
@@ -251,7 +257,7 @@ async def ws_message(
         params = body.get("params", {})
 
         if not req_id or not method:
-            management_api = get_management_api_client()
+            management_api = await get_management_api_client()
             management_api.send_message(
                 x_connection_id,
                 {
@@ -268,7 +274,7 @@ async def ws_message(
         # Auth is already handled by the Lambda authorizer, so we accept
         # any token and respond immediately.
         if method == "connect":
-            management_api = get_management_api_client()
+            management_api = await get_management_api_client()
             management_api.send_message(
                 x_connection_id,
                 {
@@ -295,7 +301,7 @@ async def ws_message(
         message = body.get("message")
 
         if not agent_id or not message:
-            management_api = get_management_api_client()
+            management_api = await get_management_api_client()
             management_api.send_message(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id or message"},
@@ -314,7 +320,7 @@ async def ws_message(
     if msg_type == "town_agent_connect":
         token = body.get("token")
         agent_name = body.get("agent_name")
-        management_api = get_management_api_client()
+        management_api = await get_management_api_client()
 
         if not token or not agent_name:
             management_api.send_message(
@@ -437,7 +443,7 @@ async def ws_message(
 
         ws_manager = get_town_agent_ws_manager()
         agent_conn = ws_manager.get_by_connection(x_connection_id)
-        management_api = get_management_api_client()
+        management_api = await get_management_api_client()
 
         if not agent_conn:
             management_api.send_message(
@@ -926,7 +932,7 @@ async def ws_message(
 
         ws_manager = get_town_agent_ws_manager()
         agent_conn = ws_manager.get_by_connection(x_connection_id)
-        management_api = get_management_api_client()
+        management_api = await get_management_api_client()
 
         if not agent_conn:
             return Response(status_code=200)
@@ -980,7 +986,7 @@ async def ws_message(
         return Response(status_code=200)
 
     # Unknown message type
-    management_api = get_management_api_client()
+    management_api = await get_management_api_client()
     management_api.send_message(
         x_connection_id,
         {"type": "error", "message": f"Unknown message type: {msg_type}"},
@@ -1001,7 +1007,7 @@ async def _process_rpc_background(
     params: dict,
 ) -> None:
     """Process an OpenClaw RPC request via the gateway connection pool."""
-    management_api = get_management_api_client()
+    management_api = await get_management_api_client()
 
     try:
         ecs_manager = get_ecs_manager()
@@ -1116,7 +1122,7 @@ async def _process_agent_chat_background(
         agent_id,
     )
 
-    management_api = get_management_api_client()
+    management_api = await get_management_api_client()
 
     try:
         # Look up user's container and discover task IP

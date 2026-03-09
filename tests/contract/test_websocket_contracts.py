@@ -146,8 +146,9 @@ async def test_ws_message_requires_connection_id(ws_client):
 @pytest.mark.asyncio
 async def test_ws_message_unknown_connection_returns_401(ws_client):
     """POST /ws/message with unknown connection returns 401."""
-    with patch("routers.websocket_chat.get_connection_service") as mock_cs:
-        mock_cs.return_value.get_connection.return_value = None
+    mock_service = MagicMock()
+    mock_service.get_connection.return_value = None
+    with patch("routers.websocket_chat.get_connection_service", new_callable=AsyncMock, return_value=mock_service):
         response = await ws_client.post(
             "/api/v1/ws/message",
             json={"type": "ping"},
@@ -159,15 +160,19 @@ async def test_ws_message_unknown_connection_returns_401(ws_client):
 @pytest.mark.asyncio
 async def test_ws_message_ping_returns_200(ws_client):
     """POST /ws/message with ping type returns 200."""
+    mock_service = MagicMock()
+    mock_service.get_connection.return_value = {
+        "user_id": "user_123",
+        "org_id": None,
+    }
+    mock_mgmt_instance = MagicMock()
+    mock_mgmt_instance.post_to_connection = AsyncMock()
     with (
-        patch("routers.websocket_chat.get_connection_service") as mock_cs,
-        patch("routers.websocket_chat.get_management_api_client") as mock_mgmt,
+        patch("routers.websocket_chat.get_connection_service", new_callable=AsyncMock, return_value=mock_service),
+        patch(
+            "routers.websocket_chat.get_management_api_client", new_callable=AsyncMock, return_value=mock_mgmt_instance
+        ),
     ):
-        mock_cs.return_value.get_connection.return_value = {
-            "user_id": "user_123",
-            "org_id": None,
-        }
-        mock_mgmt.return_value.post_to_connection = AsyncMock()
         response = await ws_client.post(
             "/api/v1/ws/message",
             json={"type": "ping"},
