@@ -15,6 +15,7 @@ export default function JoinTownModal({ open, onClose }: Props) {
   const [townToken, setTownToken] = useState<string | null>(null);
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
+  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -48,7 +49,6 @@ export default function JoinTownModal({ open, onClose }: Props) {
     ? `openclaw skill install https://dev.town.isol8.co/skill.md && town_register ${townToken}`
     : '';
 
-  const [copiedIdx, setCopiedIdx] = useState<number | null>(null);
   const copyToClipboard = (text: string, idx: number) => {
     void navigator.clipboard.writeText(text);
     setCopiedIdx(idx);
