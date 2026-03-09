@@ -9,6 +9,7 @@ API.
 
 import hashlib
 import logging
+import re
 import urllib.request
 import urllib.error
 
@@ -48,12 +49,14 @@ class EcsManager:
     def _service_name(self, user_id: str) -> str:
         """Generate deterministic, collision-resistant service name from user_id.
 
-        ECS service names must be <= 255 chars. We use a SHA-256 hash
-        truncated to 12 hex chars (48 bits) for uniqueness while keeping
-        names short and readable.
+        ECS service names must be <= 255 chars. Format: openclaw-{user_id}-{hash}
+        so services are identifiable in the ECS console. The hash suffix
+        guarantees uniqueness even if user_id is truncated.
         """
         uid_hash = hashlib.sha256(user_id.encode()).hexdigest()[:12]
-        return f"openclaw-{uid_hash}"
+        # Sanitize user_id for ECS naming (alphanumeric, hyphens, underscores only)
+        safe_uid = re.sub(r"[^a-zA-Z0-9_-]", "", user_id)[:40]
+        return f"openclaw-{safe_uid}-{uid_hash}"
 
     # ------------------------------------------------------------------
     # Per-user EFS access points

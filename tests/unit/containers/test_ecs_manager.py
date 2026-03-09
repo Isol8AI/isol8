@@ -22,7 +22,7 @@ from models.container import Container
 def mock_ecs_client():
     """Create a mock ECS boto3 client."""
     client = MagicMock()
-    client.create_service.return_value = {"service": {"serviceName": "openclaw-f4ae64abb2db"}}
+    client.create_service.return_value = {"service": {"serviceName": "openclaw-user_test_123-f4ae64abb2db"}}
     client.update_service.return_value = {}
     client.delete_service.return_value = {}
     client.describe_task_definition.return_value = {
@@ -117,7 +117,7 @@ def mock_db():
 
 def _make_container(
     user_id="user_test_123",
-    service_name="openclaw-f4ae64abb2db",
+    service_name="openclaw-user_test_123-f4ae64abb2db",
     gateway_token="tok-abc",
     status="running",
     access_point_id=None,
@@ -149,12 +149,12 @@ class TestServiceNaming:
         name2 = manager._service_name("user_test_123")
         assert name1 == name2
 
-    def test_service_name_uses_hash(self, manager):
-        """Service name uses hash prefix, not raw user_id."""
-        name = manager._service_name("user_test_123_long_id")
-        assert name.startswith("openclaw-")
-        # Hash portion is 12 hex chars
-        hash_part = name.replace("openclaw-", "")
+    def test_service_name_includes_user_id_and_hash(self, manager):
+        """Service name includes sanitized user_id and hash suffix."""
+        name = manager._service_name("user_test_123")
+        assert name.startswith("openclaw-user_test_123-")
+        # Hash suffix is 12 hex chars
+        hash_part = name.split("-")[-1]
         assert len(hash_part) == 12
         assert all(c in "0123456789abcdef" for c in hash_part)
 
@@ -298,7 +298,7 @@ class TestCreateUserService:
 
         service_name = await manager.create_user_service("user_test_123", "token-abc", mock_db)
 
-        assert service_name == "openclaw-f4ae64abb2db"
+        assert service_name == "openclaw-user_test_123-f4ae64abb2db"
 
         # Verify EFS access point was created
         mock_efs_client.create_access_point.assert_called_once()
@@ -311,7 +311,7 @@ class TestCreateUserService:
         mock_ecs_client.create_service.assert_called_once()
         call_kwargs = mock_ecs_client.create_service.call_args.kwargs
         assert call_kwargs["cluster"] == manager._cluster
-        assert call_kwargs["serviceName"] == "openclaw-f4ae64abb2db"
+        assert call_kwargs["serviceName"] == "openclaw-user_test_123-f4ae64abb2db"
         assert "task-definition" in call_kwargs["taskDefinition"]
         assert call_kwargs["desiredCount"] == 1
         assert call_kwargs["launchType"] == "FARGATE"
@@ -323,7 +323,7 @@ class TestCreateUserService:
         mock_db.add.assert_called_once()
         added_container = mock_db.add.call_args[0][0]
         assert added_container.user_id == "user_test_123"
-        assert added_container.service_name == "openclaw-f4ae64abb2db"
+        assert added_container.service_name == "openclaw-user_test_123-f4ae64abb2db"
         assert added_container.gateway_token == "token-abc"
         assert added_container.access_point_id == "fsap-user123"
         assert added_container.task_definition_arn is not None
@@ -341,7 +341,7 @@ class TestCreateUserService:
 
         service_name = await manager.create_user_service("user_test_123", "new-token", mock_db)
 
-        assert service_name == "openclaw-f4ae64abb2db"
+        assert service_name == "openclaw-user_test_123-f4ae64abb2db"
         # Should NOT call db.add — updates in place
         mock_db.add.assert_not_called()
         assert existing.gateway_token == "new-token"
@@ -465,7 +465,7 @@ class TestStopUserService:
 
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-f4ae64abb2db",
+            service="openclaw-user_test_123-f4ae64abb2db",
             desiredCount=0,
         )
         assert existing.status == "stopped"
@@ -513,7 +513,7 @@ class TestStartUserService:
 
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-f4ae64abb2db",
+            service="openclaw-user_test_123-f4ae64abb2db",
             desiredCount=1,
             forceNewDeployment=True,
         )
@@ -566,13 +566,13 @@ class TestDeleteUserService:
         # Verify update_service (scale to 0) called first
         mock_ecs_client.update_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-f4ae64abb2db",
+            service="openclaw-user_test_123-f4ae64abb2db",
             desiredCount=0,
         )
         # Verify delete_service called
         mock_ecs_client.delete_service.assert_called_once_with(
             cluster=manager._cluster,
-            service="openclaw-f4ae64abb2db",
+            service="openclaw-user_test_123-f4ae64abb2db",
             force=True,
         )
         # Verify per-user task definition deregistered
