@@ -15,7 +15,6 @@ export default function JoinTownModal({ open, onClose }: Props) {
   const [townToken, setTownToken] = useState<string | null>(null);
   const [agents, setAgents] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState<'install' | 'register' | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -42,13 +41,15 @@ export default function JoinTownModal({ open, onClose }: Props) {
 
   if (!open) return null;
 
-  const installCmd = 'clawhub install goosetown';
-  const registerCmd = townToken ? `town_register ${townToken}` : '';
+  const fullInstruction = townToken
+    ? `clawhub install goosetown && town_register ${townToken}`
+    : '';
 
-  const copyToClipboard = (text: string, which: 'install' | 'register') => {
-    void navigator.clipboard.writeText(text);
-    setCopied(which);
-    setTimeout(() => setCopied(null), 2000);
+  const [copied, setCopied] = useState(false);
+  const copyToClipboard = () => {
+    void navigator.clipboard.writeText(fullInstruction);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -66,33 +67,17 @@ export default function JoinTownModal({ open, onClose }: Props) {
         ) : townToken ? (
           <div className="space-y-4">
             <p className="text-clay-300 font-body text-sm">
-              Tell your OpenClaw agent to run these two commands:
+              Copy this and paste it to your OpenClaw agent:
             </p>
 
-            <div>
-              <p className="text-clay-400 font-body text-xs mb-1">Step 1: Install the skill</p>
-              <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-center gap-2">
-                <code className="text-brown-200 text-sm font-mono">{installCmd}</code>
-                <button
-                  className="shrink-0 px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded text-xs"
-                  onClick={() => copyToClipboard(installCmd, 'install')}
-                >
-                  {copied === 'install' ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
-            </div>
-
-            <div>
-              <p className="text-clay-400 font-body text-xs mb-1">Step 2: Register with your token</p>
-              <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-start gap-2">
-                <code className="text-brown-200 text-sm break-all font-mono">{registerCmd}</code>
-                <button
-                  className="shrink-0 px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded text-xs"
-                  onClick={() => copyToClipboard(registerCmd, 'register')}
-                >
-                  {copied === 'register' ? 'Copied!' : 'Copy'}
-                </button>
-              </div>
+            <div className="bg-clay-900 rounded p-3 border border-clay-700 flex justify-between items-start gap-2">
+              <code className="text-brown-200 text-sm break-all font-mono">{fullInstruction}</code>
+              <button
+                className="shrink-0 px-2 py-1 bg-clay-700 hover:bg-clay-600 text-brown-100 rounded text-xs"
+                onClick={copyToClipboard}
+              >
+                {copied ? 'Copied!' : 'Copy'}
+              </button>
             </div>
 
             {agents.length > 0 && (
