@@ -288,7 +288,9 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream"
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListFoundationModels",
+          "bedrock:ListInferenceProfiles"
         ]
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
