@@ -88,6 +88,7 @@ class EcsManager:
                     },
                 },
                 Tags=[
+                    {"Key": "Name", "Value": f"isol8-{user_id}"},
                     {"Key": "user_id", "Value": user_id},
                     {"Key": "ManagedBy", "Value": "isol8-backend"},
                 ],
