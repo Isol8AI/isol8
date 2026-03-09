@@ -1,4 +1,4 @@
-"""Bit City simulation engine.
+"""GooseTown simulation engine.
 
 Runs as an asyncio background task inside FastAPI. Manages agent movement,
 state transitions, and event dispatch to agent WebSocket connections.
@@ -38,7 +38,7 @@ THINK_INTERVAL = 15.0  # seconds between autonomous think pings per agent
 
 
 class TownSimulation:
-    """Manages the Bit City simulation loop."""
+    """Manages the GooseTown simulation loop."""
 
     def __init__(self, db_factory, notify_fn: Optional[Callable] = None):
         """Initialize with a database session factory.
@@ -93,7 +93,7 @@ class TownSimulation:
             return
         self._running = True
         self._task = asyncio.create_task(self._run_loop())
-        logger.info("Bit City simulation started")
+        logger.info("GooseTown simulation started")
 
     async def stop(self):
         """Stop the simulation."""
@@ -104,7 +104,7 @@ class TownSimulation:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        logger.info("Bit City simulation stopped")
+        logger.info("GooseTown simulation stopped")
 
     def set_notify_fn(self, fn: Callable):
         """Set the WebSocket push callback (called after state changes)."""
@@ -116,7 +116,7 @@ class TownSimulation:
             try:
                 await self._tick()
             except Exception as e:
-                logger.error(f"Bit City tick error: {e}", exc_info=True)
+                logger.error(f"GooseTown tick error: {e}", exc_info=True)
 
             await asyncio.sleep(TICK_INTERVAL)
 
@@ -168,7 +168,7 @@ class TownSimulation:
                                 {
                                     "type": "town_event",
                                     "event": "wake",
-                                    "message": "Your alarm went off. You just woke up in Bit City.",
+                                    "message": "Your alarm went off. You just woke up in GooseTown.",
                                 },
                             )
                         )
@@ -582,7 +582,7 @@ class TownSimulation:
         context_label = "town" if location_context == "town" else "apartment"
 
         lines = [
-            "# Bit City Status",
+            "# GooseTown Status",
             "",
             f"**Location:** {loc_label} ({context_label})",
             f"**Activity:** {activity}",

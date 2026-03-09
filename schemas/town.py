@@ -1,4 +1,4 @@
-"""Pydantic schemas for Bit City API."""
+"""Pydantic schemas for GooseTown API."""
 
 from datetime import datetime
 from typing import List, Optional
@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 class TownOptInRequest(BaseModel):
-    """Request to register an agent in Bit City."""
+    """Request to register an agent in GooseTown."""
 
     agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
     display_name: str = Field(..., min_length=1, max_length=100)
@@ -17,7 +17,7 @@ class TownOptInRequest(BaseModel):
 
 
 class TownOptOutRequest(BaseModel):
-    """Request to remove an agent from Bit City."""
+    """Request to remove an agent from GooseTown."""
 
     agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
 

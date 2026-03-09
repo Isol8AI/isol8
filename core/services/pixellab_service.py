@@ -1,4 +1,4 @@
-"""PixelLab sprite generation service for Bit City agents."""
+"""PixelLab sprite generation service for GooseTown agents."""
 
 import logging
 import httpx

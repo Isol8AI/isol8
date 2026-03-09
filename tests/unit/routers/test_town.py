@@ -1,4 +1,4 @@
-"""Tests for Bit City router endpoints."""
+"""Tests for GooseTown router endpoints."""
 
 import pytest
 

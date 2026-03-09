@@ -1,4 +1,4 @@
-"""HMAC-signed town tokens for Bit City agent WebSocket auth.
+"""HMAC-signed town tokens for GooseTown agent WebSocket auth.
 
 Format: <payload_b64url>.<signature_b64url>
 Payload: JSON {"uid": user_id, "iid": instance_id}

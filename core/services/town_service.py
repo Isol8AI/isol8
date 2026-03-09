@@ -1,4 +1,4 @@
-"""Town service for managing Bit City agent registration and state."""
+"""Town service for managing GooseTown agent registration and state."""
 
 import logging
 import secrets
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class TownService:
-    """Service for Bit City CRUD operations."""
+    """Service for GooseTown CRUD operations."""
 
     def __init__(self, db: AsyncSession):
         self.db = db
@@ -29,7 +29,7 @@ class TownService:
         personality_summary: Optional[str] = None,
         avatar_config: Optional[dict] = None,
     ) -> TownAgent:
-        """Register an agent in Bit City.
+        """Register an agent in GooseTown.
 
         Agent name validation is the caller's responsibility (agents now
         live on EFS, so there is no DB-side AgentState to check).
@@ -71,18 +71,18 @@ class TownService:
         self.db.add(state)
         await self.db.flush()
 
-        logger.info(f"Agent '{agent_name}' opted into Bit City as '{display_name}'")
+        logger.info(f"Agent '{agent_name}' opted into GooseTown as '{display_name}'")
         return town_agent
 
     async def opt_out(self, user_id: str, agent_name: str) -> bool:
-        """Remove an agent from Bit City (deactivate, preserve data)."""
+        """Remove an agent from GooseTown (deactivate, preserve data)."""
         agent = await self._get_town_agent(user_id, agent_name)
         if not agent:
             return False
 
         agent.is_active = False
         await self.db.flush()
-        logger.info(f"Agent '{agent_name}' opted out of Bit City")
+        logger.info(f"Agent '{agent_name}' opted out of GooseTown")
         return True
 
     async def get_active_agents(self) -> List[TownAgent]:
@@ -357,7 +357,7 @@ class TownService:
         """Instance-level opt-in: create instance + all agents + states."""
         existing = await self.get_active_instance(user_id)
         if existing:
-            raise ValueError("User already has an active Bit City instance")
+            raise ValueError("User already has an active GooseTown instance")
 
         instance = await self.create_instance(user_id)
         created_agents = []
