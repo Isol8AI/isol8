@@ -112,6 +112,7 @@ class ApartmentAgentState(BaseModel):
     facing_y: float = 1.0
     current_spot: Optional[str] = None
     is_active: bool = True
+    sprite_url: Optional[str] = None
 
 
 class ApartmentActivityEvent(BaseModel):

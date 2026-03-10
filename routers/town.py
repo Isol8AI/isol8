@@ -691,6 +691,7 @@ async def get_apartment(
                 facing_y=state.facing_y if state and state.facing_y is not None else 1.0,
                 current_spot=current_spot,
                 is_active=agent.is_active,
+                sprite_url=agent.sprite_url if agent.sprite_ready else None,
             )
         )
 
