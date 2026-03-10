@@ -565,6 +565,76 @@ async def register_agent(
     }
 
 
+@router.get("/agent/status")
+async def get_agent_status(
+    agent_name: str = Query(...),
+    token_info: tuple = Depends(get_town_token_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Check agent sprite readiness. Polls PixelLab if sprite not yet downloaded."""
+    from core.config import settings
+    from sqlalchemy import select
+
+    user_id, _ = token_info
+    result = await db.execute(
+        select(TownAgent).where(
+            TownAgent.user_id == user_id,
+            TownAgent.agent_name == agent_name,
+        )
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(404, "Agent not found")
+
+    # Already done
+    if agent.sprite_ready and agent.sprite_url:
+        return {
+            "agent_name": agent.agent_name,
+            "sprite_ready": True,
+            "sprite_url": agent.sprite_url,
+        }
+
+    # No PixelLab character queued
+    if not agent.pixellab_character_id:
+        return {
+            "agent_name": agent.agent_name,
+            "sprite_ready": False,
+            "sprite_url": None,
+        }
+
+    # Check PixelLab and download/upload if ready
+    if settings.pixellab_api_key and settings.SPRITE_S3_BUCKET:
+        try:
+            import asyncio
+            from core.services.sprite_storage import download_walk_spritesheet, upload_sprite_to_s3
+
+            png_bytes = await download_walk_spritesheet(
+                settings.pixellab_api_key,
+                agent.pixellab_character_id,
+            )
+            if png_bytes:
+                s3_key = await asyncio.to_thread(
+                    upload_sprite_to_s3, png_bytes, str(agent.id), settings.SPRITE_S3_BUCKET
+                )
+                cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
+                agent.sprite_ready = True
+                agent.sprite_url = cdn_url
+                await db.commit()
+                return {
+                    "agent_name": agent.agent_name,
+                    "sprite_ready": True,
+                    "sprite_url": cdn_url,
+                }
+        except Exception as e:
+            logger.warning(f"Sprite status check failed: {e}")
+
+    return {
+        "agent_name": agent.agent_name,
+        "sprite_ready": False,
+        "sprite_url": None,
+    }
+
+
 # ===========================================================================
 # Isol8-native endpoints (authenticated)
 # ===========================================================================
