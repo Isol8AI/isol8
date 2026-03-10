@@ -131,6 +131,8 @@ class TownService:
                 "last_conversation_at": state.last_conversation_at,
                 "wake_at": state.wake_at,
                 "wake_timezone": state.wake_timezone,
+                "sprite_ready": agent.sprite_ready,
+                "sprite_url": agent.sprite_url,
             }
             for agent, state in rows
         ]

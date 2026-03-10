@@ -359,6 +359,7 @@ async def _build_ai_town_state(db: AsyncSession) -> dict:
                 "name": s.get("display_name", s.get("agent_name", "Unknown")),
                 "description": s.get("personality_summary", ""),
                 "character": s.get("character", "c6"),
+                "spriteUrl": s.get("sprite_url") if s.get("sprite_ready") else None,
             }
         )
 
