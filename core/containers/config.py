@@ -269,6 +269,20 @@ def write_openclaw_config(
                 },
             },
         },
+        "channels": {
+            "telegram": {
+                "dmPolicy": "pairing",
+            },
+            "whatsapp": {
+                "dmPolicy": "pairing",
+            },
+            "discord": {
+                "dmPolicy": "pairing",
+            },
+        },
+        "web": {
+            "enabled": True,
+        },
         "browser": {"enabled": False},
         "update": {"checkOnStart": False},
     }
