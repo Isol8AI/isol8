@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Loader2,
   Zap,
@@ -34,7 +34,7 @@ export function ProvisioningStepper({
   children: React.ReactNode;
 }) {
   const { isLoading: billingLoading, isSubscribed, createCheckout } = useBilling();
-  const startTime = useRef(Date.now());
+  const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [channelsComplete, setChannelsComplete] = useState(false);
@@ -69,7 +69,7 @@ export function ProvisioningStepper({
   useEffect(() => {
     if (phase === "ready" || phase === "payment" || phase === "channels") return;
     const interval = setInterval(() => {
-      if (Date.now() - startTime.current > TIMEOUT_MS) {
+      if (Date.now() - startTime > TIMEOUT_MS) {
         setTimedOut(true);
       }
     }, 5000);
