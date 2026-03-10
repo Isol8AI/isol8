@@ -524,6 +524,24 @@ async def ws_message(
                     state.current_activity = "walking"
                     state.location_state = "active"
                     state.speed = 0.6
+                elif dest == "residence":
+                    # "residence" means go home to apartment
+                    if location_context == "town":
+                        # Walk to residential coords, then transition to apartment
+                        state.target_x = RESIDENTIAL_TOWN_COORDS["x"]
+                        state.target_y = RESIDENTIAL_TOWN_COORDS["y"]
+                        state.target_location = "home"
+                        if sim:
+                            sim._pending_destinations[state.agent_id] = "bed_1"
+                    else:
+                        # Already in apartment — walk to bed
+                        bed = APARTMENT_SPOTS["bed_1"]
+                        state.target_x = float(bed["x"])
+                        state.target_y = float(bed["y"])
+                        state.target_location = "bed_1"
+                    state.current_activity = "walking"
+                    state.location_state = "active"
+                    state.speed = 0.6
                 elif dest in TOWN_LOCATIONS:
                     if location_context == "town":
                         loc = TOWN_LOCATIONS[dest]
