@@ -62,6 +62,8 @@ class TownAgent(Base):
     instance_id = Column(UUID(as_uuid=True), ForeignKey("town_instances.id"), nullable=True)
     character = Column(Text, default="f1")
     pixellab_character_id = Column(String(100), nullable=True)
+    sprite_ready = Column(Boolean, default=False, nullable=False)
+    sprite_url = Column(Text, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("user_id", "agent_name", name="uq_town_agents_user_agent"),
