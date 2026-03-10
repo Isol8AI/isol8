@@ -198,67 +198,77 @@ function ErrorToolbar({ messageId, onRetry }: { messageId: string; onRetry?: (id
     );
 }
 
-export function MessageList({ messages, isTyping, onRetry }: MessageListProps) {
-  const { containerRef, endRef } = useScrollToBottom();
+export interface MessageListHandle {
+  scrollToBottom: () => void;
+}
 
-  return (
-    <div
-      ref={containerRef}
-      className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
-      data-lenis-prevent
-    >
-      <div className="max-w-3xl mx-auto space-y-10 py-8">
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={cn(
-              "flex w-full flex-col group relative",
-              msg.role === "user" ? "items-end" : "items-start"
-            )}
-          >
-            {msg.role === "assistant" && (
-              msg.content.startsWith("Error: ")
-                ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
-                : <MessageToolbar modelName={msg.model} />
-            )}
+export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
+  function MessageList({ messages, isTyping, onRetry }, ref) {
+    const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
+    React.useImperativeHandle(ref, () => ({
+      scrollToBottom,
+    }));
+
+    return (
+      <div
+        ref={containerRef}
+        className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
+        data-lenis-prevent
+      >
+        <div className="max-w-3xl mx-auto space-y-10 py-8">
+          {messages.map((msg) => (
             <div
+              key={msg.id}
               className={cn(
-                "relative text-sm leading-7",
-                msg.role === "user"
-                  ? "text-white max-w-[85%] text-right"
-                  : "text-white/90 w-full pl-0"
+                "flex w-full flex-col group relative",
+                msg.role === "user" ? "items-end" : "items-start"
               )}
             >
-              {msg.role === "assistant" && msg.thinking && (
-                 <ThinkingBlock content={msg.thinking} />
+              {msg.role === "assistant" && (
+                msg.content.startsWith("Error: ")
+                  ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
+                  : <MessageToolbar modelName={msg.model} />
               )}
 
-              {msg.role === "assistant" && msg.toolUses && msg.toolUses.length > 0 && (
-                <ToolUseIndicator toolUses={msg.toolUses} />
-              )}
+              <div
+                className={cn(
+                  "relative text-sm leading-7",
+                  msg.role === "user"
+                    ? "text-white max-w-[85%] text-right"
+                    : "text-white/90 w-full pl-0"
+                )}
+              >
+                {msg.role === "assistant" && msg.thinking && (
+                   <ThinkingBlock content={msg.thinking} />
+                )}
 
-              <div className={cn(
-                msg.role === "user" && "whitespace-pre-wrap",
-                msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-red-400/80"
-              )}>
-                {msg.role === "assistant" && msg.content.startsWith("Error: ")
-                  ? msg.content.slice(7)
-                  : msg.role === "assistant" && msg.content
-                    ? <MarkdownContent content={msg.content} />
-                    : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
-                        <span className="inline-flex gap-1 items-center h-5">
-                          <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
-                          <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
-                        </span>
-                      ) : null)}
+                {msg.role === "assistant" && msg.toolUses && msg.toolUses.length > 0 && (
+                  <ToolUseIndicator toolUses={msg.toolUses} />
+                )}
+
+                <div className={cn(
+                  msg.role === "user" && "whitespace-pre-wrap",
+                  msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-red-400/80"
+                )}>
+                  {msg.role === "assistant" && msg.content.startsWith("Error: ")
+                    ? msg.content.slice(7)
+                    : msg.role === "assistant" && msg.content
+                      ? <MarkdownContent content={msg.content} />
+                      : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
+                          <span className="inline-flex gap-1 items-center h-5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
+                          </span>
+                        ) : null)}
+                </div>
               </div>
             </div>
-          </div>
-        ))}
-        <div ref={endRef} />
+          ))}
+          <div ref={endRef} />
+        </div>
       </div>
-    </div>
-  );
-}
+    );
+  }
+);

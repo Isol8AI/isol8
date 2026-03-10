@@ -5,13 +5,6 @@ import { Button } from "@/components/ui/button";
 import { SendHorizontal, Paperclip, X, FileIcon, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-import { ModelSelector } from "./ModelSelector";
-
-interface Model {
-  id: string;
-  name: string;
-}
-
 interface PendingFile {
   file: File;
   id: string;
@@ -21,9 +14,6 @@ interface ChatInputProps {
   onSend: (message: string, files?: File[]) => void;
   disabled?: boolean;
   centered?: boolean;
-  models?: Model[];
-  selectedModel?: string;
-  onModelChange?: (modelId: string) => void;
   isUploading?: boolean;
 }
 
@@ -33,7 +23,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function ChatInput({ onSend, disabled, centered, models, selectedModel, onModelChange, isUploading }: ChatInputProps) {
+export function ChatInput({ onSend, disabled, centered, isUploading }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -91,7 +81,7 @@ export function ChatInput({ onSend, disabled, centered, models, selectedModel, o
   const isDisabled = disabled || isUploading;
 
   return (
-    <div className={cn("p-4", !centered && "border-t border-white/10 bg-black/40 backdrop-blur-md")}>
+    <div className={cn("p-4", !centered && "bg-black/40 backdrop-blur-md")}>
       <div
         className="relative flex flex-col max-w-3xl mx-auto"
         onDrop={handleDrop}
@@ -105,7 +95,7 @@ export function ChatInput({ onSend, disabled, centered, models, selectedModel, o
                 className="flex items-center gap-1.5 bg-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white/70"
               >
                 <FileIcon className="h-3.5 w-3.5 shrink-0 text-white/40" />
-                <span className="truncate max-w-[150px]">{pf.file.name}</span>
+                <span className="truncate max-w-37.5">{pf.file.name}</span>
                 <span className="text-white/30">{formatFileSize(pf.file.size)}</span>
                 <button
                   type="button"
@@ -120,15 +110,7 @@ export function ChatInput({ onSend, disabled, centered, models, selectedModel, o
           </div>
         )}
 
-        <div className="relative flex items-center">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder={pendingFiles.length > 0 ? "Add a message about these files..." : "Type a message..."}
-            className="flex-1 min-h-[50px] max-h-[200px] resize-none border border-white/10 rounded-2xl p-4 pr-12 pb-12 bg-white/5 text-white placeholder:text-white/30 focus:outline-none focus:ring-1 focus:ring-white/20 focus:bg-white/10 transition-all"
-            disabled={isDisabled}
-          />
+        <div className="relative flex items-end gap-2 border border-white/15 rounded-full bg-white/5 px-3 py-2 focus-within:ring-1 focus-within:ring-white/20 focus-within:bg-white/10 transition-all">
           <input
             ref={fileInputRef}
             type="file"
@@ -137,38 +119,40 @@ export function ChatInput({ onSend, disabled, centered, models, selectedModel, o
             onChange={handleFileSelect}
             aria-label="Attach files"
           />
-          {models && selectedModel && onModelChange && (
-            <div className="absolute left-2 bottom-2">
-              <ModelSelector
-                models={models}
-                selectedModel={selectedModel}
-                onModelChange={onModelChange}
-                disabled={isDisabled}
-              />
-            </div>
-          )}
           <Button
             size="icon"
             variant="ghost"
-            className="absolute right-10 bottom-2 text-white/40 hover:text-white/70"
+            className="shrink-0 h-8 w-8 rounded-full text-white/40 hover:text-white/70 hover:bg-white/10"
             onClick={() => fileInputRef.current?.click()}
             disabled={isDisabled}
             aria-label="Attach file"
           >
             <Paperclip className="h-4 w-4" />
           </Button>
+
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask anything"
+            rows={1}
+            className="flex-1 min-h-6 max-h-50 resize-none bg-transparent text-white placeholder:text-white/30 focus:outline-none text-sm leading-6 py-1"
+            disabled={isDisabled}
+            style={{ fieldSizing: "content" } as React.CSSProperties}
+          />
+
           <Button
             size="icon"
-            className="absolute right-2 bottom-2"
+            className="shrink-0 h-8 w-8 rounded-full"
             onClick={handleSend}
             disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
             data-testid="send-button"
             aria-label="Send message"
           >
             {isUploading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
+              <Loader2 className="h-4 w-4 animate-spin" />
             ) : (
-              <SendHorizontal className="h-5 w-5" />
+              <SendHorizontal className="h-4 w-4" />
             )}
           </Button>
         </div>

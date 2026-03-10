@@ -12,7 +12,7 @@
 
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useGateway, type ChatIncomingMessage } from "@/hooks/useGateway";
 
 // =============================================================================
@@ -59,6 +59,7 @@ export interface UseAgentChatReturn {
   sendMessage: (message: string) => Promise<void>;
   clearMessages: () => void;
   isConnected: boolean;
+  isLoadingHistory: boolean;
 }
 
 interface InternalMessage {
@@ -77,6 +78,7 @@ interface InternalMessage {
 // =============================================================================
 
 const _messageCache = new Map<string, InternalMessage[]>();
+const _bootstrapSent = new Set<string>();
 
 // =============================================================================
 // Hook
@@ -88,13 +90,14 @@ const _messageCache = new Map<string, InternalMessage[]>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null): UseAgentChatReturn {
-  const { isConnected, sendChat, onChatMessage } = useGateway();
+  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
   const [messages, setMessages] = useState<InternalMessage[]>(
     () => (agentId ? _messageCache.get(agentId) ?? [] : []),
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
 
   const currentAssistantIdRef = useRef<string | null>(null);
   const streamContentRef = useRef<string>("");
@@ -109,6 +112,94 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
       _messageCache.set(agentId, messages);
     }
   }, [agentId, messages]);
+
+  // ---- Fetch history on mount / agent change ----
+  const historyLoadedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!agentId || !isConnected) {
+      setIsLoadingHistory(false);
+      return;
+    }
+    if (historyLoadedRef.current.has(agentId)) return;
+    // Don't fetch if we already have cached messages
+    if (_messageCache.has(agentId)) {
+      historyLoadedRef.current.add(agentId);
+      return;
+    }
+
+    setIsLoadingHistory(true);
+    const sessionKey = `agent:${agentId}:main`;
+
+    sendReq("chat.history", { sessionKey, limit: 200 })
+      .then((result: unknown) => {
+        const historyResult = result as {
+          messages?: Array<{ role: string; content: string }>;
+        };
+        historyLoadedRef.current.add(agentId);
+        setIsLoadingHistory(false);
+
+        if (!historyResult?.messages?.length) {
+          // No history = first time. Trigger bootstrap auto-send.
+          // Guard: only bootstrap once per agent per page session.
+          if (_bootstrapSent.has(agentId)) return;
+          _bootstrapSent.add(agentId);
+
+          setTimeout(() => {
+            if (agentIdRef.current !== agentId || !isConnected) return;
+
+            // Silent send - only show assistant response, not user message
+            const assistantMsgId = `assistant-${crypto.randomUUID()}`;
+            currentAssistantIdRef.current = assistantMsgId;
+            streamContentRef.current = "";
+
+            setMessages((prev) => [
+              ...prev,
+              { id: assistantMsgId, role: "assistant", content: "" },
+            ]);
+            setIsStreaming(true);
+
+            try {
+              sendChat(agentId, "Hello! Please run Bootstrap.md — I'd love to learn about everyday life use cases where you can be helpful and automate work for me.");
+            } catch (err) {
+              const errorMessage = friendlyError(
+                err instanceof Error ? err.message : "Failed to send message",
+              );
+              setError(errorMessage);
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantMsgId ? { ...m, content: errorMessage } : m,
+                ),
+              );
+              setIsStreaming(false);
+              currentAssistantIdRef.current = null;
+              streamContentRef.current = "";
+            }
+          }, 100);
+          return;
+        }
+
+        if (agentIdRef.current !== agentId) return; // agent changed during fetch
+
+        const loaded: InternalMessage[] = historyResult.messages
+          .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
+          .map((m: { role: string; content: string }, i: number) => ({
+            id: `history-${i}`,
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          }));
+
+        if (loaded.length > 0) {
+          setMessages(loaded);
+          _messageCache.set(agentId, loaded);
+        }
+      })
+      .catch((err: unknown) => {
+        console.warn("Failed to fetch chat history:", err);
+        historyLoadedRef.current.add(agentId);
+        setIsLoadingHistory(false);
+      });
+  }, [agentId, isConnected, sendReq, sendChat]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -275,11 +366,15 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
 
   // ---- External interface ----
 
-  const externalMessages: AgentMessage[] = messages.map(({ role, content, toolUses }) => ({
-    role,
-    content,
-    ...(toolUses?.length ? { toolUses } : {}),
-  }));
+  const externalMessages: AgentMessage[] = useMemo(
+    () =>
+      messages.map(({ role, content, toolUses }) => ({
+        role,
+        content,
+        ...(toolUses?.length ? { toolUses } : {}),
+      })),
+    [messages],
+  );
 
   return {
     messages: externalMessages,
@@ -288,5 +383,6 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
     sendMessage,
     clearMessages,
     isConnected,
+    isLoadingHistory,
   };
 }

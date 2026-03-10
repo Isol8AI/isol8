@@ -1,14 +1,18 @@
 "use client";
 
-import { useRef } from "react";
+import { useCallback, useRef } from "react";
 
 export function useScrollToBottom() {
   const containerRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Minimal hook - just provide refs, let native CSS handle scrolling
+  const scrollToBottom = useCallback(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, []);
+
   return {
     containerRef,
     endRef,
+    scrollToBottom,
   };
 }

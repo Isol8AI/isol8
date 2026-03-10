@@ -11,7 +11,7 @@ describe('ChatInput', () => {
   });
 
   function getTextarea(): HTMLElement {
-    return screen.getByPlaceholderText('Type a message...');
+    return screen.getByPlaceholderText('Ask anything');
   }
 
   function getSendButton(): HTMLElement {
@@ -26,14 +26,14 @@ describe('ChatInput', () => {
       expect(getSendButton()).toBeInTheDocument();
     });
 
-    it('applies border-t class when not centered', () => {
+    it('applies backdrop-blur class when not centered', () => {
       const { container } = render(<ChatInput onSend={mockOnSend} />);
-      expect(container.firstChild).toHaveClass('border-t');
+      expect(container.firstChild).toHaveClass('backdrop-blur-md');
     });
 
-    it('omits border-t class when centered', () => {
+    it('omits backdrop-blur class when centered', () => {
       const { container } = render(<ChatInput onSend={mockOnSend} centered />);
-      expect(container.firstChild).not.toHaveClass('border-t');
+      expect(container.firstChild).not.toHaveClass('backdrop-blur-md');
     });
   });
 

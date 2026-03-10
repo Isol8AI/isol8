@@ -4,9 +4,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChatInput } from "./ChatInput";
 import { ConnectionStatusBar } from "./ConnectionStatusBar";
-import { MessageList } from "./MessageList";
+import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
+import { Loader2 } from "lucide-react";
 
 import type { ToolUse } from "@/hooks/useAgentChat";
 
@@ -32,10 +33,12 @@ export function AgentChatWindow({
     error: chatError,
     sendMessage,
     clearMessages,
+    isLoadingHistory,
   } = useAgentChat(agentId);
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
+  const messageListRef = useRef<MessageListHandle>(null);
 
   const isInitialState = chatMessages.length === 0;
   const isTyping = isStreaming;
@@ -78,6 +81,7 @@ export function AgentChatWindow({
 
         if (message.trim()) {
           await sendMessage(message);
+          setTimeout(() => messageListRef.current?.scrollToBottom(), 50);
         }
       } catch (err) {
         console.error("Failed to send message:", err);
@@ -103,13 +107,24 @@ export function AgentChatWindow({
         <ConnectionStatusBar />
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
-            <MessageList messages={messages} isTyping={isTyping} />
+            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
           )}
           <div className="p-4 m-4 bg-red-900/20 text-red-300 rounded-lg">
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
           <ChatInput onSend={handleSend} disabled={isTyping} isUploading={isUploading} />
+        </div>
+      </div>
+    );
+  }
+
+  if (isLoadingHistory) {
+    return (
+      <div className="flex flex-col h-full bg-background/20">
+        <ConnectionStatusBar />
+        <div className="flex-1 flex items-center justify-center">
+          <Loader2 className="h-6 w-6 animate-spin text-white/40" />
         </div>
       </div>
     );
@@ -139,7 +154,7 @@ export function AgentChatWindow({
   return (
     <div className="flex flex-col h-full min-h-0 bg-background/20">
       <ConnectionStatusBar />
-      <MessageList messages={messages} isTyping={isTyping} />
+      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
       <ChatInput onSend={handleSend} disabled={isTyping} isUploading={isUploading} />
     </div>
   );
