@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 // ---------------------------------------------------------------------------
 // Types — matching OpenClaw protocol
@@ -268,6 +269,60 @@ export function ChannelsPanel() {
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Per-channel allowlist input state
+  const [allowlistInputs, setAllowlistInputs] = useState<Record<string, string>>({});
+
+  // ---- Allowlist helpers ----
+
+  const getChannelAllowFrom = (channelId: string): string[] => {
+    const cfg = (configData as ConfigSnapshot | undefined)?.config ?? {};
+    const ch = (cfg.channels as Record<string, Record<string, unknown>> | undefined)?.[channelId];
+    if (!ch) return [];
+    const af = ch.allowFrom;
+    if (Array.isArray(af)) return af.map(String);
+    return [];
+  };
+
+  const handleAddToAllowlist = async (channelId: string, userId: string) => {
+    const snapshot = configData as ConfigSnapshot | undefined;
+    if (!snapshot?.hash) return;
+    const current = getChannelAllowFrom(channelId);
+    if (current.includes(userId)) return;
+    setActionBusy(`allow-${channelId}`);
+    setActionError(null);
+    try {
+      await callRpc("config.patch", {
+        raw: JSON.stringify({ channels: { [channelId]: { allowFrom: [...current, userId] } } }),
+        baseHash: snapshot.hash,
+      });
+      mutateConfig();
+      setAllowlistInputs((prev) => ({ ...prev, [channelId]: "" }));
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
+  const handleRemoveFromAllowlist = async (channelId: string, userId: string) => {
+    const snapshot = configData as ConfigSnapshot | undefined;
+    if (!snapshot?.hash) return;
+    const current = getChannelAllowFrom(channelId);
+    setActionBusy(`remove-${channelId}`);
+    setActionError(null);
+    try {
+      await callRpc("config.patch", {
+        raw: JSON.stringify({ channels: { [channelId]: { allowFrom: current.filter((id) => id !== userId) } } }),
+        baseHash: snapshot.hash,
+      });
+      mutateConfig();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setActionBusy(null);
+    }
+  };
+
   // ---- WhatsApp actions ----
 
   const handleShowQr = async (force: boolean) => {
@@ -478,6 +533,9 @@ export function ChannelsPanel() {
           const channelConf = getChannelConfig(config, channelId);
           const configFields = CHANNEL_CONFIG_FIELDS[channelId];
 
+          const allowFrom = getChannelAllowFrom(channelId);
+          const dmPolicy = account?.dmPolicy ?? null;
+
           return (
             <ChannelCard
               key={channelId}
@@ -491,6 +549,12 @@ export function ChannelsPanel() {
               actionBusy={actionBusy}
               configFields={configFields}
               channelConfig={channelConf}
+              allowFrom={allowFrom}
+              dmPolicy={dmPolicy}
+              allowlistInput={allowlistInputs[channelId] ?? ""}
+              onAllowlistInputChange={(val) => setAllowlistInputs((prev) => ({ ...prev, [channelId]: val }))}
+              onAddToAllowlist={(userId) => handleAddToAllowlist(channelId, userId)}
+              onRemoveFromAllowlist={(userId) => handleRemoveFromAllowlist(channelId, userId)}
               onShowQr={() => handleShowQr(false)}
               onRelink={() => handleShowQr(true)}
               onWaitForScan={handleWaitForScan}
@@ -536,6 +600,12 @@ function ChannelCard({
   actionBusy,
   configFields,
   channelConfig,
+  allowFrom,
+  dmPolicy,
+  allowlistInput,
+  onAllowlistInputChange,
+  onAddToAllowlist,
+  onRemoveFromAllowlist,
   onShowQr,
   onRelink,
   onWaitForScan,
@@ -552,6 +622,12 @@ function ChannelCard({
   actionBusy: string | null;
   configFields: ChannelField[] | undefined;
   channelConfig: Record<string, unknown>;
+  allowFrom: string[];
+  dmPolicy: string | null;
+  allowlistInput: string;
+  onAllowlistInputChange: (val: string) => void;
+  onAddToAllowlist: (userId: string) => void;
+  onRemoveFromAllowlist: (userId: string) => void;
   onShowQr: () => void;
   onRelink: () => void;
   onWaitForScan: () => void;
@@ -721,6 +797,46 @@ function ChannelCard({
             Logout
           </Button>
         )}
+      </div>
+
+      {/* Allowlist section */}
+      <div className="px-4 pb-4 space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-muted-foreground">Allowed Users</span>
+          {dmPolicy && (
+            <span className={cn(
+              "text-[10px] font-medium px-1.5 py-0.5 rounded",
+              dmPolicy === "open" ? "bg-emerald-500/10 text-emerald-400"
+                : dmPolicy === "pairing" ? "bg-amber-500/10 text-amber-400"
+                : "bg-muted text-muted-foreground"
+            )}>
+              {dmPolicy}
+            </span>
+          )}
+        </div>
+        {allowFrom.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {allowFrom.map((userId) => (
+              <span key={userId} className="inline-flex items-center gap-1 text-[11px] font-mono bg-muted/30 px-2 py-0.5 rounded border border-border/50">
+                {userId}
+                <button className="text-muted-foreground hover:text-destructive ml-0.5" onClick={() => onRemoveFromAllowlist(userId)} disabled={busy}>&times;</button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            placeholder="User ID"
+            value={allowlistInput}
+            onChange={(e) => onAllowlistInputChange(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && allowlistInput.trim()) onAddToAllowlist(allowlistInput.trim()); }}
+            className="w-40 rounded-md border border-border bg-background px-2 py-1 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          <Button variant="outline" size="sm" onClick={() => { if (allowlistInput.trim()) onAddToAllowlist(allowlistInput.trim()); }} disabled={!allowlistInput.trim() || busy}>
+            Add
+          </Button>
+        </div>
       </div>
     </div>
   );

@@ -12,7 +12,7 @@ import { NodesPanel } from "./panels/NodesPanel";
 import { ConfigPanel } from "./panels/ConfigPanel";
 import { DebugPanel } from "./panels/DebugPanel";
 import { LogsPanel } from "./panels/LogsPanel";
-import { ActionsPanel } from "./panels/ActionsPanel";
+
 
 interface ControlPanelRouterProps {
   panel: string;
@@ -31,7 +31,6 @@ const PANELS: Record<string, React.ComponentType> = {
   config: ConfigPanel,
   debug: DebugPanel,
   logs: LogsPanel,
-  actions: ActionsPanel,
 };
 
 export function ControlPanelRouter({ panel }: ControlPanelRouterProps) {
