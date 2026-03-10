@@ -3,7 +3,6 @@ import { useApp } from '@pixi/react';
 import { useElementSize } from 'usehooks-ts';
 import { useState, useEffect, useRef } from 'react';
 import { Character } from './Character.tsx';
-import { characters } from '../../data/characters.ts';
 import { data as pixellab48Data } from '../../data/spritesheets/pixellab48';
 import PixiViewport from './PixiViewport.tsx';
 import type { ApartmentAgent } from '../hooks/useApartment';
@@ -89,11 +88,10 @@ function ApartmentMapInner({
         height={APT_HEIGHT}
       />
       {apartmentAgents.map((agent) => {
-        const characterId = agent.character ?? 'c6';
-        const character = characters.find((c) => c.name === characterId);
-        const textureUrl = agent.sprite_url || character?.textureUrl;
-        const spritesheetData = agent.sprite_url ? pixellab48Data : (character?.spritesheetData ?? pixellab48Data);
-        if (!textureUrl) return null;
+        // Only render agents with a custom PixelLab sprite
+        if (!agent.sprite_url) return null;
+        const textureUrl = agent.sprite_url;
+        const spritesheetData = pixellab48Data;
 
         return (
           <Character
@@ -107,7 +105,7 @@ function ApartmentMapInner({
             isThinking={false}
             isSpeaking={false}
             isViewer={false}
-            speed={character?.speed ?? 0.1}
+            speed={0.1}
             scale={characterScale}
             onClick={() => {}}
           />

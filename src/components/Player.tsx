@@ -1,10 +1,6 @@
 import { Character } from './Character.tsx';
-import { characters } from '../../data/characters.ts';
 import { data as pixellab48Data } from '../../data/spritesheets/pixellab48';
-import { toast } from 'react-toastify';
 import type { TownGameState, TownPlayer } from '../types/town';
-
-const logged = new Set<string>();
 
 function orientationDegrees(dx: number, dy: number): number {
   if (Math.abs(dx) < 0.001 && Math.abs(dy) < 0.001) {
@@ -27,22 +23,15 @@ export const Player = ({
   tileDim: number;
 }) => {
   const playerDesc = game.playerDescriptions.get(player.id);
-  const characterId = playerDesc?.character ?? 'c6';
-  const character = characters.find((c) => c.name === characterId);
 
-  // Use custom sprite URL if available, otherwise fall back to bundled character
+  // Only render agents with a custom PixelLab sprite
   const spriteUrl = (playerDesc as any)?.spriteUrl;
-  const textureUrl = spriteUrl || character?.textureUrl;
-  const spritesheetData = spriteUrl ? pixellab48Data : (character?.spritesheetData ?? pixellab48Data);
-  const speed = character?.speed ?? 0.1;
-
-  if (!textureUrl) {
-    if (!logged.has(characterId)) {
-      logged.add(characterId);
-      toast.error(`Unknown character ${characterId}`);
-    }
+  if (!spriteUrl) {
     return null;
   }
+  const textureUrl = spriteUrl;
+  const spritesheetData = pixellab48Data;
+  const speed = 0.1;
 
   const isSpeaking = game.speechBubbles.some(
     (sb) => sb.speaker === playerDesc?.name,
