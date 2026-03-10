@@ -1,5 +1,6 @@
 import { Character } from './Character.tsx';
 import { characters } from '../../data/characters.ts';
+import { data as pixellab48Data } from '../../data/spritesheets/pixellab48';
 import { toast } from 'react-toastify';
 import type { TownGameState, TownPlayer } from '../types/town';
 
@@ -29,7 +30,13 @@ export const Player = ({
   const characterId = playerDesc?.character ?? 'c6';
   const character = characters.find((c) => c.name === characterId);
 
-  if (!character) {
+  // Use custom sprite URL if available, otherwise fall back to bundled character
+  const spriteUrl = (playerDesc as any)?.spriteUrl;
+  const textureUrl = spriteUrl || character?.textureUrl;
+  const spritesheetData = spriteUrl ? pixellab48Data : (character?.spritesheetData ?? pixellab48Data);
+  const speed = character?.speed ?? 0.1;
+
+  if (!textureUrl) {
     if (!logged.has(characterId)) {
       logged.add(characterId);
       toast.error(`Unknown character ${characterId}`);
@@ -53,9 +60,9 @@ export const Player = ({
       isThinking={false}
       isSpeaking={isSpeaking}
       isViewer={false}
-      textureUrl={character.textureUrl}
-      spritesheetData={character.spritesheetData}
-      speed={character.speed}
+      textureUrl={textureUrl}
+      spritesheetData={spritesheetData}
+      speed={speed}
       scale={characterScale}
       onClick={() => onClick(player.id)}
     />

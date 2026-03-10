@@ -19,6 +19,7 @@ export interface ApartmentAgent {
   facing_y: number;
   current_spot: string | null;
   is_active: boolean;
+  sprite_url: string | null;
 }
 
 export interface ActivityEvent {
@@ -59,7 +60,7 @@ function lerpPosition(lerp: LerpState, now: number): { x: number; y: number } {
 }
 
 export function useApartment() {
-  const { getToken, isSignedIn } = useAuth();
+  const { getToken, isSignedIn, isLoaded } = useAuth();
   const [data, setData] = useState<ApartmentData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +104,9 @@ export function useApartment() {
   }, []);
 
   const fetchApartment = useCallback(async () => {
+    if (!isLoaded) {
+      return; // Clerk still initializing, keep loading state
+    }
     if (!isSignedIn) {
       setData(null);
       setLoading(false);
@@ -136,7 +140,7 @@ export function useApartment() {
     } finally {
       setLoading(false);
     }
-  }, [getToken, isSignedIn, updateLerpStates]);
+  }, [getToken, isSignedIn, isLoaded, updateLerpStates]);
 
   useEffect(() => {
     void fetchApartment();
