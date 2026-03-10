@@ -85,6 +85,16 @@ async def download_walk_spritesheet(pixellab_api_key: str, character_id: str) ->
             img_resp.raise_for_status()
             strip = Image.open(io.BytesIO(img_resp.content)).convert("RGBA")
 
+            # Validate strip dimensions
+            if strip.size != (SHEET_WIDTH, FRAME_SIZE):
+                logger.warning(
+                    "Unexpected strip size %s for direction %s, character %s",
+                    strip.size,
+                    direction_name,
+                    character_id,
+                )
+                continue
+
             # Paste the strip into the correct row
             sheet.paste(strip, (0, row_index * FRAME_SIZE))
 
