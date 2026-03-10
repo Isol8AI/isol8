@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Zap,
@@ -34,8 +34,8 @@ export function ProvisioningStepper({
   children: React.ReactNode;
 }) {
   const { isLoading: billingLoading, isSubscribed, createCheckout } = useBilling();
-  const [startTime] = useState(() => Date.now());
-  const [, setTick] = useState(0);
+  const startTime = useRef(Date.now());
+  const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [channelsComplete, setChannelsComplete] = useState(false);
 
@@ -65,14 +65,16 @@ export function ProvisioningStepper({
     return "container";
   }, [isSubscribed, container, containerReady, gatewayHealth, channelsComplete]);
 
-  // Periodic re-render to detect timeout (tick forces re-render, timedOut is derived)
+  // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
-    if (phase === "ready" || phase === "payment") return;
-    const interval = setInterval(() => setTick((t) => t + 1), 5000);
+    if (phase === "ready" || phase === "payment" || phase === "channels") return;
+    const interval = setInterval(() => {
+      if (Date.now() - startTime.current > TIMEOUT_MS) {
+        setTimedOut(true);
+      }
+    }, 5000);
     return () => clearInterval(interval);
   }, [phase]);
-
-  const timedOut = phase !== "ready" && phase !== "payment" && Date.now() - startTime > TIMEOUT_MS;
 
   // Channels setup step
   if (phase === "channels") {
