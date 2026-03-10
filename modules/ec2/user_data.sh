@@ -133,6 +133,8 @@ S3_CONFIG_BUCKET=${s3_config_bucket}
 CLOUD_MAP_NAMESPACE_ID=${cloud_map_namespace_id}
 CLOUD_MAP_SERVICE_ID=${cloud_map_service_id}
 CLOUD_MAP_SERVICE_ARN=${cloud_map_service_arn}
+SPRITE_S3_BUCKET=${sprite_s3_bucket}
+SPRITE_CDN_URL=${sprite_cdn_url}
 EOF
 
 chmod 600 /home/ec2-user/.env

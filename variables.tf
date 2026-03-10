@@ -204,6 +204,22 @@ variable "stripe_meter_id" {
 # GitHub Actions OIDC (for CI/CD)
 # -----------------------------------------------------------------------------
 
+variable "town_assets_cert_arn" {
+  description = "ACM certificate ARN for assets.town.isol8.co CloudFront distribution"
+  type        = string
+  default     = ""
+}
+
+variable "town_zone_id" {
+  description = "Route53 hosted zone ID for town.isol8.co (if different from root_domain zone)"
+  type        = string
+  default     = ""
+}
+
+# -----------------------------------------------------------------------------
+# GitHub Actions OIDC (for CI/CD)
+# -----------------------------------------------------------------------------
+
 variable "github_org" {
   description = "GitHub organization name"
   type        = string

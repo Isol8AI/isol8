@@ -205,3 +205,15 @@ variable "domain_name" {
   description = "API domain name (e.g., api-dev.isol8.co) for proxy URL"
   type        = string
 }
+
+variable "sprite_s3_bucket" {
+  description = "S3 bucket name for GooseTown sprite assets"
+  type        = string
+  default     = ""
+}
+
+variable "sprite_cdn_url" {
+  description = "CloudFront CDN URL for GooseTown sprite assets"
+  type        = string
+  default     = ""
+}

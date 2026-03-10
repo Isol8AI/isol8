@@ -122,6 +122,8 @@ resource "aws_launch_template" "main" {
     cloud_map_service_arn         = var.cloud_map_service_arn
     domain_name                   = var.domain_name
     town_token_secret             = var.town_token_secret
+    sprite_s3_bucket              = var.sprite_s3_bucket
+    sprite_cdn_url                = var.sprite_cdn_url
   }))
 
   # Metadata options (IMDSv2 required for security)
