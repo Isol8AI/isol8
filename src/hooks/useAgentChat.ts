@@ -38,6 +38,21 @@ function friendlyError(raw: string): string {
 }
 
 // =============================================================================
+// Content extraction
+// =============================================================================
+
+/**
+ * Extract text from OpenClaw message content blocks.
+ * chat.history returns content as an array of blocks: [{ type: "text", text: "..." }, ...]
+ */
+function extractTextContent(content: Array<{ type: string; text?: string }>): string {
+  return content
+    .filter((block) => block.type === "text" || block.type === "output_text")
+    .map((block) => block.text ?? "")
+    .join("");
+}
+
+// =============================================================================
 // Types
 // =============================================================================
 
@@ -134,7 +149,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
     sendReq("chat.history", { sessionKey, limit: 200 })
       .then((result: unknown) => {
         const historyResult = result as {
-          messages?: Array<{ role: string; content: string }>;
+          messages?: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
         };
         historyLoadedRef.current.add(agentId);
         setHistoryLoadState("done");
@@ -183,10 +198,10 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
 
         const loaded: InternalMessage[] = historyResult.messages
           .filter((m: { role: string }) => m.role === "user" || m.role === "assistant")
-          .map((m: { role: string; content: string }, i: number) => ({
+          .map((m: { role: string; content: Array<{ type: string; text?: string }> }, i: number) => ({
             id: `history-${i}`,
             role: m.role as "user" | "assistant",
-            content: m.content,
+            content: extractTextContent(m.content),
           }));
 
         if (loaded.length > 0) {
