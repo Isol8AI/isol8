@@ -896,6 +896,14 @@ resource "aws_iam_role_policy" "github_terraform_infra" {
           "elasticfilesystem:*",
         ]
         Resource = "*"
+      },
+      {
+        Sid    = "CloudFrontFull"
+        Effect = "Allow"
+        Action = [
+          "cloudfront:*",
+        ]
+        Resource = "*"
       }
     ]
   })
