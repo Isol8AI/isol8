@@ -284,7 +284,7 @@ module "iam" {
   openclaw_config_bucket_arn = aws_s3_bucket.openclaw_configs.arn
 
   # GooseTown sprite assets
-  sprite_s3_bucket_arn = aws_s3_bucket.town_sprites.arn
+  sprite_s3_bucket_name = "isol8-${var.environment}-town-sprites"
 }
 
 # -----------------------------------------------------------------------------
