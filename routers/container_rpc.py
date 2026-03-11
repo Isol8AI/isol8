@@ -138,7 +138,12 @@ async def container_status(
     db: AsyncSession = Depends(get_db),
 ):
     ecs_manager = get_ecs_manager()
-    container = await ecs_manager.get_service_status(auth.user_id, db)
+    # Use resolve_running_container so polling triggers the
+    # provisioning → running health-check transition.
+    container, _ip = await ecs_manager.resolve_running_container(auth.user_id, db)
+    if not container:
+        # Fall back to get_service_status for error/stopped containers
+        container = await ecs_manager.get_service_status(auth.user_id, db)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
