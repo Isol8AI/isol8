@@ -65,8 +65,8 @@ class EcsManager:
     def _create_access_point(self, user_id: str) -> str:
         """Create a per-user EFS access point rooted at /users/{user_id}.
 
-        The access point enforces POSIX UID/GID 1000 (matching the
-        OpenClaw container's node user) and creates the root directory
+        The access point enforces POSIX UID/GID 0 (matching the
+        container's root user) and creates the root directory
         with 0755 permissions if it doesn't exist.
 
         Args:
@@ -81,12 +81,12 @@ class EcsManager:
         try:
             resp = self._efs.create_access_point(
                 FileSystemId=self._efs_file_system_id,
-                PosixUser={"Uid": 1000, "Gid": 1000},
+                PosixUser={"Uid": 0, "Gid": 0},
                 RootDirectory={
                     "Path": f"/users/{user_id}",
                     "CreationInfo": {
-                        "OwnerUid": 1000,
-                        "OwnerGid": 1000,
+                        "OwnerUid": 0,
+                        "OwnerGid": 0,
                         "Permissions": "0755",
                     },
                 },
