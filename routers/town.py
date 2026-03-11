@@ -36,6 +36,9 @@ router = APIRouter()
 _TOWN_WS_URL = os.environ.get("TOWN_WS_URL", "wss://ws-dev.isol8.co")
 _TOWN_API_URL = os.environ.get("TOWN_API_URL", "https://api-dev.isol8.co/api/v1")
 
+# Strong references to background sprite tasks to prevent GC
+_background_sprite_tasks: set = set()
+
 
 # ---------------------------------------------------------------------------
 # Token auth dependency for external OpenClaw agents
@@ -509,9 +512,15 @@ async def register_agent(
     _notify_state_changed()
 
     # Trigger PixelLab sprite generation in background
+    logger.info(
+        f"Sprite check: appearance={bool(request.appearance)}, appearance_val={request.appearance[:50] if request.appearance else 'empty'}"
+    )
     if request.appearance:
         from core.config import settings
 
+        logger.info(
+            f"Sprite settings: api_key={bool(settings.pixellab_api_key)}, bucket={settings.SPRITE_S3_BUCKET}, cdn={settings.SPRITE_CDN_URL}"
+        )
         if settings.pixellab_api_key and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             import asyncio
             from core.database import get_session_factory
@@ -519,14 +528,17 @@ async def register_agent(
             _agent_id = agent.id  # capture before session closes
 
             async def _generate_sprite():
+                logger.info(f"_generate_sprite started for agent {_agent_id}")
                 try:
                     from core.services.pixellab_service import PixelLabService
                     from core.services.sprite_storage import download_walk_spritesheet, upload_sprite_to_s3
 
                     pxl = PixelLabService(api_key=settings.pixellab_api_key)
+                    logger.info(f"Calling PixelLab create_character for {_agent_id}")
                     char_id = await pxl.create_character(
                         description=request.appearance,
                     )
+                    logger.info(f"PixelLab returned char_id={char_id} for {_agent_id}")
                     # Store character ID
                     session_factory = get_session_factory()
                     async with session_factory() as session:
@@ -560,9 +572,11 @@ async def register_agent(
                             return
                     logger.warning(f"Sprite generation timed out for agent {_agent_id}")
                 except Exception as e:
-                    logger.warning(f"PixelLab sprite generation failed: {e}")
+                    logger.exception(f"PixelLab sprite generation failed for {_agent_id}: {e}")
 
-            asyncio.create_task(_generate_sprite())
+            task = asyncio.create_task(_generate_sprite())
+            _background_sprite_tasks.add(task)
+            task.add_done_callback(_background_sprite_tasks.discard)
 
     return {
         "agent_id": str(agent.id),

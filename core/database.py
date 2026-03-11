@@ -60,7 +60,11 @@ async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
 async def get_db():
     """Dependency that yields a database session for request scope."""
     async with async_session_factory() as session:
-        yield session
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
 
 
 def get_session_factory():
