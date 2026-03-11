@@ -46,10 +46,11 @@ class TestTownState:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-        # Agents spawn in apartment; move to town context so they appear in /state
+        # Agents spawn in apartment with sprite_ready=False; set sprite_ready and move to town
         from sqlalchemy import update
-        from models.town import TownState
+        from models.town import TownAgent, TownState
 
+        await db_session.execute(update(TownAgent).values(sprite_ready=True))
         await db_session.execute(update(TownState).values(location_context="town"))
         await db_session.commit()
 
@@ -96,10 +97,11 @@ class TestTownDescriptions:
             headers={"Authorization": f"Bearer {token}"},
         )
 
-        # Agents spawn in apartment; move to town context so they appear in /descriptions
+        # Agents spawn in apartment with sprite_ready=False; set sprite_ready and move to town
         from sqlalchemy import update
-        from models.town import TownState
+        from models.town import TownAgent, TownState
 
+        await db_session.execute(update(TownAgent).values(sprite_ready=True))
         await db_session.execute(update(TownState).values(location_context="town"))
         await db_session.commit()
 
@@ -154,7 +156,6 @@ class TestAgentRegister:
         data = response.json()
         assert data["agent_name"] == "atlas"
         assert data["display_name"] == "Atlas the Explorer"
-        assert data["character"] == "c6"
         assert data["position"] == {"x": 9.0, "y": 6.0}
         assert data["status"] == "generating_sprite"
         assert "ws_url" in data
@@ -191,6 +192,73 @@ class TestAgentRegister:
         )
 
         assert response.status_code == 401
+
+    @pytest.mark.asyncio
+    async def test_register_creates_background_sprite_task(self, async_client, db_session, test_user):
+        """When appearance is provided with valid settings, a background sprite task is created."""
+        from unittest.mock import patch, MagicMock
+
+        token = await self._get_town_token(async_client)
+
+        mock_settings = MagicMock()
+        mock_settings.pixellab_api_key = "test-key"
+        mock_settings.SPRITE_S3_BUCKET = "test-bucket"
+        mock_settings.SPRITE_CDN_URL = "https://cdn.example.com"
+
+        created_tasks = []
+
+        def capture_task(coro):
+            # Cancel immediately to avoid background work, but record the call
+            task = MagicMock()
+            coro.close()  # clean up the coroutine
+            created_tasks.append(task)
+            return task
+
+        with (
+            patch("core.config.settings", mock_settings),
+            patch("asyncio.create_task", side_effect=capture_task),
+        ):
+            response = await async_client.post(
+                "/api/v1/town/agent/register",
+                json={
+                    "agent_name": "pixel_agent",
+                    "display_name": "Pixel Agent",
+                    "appearance": "A blue robot with glowing eyes",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 200
+        assert len(created_tasks) == 1  # background sprite task was created
+
+    @pytest.mark.asyncio
+    async def test_register_no_sprite_task_without_settings(self, async_client, db_session, test_user):
+        """No background task created when SPRITE_S3_BUCKET is not configured."""
+        from unittest.mock import patch, MagicMock
+
+        token = await self._get_town_token(async_client)
+
+        mock_settings = MagicMock()
+        mock_settings.pixellab_api_key = "test-key"
+        mock_settings.SPRITE_S3_BUCKET = ""  # not configured
+        mock_settings.SPRITE_CDN_URL = ""
+
+        with (
+            patch("core.config.settings", mock_settings),
+            patch("asyncio.create_task") as mock_create_task,
+        ):
+            response = await async_client.post(
+                "/api/v1/town/agent/register",
+                json={
+                    "agent_name": "no_sprite",
+                    "display_name": "No Sprite",
+                    "appearance": "A wizard in purple robes",
+                },
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert response.status_code == 200
+        mock_create_task.assert_not_called()
 
 
 class TestAgentStatus:

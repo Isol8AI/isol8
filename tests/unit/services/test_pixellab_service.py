@@ -23,10 +23,16 @@ class TestPixelLabService:
 
             result = await service.create_character(
                 description="A blue robot",
-                name="BlueBot",
             )
             assert result == "char_123"
             mock_client.post.assert_called_once()
+            call_args = mock_client.post.call_args
+            assert "/v2/create-character-with-8-directions" in call_args.args[0]
+            body = call_args.kwargs["json"]
+            assert body["description"] == "A blue robot"
+            assert body["image_size"] == {"width": 48, "height": 48}
+            assert "name" not in body
+            assert "n_directions" not in body
 
     @pytest.mark.asyncio
     async def test_get_character_returns_data(self):
@@ -44,6 +50,8 @@ class TestPixelLabService:
 
             result = await service.get_character("char_123")
             assert result["status"] == "completed"
+            call_args = mock_client.get.call_args
+            assert "/v2/characters/char_123" in call_args.args[0]
 
     @pytest.mark.asyncio
     async def test_animate_character(self):
@@ -61,6 +69,12 @@ class TestPixelLabService:
 
             result = await service.animate_character("char_123", "walk")
             assert result == "job_456"
+            call_args = mock_client.post.call_args
+            assert "/v2/characters/animations" in call_args.args[0]
+            body = call_args.kwargs["json"]
+            assert body["character_id"] == "char_123"
+            assert body["template_animation_id"] == "walk"
+            assert body["image_size"] == {"width": 48, "height": 48}
 
     @pytest.mark.asyncio
     async def test_generate_all_animations_calls_walk_and_idle(self):
@@ -74,3 +88,22 @@ class TestPixelLabService:
         assert calls[0].args == ("char_123", "walk")
         assert calls[1].args[0] == "char_123"
         assert calls[1].args[1] == "breathing-idle"
+
+    @pytest.mark.asyncio
+    async def test_get_job_status(self):
+        service = PixelLabService(api_key="test-key")
+
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"status": "completed", "job_id": "job_789"}
+        mock_response.raise_for_status = MagicMock()
+
+        with patch("core.services.pixellab_service.httpx.AsyncClient") as MockClient:
+            mock_client = AsyncMock()
+            mock_client.get.return_value = mock_response
+            MockClient.return_value.__aenter__ = AsyncMock(return_value=mock_client)
+            MockClient.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            result = await service.get_job_status("job_789")
+            assert result["status"] == "completed"
+            call_args = mock_client.get.call_args
+            assert "/v2/background-jobs/job_789" in call_args.args[0]

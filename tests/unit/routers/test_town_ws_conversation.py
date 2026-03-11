@@ -50,7 +50,24 @@ def _make_state_mock(agent_id, current_conversation_id=None, current_location="p
     state.current_location = current_location
     state.current_activity = "idle"
     state.last_decision_at = None
+    state.energy = 80
+    state.mood = "0"
     return state
+
+
+def _make_agent_mock(agent_id, traits=""):
+    agent = MagicMock()
+    agent.id = uuid.UUID(agent_id) if isinstance(agent_id, str) else agent_id
+    agent.traits = traits
+    return agent
+
+
+def _make_scalar_one_result(value):
+    """Create a mock for session.execute() that supports scalar_one()."""
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = value
+    result.scalar_one.return_value = value
+    return result
 
 
 def _make_conversation_mock(
@@ -635,6 +652,10 @@ class TestEndConversationAction:
         rel_update_result = MagicMock()
         rel_update_result.scalar_one.return_value = rel_mock
 
+        # Mock TownAgent lookups for mood/energy wiring
+        agent_a_mock = _make_agent_mock(AGENT_A_ID)
+        agent_b_mock = _make_agent_mock(AGENT_B_ID)
+
         mock_session = MockSession(
             execute_results=[
                 _make_result_mock(state_a),  # lookup initiator state
@@ -642,6 +663,8 @@ class TestEndConversationAction:
                 _make_result_mock(state_b),  # lookup partner state
                 rel_result,  # get_or_create_relationship
                 rel_update_result,  # update_relationship
+                _make_scalar_one_result(agent_a_mock),  # TownAgent lookup for initiator (mood)
+                _make_scalar_one_result(agent_b_mock),  # TownAgent lookup for partner (mood)
             ]
         )
 
@@ -706,6 +729,10 @@ class TestEndConversationAction:
         rel_update_result = MagicMock()
         rel_update_result.scalar_one.return_value = rel_mock
 
+        # Mock TownAgent lookups for mood/energy wiring
+        agent_a_mock = _make_agent_mock(AGENT_A_ID)
+        agent_b_mock = _make_agent_mock(AGENT_B_ID)
+
         mock_session = MockSession(
             execute_results=[
                 _make_result_mock(state_a),
@@ -713,6 +740,8 @@ class TestEndConversationAction:
                 _make_result_mock(state_b),
                 rel_result,
                 rel_update_result,
+                _make_scalar_one_result(agent_a_mock),  # TownAgent lookup for initiator (mood)
+                _make_scalar_one_result(agent_b_mock),  # TownAgent lookup for partner (mood)
             ]
         )
 

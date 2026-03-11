@@ -25,7 +25,7 @@ def _make_strip_png(width: int = FRAME_COUNT * FRAME_SIZE, height: int = FRAME_S
 
 
 def _build_character_response(status: str = "completed", include_walk: bool = True) -> dict:
-    """Build a mock PixelLab character API response."""
+    """Build a mock PixelLab v2 character API response."""
     animations = []
     if include_walk:
         directions = {}

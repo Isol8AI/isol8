@@ -60,7 +60,7 @@ class TownAgent(Base):
         nullable=False,
     )
     instance_id = Column(UUID(as_uuid=True), ForeignKey("town_instances.id"), nullable=True)
-    character = Column(Text, default="f1")
+    character = Column(Text, nullable=True)
     pixellab_character_id = Column(String(100), nullable=True)
     sprite_ready = Column(Boolean, default=False, nullable=False)
     sprite_url = Column(Text, nullable=True)

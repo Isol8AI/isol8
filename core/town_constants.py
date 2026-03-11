@@ -46,22 +46,3 @@ TOWN_LOCATIONS: Dict[str, Dict] = {
         "activities": ["go inside your apartment"],
     },
 }
-
-# Full avatar catalog with metadata for the agent selection API
-AVATAR_CATALOG = [
-    {"id": "c1", "name": "Lucky", "description": "A cheerful adventurer"},
-    {"id": "c2", "name": "Bob", "description": "A grumpy gardener"},
-    {"id": "c3", "name": "Stella", "description": "A charming trickster"},
-    {"id": "c4", "name": "Alice", "description": "A brilliant scientist"},
-    {"id": "c5", "name": "Pete", "description": "A devout believer"},
-    {"id": "c6", "name": "Scholar", "description": "A studious bookworm"},
-    {"id": "c7", "name": "Knight", "description": "A brave protector"},
-    {"id": "c8", "name": "Merchant", "description": "A savvy trader"},
-    {"id": "c9", "name": "Bard", "description": "A musical storyteller"},
-    {"id": "c10", "name": "Ranger", "description": "A wilderness explorer"},
-    {"id": "c11", "name": "Healer", "description": "A gentle caretaker"},
-    {"id": "c12", "name": "Tinkerer", "description": "An inventive builder"},
-]
-
-# Available character sprites
-AVAILABLE_CHARACTERS = [a["id"] for a in AVATAR_CATALOG]

@@ -1129,3 +1129,83 @@ class TestWakeAlarm:
         calls = mock_service.update_agent_state.call_args_list
         wake_calls = [c for c in calls if c[1].get("location_state") == "active"]
         assert len(wake_calls) == 0
+
+
+class TestContextSummaryEnrichment:
+    """Test that context_summary includes relationship and personality data."""
+
+    def test_nearby_agent_includes_personality(self):
+        agent_state = {
+            "location_context": "town",
+            "current_location": "plaza",
+            "current_activity": "idle",
+            "mood": "0",
+            "energy": 80,
+        }
+        nearby = [
+            {
+                "name": "Lucky",
+                "agent_name": "lucky",
+                "distance": 3.0,
+                "activity": "idle",
+                "personality": "a cheerful adventurer who loves exploring",
+            },
+        ]
+        result = TownSimulation._build_context_summary(agent_state, nearby)
+        assert "cheerful adventurer" in result
+
+    def test_nearby_agent_includes_relationship(self):
+        agent_state = {
+            "location_context": "town",
+            "current_location": "cafe",
+            "current_activity": "idle",
+            "mood": "0",
+            "energy": 80,
+        }
+        nearby = [
+            {
+                "name": "Lucky",
+                "agent_name": "lucky",
+                "distance": 2.0,
+                "activity": "reading",
+                "personality": "a cheerful adventurer",
+                "relationship_type": "acquaintance",
+                "interaction_count": 3,
+                "last_topic": "books",
+            },
+        ]
+        result = TownSimulation._build_context_summary(agent_state, nearby)
+        assert "acquaintance" in result
+        assert "3" in result
+        assert "books" in result
+
+    def test_nearby_agent_stranger_no_relationship(self):
+        agent_state = {
+            "location_context": "town",
+            "current_location": "plaza",
+            "current_activity": "idle",
+            "mood": "0",
+            "energy": 80,
+        }
+        nearby = [
+            {
+                "name": "Scholar",
+                "agent_name": "scholar",
+                "distance": 4.0,
+                "activity": "reading",
+                "personality": "a studious bookworm",
+            },
+        ]
+        result = TownSimulation._build_context_summary(agent_state, nearby)
+        assert "studious bookworm" in result
+
+    def test_mood_label_in_summary(self):
+        agent_state = {
+            "location_context": "town",
+            "current_location": "plaza",
+            "current_activity": "idle",
+            "mood": "25",
+            "energy": 60,
+        }
+        result = TownSimulation._build_context_summary(agent_state, [])
+        assert "happy" in result

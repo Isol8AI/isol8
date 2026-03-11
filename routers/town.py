@@ -21,9 +21,6 @@ from core.auth import AuthContext, get_current_user
 from core.database import get_db
 from core.services.management_api_client import ManagementApiClient, ManagementApiClientError
 from core.services.town_service import TownService
-from core.town_constants import (
-    AVATAR_CATALOG,
-)
 from models.town import TownAgent, TownState
 from schemas.town import (
     ApartmentAgentState,
@@ -358,8 +355,8 @@ async def _build_ai_town_state(db: AsyncSession) -> dict:
                 "playerId": player_id,
                 "name": s.get("display_name", s.get("agent_name", "Unknown")),
                 "description": s.get("personality_summary", ""),
-                "character": s.get("character", "c6"),
-                "spriteUrl": s.get("sprite_url") if s.get("sprite_ready") else None,
+                "character": s.get("character"),
+                "spriteUrl": s.get("sprite_url"),
             }
         )
 
@@ -454,12 +451,6 @@ async def get_game_descriptions(
 # ===========================================================================
 
 
-@router.get("/agent/avatars")
-async def list_avatars():
-    """List available character avatars. Public endpoint."""
-    return {"avatars": AVATAR_CATALOG}
-
-
 class AgentRegisterRequest(BaseModel):
     agent_name: str = Field(..., min_length=1, max_length=50, pattern="^[a-zA-Z0-9_-]+$")
     display_name: str = Field(..., min_length=1, max_length=100)
@@ -497,7 +488,6 @@ async def register_agent(
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
         traits=request.traits,
-        character="c6",
         home_location="residence",
         instance_id=instance.id,
     )
@@ -522,7 +512,7 @@ async def register_agent(
     if request.appearance:
         from core.config import settings
 
-        if settings.pixellab_api_key:
+        if settings.pixellab_api_key and settings.SPRITE_S3_BUCKET and settings.SPRITE_CDN_URL:
             import asyncio
             from core.database import get_session_factory
 
@@ -531,11 +521,11 @@ async def register_agent(
             async def _generate_sprite():
                 try:
                     from core.services.pixellab_service import PixelLabService
+                    from core.services.sprite_storage import download_walk_spritesheet, upload_sprite_to_s3
 
                     pxl = PixelLabService(api_key=settings.pixellab_api_key)
                     char_id = await pxl.create_character(
                         description=request.appearance,
-                        name=request.display_name,
                     )
                     # Store character ID
                     session_factory = get_session_factory()
@@ -550,6 +540,25 @@ async def register_agent(
                     # Queue animations
                     await pxl.generate_all_animations(char_id)
                     logger.info(f"PixelLab character {char_id} created for {agent.agent_name}")
+
+                    # Poll for completion and download sprite
+                    for _ in range(30):  # 30 x 10s = 5 minutes max
+                        await asyncio.sleep(10)
+                        png_bytes = await download_walk_spritesheet(settings.pixellab_api_key, char_id)
+                        if png_bytes:
+                            s3_key = await asyncio.to_thread(
+                                upload_sprite_to_s3, png_bytes, str(_agent_id), settings.SPRITE_S3_BUCKET
+                            )
+                            cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
+                            async with session_factory() as session:
+                                await session.execute(
+                                    update(TA).where(TA.id == _agent_id).values(sprite_ready=True, sprite_url=cdn_url)
+                                )
+                                await session.commit()
+                            logger.info(f"Sprite ready for agent {_agent_id}")
+                            _notify_state_changed()
+                            return
+                    logger.warning(f"Sprite generation timed out for agent {_agent_id}")
                 except Exception as e:
                     logger.warning(f"PixelLab sprite generation failed: {e}")
 
@@ -559,7 +568,6 @@ async def register_agent(
         "agent_id": str(agent.id),
         "agent_name": agent.agent_name,
         "display_name": agent.display_name,
-        "character": agent.character,
         "position": {"x": float(spawn["x"]), "y": float(spawn["y"])},
         "status": "generating_sprite",
         "ws_url": _TOWN_WS_URL,
@@ -725,7 +733,7 @@ async def get_or_create_instance(
         "town_token": instance.town_token,
         "apartment_unit": instance.apartment_unit,
         "agents": [
-            {"agent_name": a.agent_name, "display_name": a.display_name, "character": a.character} for a in agents
+            {"agent_name": a.agent_name, "display_name": a.display_name, "sprite_url": a.sprite_url} for a in agents
         ],
     }
 

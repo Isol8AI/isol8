@@ -93,11 +93,11 @@ class TownService:
         return list(result.scalars().all())
 
     async def get_town_state(self) -> List[dict]:
-        """Get current state of all active agents."""
+        """Get current state of all active agents with ready sprites."""
         result = await self.db.execute(
             select(TownAgent, TownState)
             .join(TownState, TownState.agent_id == TownAgent.id)
-            .where(TownAgent.is_active.is_(True))
+            .where(TownAgent.is_active.is_(True), TownAgent.sprite_ready.is_(True))
         )
         rows = result.all()
 
@@ -133,9 +133,44 @@ class TownService:
                 "wake_timezone": state.wake_timezone,
                 "sprite_ready": agent.sprite_ready,
                 "sprite_url": agent.sprite_url,
+                "traits": agent.traits or "",
             }
             for agent, state in rows
         ]
+
+    async def get_all_relationships(self) -> list[dict]:
+        """Get all relationships with latest conversation topics."""
+        result = await self.db.execute(select(TownRelationship))
+        rels = result.scalars().all()
+        out = []
+        for r in rels:
+            conv_result = await self.db.execute(
+                select(TownConversation)
+                .where(
+                    (
+                        (TownConversation.participant_a_id == r.agent_a_id)
+                        & (TownConversation.participant_b_id == r.agent_b_id)
+                    )
+                    | (
+                        (TownConversation.participant_a_id == r.agent_b_id)
+                        & (TownConversation.participant_b_id == r.agent_a_id)
+                    )
+                )
+                .where(TownConversation.status == "ended")
+                .order_by(TownConversation.ended_at.desc())
+                .limit(1)
+            )
+            last_conv = conv_result.scalar_one_or_none()
+            out.append(
+                {
+                    "agent_a_id": str(r.agent_a_id),
+                    "agent_b_id": str(r.agent_b_id),
+                    "relationship_type": r.relationship_type,
+                    "interaction_count": r.interaction_count,
+                    "last_topic": last_conv.topic_summary if last_conv else None,
+                }
+            )
+        return out
 
     async def get_or_create_relationship(self, agent_a_id: UUID, agent_b_id: UUID) -> Tuple[TownRelationship, bool]:
         """Get or create a relationship between two agents."""
@@ -226,65 +261,6 @@ class TownService:
                     }
                 )
         return speeches
-
-    async def seed_agent(
-        self,
-        user_id: str,
-        agent_name: str,
-        display_name: str,
-        personality_summary: Optional[str] = None,
-        position_x: float = 0.0,
-        position_y: float = 0.0,
-        home_location: str = "apartment",
-    ) -> TownAgent:
-        """Seed a default agent directly.
-
-        Used by TownSimulation.seed_default_agents() for system-generated agents.
-        If the agent already exists and is active, returns it unchanged.
-        """
-        existing = await self._get_town_agent(user_id, agent_name)
-        if existing:
-            if not existing.is_active:
-                existing.is_active = True
-                existing.last_active_at = datetime.now(timezone.utc)
-            existing.display_name = display_name
-            existing.personality_summary = personality_summary
-            existing.home_location = home_location
-            # Always update position on seed (supports map changes across deploys)
-            state_result = await self.db.execute(select(TownState).where(TownState.agent_id == existing.id))
-            state = state_result.scalar_one_or_none()
-            if state:
-                state.position_x = position_x
-                state.position_y = position_y
-                state.target_x = None
-                state.target_y = None
-                state.speed = 0.0
-                state.current_activity = "idle"
-                state.location_state = "active"
-            await self.db.flush()
-            return existing
-
-        town_agent = TownAgent(
-            user_id=user_id,
-            agent_name=agent_name,
-            display_name=display_name,
-            personality_summary=personality_summary,
-            home_location=home_location,
-        )
-        self.db.add(town_agent)
-        await self.db.flush()
-
-        state = TownState(
-            agent_id=town_agent.id,
-            position_x=position_x,
-            position_y=position_y,
-            current_location=home_location,
-        )
-        self.db.add(state)
-        await self.db.flush()
-
-        logger.info(f"Seeded default agent '{display_name}' at ({position_x}, {position_y})")
-        return town_agent
 
     # ------------------------------------------------------------------
     # Instance-based opt-in / opt-out

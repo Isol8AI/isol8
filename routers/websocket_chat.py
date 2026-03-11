@@ -579,6 +579,21 @@ async def ws_message(
                 state.target_y = None
                 state.speed = 0
 
+                # Apply solitary_activity mood/energy effect
+                from core.services.town_mood_engine import apply_event as _apply_mood_event, parse_mood as _parse_mood
+                from models.town import TownAgent as _TownAgent
+
+                _agent_result = await session.execute(select(_TownAgent).where(_TownAgent.id == state.agent_id))
+                _this_agent = _agent_result.scalar_one()
+                _new_energy, _new_mood = _apply_mood_event(
+                    "solitary_activity",
+                    energy=state.energy,
+                    mood=_parse_mood(state.mood),
+                    traits=_this_agent.traits or "",
+                )
+                state.energy = _new_energy
+                state.mood = str(_new_mood)
+
             elif action == "chat":
                 # Initiate a conversation with another agent
                 target_name = body.get("target")
@@ -902,6 +917,33 @@ async def ws_message(
                     conversation.participant_a_id, conversation.participant_b_id
                 )
                 await town_svc.update_relationship(rel.id, affinity_delta=1)
+
+                # Apply conversation_completed mood/energy effect to both participants
+                from core.services.town_mood_engine import apply_event as _apply_mood_event, parse_mood as _parse_mood
+                from models.town import TownAgent as _TownAgent
+
+                _agent_result = await session.execute(select(_TownAgent).where(_TownAgent.id == agent_uuid))
+                _this_agent = _agent_result.scalar_one()
+                _new_energy, _new_mood = _apply_mood_event(
+                    "conversation_completed",
+                    energy=state.energy,
+                    mood=_parse_mood(state.mood),
+                    traits=_this_agent.traits or "",
+                )
+                state.energy = _new_energy
+                state.mood = str(_new_mood)
+
+                if partner_state:
+                    _partner_agent_result = await session.execute(select(_TownAgent).where(_TownAgent.id == partner_id))
+                    _partner_agent = _partner_agent_result.scalar_one()
+                    _p_energy, _p_mood = _apply_mood_event(
+                        "conversation_completed",
+                        energy=partner_state.energy,
+                        mood=_parse_mood(partner_state.mood),
+                        traits=_partner_agent.traits or "",
+                    )
+                    partner_state.energy = _p_energy
+                    partner_state.mood = str(_p_mood)
 
                 # Push to partner
                 partner_conn_id = None

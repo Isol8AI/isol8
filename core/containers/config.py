@@ -48,9 +48,6 @@ def write_openclaw_config(
             "controlUi": {
                 "enabled": False,
             },
-            "canvasHost": {
-                "enabled": False,
-            },
             "http": {
                 "endpoints": {
                     "chatCompletions": {"enabled": False},

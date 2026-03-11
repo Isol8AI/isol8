@@ -8,9 +8,9 @@ import boto3
 import httpx
 from PIL import Image
 
-logger = logging.getLogger(__name__)
+from core.services.pixellab_service import PIXELLAB_API_URL
 
-PIXELLAB_API_URL = "https://api.pixellab.ai/v1"
+logger = logging.getLogger(__name__)
 
 # Sprite sheet layout: 6 frames x 48px wide, 4 directions x 48px tall
 FRAME_COUNT = 6

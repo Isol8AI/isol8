@@ -308,8 +308,35 @@ class TownSimulation:
                         # Handle going_home -> sleeping transition
                         if arrived and location_state == "going_home" and not pending:
                             update["location_state"] = "sleeping"
+
+                            from core.services.town_mood_engine import apply_event as _apply_mood_event, parse_mood
+
+                            _sleep_energy, _sleep_mood = _apply_mood_event(
+                                "sleep",
+                                energy=agent_state.get("energy", 50),
+                                mood=parse_mood(agent_state.get("mood")),
+                                traits=agent_state.get("traits", ""),
+                            )
+                            update["energy"] = _sleep_energy
+                            update["mood"] = str(_sleep_mood)
+
                             logger.debug("Agent %s arrived home, now sleeping", agent_name)
                         elif arrived and not pending:
+                            # Apply arrived_new_location mood/energy effect
+                            from core.services.town_mood_engine import (
+                                apply_event as _apply_mood_event,
+                                parse_mood as _parse_mood,
+                            )
+
+                            _arr_energy, _arr_mood = _apply_mood_event(
+                                "arrived_new_location",
+                                energy=agent_state.get("energy", 100),
+                                mood=_parse_mood(agent_state.get("mood")),
+                                traits=agent_state.get("traits", ""),
+                            )
+                            update["energy"] = _arr_energy
+                            update["mood"] = str(_arr_mood)
+
                             # Push "arrived" event to connected agent
                             events_to_push.append(
                                 (
@@ -424,7 +451,18 @@ class TownSimulation:
         # --- World update push (every N ticks) ---
         self._tick_count += 1
         if self._tick_count % WORLD_UPDATE_INTERVAL == 0:
-            self._push_world_updates(ws_manager, states)
+            # Bulk-load relationships for enrichment
+            relationships_cache = {}
+            try:
+                async with self._db_factory() as db2:
+                    rel_service = TownService(db2)
+                    rel_rows = await rel_service.get_all_relationships()
+                    for r in rel_rows:
+                        key = frozenset([str(r["agent_a_id"]), str(r["agent_b_id"])])
+                        relationships_cache[key] = r
+            except Exception:
+                pass  # graceful degradation
+            self._push_world_updates(ws_manager, states, relationships_cache)
 
         # Push updated state to WebSocket viewers
         if self._notify_fn:
@@ -458,11 +496,14 @@ class TownSimulation:
             except Exception as e:
                 logger.debug("Failed to push event to agent %s: %s", agent_name, e)
 
-    def _push_world_updates(self, ws_manager, states):
+    def _push_world_updates(self, ws_manager, states, relationships_cache=None):
         """Push world_update to each connected agent with full world context."""
         mgmt = self._get_mgmt_client()
         if mgmt is None:
             return
+
+        if relationships_cache is None:
+            relationships_cache = {}
 
         # Build location occupancy map
         location_agents: dict[str, list[str]] = {}
@@ -505,6 +546,23 @@ class TownSimulation:
                             "distance": round(dist, 1),
                         }
                     )
+
+            # Enrich nearby agents with personality and relationship data
+            if nearby:
+                agent_id = str(agent_state["agent_id"])
+                for n in nearby:
+                    n_agent_name = n.get("agent_name")
+                    for other_state in states:
+                        if other_state["agent_name"] == n_agent_name:
+                            n["personality"] = other_state.get("personality_summary") or ""
+                            n_agent_id = str(other_state["agent_id"])
+                            rel_key = frozenset([agent_id, n_agent_id])
+                            rel_data = relationships_cache.get(rel_key)
+                            if rel_data:
+                                n["relationship_type"] = rel_data.get("relationship_type", "stranger")
+                                n["interaction_count"] = rel_data.get("interaction_count", 0)
+                                n["last_topic"] = rel_data.get("last_topic")
+                            break
 
             payload = {
                 "type": "world_update",
@@ -558,11 +616,13 @@ class TownSimulation:
     ) -> str:
         """Build a markdown context summary for an agent's TOWN_STATUS.md."""
         from core.apartment_constants import APARTMENT_ROOMS, APARTMENT_SPOTS
+        from core.services.town_mood_engine import mood_label, parse_mood
 
         location_context = agent_state.get("location_context", "apartment")
         current_location = agent_state.get("current_location", "unknown")
         activity = agent_state.get("current_activity", "idle")
-        mood = agent_state.get("mood") or "neutral"
+        mood_int = parse_mood(agent_state.get("mood"))
+        mood_str = mood_label(mood_int)
         energy = agent_state.get("energy")
         energy_str = f"{energy}%" if energy is not None else "unknown"
 
@@ -586,7 +646,7 @@ class TownSimulation:
             "",
             f"**Location:** {loc_label} ({context_label})",
             f"**Activity:** {activity}",
-            f"**Mood:** {mood} | **Energy:** {energy_str}",
+            f"**Mood:** {mood_str} | **Energy:** {energy_str}",
             "",
         ]
 
@@ -597,7 +657,22 @@ class TownSimulation:
                 name = n.get("name", n.get("agent_name", "someone"))
                 dist = n.get("distance", "?")
                 n_activity = n.get("activity", "idle")
-                lines.append(f"- {name} ({dist} tiles away, {n_activity})")
+                personality = n.get("personality", "")
+                line = f"- {name} ({dist} tiles away, {n_activity})"
+                if personality:
+                    line += f' — "{personality}"'
+                lines.append(line)
+
+                # Show relationship details when meaningful
+                rel_type = n.get("relationship_type")
+                interaction_count = n.get("interaction_count", 0)
+                if rel_type and rel_type != "stranger" and interaction_count > 0:
+                    last_topic = n.get("last_topic")
+                    rel_line = f"  Relationship: {rel_type} (talked {interaction_count} times"
+                    if last_topic:
+                        rel_line += f", last topic: {last_topic}"
+                    rel_line += ")"
+                    lines.append(rel_line)
         else:
             lines.append("**Nearby:** no one")
         lines.append("")

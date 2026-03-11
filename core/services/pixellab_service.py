@@ -5,7 +5,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-PIXELLAB_API_URL = "https://api.pixellab.ai/v1"
+PIXELLAB_API_URL = "https://api.pixellab.ai/v2"
 
 
 class PixelLabService:
@@ -17,25 +17,19 @@ class PixelLabService:
     async def create_character(
         self,
         description: str,
-        name: str,
-        n_directions: int = 8,
-        size: int = 48,
     ) -> str:
         """Queue character creation. Returns character_id."""
         async with httpx.AsyncClient() as client:
             resp = await client.post(
-                f"{PIXELLAB_API_URL}/characters",
+                f"{PIXELLAB_API_URL}/create-character-with-8-directions",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json={
                     "description": description,
-                    "name": name,
-                    "n_directions": n_directions,
-                    "size": size,
-                    "view": "low top-down",
-                    "body_type": "humanoid",
-                    "detail": "medium detail",
+                    "image_size": {"width": 48, "height": 48},
                     "outline": "single color black outline",
                     "shading": "basic shading",
+                    "detail": "medium detail",
+                    "view": "low top-down",
                 },
                 timeout=30.0,
             )
@@ -59,17 +53,32 @@ class PixelLabService:
     ) -> str:
         """Queue animation for a character. Returns job_id."""
         async with httpx.AsyncClient() as client:
-            body = {"template_animation_id": animation}
+            body = {
+                "character_id": character_id,
+                "template_animation_id": animation,
+                "image_size": {"width": 48, "height": 48},
+            }
             if action_description:
                 body["action_description"] = action_description
             resp = await client.post(
-                f"{PIXELLAB_API_URL}/characters/{character_id}/animations",
+                f"{PIXELLAB_API_URL}/characters/animations",
                 headers={"Authorization": f"Bearer {self.api_key}"},
                 json=body,
                 timeout=30.0,
             )
             resp.raise_for_status()
             return resp.json().get("job_id", "")
+
+    async def get_job_status(self, job_id: str) -> dict:
+        """Get background job status."""
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"{PIXELLAB_API_URL}/background-jobs/{job_id}",
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                timeout=30.0,
+            )
+            resp.raise_for_status()
+            return resp.json()
 
     async def generate_all_animations(self, character_id: str):
         """Generate walk and sleeping animations for a character."""

@@ -1,4 +1,4 @@
-from core.services.town_mood_engine import apply_event, mood_label
+from core.services.town_mood_engine import apply_event, mood_label, parse_mood
 
 
 class TestMoodLabel:
@@ -16,6 +16,26 @@ class TestMoodLabel:
 
     def test_high_mood_elated(self):
         assert mood_label(40) == "elated"
+
+
+class TestParseMood:
+    def test_parse_int(self):
+        assert parse_mood(10) == 10
+
+    def test_parse_string_int(self):
+        assert parse_mood("25") == 25
+
+    def test_parse_negative_string(self):
+        assert parse_mood("-15") == -15
+
+    def test_parse_none(self):
+        assert parse_mood(None) == 0
+
+    def test_parse_label_string(self):
+        assert parse_mood("neutral") == 0
+
+    def test_parse_empty_string(self):
+        assert parse_mood("") == 0
 
 
 class TestApplyEvent:

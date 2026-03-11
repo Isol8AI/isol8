@@ -8,6 +8,18 @@ No passive decay — energy and mood only change when things happen.
 """
 
 
+def parse_mood(raw) -> int:
+    """Parse a mood value from DB (string, int, or None) to int."""
+    if raw is None:
+        return 0
+    if isinstance(raw, int):
+        return raw
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return 0
+
+
 def mood_label(mood: int) -> str:
     """Convert numeric mood to a human-readable label."""
     if mood <= -30:
