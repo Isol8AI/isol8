@@ -154,11 +154,11 @@ resource "aws_ecs_task_definition" "openclaw" {
       # Config is written to EFS by the EC2 control plane and mounted
       # into the container at /home/node/.openclaw via per-user access
       # points. No inline config generation needed.
-      user             = "1000:1000"
+      user             = "0:0"
       workingDirectory = "/home/node"
       command = [
         "sh", "-c",
-        "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter clawhub openai 2>/dev/null; GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v$${GH_VER}/gh_$${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_$${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null; wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH; clawhub install markdown-converter --no-input 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
+        "apt-get update -qq && apt-get install -y -qq socat python3-pip > /dev/null 2>&1; pip install --break-system-packages websockets > /dev/null 2>&1; export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH && npm i -g --ignore-scripts mcporter clawhub openai 2>/dev/null; GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v$${GH_VER}/gh_$${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_$${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null; wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH; clawhub install markdown-converter --no-input 2>/dev/null; exec node /app/openclaw.mjs gateway --port 18789 --bind lan"
       ]
 
       portMappings = [
@@ -198,6 +198,10 @@ resource "aws_ecs_task_definition" "openclaw" {
         {
           name  = "AWS_DEFAULT_REGION"
           value = "us-east-1"
+        },
+        {
+          name  = "NODE_PATH"
+          value = "/home/node/.npm-global/lib/node_modules"
         }
       ]
 

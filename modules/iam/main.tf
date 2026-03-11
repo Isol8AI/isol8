@@ -288,15 +288,21 @@ resource "aws_iam_role_policy" "ecs_task_bedrock" {
         Effect = "Allow"
         Action = [
           "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream",
-          "bedrock:ListFoundationModels",
-          "bedrock:ListInferenceProfiles"
+          "bedrock:InvokeModelWithResponseStream"
         ]
         Resource = [
           "arn:aws:bedrock:*::foundation-model/*",
           "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*",
           "arn:aws:bedrock:*:*:inference-profile/*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "bedrock:ListFoundationModels",
+          "bedrock:ListInferenceProfiles"
+        ]
+        Resource = "*"
       },
       {
         Effect   = "Allow"
