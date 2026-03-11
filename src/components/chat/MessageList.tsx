@@ -248,6 +248,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 )}
 
                 <div className={cn(
+                  "wrap-break-word",
                   msg.role === "user" && "whitespace-pre-wrap",
                   msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-red-400/80"
                 )}>
