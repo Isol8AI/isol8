@@ -218,7 +218,53 @@ def write_openclaw_config(
                     "amazon-bedrock/us.mistral.mistral-large-2512-v1:0": {"alias": "Mistral Large 3"},
                 },
                 "memorySearch": {
-                    "enabled": False,
+                    "enabled": bool(gateway_token),
+                    "provider": "openai",
+                    "model": "titan-embed-v2",
+                    "remote": {
+                        "baseUrl": f"{proxy_base_url}/embeddings",
+                        "apiKey": gateway_token or "disabled",
+                    },
+                    "query": {
+                        "hybrid": {
+                            "enabled": True,
+                            "vectorWeight": 0.7,
+                            "textWeight": 0.3,
+                            "candidateMultiplier": 4,
+                            "mmr": {
+                                "enabled": True,
+                                "lambda": 0.7,
+                            },
+                            "temporalDecay": {
+                                "enabled": True,
+                                "halfLifeDays": 30,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        "memory": {
+            "backend": "qmd",
+            "citations": "auto",
+            "qmd": {
+                "includeDefaultMemory": True,
+                "searchMode": "search",
+                "update": {
+                    "interval": "5m",
+                    "debounceMs": 15000,
+                    "onBoot": True,
+                    "waitForBootSync": False,
+                },
+                "limits": {
+                    "maxResults": 6,
+                    "timeoutMs": 4000,
+                },
+                "scope": {
+                    "default": "deny",
+                    "rules": [
+                        {"action": "allow", "match": {"chatType": "direct"}},
+                    ],
                 },
             },
         },

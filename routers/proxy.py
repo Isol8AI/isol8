@@ -5,13 +5,16 @@ keeping real API keys server-side. Users authenticate with
 their gateway_token.
 """
 
+import asyncio
 import json
 import logging
 from decimal import Decimal
+from functools import partial
 
 import boto3
 import httpx
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError, BotoCoreError
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -107,8 +110,8 @@ def _get_bedrock_client():
     return _bedrock_client
 
 
-async def _call_bedrock_embed(text: str) -> dict:
-    """Call Bedrock Titan Embed v2 and return the response dict."""
+def _invoke_bedrock_embed(text: str) -> dict:
+    """Synchronous Bedrock Titan Embed v2 call (runs in thread pool)."""
     client = _get_bedrock_client()
     body = json.dumps(
         {
@@ -126,6 +129,12 @@ async def _call_bedrock_embed(text: str) -> dict:
     return json.loads(response["body"].read())
 
 
+async def _call_bedrock_embed(text: str) -> dict:
+    """Call Bedrock Titan Embed v2 without blocking the event loop."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, partial(_invoke_bedrock_embed, text))
+
+
 @router.post("/embeddings/embeddings", include_in_schema=False)
 async def proxy_embeddings(request: Request):
     """OpenAI-compatible embeddings endpoint backed by Bedrock Titan."""
@@ -137,11 +146,53 @@ async def proxy_embeddings(request: Request):
         input_data = body.get("input", "")
         texts = input_data if isinstance(input_data, list) else [input_data]
 
+        if not texts or all(not t for t in texts):
+            raise HTTPException(status_code=400, detail="No input text provided")
+
         embeddings = []
         total_tokens = 0
 
         for i, text in enumerate(texts):
-            result = await _call_bedrock_embed(text)
+            try:
+                result = await _call_bedrock_embed(text)
+            except ClientError as e:
+                error_code = e.response["Error"]["Code"]
+                error_msg = e.response["Error"]["Message"]
+                logger.error(
+                    "Bedrock embedding failed for user %s: %s - %s (model=%s, text_len=%d)",
+                    container.user_id,
+                    error_code,
+                    error_msg,
+                    EMBEDDING_MODEL_ID,
+                    len(text),
+                )
+                if error_code == "AccessDeniedException":
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Bedrock access denied for model {EMBEDDING_MODEL_ID}",
+                    )
+                if error_code == "ThrottlingException":
+                    raise HTTPException(status_code=429, detail="Bedrock rate limit exceeded")
+                if error_code == "ValidationException":
+                    raise HTTPException(status_code=400, detail=f"Bedrock validation error: {error_msg}")
+                raise HTTPException(status_code=502, detail=f"Bedrock error: {error_code}")
+            except BotoCoreError as e:
+                logger.error(
+                    "Bedrock connection error for user %s: %s (model=%s)",
+                    container.user_id,
+                    e,
+                    EMBEDDING_MODEL_ID,
+                )
+                raise HTTPException(status_code=502, detail=f"Bedrock connection error: {e}")
+            except Exception:
+                logger.exception(
+                    "Unexpected embedding error for user %s (model=%s, text_len=%d)",
+                    container.user_id,
+                    EMBEDDING_MODEL_ID,
+                    len(text),
+                )
+                raise HTTPException(status_code=500, detail="Internal embedding error")
+
             embeddings.append(
                 {
                     "object": "embedding",
