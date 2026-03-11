@@ -3,8 +3,10 @@
 # =============================================================================
 # Creates an EFS file system for OpenClaw agent workspace persistence.
 # Shared between the EC2 control plane (reads agent files directly) and
-# Fargate tasks (OpenClaw workspace data). The access point UID/GID 0
-# matches the container's root user for system package installation.
+# Fargate tasks (OpenClaw workspace data). The access point UID/GID 1000
+# matches ec2-user so the control plane can write config files to EFS.
+# Containers run as root (user 0:0) but per-user access points remap
+# UID to 1000 for EFS operations — root can still read UID 1000 files.
 # =============================================================================
 
 # -----------------------------------------------------------------------------
@@ -70,16 +72,16 @@ resource "aws_efs_access_point" "openclaw" {
   file_system_id = aws_efs_file_system.main.id
 
   posix_user {
-    uid = 0
-    gid = 0
+    uid = 1000
+    gid = 1000
   }
 
   root_directory {
     path = "/users"
 
     creation_info {
-      owner_uid   = 0
-      owner_gid   = 0
+      owner_uid   = 1000
+      owner_gid   = 1000
       permissions = "0755"
     }
   }
