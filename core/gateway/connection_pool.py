@@ -154,21 +154,34 @@ class GatewayConnection:
 
     @staticmethod
     def _transform_agent_event(payload: dict) -> dict | None:
-        """Extract streaming text from an unthrottled OpenClaw agent event.
+        """Extract streaming text or tool events from an OpenClaw agent event.
 
-        Agent events fire for every LLM token (no 150ms throttle). Only
-        ``stream: "assistant"`` events with text are forwarded. The text is
-        cumulative (full response so far); the frontend replaces its display
-        buffer on each chunk.
+        Agent events fire for every LLM token (no 150ms throttle).
+        - ``stream: "assistant"`` events with text are forwarded as chunks.
+        - ``stream: "tool"`` events are forwarded as tool_start/tool_end.
         """
-        if payload.get("stream") != "assistant":
-            return None
+        stream = payload.get("stream")
         data = payload.get("data")
         if not isinstance(data, dict):
             return None
-        text = data.get("text", "")
-        if text:
-            return {"type": "chunk", "content": text}
+
+        if stream == "assistant":
+            text = data.get("text", "")
+            if text:
+                return {"type": "chunk", "content": text}
+            return None
+
+        if stream == "tool":
+            phase = data.get("phase", "")
+            name = data.get("name", "")
+            if not name:
+                return None
+            if phase == "start":
+                return {"type": "tool_start", "tool": name}
+            if phase == "result":
+                return {"type": "tool_end", "tool": name}
+            return None
+
         return None
 
     @staticmethod

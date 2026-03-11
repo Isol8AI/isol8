@@ -77,9 +77,34 @@ class TestTransformAgentEvent:
         )
         assert r2 == {"type": "chunk", "content": "Hello world"}
 
-    def test_non_assistant_stream_ignored(self):
+    def test_non_assistant_non_tool_stream_ignored(self):
         assert GatewayConnection._transform_agent_event({"stream": "lifecycle", "data": {"phase": "start"}}) is None
-        assert GatewayConnection._transform_agent_event({"stream": "tool", "data": {"tool": "brave_search"}}) is None
+        assert GatewayConnection._transform_agent_event({"stream": "compaction", "data": {"phase": "start"}}) is None
+
+    def test_tool_stream_start_phase(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"}}
+        )
+        assert result == {"type": "tool_start", "tool": "web_search"}
+
+    def test_tool_stream_result_phase(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123"}}
+        )
+        assert result == {"type": "tool_end", "tool": "web_search"}
+
+    def test_tool_stream_update_phase_ignored(self):
+        """Intermediate tool updates are not forwarded."""
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "tool", "data": {"name": "web_search", "phase": "update", "toolCallId": "abc-123"}}
+        )
+        assert result is None
+
+    def test_tool_stream_missing_name_ignored(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "tool", "data": {"phase": "start", "toolCallId": "abc-123"}}
+        )
+        assert result is None
 
     def test_missing_stream_ignored(self):
         assert GatewayConnection._transform_agent_event({"data": {"text": "Hi"}}) is None
@@ -177,6 +202,26 @@ class TestHandleMessage:
             }
         )
         mock_management_api.send_message.assert_not_called()
+
+    def test_agent_tool_start_forwarded(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "t1"}},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_start", "tool": "web_search"})
+
+    def test_agent_tool_end_forwarded(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "t1"}},
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_end", "tool": "web_search"})
 
     # -- Chat events (terminal states only) --
 
