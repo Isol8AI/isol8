@@ -127,6 +127,33 @@ class TestTownAgentModel:
         assert agent.pixellab_character_id is None
 
     @pytest.mark.asyncio
+    async def test_town_agent_has_traits_field(self, db_session, test_user):
+        """TownAgent should store comma-separated personality traits."""
+        agent = TownAgent(
+            user_id=test_user.id,
+            agent_name="traits_test",
+            display_name="Traits Test",
+            traits="introvert,studious,creative",
+        )
+        db_session.add(agent)
+        await db_session.flush()
+
+        assert agent.traits == "introvert,studious,creative"
+
+    @pytest.mark.asyncio
+    async def test_town_agent_traits_default_empty(self, db_session, test_user):
+        """TownAgent traits should default to empty string when not provided."""
+        agent = TownAgent(
+            user_id=test_user.id,
+            agent_name="no_traits",
+            display_name="No Traits",
+        )
+        db_session.add(agent)
+        await db_session.flush()
+
+        assert agent.traits == ""
+
+    @pytest.mark.asyncio
     async def test_different_users_same_agent_name(self, db_session, test_user, other_user):
         agent1 = TownAgent(user_id=test_user.id, agent_name="luna", display_name="Luna A")
         agent2 = TownAgent(user_id=other_user.id, agent_name="luna", display_name="Luna B")

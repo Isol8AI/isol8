@@ -465,6 +465,7 @@ class AgentRegisterRequest(BaseModel):
     display_name: str = Field(..., min_length=1, max_length=100)
     personality: str = Field("", max_length=500)
     appearance: str = Field("", max_length=500)
+    traits: str = Field("", max_length=200)
 
 
 @router.post("/agent/register")
@@ -495,6 +496,7 @@ async def register_agent(
         agent_name=request.agent_name,
         display_name=request.display_name,
         personality_summary=request.personality[:200] if request.personality else None,
+        traits=request.traits,
         character="c6",
         home_location="residence",
         instance_id=instance.id,
