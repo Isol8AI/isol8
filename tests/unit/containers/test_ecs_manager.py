@@ -296,6 +296,9 @@ class TestCreateUserService:
         mock_result.scalar_one_or_none.return_value = None
         mock_db.execute.return_value = mock_result
 
+        # Mock _update_container to track substatus updates
+        manager._update_container = AsyncMock()
+
         service_name = await manager.create_user_service("user_test_123", "token-abc", mock_db)
 
         assert service_name == "openclaw-user_test_123-f4ae64abb2db"
@@ -319,18 +322,17 @@ class TestCreateUserService:
         assert call_kwargs["networkConfiguration"]["awsvpcConfiguration"]["assignPublicIp"] == "DISABLED"
         assert call_kwargs["enableExecuteCommand"] is True
 
-        # Verify DB record was added early (before AWS steps) with substatus tracking
+        # Verify DB record was added early (before AWS steps)
         mock_db.add.assert_called_once()
         added_container = mock_db.add.call_args[0][0]
         assert added_container.user_id == "user_test_123"
         assert added_container.service_name == "openclaw-user_test_123-f4ae64abb2db"
         assert added_container.gateway_token == "token-abc"
-        assert added_container.access_point_id == "fsap-user123"
-        assert added_container.task_definition_arn is not None
         assert added_container.status == "provisioning"
-        assert added_container.substatus == "service_created"
-        # commit called: initial upsert + efs_created + task_registered + service_created
-        assert mock_db.commit.await_count == 4
+        # Initial upsert commits via mock_db
+        mock_db.commit.assert_awaited_once()
+        # Substatus updates go through _update_container (3 calls: efs, task_def, service)
+        assert manager._update_container.await_count == 3
 
     async def test_upserts_existing_db_record(self, manager, mock_ecs_client, mock_efs_client, mock_db):
         """create_user_service updates existing DB record instead of inserting."""
@@ -339,18 +341,19 @@ class TestCreateUserService:
         mock_result.scalar_one_or_none.return_value = existing
         mock_db.execute.return_value = mock_result
 
+        manager._update_container = AsyncMock()
+
         service_name = await manager.create_user_service("user_test_123", "new-token", mock_db)
 
         assert service_name == "openclaw-user_test_123-f4ae64abb2db"
         # Should NOT call db.add — updates in place
         mock_db.add.assert_not_called()
         assert existing.gateway_token == "new-token"
-        assert existing.access_point_id == "fsap-user123"
-        assert existing.task_definition_arn is not None
         assert existing.status == "provisioning"
-        assert existing.substatus == "service_created"
-        # commit called: initial upsert + efs_created + task_registered + service_created
-        assert mock_db.commit.await_count == 4
+        # Initial upsert commits via mock_db
+        mock_db.commit.assert_awaited_once()
+        # Substatus updates go through _update_container (3 calls)
+        assert manager._update_container.await_count == 3
 
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client, mock_db):
         """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
@@ -358,6 +361,8 @@ class TestCreateUserService:
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = existing
         mock_db.execute.return_value = mock_result
+
+        manager._update_container = AsyncMock()
 
         mock_ecs_client.create_service.side_effect = ClientError(
             {"Error": {"Code": "ClusterNotFoundException", "Message": "not found"}},
@@ -367,9 +372,8 @@ class TestCreateUserService:
         with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
             await manager.create_user_service("user_test_123", "token", mock_db)
 
-        # Container should be marked as error with substatus cleared
-        assert existing.status == "error"
-        assert existing.substatus is None
+        # Error status set via _update_container
+        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
 
         # Rollback: task def deregistered and access point deleted
         mock_ecs_client.deregister_task_definition.assert_called_once()
@@ -382,6 +386,8 @@ class TestCreateUserService:
         mock_result.scalar_one_or_none.return_value = existing
         mock_db.execute.return_value = mock_result
 
+        manager._update_container = AsyncMock()
+
         mock_efs_client.create_access_point.side_effect = ClientError(
             {"Error": {"Code": "FileSystemNotFound", "Message": "not found"}},
             "CreateAccessPoint",
@@ -390,9 +396,8 @@ class TestCreateUserService:
         with pytest.raises(EcsManagerError, match="Failed to create EFS access point"):
             await manager.create_user_service("user_test_123", "token", mock_db)
 
-        # Container should be marked as error
-        assert existing.status == "error"
-        assert existing.substatus is None
+        # Error status set via _update_container
+        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
 
         # No AWS rollback needed — nothing was created yet
         mock_ecs_client.create_service.assert_not_called()
@@ -405,6 +410,8 @@ class TestCreateUserService:
         mock_result.scalar_one_or_none.return_value = existing
         mock_db.execute.return_value = mock_result
 
+        manager._update_container = AsyncMock()
+
         mock_ecs_client.register_task_definition.side_effect = ClientError(
             {"Error": {"Code": "ClientException", "Message": "failed"}},
             "RegisterTaskDefinition",
@@ -413,9 +420,8 @@ class TestCreateUserService:
         with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
             await manager.create_user_service("user_test_123", "token", mock_db)
 
-        # Container should be marked as error
-        assert existing.status == "error"
-        assert existing.substatus is None
+        # Error status set via _update_container
+        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
 
         # Access point should be cleaned up
         mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
@@ -423,27 +429,30 @@ class TestCreateUserService:
         mock_ecs_client.create_service.assert_not_called()
 
     async def test_substatus_progression(self, manager, mock_ecs_client, mock_efs_client, mock_db):
-        """create_user_service updates substatus at each step."""
+        """create_user_service updates substatus at each step via _update_container."""
         existing = _make_container(status="stopped")
-        substatus_values = []
+        update_calls = []
 
         mock_result = MagicMock()
         mock_result.scalar_one_or_none.return_value = existing
         mock_db.execute.return_value = mock_result
 
-        # Capture substatus at each commit
-        original_commit = mock_db.commit
+        # Capture _update_container calls
+        async def track_update(user_id, **fields):
+            update_calls.append(fields)
 
-        async def track_commit():
-            substatus_values.append(existing.substatus)
-            return await original_commit()
-
-        mock_db.commit = AsyncMock(side_effect=track_commit)
+        manager._update_container = AsyncMock(side_effect=track_update)
 
         await manager.create_user_service("user_test_123", "token-abc", mock_db)
 
-        # substatus should progress: None → efs_created → task_registered → service_created
-        assert substatus_values == [None, "efs_created", "task_registered", "service_created"]
+        # Initial upsert sets substatus=None via mock_db.commit
+        # Then _update_container is called for each substatus progression
+        assert len(update_calls) == 3
+        assert update_calls[0]["substatus"] == "efs_created"
+        assert "access_point_id" in update_calls[0]
+        assert update_calls[1]["substatus"] == "task_registered"
+        assert "task_definition_arn" in update_calls[1]
+        assert update_calls[2]["substatus"] == "service_created"
 
 
 # ---------------------------------------------------------------------------

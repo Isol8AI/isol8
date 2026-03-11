@@ -14,8 +14,8 @@ import urllib.request
 import urllib.error
 
 import boto3
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config import settings
 from models.container import Container
@@ -36,7 +36,7 @@ class EcsManagerError(Exception):
 class EcsManager:
     """Manages per-user ECS Fargate services for OpenClaw gateways."""
 
-    def __init__(self):
+    def __init__(self, session_factory: async_sessionmaker | None = None):
         self._ecs = boto3.client("ecs", region_name=settings.AWS_REGION)
         self._efs = boto3.client("efs", region_name=settings.AWS_REGION)
         self._cluster = settings.ECS_CLUSTER_ARN
@@ -45,6 +45,7 @@ class EcsManager:
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
         self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
+        self._session_factory = session_factory
 
     def _service_name(self, user_id: str) -> str:
         """Generate deterministic, collision-resistant service name from user_id.
@@ -188,6 +189,30 @@ class EcsManager:
             logger.error("Failed to deregister task definition %s: %s", task_definition_arn, e)
 
     # ------------------------------------------------------------------
+    # Safe DB helpers
+    # ------------------------------------------------------------------
+
+    def _get_session_factory(self) -> async_sessionmaker:
+        """Return the session factory, importing lazily if not set at init."""
+        if self._session_factory is None:
+            from core.database import async_session_factory
+
+            self._session_factory = async_session_factory
+        return self._session_factory
+
+    async def _update_container(self, user_id: str, **fields) -> None:
+        """Update container fields using a fresh session.
+
+        Uses the session factory to create an isolated session for each
+        update, avoiding 7s2a errors when pgbouncer drops connections
+        between long-running boto3 calls.
+        """
+        factory = self._get_session_factory()
+        async with factory() as db:
+            await db.execute(update(Container).where(Container.user_id == user_id).values(**fields))
+            await db.commit()
+
+    # ------------------------------------------------------------------
     # Service lifecycle
     # ------------------------------------------------------------------
 
@@ -200,6 +225,9 @@ class EcsManager:
         4. Creates the ECS service → substatus=service_created
 
         On failure, sets status=error, substatus=None, and rolls back AWS resources.
+
+        Substatus updates use fresh sessions (via _update_container) to avoid
+        7s2a errors when pgbouncer drops connections during slow AWS API calls.
 
         Args:
             user_id: Clerk user ID.
@@ -238,15 +266,19 @@ class EcsManager:
         try:
             # Step 1: Create per-user EFS access point
             access_point_id = self._create_access_point(user_id)
-            container.access_point_id = access_point_id
-            container.substatus = "efs_created"
-            await db.commit()
+            await self._update_container(
+                user_id,
+                access_point_id=access_point_id,
+                substatus="efs_created",
+            )
 
             # Step 2: Register per-user task definition with that access point
             task_def_arn = self._register_task_definition(access_point_id)
-            container.task_definition_arn = task_def_arn
-            container.substatus = "task_registered"
-            await db.commit()
+            await self._update_container(
+                user_id,
+                task_definition_arn=task_def_arn,
+                substatus="task_registered",
+            )
 
             # Step 3: Create ECS service with per-user task definition
             create_kwargs = dict(
@@ -268,13 +300,13 @@ class EcsManager:
             if settings.ENVIRONMENT != "prod":
                 create_kwargs["enableExecuteCommand"] = True
             self._ecs.create_service(**create_kwargs)
-            container.substatus = "service_created"
-            await db.commit()
+            await self._update_container(user_id, substatus="service_created")
         except EcsManagerError:
-            # Mark container as error in DB
-            container.status = "error"
-            container.substatus = None
-            await db.commit()
+            # Mark container as error in DB (fresh session — safe even if connection died)
+            try:
+                await self._update_container(user_id, status="error", substatus=None)
+            except Exception:
+                logger.error("Failed to mark container as error for user %s", user_id)
             # Rollback already-created AWS resources
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
@@ -282,10 +314,11 @@ class EcsManager:
                 self._delete_access_point(access_point_id)
             raise
         except Exception as e:
-            # Mark container as error in DB
-            container.status = "error"
-            container.substatus = None
-            await db.commit()
+            # Mark container as error in DB (fresh session — safe even if connection died)
+            try:
+                await self._update_container(user_id, status="error", substatus=None)
+            except Exception:
+                logger.error("Failed to mark container as error for user %s", user_id)
             # Rollback already-created AWS resources
             if task_def_arn:
                 self._deregister_task_definition(task_def_arn)
@@ -532,14 +565,24 @@ class EcsManager:
 
         # Auto-transition provisioning → running once the task is reachable
         if container.status == "provisioning" and self.is_healthy(ip):
-            container.substatus = "gateway_healthy"
-            container.status = "running"
-            await db.commit()
-            logger.info(
-                "Container %s for user %s transitioned to running",
-                container.service_name,
-                user_id,
-            )
+            try:
+                container.substatus = "gateway_healthy"
+                container.status = "running"
+                await db.commit()
+                logger.info(
+                    "Container %s for user %s transitioned to running",
+                    container.service_name,
+                    user_id,
+                )
+            except Exception:
+                # Connection may have been dropped during is_healthy() HTTP call.
+                # Rollback so the session is usable; status transition will happen
+                # on the next poll.
+                await db.rollback()
+                logger.warning(
+                    "Failed to persist running status for user %s, will retry on next poll",
+                    user_id,
+                )
 
         return container, ip
 

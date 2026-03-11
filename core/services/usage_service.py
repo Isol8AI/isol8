@@ -147,7 +147,11 @@ class UsageService:
             billable=billable,
         )
 
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         # 6. Report to Stripe (non-blocking — don't fail if Stripe is down)
         await self._report_to_stripe(account.stripe_customer_id, billable, event)
@@ -209,7 +213,11 @@ class UsageService:
             usage_type="tool",
         )
 
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         if not is_byok and billable > 0:
             await self._report_to_stripe(account.stripe_customer_id, billable, event)
@@ -272,6 +280,10 @@ class UsageService:
             event.stripe_meter_event_id = str(event.id)
             await self.db.commit()
         except Exception as e:
+            try:
+                await self.db.rollback()
+            except Exception:
+                pass
             logger.error("Stripe meter event failed for %s: %s", event.id, e)
             # Left as NULL — retry job will pick it up
 

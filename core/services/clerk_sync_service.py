@@ -33,7 +33,11 @@ class ClerkSyncService:
 
         user = User(id=user_id)
         self.db.add(user)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
         logger.info("Created user %s", user_id)
         return user
@@ -49,7 +53,11 @@ class ClerkSyncService:
             logger.warning("User %s not found for update, creating", user_id)
             return await self.create_user(data)
 
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         logger.info("Updated user %s", user_id)
         return user
 
@@ -65,5 +73,9 @@ class ClerkSyncService:
             return
 
         await self.db.delete(user)
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
         logger.warning("Deleted user %s", user_id)

@@ -120,10 +120,18 @@ class BillingService:
         """Update billing account after subscription change."""
         billing_account.stripe_subscription_id = subscription_id
         billing_account.plan_tier = tier
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
 
     async def cancel_subscription(self, billing_account: BillingAccount) -> None:
         """Revert to free tier after subscription cancellation."""
         billing_account.stripe_subscription_id = None
         billing_account.plan_tier = "free"
-        await self.db.commit()
+        try:
+            await self.db.commit()
+        except Exception:
+            await self.db.rollback()
+            raise
