@@ -218,29 +218,7 @@ def write_openclaw_config(
                     "amazon-bedrock/us.mistral.mistral-large-2512-v1:0": {"alias": "Mistral Large 3"},
                 },
                 "memorySearch": {
-                    "enabled": bool(gateway_token),
-                    "provider": "openai",
-                    "model": "titan-embed-v2",
-                    "remote": {
-                        "baseUrl": f"{proxy_base_url}/embeddings",
-                        "apiKey": gateway_token or "disabled",
-                    },
-                    "query": {
-                        "hybrid": {
-                            "enabled": True,
-                            "vectorWeight": 0.7,
-                            "textWeight": 0.3,
-                            "candidateMultiplier": 4,
-                            "mmr": {
-                                "enabled": True,
-                                "lambda": 0.7,
-                            },
-                            "temporalDecay": {
-                                "enabled": True,
-                                "halfLifeDays": 30,
-                            },
-                        },
-                    },
+                    "enabled": False,
                 },
             },
         },
@@ -295,25 +273,8 @@ def write_openclaw_config(
             },
         },
         "plugins": {
-            "slots": {
-                "memory": "memory-lancedb" if gateway_token else "memory-core",
-            },
-            "entries": {
-                "memory-lancedb": {
-                    "enabled": bool(gateway_token),
-                    "config": {
-                        "embedding": {
-                            "apiKey": gateway_token or "disabled",
-                            "model": "titan-embed-v2",
-                            "baseUrl": f"{proxy_base_url}/embeddings",
-                            "dimensions": 1024,
-                        },
-                        "autoCapture": True,
-                        "autoRecall": True,
-                        "captureMaxChars": 2000,
-                    },
-                },
-            },
+            "slots": {},
+            "entries": {},
         },
         "channels": {
             "telegram": {

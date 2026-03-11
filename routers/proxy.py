@@ -5,16 +5,11 @@ keeping real API keys server-side. Users authenticate with
 their gateway_token.
 """
 
-import asyncio
 import json
 import logging
 from decimal import Decimal
-from functools import partial
 
-import boto3
 import httpx
-from botocore.config import Config as BotoConfig
-from botocore.exceptions import ClientError, BotoCoreError
 from fastapi import APIRouter, HTTPException, Request, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -40,11 +35,6 @@ UPSTREAM_KEY_SETTINGS = {
 DEFAULT_TOOL_COSTS = {
     "search": Decimal("0.005"),
 }
-
-# Bedrock Titan Embed v2: $0.00002 per 1K input tokens
-EMBEDDING_COST_PER_TOKEN = Decimal("0.00000002")
-EMBEDDING_MODEL_ID = "amazon.titan-embed-text-v2:0"
-EMBEDDING_DIMENSIONS = 1024
 
 
 async def _authenticate_and_check_budget(
@@ -90,143 +80,6 @@ async def _authenticate_and_check_budget(
             )
 
     return container, account
-
-
-_bedrock_client = None
-
-
-def _get_bedrock_client():
-    global _bedrock_client
-    if _bedrock_client is None:
-        _bedrock_client = boto3.client(
-            "bedrock-runtime",
-            region_name=settings.AWS_REGION,
-            config=BotoConfig(
-                read_timeout=30,
-                connect_timeout=10,
-                retries={"max_attempts": 2},
-            ),
-        )
-    return _bedrock_client
-
-
-def _invoke_bedrock_embed(text: str) -> dict:
-    """Synchronous Bedrock Titan Embed v2 call (runs in thread pool)."""
-    client = _get_bedrock_client()
-    body = json.dumps(
-        {
-            "inputText": text,
-            "dimensions": EMBEDDING_DIMENSIONS,
-            "normalize": True,
-        }
-    )
-    response = client.invoke_model(
-        modelId=EMBEDDING_MODEL_ID,
-        contentType="application/json",
-        accept="application/json",
-        body=body,
-    )
-    return json.loads(response["body"].read())
-
-
-async def _call_bedrock_embed(text: str) -> dict:
-    """Call Bedrock Titan Embed v2 without blocking the event loop."""
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, partial(_invoke_bedrock_embed, text))
-
-
-@router.post("/embeddings/embeddings", include_in_schema=False)
-async def proxy_embeddings(request: Request):
-    """OpenAI-compatible embeddings endpoint backed by Bedrock Titan."""
-    session_factory = get_session_factory()
-    async with session_factory() as db:
-        container, account = await _authenticate_and_check_budget(request, db)
-
-        body = await request.json()
-        input_data = body.get("input", "")
-        texts = input_data if isinstance(input_data, list) else [input_data]
-
-        if not texts or all(not t for t in texts):
-            raise HTTPException(status_code=400, detail="No input text provided")
-
-        embeddings = []
-        total_tokens = 0
-
-        for i, text in enumerate(texts):
-            try:
-                result = await _call_bedrock_embed(text)
-            except ClientError as e:
-                error_code = e.response["Error"]["Code"]
-                error_msg = e.response["Error"]["Message"]
-                logger.error(
-                    "Bedrock embedding failed for user %s: %s - %s (model=%s, text_len=%d)",
-                    container.user_id,
-                    error_code,
-                    error_msg,
-                    EMBEDDING_MODEL_ID,
-                    len(text),
-                )
-                if error_code == "AccessDeniedException":
-                    raise HTTPException(
-                        status_code=503,
-                        detail=f"Bedrock access denied for model {EMBEDDING_MODEL_ID}",
-                    )
-                if error_code == "ThrottlingException":
-                    raise HTTPException(status_code=429, detail="Bedrock rate limit exceeded")
-                if error_code == "ValidationException":
-                    raise HTTPException(status_code=400, detail=f"Bedrock validation error: {error_msg}")
-                raise HTTPException(status_code=502, detail=f"Bedrock error: {error_code}")
-            except BotoCoreError as e:
-                logger.error(
-                    "Bedrock connection error for user %s: %s (model=%s)",
-                    container.user_id,
-                    e,
-                    EMBEDDING_MODEL_ID,
-                )
-                raise HTTPException(status_code=502, detail=f"Bedrock connection error: {e}")
-            except Exception:
-                logger.exception(
-                    "Unexpected embedding error for user %s (model=%s, text_len=%d)",
-                    container.user_id,
-                    EMBEDDING_MODEL_ID,
-                    len(text),
-                )
-                raise HTTPException(status_code=500, detail="Internal embedding error")
-
-            embeddings.append(
-                {
-                    "object": "embedding",
-                    "index": i,
-                    "embedding": result["embedding"],
-                }
-            )
-            total_tokens += result.get("inputTextTokenCount", 0)
-
-        # Record usage
-        try:
-            usage_service = UsageService(db)
-            cost = EMBEDDING_COST_PER_TOKEN * total_tokens
-            await usage_service.record_tool_usage(
-                billing_account_id=account.id,
-                clerk_user_id=container.user_id,
-                tool_id="bedrock_embeddings",
-                quantity=total_tokens,
-                total_cost=cost,
-                source="embeddings",
-            )
-        except Exception:
-            logger.exception("Failed to record embedding usage for user %s", container.user_id)
-            await db.rollback()
-
-        return {
-            "object": "list",
-            "data": embeddings,
-            "model": body.get("model", "titan-embed-v2"),
-            "usage": {
-                "prompt_tokens": total_tokens,
-                "total_tokens": total_tokens,
-            },
-        }
 
 
 @router.api_route(
