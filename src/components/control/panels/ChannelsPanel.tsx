@@ -345,6 +345,41 @@ export function ChannelsPanel() {
     }
   };
 
+  const attemptWhatsApp515Recovery = async (): Promise<boolean> => {
+    setLoginMessage("Verifying WhatsApp pairing...");
+    try {
+      // Wait for creds to flush to EFS
+      await new Promise((r) => setTimeout(r, 3000));
+
+      const status = await callRpc<{
+        channelAccounts: Record<string, { linked?: boolean; configured?: boolean }[]>;
+      }>("channels.status", {});
+      const waAccounts = status?.channelAccounts?.whatsapp;
+      const linked = waAccounts?.some((a) => a.linked || a.configured);
+
+      if (!linked) {
+        return false;
+      }
+
+      // Trigger gateway restart via config.patch to start the WhatsApp channel
+      const snapshot = configData as ConfigSnapshot | undefined;
+      if (snapshot?.hash) {
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+
+      setQrDataUrl(null);
+      setLoginMessage("Connected!");
+      mutate();
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const handleWaitForScan = async () => {
     setActionBusy("wait");
     setActionError(null);
@@ -352,14 +387,28 @@ export function ChannelsPanel() {
       const res = await callRpc<WebLoginResult>("web.login.wait", {
         timeoutMs: 120000,
       });
-      setLoginMessage(res.message ?? null);
       if (res.connected) {
         setQrDataUrl(null);
         setLoginMessage("Connected!");
         mutate();
+      } else {
+        const is515 = res.message?.includes("515");
+        if (is515) {
+          const recovered = await attemptWhatsApp515Recovery();
+          if (recovered) return;
+        }
+        setLoginMessage(res.message ?? null);
       }
     } catch (err) {
-      setActionError(err instanceof Error ? err.message : String(err));
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const is515 = errMsg.includes("515");
+
+      if (is515) {
+        const recovered = await attemptWhatsApp515Recovery();
+        if (recovered) return;
+      }
+
+      setActionError(errMsg);
     } finally {
       setActionBusy(null);
     }

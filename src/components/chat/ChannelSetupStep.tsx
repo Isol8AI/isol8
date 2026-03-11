@@ -260,24 +260,92 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
         setConnectedChannels((prev) => new Set([...prev, "whatsapp"]));
         setExpandedChannel(null); // auto-collapse
       } else {
+        // Check if this is a 515 "restart required" failure — the QR pairing
+        // may have actually succeeded but the in-process socket restart failed
+        // (race between async credential save and socket reconnect on EFS).
+        const is515 = res.message?.includes("515");
+        if (is515) {
+          const recovered = await attemptWhatsApp515Recovery();
+          if (recovered) return;
+        }
         setWaMessage(res.message ?? "Waiting timed out. Try again.");
       }
     } catch (err) {
-      // Login failed — wipe bad creds so the health monitor doesn't crash-loop
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const is515 = errMsg.includes("515");
+
+      if (is515) {
+        // 515 = WhatsApp asked for a restart after pairing. The creds were
+        // likely saved; don't delete them. Instead try to verify + recover.
+        const recovered = await attemptWhatsApp515Recovery();
+        if (recovered) return;
+      }
+
+      // Non-515 failure — wipe bad creds so the health monitor doesn't crash-loop
       setWaLoginFailed(true);
       setQrDataUrl(null);
       setWaMessage(null);
-      try {
-        await callRpc("channels.logout", { channel: "whatsapp" });
-      } catch {
-        // Logout cleanup is best-effort
+      if (!is515) {
+        try {
+          await callRpc("channels.logout", { channel: "whatsapp" });
+        } catch {
+          // Logout cleanup is best-effort
+        }
       }
       setErrors((prev) => ({
         ...prev,
-        whatsapp: err instanceof Error ? err.message : String(err),
+        whatsapp: errMsg,
       }));
     } finally {
       setWaBusy(null);
+    }
+  };
+
+  /**
+   * After a 515 error, the QR pairing likely succeeded but the in-process
+   * socket restart failed. Wait for creds to flush to EFS, then check
+   * channels.status. If linked, trigger a config reload to start the channel.
+   */
+  const attemptWhatsApp515Recovery = async (): Promise<boolean> => {
+    setWaMessage("Verifying WhatsApp pairing...");
+    try {
+      // Wait for credential save to complete on EFS
+      await new Promise((r) => setTimeout(r, 3000));
+
+      // Check if WhatsApp is actually linked (creds exist on disk)
+      const status = await callRpc<{
+        channelAccounts: Record<string, { linked?: boolean; configured?: boolean }[]>;
+      }>("channels.status", {});
+      const waAccounts = status?.channelAccounts?.whatsapp;
+      const linked = waAccounts?.some((a) => a.linked || a.configured);
+
+      if (!linked) {
+        return false; // Creds didn't save — real failure
+      }
+
+      // Pairing succeeded! Trigger a config reload to start the channel.
+      // config.patch with the existing WhatsApp config is a no-op write
+      // that triggers a gateway restart, which clears manuallyStopped and
+      // starts the WhatsApp channel with the saved creds.
+      const snapshot = configData as ConfigSnapshot | undefined;
+      if (snapshot?.hash) {
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        // Wait for gateway restart to complete
+        await new Promise((r) => setTimeout(r, 4000));
+      }
+
+      // Success — mark WhatsApp as connected
+      setQrDataUrl(null);
+      setWaMessage(null);
+      setWaLoginFailed(false);
+      setConnectedChannels((prev) => new Set([...prev, "whatsapp"]));
+      setExpandedChannel(null);
+      return true;
+    } catch {
+      return false; // Recovery failed — let caller handle
     }
   };
 
