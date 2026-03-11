@@ -228,9 +228,9 @@ class TestCreateAccessPoint:
         mock_efs_client.create_access_point.assert_called_once()
         call_kwargs = mock_efs_client.create_access_point.call_args.kwargs
         assert call_kwargs["FileSystemId"] == "fs-test123"
-        assert call_kwargs["PosixUser"] == {"Uid": 0, "Gid": 0}
+        assert call_kwargs["PosixUser"] == {"Uid": 1000, "Gid": 1000}
         assert call_kwargs["RootDirectory"]["Path"] == "/users/user_test_123"
-        assert call_kwargs["RootDirectory"]["CreationInfo"]["OwnerUid"] == 0
+        assert call_kwargs["RootDirectory"]["CreationInfo"]["OwnerUid"] == 1000
         assert call_kwargs["RootDirectory"]["CreationInfo"]["Permissions"] == "0755"
 
     def test_access_point_failure_raises(self, manager, mock_efs_client):

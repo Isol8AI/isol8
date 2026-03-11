@@ -81,12 +81,12 @@ class EcsManager:
         try:
             resp = self._efs.create_access_point(
                 FileSystemId=self._efs_file_system_id,
-                PosixUser={"Uid": 0, "Gid": 0},
+                PosixUser={"Uid": 1000, "Gid": 1000},
                 RootDirectory={
                     "Path": f"/users/{user_id}",
                     "CreationInfo": {
-                        "OwnerUid": 0,
-                        "OwnerGid": 0,
+                        "OwnerUid": 1000,
+                        "OwnerGid": 1000,
                         "Permissions": "0755",
                     },
                 },
