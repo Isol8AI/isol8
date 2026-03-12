@@ -106,11 +106,11 @@ class TownDaemon:
             self.state.setdefault("pending_messages", []).append(data)
             if event == "conversation_invite":
                 self._append_event(
-                    f"CHAT_INVITE from {data.get('from', '?')} — \"{data.get('message', '')}\" (conv_id: {data.get('conv_id', '?')})"
+                    f'CHAT_INVITE from {data.get("from", "?")} — "{data.get("message", "")}" (conv_id: {data.get("conv_id", "?")})'
                 )
             else:
                 self._append_event(
-                    f"CHAT_MESSAGE {data.get('from', '?')} — \"{data.get('text', '')}\" (conv_id: {data.get('conv_id', '?')}, turn {data.get('turn', '?')})"
+                    f'CHAT_MESSAGE {data.get("from", "?")} — "{data.get("text", "")}" (conv_id: {data.get("conv_id", "?")}, turn {data.get("turn", "?")})'
                 )
         elif event == "conversation_ended":
             self.state.pop("active_conversation", None)
@@ -208,11 +208,11 @@ class TownDaemon:
                 event = msg.get("event", "")
                 if event == "conversation_invite":
                     msg_lines.append(
-                        f"- **{msg.get('from', '?')}** wants to chat: \"{msg.get('message', '')}\" (conv_id: {msg.get('conv_id', '?')})"
+                        f'- **{msg.get("from", "?")}** wants to chat: "{msg.get("message", "")}" (conv_id: {msg.get("conv_id", "?")})'
                     )
                 elif event == "conversation_message":
                     msg_lines.append(
-                        f"- **{msg.get('from', '?')}** says: \"{msg.get('text', '')}\" (conv_id: {msg.get('conv_id', '?')}, turn {msg.get('turn', '?')})"
+                        f'- **{msg.get("from", "?")}** says: "{msg.get("text", "")}" (conv_id: {msg.get("conv_id", "?")}, turn {msg.get("turn", "?")})'
                     )
             pending_text = "\n".join(msg_lines) if msg_lines else "None"
         else:
