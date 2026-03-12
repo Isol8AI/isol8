@@ -35,6 +35,9 @@ stripe_pro_fixed_price_id     = "price_1T5fAdEfizkJ25sA2n6bPqPW"
 stripe_metered_price_id       = "price_1T5f90EfizkJ25sAebYrGVyk"
 stripe_meter_id               = "mtr_test_61UF36IlRmFY2XJYU41EfizkJ25sA2T2"
 
+# GooseTown sprite CDN (CloudFront + S3)
+town_assets_cert_arn = "arn:aws:acm:us-east-1:877352799272:certificate/24b2c113-a8ec-4d72-84af-044807ff8d87"
+
 # =============================================================================
 # SENSITIVE VALUES - Set via environment variables, not in this file!
 # =============================================================================
