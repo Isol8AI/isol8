@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { Button } from "@/components/ui/button";
-import { SendHorizontal, Paperclip, X, FileIcon, Loader2 } from "lucide-react";
+import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface PendingFile {
@@ -12,9 +12,11 @@ interface PendingFile {
 
 interface ChatInputProps {
   onSend: (message: string, files?: File[]) => void;
+  onStop?: () => void;
   disabled?: boolean;
   centered?: boolean;
   isUploading?: boolean;
+  isStreaming?: boolean;
   suggestedMessage?: string;
 }
 
@@ -24,7 +26,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function ChatInput({ onSend, disabled, centered, isUploading, suggestedMessage }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -155,20 +157,33 @@ export function ChatInput({ onSend, disabled, centered, isUploading, suggestedMe
             />
           </div>
 
-          <Button
-            size="icon"
-            className="shrink-0 h-8 w-8 rounded-full"
-            onClick={handleSend}
-            disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
-            data-testid="send-button"
-            aria-label="Send message"
-          >
-            {isUploading ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <SendHorizontal className="h-4 w-4" />
-            )}
-          </Button>
+          {isStreaming ? (
+            <Button
+              size="icon"
+              variant="destructive"
+              className="shrink-0 h-8 w-8 rounded-full"
+              onClick={onStop}
+              data-testid="stop-button"
+              aria-label="Stop agent"
+            >
+              <Square className="h-3.5 w-3.5 fill-current" />
+            </Button>
+          ) : (
+            <Button
+              size="icon"
+              className="shrink-0 h-8 w-8 rounded-full"
+              onClick={handleSend}
+              disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
+              data-testid="send-button"
+              aria-label="Send message"
+            >
+              {isUploading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <SendHorizontal className="h-4 w-4" />
+              )}
+            </Button>
+          )}
         </div>
       </div>
     </div>

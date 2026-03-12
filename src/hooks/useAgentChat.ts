@@ -89,6 +89,7 @@ export interface UseAgentChatReturn {
   isStreaming: boolean;
   error: string | null;
   sendMessage: (message: string) => Promise<void>;
+  cancelMessage: () => Promise<void>;
   clearMessages: () => void;
   isConnected: boolean;
   isLoadingHistory: boolean;
@@ -359,6 +360,24 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
     [sendChat, isConnected],
   );
 
+  // ---- Cancel / stop agent ----
+
+  const cancelMessage = useCallback(async () => {
+    if (!agentIdRef.current || !isStreaming) return;
+
+    const sessionKey = `agent:${agentIdRef.current}:main`;
+    try {
+      await sendReq("chat.abort", { sessionKey });
+    } catch (err) {
+      console.warn("Failed to abort agent run:", err);
+    }
+
+    // Immediately update local state so the UI feels responsive
+    setIsStreaming(false);
+    currentAssistantIdRef.current = null;
+    streamContentRef.current = "";
+  }, [isStreaming, sendReq]);
+
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
@@ -397,6 +416,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
     isStreaming,
     error,
     sendMessage,
+    cancelMessage,
     clearMessages,
     isConnected,
     isLoadingHistory,

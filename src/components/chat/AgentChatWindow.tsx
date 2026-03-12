@@ -32,6 +32,7 @@ export function AgentChatWindow({
     isStreaming,
     error: chatError,
     sendMessage,
+    cancelMessage,
     clearMessages,
     isLoadingHistory,
     needsBootstrap,
@@ -115,7 +116,7 @@ export function AgentChatWindow({
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
-          <ChatInput onSend={handleSend} disabled={isTyping} isUploading={isUploading} />
+          <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
         </div>
       </div>
     );
@@ -148,7 +149,9 @@ export function AgentChatWindow({
           <div className="w-full max-w-2xl">
             <ChatInput
               onSend={handleSend}
+              onStop={cancelMessage}
               disabled={isTyping || !agentId}
+              isStreaming={isStreaming}
               centered
               isUploading={isUploading}
               suggestedMessage={needsBootstrap ? BOOTSTRAP_MESSAGE : undefined}
@@ -163,7 +166,7 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-background/20">
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
-      <ChatInput onSend={handleSend} disabled={isTyping} isUploading={isUploading} />
+      <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
     </div>
   );
 }
