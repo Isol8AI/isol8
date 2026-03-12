@@ -641,8 +641,8 @@ async def register_agent(
                             logger.info(f"Sprite ready for agent {_agent_id}")
                             _notify_state_changed()
                             return
-                        logger.warning(f"ZIP downloaded but no walk frames for {char_id}")
-                        break
+                        logger.info(f"ZIP downloaded but no walk frames yet for {char_id} (attempt {attempt + 1})")
+                        continue
                     logger.warning(f"Sprite generation timed out for agent {_agent_id}")
                 except Exception as e:
                     logger.exception(f"PixelLab sprite generation failed for {_agent_id}: {e}")
