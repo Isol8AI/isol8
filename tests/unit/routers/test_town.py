@@ -348,19 +348,26 @@ class TestAgentStatus:
 
         from unittest.mock import AsyncMock, patch, MagicMock
 
+        fake_zip = b"fake-zip-bytes"
         fake_png = b"fake-png-bytes"
         mock_settings = MagicMock()
         mock_settings.pixellab_api_key = "test-key"
         mock_settings.SPRITE_S3_BUCKET = "test-bucket"
         mock_settings.SPRITE_CDN_URL = "https://cdn.example.com"
 
+        mock_pxl_instance = AsyncMock()
+        mock_pxl_instance.download_character_zip.return_value = fake_zip
+
         with (
             patch("core.config.settings", mock_settings),
             patch(
-                "core.services.sprite_storage.download_walk_spritesheet",
-                new_callable=AsyncMock,
+                "core.services.pixellab_service.PixelLabService",
+                return_value=mock_pxl_instance,
+            ),
+            patch(
+                "core.services.sprite_storage.extract_walk_spritesheet",
                 return_value=fake_png,
-            ) as mock_download,
+            ) as mock_extract,
             patch(
                 "core.services.sprite_storage.upload_sprite_to_s3",
                 return_value="sprites/test-id/walk.png",
@@ -377,7 +384,8 @@ class TestAgentStatus:
         assert data["agent_name"] == "sprited"
         assert data["sprite_ready"] is True
         assert data["sprite_url"] == "https://cdn.example.com/sprites/test-id/walk.png"
-        mock_download.assert_called_once_with("test-key", "pxl_char_123")
+        mock_pxl_instance.download_character_zip.assert_called_once_with("pxl_char_123")
+        mock_extract.assert_called_once_with(fake_zip)
         mock_upload.assert_called_once()
 
 

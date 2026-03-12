@@ -595,7 +595,7 @@ async def register_agent(
                 logger.info(f"_generate_sprite started for agent {_agent_id}")
                 try:
                     from core.services.pixellab_service import PixelLabService
-                    from core.services.sprite_storage import download_walk_spritesheet, upload_sprite_to_s3
+                    from core.services.sprite_storage import extract_walk_spritesheet, upload_sprite_to_s3
 
                     pxl = PixelLabService(api_key=settings.pixellab_api_key)
                     logger.info(f"Calling PixelLab create_character for {_agent_id}")
@@ -613,18 +613,21 @@ async def register_agent(
                             update(TA).where(TA.id == _agent_id).values(pixellab_character_id=char_id)
                         )
                         await session.commit()
-                    # Queue animations (non-fatal — character may already have them)
+                    # Queue walk animation only (non-fatal)
                     try:
-                        await pxl.generate_all_animations(char_id)
-                        logger.info(f"PixelLab animations queued for {char_id}")
+                        job_ids = await pxl.animate_character(char_id, "walk")
+                        logger.info(f"PixelLab walk animation queued for {char_id}, jobs={job_ids}")
                     except Exception as anim_err:
                         logger.warning(f"Animation request failed (continuing to poll): {anim_err}")
-                    logger.info(f"PixelLab character {char_id} created for {agent.agent_name}")
 
-                    # Poll for completion and download sprite
-                    for _ in range(30):  # 30 x 10s = 5 minutes max
+                    # Poll for ZIP download (423 = still processing)
+                    for attempt in range(30):  # 30 x 10s = 5 minutes max
                         await asyncio.sleep(10)
-                        png_bytes = await download_walk_spritesheet(settings.pixellab_api_key, char_id)
+                        zip_bytes = await pxl.download_character_zip(char_id)
+                        if zip_bytes is None:
+                            logger.info(f"ZIP not ready for {char_id} (attempt {attempt + 1})")
+                            continue
+                        png_bytes = extract_walk_spritesheet(zip_bytes)
                         if png_bytes:
                             s3_key = await asyncio.to_thread(
                                 upload_sprite_to_s3, png_bytes, str(_agent_id), settings.SPRITE_S3_BUCKET
@@ -638,6 +641,8 @@ async def register_agent(
                             logger.info(f"Sprite ready for agent {_agent_id}")
                             _notify_state_changed()
                             return
+                        logger.warning(f"ZIP downloaded but no walk frames for {char_id}")
+                        break
                     logger.warning(f"Sprite generation timed out for agent {_agent_id}")
                 except Exception as e:
                     logger.exception(f"PixelLab sprite generation failed for {_agent_id}: {e}")
@@ -699,25 +704,26 @@ async def get_agent_status(
     if settings.pixellab_api_key and settings.SPRITE_S3_BUCKET:
         try:
             import asyncio
-            from core.services.sprite_storage import download_walk_spritesheet, upload_sprite_to_s3
+            from core.services.pixellab_service import PixelLabService
+            from core.services.sprite_storage import extract_walk_spritesheet, upload_sprite_to_s3
 
-            png_bytes = await download_walk_spritesheet(
-                settings.pixellab_api_key,
-                agent.pixellab_character_id,
-            )
-            if png_bytes:
-                s3_key = await asyncio.to_thread(
-                    upload_sprite_to_s3, png_bytes, str(agent.id), settings.SPRITE_S3_BUCKET
-                )
-                cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
-                agent.sprite_ready = True
-                agent.sprite_url = cdn_url
-                await db.commit()
-                return {
-                    "agent_name": agent.agent_name,
-                    "sprite_ready": True,
-                    "sprite_url": cdn_url,
-                }
+            pxl = PixelLabService(api_key=settings.pixellab_api_key)
+            zip_bytes = await pxl.download_character_zip(agent.pixellab_character_id)
+            if zip_bytes:
+                png_bytes = extract_walk_spritesheet(zip_bytes)
+                if png_bytes:
+                    s3_key = await asyncio.to_thread(
+                        upload_sprite_to_s3, png_bytes, str(agent.id), settings.SPRITE_S3_BUCKET
+                    )
+                    cdn_url = f"{settings.SPRITE_CDN_URL}/{s3_key}"
+                    agent.sprite_ready = True
+                    agent.sprite_url = cdn_url
+                    await db.commit()
+                    return {
+                        "agent_name": agent.agent_name,
+                        "sprite_ready": True,
+                        "sprite_url": cdn_url,
+                    }
         except Exception as e:
             logger.warning(f"Sprite status check failed: {e}")
 
