@@ -56,7 +56,6 @@ class PixelLabService:
             body = {
                 "character_id": character_id,
                 "template_animation_id": animation,
-                "image_size": {"width": 48, "height": 48},
             }
             if action_description:
                 body["action_description"] = action_description
@@ -66,6 +65,8 @@ class PixelLabService:
                 json=body,
                 timeout=30.0,
             )
+            if resp.status_code != 200:
+                logger.error(f"PixelLab animate_character {resp.status_code}: {resp.text}")
             resp.raise_for_status()
             return resp.json().get("job_id", "")
 

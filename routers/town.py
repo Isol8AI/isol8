@@ -549,8 +549,12 @@ async def register_agent(
                             update(TA).where(TA.id == _agent_id).values(pixellab_character_id=char_id)
                         )
                         await session.commit()
-                    # Queue animations
-                    await pxl.generate_all_animations(char_id)
+                    # Queue animations (non-fatal — character may already have them)
+                    try:
+                        await pxl.generate_all_animations(char_id)
+                        logger.info(f"PixelLab animations queued for {char_id}")
+                    except Exception as anim_err:
+                        logger.warning(f"Animation request failed (continuing to poll): {anim_err}")
                     logger.info(f"PixelLab character {char_id} created for {agent.agent_name}")
 
                     # Poll for completion and download sprite

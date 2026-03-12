@@ -74,7 +74,6 @@ class TestPixelLabService:
             body = call_args.kwargs["json"]
             assert body["character_id"] == "char_123"
             assert body["template_animation_id"] == "walk"
-            assert body["image_size"] == {"width": 48, "height": 48}
 
     @pytest.mark.asyncio
     async def test_generate_all_animations_calls_walk_and_idle(self):
