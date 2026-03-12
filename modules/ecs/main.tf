@@ -219,7 +219,7 @@ resource "aws_ecs_task_definition" "openclaw" {
         interval    = 30
         timeout     = 10
         retries     = 3
-        startPeriod = 60
+        startPeriod = 120
       }
 
       linuxParameters = {
