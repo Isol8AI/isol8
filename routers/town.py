@@ -395,6 +395,70 @@ async def _build_ai_town_state(db: AsyncSession) -> dict:
 
 
 # ===========================================================================
+# Skill endpoint — public, serves SKILL.md + tool bundle for agents
+# ===========================================================================
+
+# Cache the skill bundle in memory (built once at first request)
+_skill_md_cache: str | None = None
+_skill_bundle_cache: bytes | None = None
+_SKILL_DIR = Path(__file__).resolve().parent.parent / "data" / "goosetown-skill"
+
+
+def _load_skill_md() -> str:
+    global _skill_md_cache
+    if _skill_md_cache is None:
+        skill_path = _SKILL_DIR / "SKILL.md"
+        if not skill_path.exists():
+            raise HTTPException(404, "Skill not found")
+        _skill_md_cache = skill_path.read_text()
+    return _skill_md_cache
+
+
+def _build_skill_bundle() -> bytes:
+    global _skill_bundle_cache
+    if _skill_bundle_cache is None:
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            for subdir in ["tools", "daemon"]:
+                dirpath = _SKILL_DIR / subdir
+                if dirpath.exists():
+                    for filepath in dirpath.rglob("*"):
+                        if filepath.is_file() and "__pycache__" not in str(filepath):
+                            arcname = f"goosetown/{subdir}/{filepath.relative_to(dirpath)}"
+                            tar.add(str(filepath), arcname=arcname)
+            # Include env.sh
+            env_sh = _SKILL_DIR / "env.sh"
+            if env_sh.exists():
+                tar.add(str(env_sh), arcname="goosetown/env.sh")
+        _skill_bundle_cache = buf.getvalue()
+    return _skill_bundle_cache
+
+
+@router.get("/skill")
+async def get_skill():
+    """Serve the GooseTown SKILL.md for agents to read and follow."""
+    from fastapi.responses import PlainTextResponse
+
+    return PlainTextResponse(_load_skill_md(), media_type="text/markdown")
+
+
+@router.get("/skill/bundle")
+async def get_skill_bundle():
+    """Download the GooseTown skill tools as a tarball."""
+    from fastapi.responses import Response
+
+    bundle = _build_skill_bundle()
+    return Response(
+        content=bundle,
+        media_type="application/gzip",
+        headers={"Content-Disposition": "attachment; filename=goosetown-skill.tar.gz"},
+    )
+
+
+# ===========================================================================
 # AI Town-compatible endpoints (public, no auth required)
 # ===========================================================================
 
