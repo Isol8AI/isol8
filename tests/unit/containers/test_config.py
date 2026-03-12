@@ -115,11 +115,11 @@ class TestWriteOpenclawConfig:
         assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
         assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
 
-    def test_memory_search_local_embeddings(self):
-        """Memory search uses local GGUF embeddings."""
+    def test_memory_search_enabled(self):
+        """Memory search is enabled (QMD handles embeddings locally)."""
         config = json.loads(write_openclaw_config())
         mem = config["agents"]["defaults"]["memorySearch"]
-        assert mem["enabled"] is False
+        assert mem["enabled"] is True
 
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""

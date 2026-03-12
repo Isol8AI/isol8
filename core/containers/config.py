@@ -218,7 +218,7 @@ def write_openclaw_config(
                     "amazon-bedrock/us.mistral.mistral-large-2512-v1:0": {"alias": "Mistral Large 3"},
                 },
                 "memorySearch": {
-                    "enabled": False,
+                    "enabled": True,
                 },
             },
         },
