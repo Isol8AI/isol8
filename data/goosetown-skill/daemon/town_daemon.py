@@ -428,11 +428,15 @@ class TownDaemon:
         try:
             await self.connect_ws()
 
-            # Wait for initial state
+            # Start WS listener so we can receive the connected event
+            ws_task = asyncio.create_task(self.listen_ws())
+
+            # Wait for initial state (connected event)
             try:
-                await asyncio.wait_for(self._initial_state_event.wait(), timeout=10.0)
+                await asyncio.wait_for(self._initial_state_event.wait(), timeout=15.0)
             except asyncio.TimeoutError:
                 logger.error("Timeout waiting for initial state")
+                ws_task.cancel()
                 return
 
             # Print initial state to stdout (captured by town_connect.sh)
@@ -440,7 +444,7 @@ class TownDaemon:
             sys.stdout.flush()
 
             # Run WS listener and socket server concurrently
-            await asyncio.gather(self.listen_ws(), self.run_socket_server())
+            await asyncio.gather(ws_task, self.run_socket_server())
         finally:
             if self.ws:
                 await self.ws.close()
