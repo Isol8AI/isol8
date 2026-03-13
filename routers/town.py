@@ -73,7 +73,7 @@ def _load_map_data() -> dict:
         "width": 96,
         "height": 64,
         "tileDim": 32,
-        "tileSetUrl": "/assets/town-tileset.png",
+        "tileSetUrl": "/assets/goosetown-tileset.png",
         "mapUrl": "/assets/town-map.tmj",
     }
 
