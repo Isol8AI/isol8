@@ -169,8 +169,8 @@ class GatewayConnection:
 
         # Step 2: build device auth
         identity = _DEVICE_IDENTITY
-        client_id = "isol8-backend"
-        client_mode = "cli"
+        client_id = "gateway-client"
+        client_mode = "backend"
         client_platform = "linux"
         role = "operator"
         scopes = ["operator.admin"]
