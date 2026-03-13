@@ -9,11 +9,19 @@ req/res/event protocol. Background reader task handles incoming messages:
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
+import time
 import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    PublicFormat,
+)
 from websockets import connect as ws_connect
 
 from core.containers.ecs_manager import GATEWAY_PORT
@@ -23,6 +31,78 @@ logger = logging.getLogger(__name__)
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
+
+
+# ---------------------------------------------------------------------------
+# Ed25519 device identity helpers (matches OpenClaw device-auth protocol)
+# ---------------------------------------------------------------------------
+
+
+def _base64url_encode(data: bytes) -> str:
+    """Base64url encode without padding (RFC 7515)."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def _generate_device_identity() -> dict:
+    """Generate a stable Ed25519 device identity (keypair + derived device ID).
+
+    Returns dict with keys: private_key, public_key_raw, device_id.
+    """
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    # Raw 32-byte public key
+    public_key_raw = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+    # Device ID = SHA-256 hex of raw public key (matches OpenClaw fingerprint)
+    device_id = hashlib.sha256(public_key_raw).hexdigest()
+    return {
+        "private_key": private_key,
+        "public_key_raw": public_key_raw,
+        "device_id": device_id,
+    }
+
+
+# Module-level singleton: one device identity per backend process
+_DEVICE_IDENTITY = _generate_device_identity()
+
+
+def _build_device_auth_payload_v3(
+    device_id: str,
+    client_id: str,
+    client_mode: str,
+    role: str,
+    scopes: list[str],
+    signed_at_ms: int,
+    token: str | None,
+    nonce: str,
+    platform: str | None = None,
+    device_family: str | None = None,
+) -> str:
+    """Build v3 device auth payload string (matches OpenClaw buildDeviceAuthPayloadV3)."""
+    scopes_str = ",".join(scopes)
+    token_str = token or ""
+    platform_str = (platform or "").strip().lower()
+    device_family_str = (device_family or "").strip().lower()
+    return "|".join(
+        [
+            "v3",
+            device_id,
+            client_id,
+            client_mode,
+            role,
+            scopes_str,
+            str(signed_at_ms),
+            token_str,
+            nonce,
+            platform_str,
+            device_family_str,
+        ]
+    )
+
+
+def _sign_device_payload(private_key: Ed25519PrivateKey, payload: str) -> str:
+    """Sign payload with Ed25519 and return base64url-encoded signature."""
+    sig = private_key.sign(payload.encode("utf-8"))
+    return _base64url_encode(sig)
 
 
 class GatewayConnection:
@@ -74,14 +154,41 @@ class GatewayConnection:
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
-        """Complete OpenClaw connect handshake."""
+        """Complete OpenClaw connect handshake with Ed25519 device identity."""
         # Step 1: receive connect.challenge
         raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
         challenge = json.loads(raw)
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
 
-        # Step 2: send connect
+        # Extract nonce from challenge
+        challenge_payload = challenge.get("payload", {})
+        nonce = challenge_payload.get("nonce", "")
+        if not nonce:
+            raise RuntimeError("connect.challenge missing nonce")
+
+        # Step 2: build device auth
+        identity = _DEVICE_IDENTITY
+        client_id = "isol8-backend"
+        client_mode = "cli"
+        client_platform = "linux"
+        role = "operator"
+        scopes = ["operator.admin"]
+        signed_at_ms = int(time.time() * 1000)
+
+        payload_str = _build_device_auth_payload_v3(
+            device_id=identity["device_id"],
+            client_id=client_id,
+            client_mode=client_mode,
+            role=role,
+            scopes=scopes,
+            signed_at_ms=signed_at_ms,
+            token=self.token,
+            nonce=nonce,
+            platform=client_platform,
+        )
+        signature = _sign_device_payload(identity["private_key"], payload_str)
+
         connect_msg = {
             "type": "req",
             "id": str(uuid.uuid4()),
@@ -89,10 +196,22 @@ class GatewayConnection:
             "params": {
                 "minProtocol": 3,
                 "maxProtocol": 3,
-                "client": {"id": "cli", "version": "1.0.0", "platform": "linux", "mode": "cli"},
-                "role": "operator",
-                "scopes": ["operator.admin"],
+                "client": {
+                    "id": client_id,
+                    "version": "1.0.0",
+                    "platform": client_platform,
+                    "mode": client_mode,
+                },
+                "role": role,
+                "scopes": scopes,
                 "auth": {"token": self.token},
+                "device": {
+                    "id": identity["device_id"],
+                    "publicKey": _base64url_encode(identity["public_key_raw"]),
+                    "signature": signature,
+                    "signedAt": signed_at_ms,
+                    "nonce": nonce,
+                },
             },
         }
         await self._ws.send(json.dumps(connect_msg))
