@@ -123,6 +123,17 @@ resource "aws_s3_bucket" "town_sprites" {
   }
 }
 
+resource "aws_s3_bucket_cors_configuration" "town_sprites" {
+  bucket = aws_s3_bucket.town_sprites.id
+
+  cors_rule {
+    allowed_headers = ["*"]
+    allowed_methods = ["GET", "HEAD"]
+    allowed_origins = ["*"]
+    max_age_seconds = 86400
+  }
+}
+
 resource "aws_s3_bucket_public_access_block" "town_sprites" {
   bucket                  = aws_s3_bucket.town_sprites.id
   block_public_acls       = true
@@ -154,6 +165,25 @@ resource "aws_s3_bucket_policy" "town_sprites" {
   })
 }
 
+resource "aws_cloudfront_response_headers_policy" "town_sprites_cors" {
+  count = var.town_assets_cert_arn != "" ? 1 : 0
+  name  = "isol8-${var.environment}-town-sprites-cors"
+
+  cors_config {
+    access_control_allow_origins {
+      items = ["*"]
+    }
+    access_control_allow_methods {
+      items = ["GET", "HEAD"]
+    }
+    access_control_allow_headers {
+      items = ["*"]
+    }
+    access_control_max_age_sec = 86400
+    origin_override            = true
+  }
+}
+
 resource "aws_cloudfront_distribution" "town_sprites" {
   count = var.town_assets_cert_arn != "" ? 1 : 0
 
@@ -174,13 +204,16 @@ resource "aws_cloudfront_distribution" "town_sprites" {
   }
 
   default_cache_behavior {
-    allowed_methods        = ["GET", "HEAD"]
+    allowed_methods        = ["GET", "HEAD", "OPTIONS"]
     cached_methods         = ["GET", "HEAD"]
     target_origin_id       = "S3-town-sprites"
     viewer_protocol_policy = "redirect-to-https"
 
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.town_sprites_cors[0].id
+
     forwarded_values {
       query_string = false
+      headers      = ["Origin", "Access-Control-Request-Method", "Access-Control-Request-Headers"]
       cookies {
         forward = "none"
       }
