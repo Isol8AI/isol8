@@ -620,8 +620,29 @@ async def register_agent(
                     except Exception as anim_err:
                         logger.warning(f"Animation request failed (continuing to poll): {anim_err}")
 
-                    # Poll for ZIP download (423 = still processing)
-                    for attempt in range(30):  # 30 x 10s = 5 minutes max
+                    # Wait for all animation jobs to complete before downloading ZIP
+                    if job_ids:
+                        for attempt in range(30):  # 30 x 10s = 5 minutes max
+                            await asyncio.sleep(10)
+                            statuses = []
+                            for jid in job_ids:
+                                try:
+                                    job = await pxl.get_job_status(jid)
+                                    statuses.append(job.get("status", "unknown"))
+                                except Exception as e:
+                                    logger.warning(f"Failed to check job {jid}: {e}")
+                                    statuses.append("unknown")
+                            completed = sum(1 for s in statuses if s == "completed")
+                            logger.info(
+                                f"Animation jobs for {char_id}: {completed}/{len(job_ids)} completed (attempt {attempt + 1})"
+                            )
+                            if all(s == "completed" for s in statuses):
+                                break
+                        else:
+                            logger.warning(f"Animation jobs timed out for {char_id}, proceeding with download anyway")
+
+                    # Download ZIP and extract spritesheet
+                    for attempt in range(6):  # 6 x 10s = 1 minute for ZIP to be ready
                         await asyncio.sleep(10)
                         zip_bytes = await pxl.download_character_zip(char_id)
                         if zip_bytes is None:
