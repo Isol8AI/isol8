@@ -20,6 +20,8 @@ from typing import Any, Callable, Coroutine, Dict, Optional, Set
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives.serialization import (
     Encoding,
+    NoEncryption,
+    PrivateFormat,
     PublicFormat,
 )
 from websockets import connect as ws_connect
@@ -44,25 +46,37 @@ def _base64url_encode(data: bytes) -> str:
 
 
 def _generate_device_identity() -> dict:
-    """Generate a stable Ed25519 device identity (keypair + derived device ID).
+    """Generate a new Ed25519 device identity (keypair + derived device ID).
 
-    Returns dict with keys: private_key, public_key_raw, device_id.
+    Returns dict with keys: private_key, public_key_raw, device_id, private_key_pem.
     """
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
-    # Raw 32-byte public key
     public_key_raw = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
-    # Device ID = SHA-256 hex of raw public key (matches OpenClaw fingerprint)
+    device_id = hashlib.sha256(public_key_raw).hexdigest()
+    private_key_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
+    return {
+        "private_key": private_key,
+        "public_key_raw": public_key_raw,
+        "device_id": device_id,
+        "private_key_pem": private_key_pem,
+    }
+
+
+def _load_device_identity(private_key_pem: str) -> dict:
+    """Reconstruct device identity from a stored PEM private key."""
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
+
+    private_key = load_pem_private_key(private_key_pem.encode("ascii"), password=None)
+    public_key = private_key.public_key()
+    public_key_raw = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
     device_id = hashlib.sha256(public_key_raw).hexdigest()
     return {
         "private_key": private_key,
         "public_key_raw": public_key_raw,
         "device_id": device_id,
+        "private_key_pem": private_key_pem,
     }
-
-
-# Module-level singleton: one device identity per backend process
-_DEVICE_IDENTITY = _generate_device_identity()
 
 
 def _build_device_auth_payload_v3(
@@ -117,12 +131,14 @@ class GatewayConnection:
         user_id: str,
         ip: str,
         token: str,
+        device_identity: dict,
         management_api: Any,
         on_usage: Optional["GatewayConnection.UsageCallback"] = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
+        self._device_identity = device_identity
         self._management_api = management_api
         self._on_usage = on_usage
         self._ws: Any = None
@@ -168,7 +184,7 @@ class GatewayConnection:
             raise RuntimeError("connect.challenge missing nonce")
 
         # Step 2: build device auth
-        identity = _DEVICE_IDENTITY
+        identity = self._device_identity
         client_id = "gateway-client"
         client_mode = "backend"
         client_platform = "linux"
@@ -527,16 +543,48 @@ class GatewayConnectionPool:
         self._management_api = management_api
         self._on_usage = on_usage
         self._connections: Dict[str, GatewayConnection] = {}
+        self._device_identities: Dict[str, dict] = {}  # user_id -> device identity
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
 
+    async def _get_or_create_device_identity(self, user_id: str) -> dict:
+        """Get cached device identity or load/generate from DB."""
+        if user_id in self._device_identities:
+            return self._device_identities[user_id]
+
+        from core.database import get_session_factory
+        from models.container import Container
+        from sqlalchemy import select, update
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            result = await session.execute(select(Container.device_private_key_pem).where(Container.user_id == user_id))
+            row = result.first()
+            pem = row[0] if row else None
+
+            if pem:
+                identity = _load_device_identity(pem)
+            else:
+                identity = _generate_device_identity()
+                await session.execute(
+                    update(Container)
+                    .where(Container.user_id == user_id)
+                    .values(device_private_key_pem=identity["private_key_pem"])
+                )
+                await session.commit()
+
+        self._device_identities[user_id] = identity
+        return identity
+
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
+        device_identity = await self._get_or_create_device_identity(user_id)
         conn = GatewayConnection(
             user_id=user_id,
             ip=ip,
             token=token,
+            device_identity=device_identity,
             management_api=self._management_api,
             on_usage=self._on_usage,
         )

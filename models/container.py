@@ -59,6 +59,7 @@ class Container(Base):
 
     # Auth
     gateway_token = Column(String, nullable=False)
+    device_private_key_pem = Column(String, nullable=True)
 
     # Status: provisioning, running, stopped, error
     status = Column(
