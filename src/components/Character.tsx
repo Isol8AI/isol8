@@ -45,6 +45,7 @@ export const Character = ({
       const sheet = new Spritesheet(
         BaseTexture.from(textureUrl, {
           scaleMode: PIXI.SCALE_MODES.NEAREST,
+          resourceOptions: { crossorigin: 'anonymous' },
         }),
         spritesheetData,
       );
