@@ -50,23 +50,9 @@ export interface SpeechBubble {
 export interface WorldMap {
   width: number;
   height: number;
-  tileSetUrl: string;
-  tileSetDimX: number;
-  tileSetDimY: number;
   tileDim: number;
-  bgTiles: number[][][];
-  objectTiles: number[][][];
-  animatedSprites: AnimatedSprite[];
-}
-
-export interface AnimatedSprite {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  layer: number;
-  sheet: string;
-  animation: string;
+  tileSetUrl: string;
+  mapUrl: string;
 }
 
 /** Response from GET /town/state */
