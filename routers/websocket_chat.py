@@ -14,15 +14,18 @@ import logging
 import secrets
 import uuid as _uuid
 from typing import Any, Dict, Optional
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
+from core.services.town_agent_ws import get_town_agent_ws_manager
+from models.town import TownState
 
 logger = logging.getLogger(__name__)
 
@@ -157,27 +160,21 @@ async def ws_disconnect(
     except Exception:
         pass
 
-    # Clean up town agent connection if active — set agent to sleeping
+    # Clean up town agent connection if active — move back to apartment
     try:
-        from core.services.town_agent_ws import get_town_agent_ws_manager
-
         ws_manager = get_town_agent_ws_manager()
         agent_conn = ws_manager.get_by_connection(x_connection_id)
         if agent_conn:
             ws_manager.unregister(x_connection_id)
-            # Set agent to sleeping in DB since their WS is gone
+            # Move agent back to apartment on disconnect so it disappears from town
             try:
-                from core.database import get_session_factory
-                from models.town import TownState
-                from sqlalchemy import update
-                from uuid import UUID
-
-                async_session = get_session_factory()
+                async_session = db_get_session_factory()
                 async with async_session() as session:
                     await session.execute(
                         update(TownState)
                         .where(TownState.agent_id == UUID(agent_conn.agent_id))
                         .values(
+                            location_context="apartment",
                             location_state="sleeping",
                             speed=0.0,
                             target_x=None,
@@ -186,7 +183,7 @@ async def ws_disconnect(
                         )
                     )
                     await session.commit()
-                logger.info("Agent %s set to sleeping on disconnect", agent_conn.agent_name)
+                logger.info("Agent %s moved to apartment on disconnect", agent_conn.agent_name)
             except Exception as e:
                 logger.warning("Failed to set agent sleeping on disconnect: %s", e)
     except Exception:
