@@ -1,5 +1,5 @@
 import * as PIXI from 'pixi.js';
-import { useApp, PixiComponent } from '@pixi/react';
+import { useApp, Container, PixiComponent } from '@pixi/react';
 import { Player } from './Player.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { TiledMapRenderer, type MapDimensions } from './TiledMapRenderer.tsx';
@@ -135,9 +135,11 @@ export const PixiGame = (props: {
       worldHeight={height * tileDim}
       viewportRef={viewportRef}
     >
+      {/* Ground + objects layers (below agents) */}
       <TiledMapRenderer
         mapUrl="/assets/town-map.tmj"
         tilesetUrl="/assets/town-tileset.png"
+        layers={['background', 'ground', 'objects']}
         onMapLoaded={setMapDims}
       />
       {/* Location labels (hover-only) */}
@@ -150,16 +152,24 @@ export const PixiGame = (props: {
           tileDim={tileDim}
         />
       ))}
-      {/* Players with smooth interpolation */}
-      {interpolatedPlayers.map((p) => (
-        <Player
-          key={`player-${p.id}`}
-          game={props.game}
-          player={p}
-          onClick={(id) => props.setSelectedPlayerId(id)}
-          tileDim={tileDim}
-        />
-      ))}
+      {/* Players with smooth interpolation, Y-sorted */}
+      <Container sortableChildren={true}>
+        {interpolatedPlayers.map((p) => (
+          <Player
+            key={`player-${p.id}`}
+            game={props.game}
+            player={p}
+            onClick={(id) => props.setSelectedPlayerId(id)}
+            tileDim={tileDim}
+          />
+        ))}
+      </Container>
+      {/* Foreground layer (above agents) */}
+      <TiledMapRenderer
+        mapUrl="/assets/town-map.tmj"
+        tilesetUrl="/assets/town-tileset.png"
+        layers={['foreground']}
+      />
     </PixiViewport>
   );
 };
