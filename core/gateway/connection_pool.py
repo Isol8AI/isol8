@@ -297,6 +297,18 @@ class GatewayConnection:
 
             if event_name == "agent":
                 # Unthrottled agent events — smooth token-by-token streaming
+                stream = payload.get("stream", "")
+                if stream not in ("assistant", ""):
+                    # Log non-assistant events (tool, lifecycle, error) for debugging
+                    data = payload.get("data", {})
+                    logger.info(
+                        "Agent event for user %s: stream=%s phase=%s name=%s keys=%s",
+                        self.user_id,
+                        stream,
+                        data.get("phase", ""),
+                        data.get("name", ""),
+                        list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+                    )
                 transformed = self._transform_agent_event(payload)
                 if transformed:
                     self._forward_to_frontends(transformed)
