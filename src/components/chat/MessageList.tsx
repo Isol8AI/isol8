@@ -217,7 +217,12 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
         data-lenis-prevent
       >
         <div className="max-w-3xl mx-auto space-y-10 py-8">
-          {messages.map((msg) => (
+          {messages.map((msg, idx) => {
+            const isLastAssistant = msg.role === "assistant" && (
+              idx === messages.length - 1 ||
+              messages.slice(idx + 1).every((m) => m.role !== "assistant")
+            );
+            return (
             <div
               key={msg.id}
               className={cn(
@@ -264,9 +269,21 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                           </span>
                         ) : null)}
                 </div>
+
+                {isTyping && isLastAssistant && msg.content && (
+                  <div className="mt-3 flex items-center gap-2 text-xs text-white/40">
+                    <span className="inline-flex gap-1 items-center">
+                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </span>
+                    <span>Agent is working</span>
+                  </div>
+                )}
               </div>
             </div>
-          ))}
+          );
+          })}
           <div ref={endRef} />
         </div>
       </div>
