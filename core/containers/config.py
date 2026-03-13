@@ -279,12 +279,15 @@ def write_openclaw_config(
         },
         "channels": {
             "telegram": {
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
             "whatsapp": {
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
             "discord": {
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
         },
