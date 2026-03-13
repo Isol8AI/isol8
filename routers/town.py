@@ -6,7 +6,6 @@ Serves two sets of endpoints:
    return plain dicts matching AI Town's TypeScript class constructors
 """
 
-import json
 import logging
 import os
 import time
@@ -64,49 +63,19 @@ async def get_town_token_user(
 
 
 # ---------------------------------------------------------------------------
-# Map data cache (loaded once from gentle_map.json)
+# Map metadata (static — tile data now loaded from TMJ on the frontend)
 # ---------------------------------------------------------------------------
-
-_map_data: Optional[dict] = None
 
 
 def _load_map_data() -> dict:
-    """Load and cache the tilemap data, remapping to AI Town field names."""
-    global _map_data
-    if _map_data is not None:
-        return _map_data
-
-    map_path = Path(__file__).parent.parent / "data" / "city_map.json"
-    if not map_path.exists():
-        logger.warning("city_map.json not found, using empty map")
-        _map_data = {
-            "width": 64,
-            "height": 48,
-            "tileSetUrl": "/ai-town/assets/gentle-obj.png",
-            "tileSetDimX": 1440,
-            "tileSetDimY": 1024,
-            "tileDim": 32,
-            "bgTiles": [],
-            "objectTiles": [],
-            "animatedSprites": [],
-        }
-        return _map_data
-
-    with open(map_path) as f:
-        raw = json.load(f)
-
-    _map_data = {
-        "width": raw["mapwidth"],
-        "height": raw["mapheight"],
-        "tileSetUrl": raw["tilesetpath"],
-        "tileSetDimX": raw["tilesetpxw"],
-        "tileSetDimY": raw["tilesetpxh"],
-        "tileDim": raw["tiledim"],
-        "bgTiles": raw["bgtiles"],
-        "objectTiles": raw["objmap"],
-        "animatedSprites": raw["animatedsprites"],
+    """Return map metadata. Tile rendering is handled by the frontend via TMJ."""
+    return {
+        "width": 96,
+        "height": 64,
+        "tileDim": 32,
+        "tileSetUrl": "/assets/town-tileset.png",
+        "mapUrl": "/assets/town-map.tmj",
     }
-    return _map_data
 
 
 # Persistent world ID (single world for now)
