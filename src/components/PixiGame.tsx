@@ -138,8 +138,8 @@ export const PixiGame = (props: {
       {/* Ground + objects layers (below agents) */}
       <TiledMapRenderer
         mapUrl="/assets/town-map.tmj"
-        tilesetUrl="/assets/town-tileset.png"
-        layers={['background', 'ground', 'objects']}
+        tilesetUrl="/assets/goosetown-tileset.png"
+        layers={['ground', 'objects']}
         onMapLoaded={setMapDims}
       />
       {/* Location labels (hover-only) */}
@@ -167,7 +167,7 @@ export const PixiGame = (props: {
       {/* Foreground layer (above agents) */}
       <TiledMapRenderer
         mapUrl="/assets/town-map.tmj"
-        tilesetUrl="/assets/town-tileset.png"
+        tilesetUrl="/assets/goosetown-tileset.png"
         layers={['foreground']}
       />
     </PixiViewport>
