@@ -226,6 +226,7 @@ def write_openclaw_config(
             "backend": "qmd",
             "citations": "auto",
             "qmd": {
+                "command": "/home/node/.npm-global/bin/qmd",
                 "includeDefaultMemory": True,
                 "searchMode": "search",
                 "update": {

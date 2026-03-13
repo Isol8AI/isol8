@@ -156,6 +156,7 @@ class TestWriteOpenclawConfig:
         memory = config["memory"]
         assert memory["backend"] == "qmd"
         assert memory["citations"] == "auto"
+        assert memory["qmd"]["command"] == "/home/node/.npm-global/bin/qmd"
         assert memory["qmd"]["includeDefaultMemory"] is True
         assert memory["qmd"]["searchMode"] == "search"
 
