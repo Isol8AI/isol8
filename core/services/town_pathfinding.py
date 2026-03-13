@@ -1,7 +1,7 @@
 """A* pathfinding for GooseTown agents.
 
-Uses the objmap from city_map.json to route agents around buildings
-and obstacles on the 96x64 tile grid.
+Uses the collision layer from town-map.tmj (Tiled JSON) to route agents
+around buildings and obstacles on the 96x64 tile grid.
 """
 
 import heapq
@@ -17,17 +17,46 @@ Point = Tuple[int, int]
 
 
 def _load_objmap() -> List[List[int]]:
-    """Load the walkability grid from city_map.json.
+    """Load the walkability grid from town-map.tmj (Tiled JSON).
 
-    Returns objmap[x][y] where 0 = walkable, -1 = blocked.
+    Reads the 'collision' layer and transposes from row-major TMJ format
+    to grid[x][y] where 0 = walkable, -1 = blocked.
     """
-    map_path = Path(__file__).parent.parent.parent / "data" / "city_map.json"
+    map_path = Path(__file__).parent.parent.parent / "data" / "town-map.tmj"
     if not map_path.exists():
-        logger.warning("city_map.json not found, pathfinding disabled")
+        logger.warning("town-map.tmj not found, pathfinding disabled")
         return []
     with open(map_path) as f:
-        raw = json.load(f)
-    return raw["objmap"][0]
+        tmj = json.load(f)
+
+    # Find the collision layer by name
+    collision_layer = None
+    for layer in tmj.get("layers", []):
+        if layer.get("name") == "collision" and layer.get("type") == "tilelayer":
+            collision_layer = layer
+            break
+
+    if collision_layer is None:
+        logger.warning("No 'collision' tilelayer found in town-map.tmj, pathfinding disabled")
+        return []
+
+    width = tmj["width"]
+    height = tmj["height"]
+    data = collision_layer["data"]
+
+    # Build grid[x][y] — transpose from row-major TMJ data
+    # TMJ index = y * width + x
+    # GID 0 = walkable (0), GID > 0 = blocked (-1)
+    # Mask with 0x1FFFFFFF to strip Tiled flip flags
+    grid: List[List[int]] = []
+    for x in range(width):
+        column: List[int] = []
+        for y in range(height):
+            gid = data[y * width + x] & 0x1FFFFFFF
+            column.append(0 if gid == 0 else -1)
+        grid.append(column)
+
+    return grid
 
 
 # Module-level cache
