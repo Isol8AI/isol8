@@ -1,8 +1,8 @@
 import * as PIXI from 'pixi.js';
 import { useApp, PixiComponent } from '@pixi/react';
 import { Player } from './Player.tsx';
-import { useEffect, useRef } from 'react';
-import { PixiStaticMap } from './PixiStaticMap.tsx';
+import { useEffect, useRef, useState } from 'react';
+import { TiledMapRenderer, type MapDimensions } from './TiledMapRenderer.tsx';
 import PixiViewport from './PixiViewport.tsx';
 import type { TownGameState, TownPlayer } from '../types/town';
 
@@ -82,6 +82,7 @@ export const PixiGame = (props: {
   const pixiApp = useApp();
   const viewportRef = props.viewportRef;
   const { lerpPlayers } = props;
+  const [mapDims, setMapDims] = useState<MapDimensions | null>(null);
 
   // Ctrl/Cmd + wheel = zoom
   useEffect(() => {
@@ -134,7 +135,11 @@ export const PixiGame = (props: {
       worldHeight={height * tileDim}
       viewportRef={viewportRef}
     >
-      <PixiStaticMap map={props.game.worldMap} />
+      <TiledMapRenderer
+        mapUrl="/assets/town-map.tmj"
+        tilesetUrl="/assets/town-tileset.png"
+        onMapLoaded={setMapDims}
+      />
       {/* Location labels (hover-only) */}
       {LOCATION_LABELS.map((loc) => (
         <HoverLabel
