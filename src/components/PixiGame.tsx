@@ -8,11 +8,11 @@ import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
-  { label: 'Plaza', x: 40, y: 22 },          // area, label above bounds
-  { label: 'Library', x: 40, y: 11 },        // label on building, agents walk to (40,13)
-  { label: 'Cafe', x: 10, y: 15 },           // label on building, agents walk to (10,17)
-  { label: 'Activity Center', x: 65, y: 8 }, // label on building, agents walk to (65,10)
-  { label: 'Residence', x: 69, y: 22 },      // label on building, agents walk to (69,25)
+  { label: 'Plaza', x: 34, y: 22 },
+  { label: 'Library', x: 36, y: 12 },
+  { label: 'Cafe', x: 16, y: 14 },
+  { label: 'Activity Center', x: 48, y: 12 },
+  { label: 'Residence', x: 42, y: 36 },
 ];
 
 const HoverLabel = PixiComponent('HoverLabel', {
@@ -112,9 +112,9 @@ export const PixiGame = (props: {
   useEffect(() => {
     if (!viewportRef.current || hasAnimatedInitial.current) return;
     hasAnimatedInitial.current = true;
-    // Focus on Residence spawn point (69, 25)
-    const focusX = 69 * tileDim;
-    const focusY = 25 * tileDim;
+    // Focus on central plaza
+    const focusX = 34 * tileDim;
+    const focusY = 22 * tileDim;
     viewportRef.current.animate({
       position: new PIXI.Point(focusX, focusY),
       scale: 1.5,
@@ -137,9 +137,9 @@ export const PixiGame = (props: {
     >
       {/* Ground layers (below agents) */}
       <TiledMapRenderer
-        mapUrl="/assets/town-map.tmj"
-        tilesetUrl="/assets/town-tileset.png"
-        layers={['background', 'ground']}
+        mapUrl="/assets/town-v2-map.tmj"
+        tilesetUrl="/assets/tilesets/town-v2-tileset.png"
+        layers={['Ground_Base', 'Ground_Detail', 'Water_Back', 'Terrain_Structures', 'Buildings_Base', 'Props_Back', 'Animation_Back']}
         onMapLoaded={setMapDims}
       />
       {/* Location labels (hover-only) */}
@@ -164,11 +164,11 @@ export const PixiGame = (props: {
           />
         ))}
       </Container>
-      {/* Foreground layer (above agents) */}
+      {/* Foreground layers (above agents) */}
       <TiledMapRenderer
-        mapUrl="/assets/town-map.tmj"
-        tilesetUrl="/assets/town-tileset.png"
-        layers={['foreground']}
+        mapUrl="/assets/town-v2-map.tmj"
+        tilesetUrl="/assets/tilesets/town-v2-tileset.png"
+        layers={['Props_Front', 'Foreground_Low', 'Foreground_High']}
       />
     </PixiViewport>
   );
