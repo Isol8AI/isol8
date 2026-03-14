@@ -8,11 +8,11 @@ import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
-  { label: 'Plaza', x: 34, y: 22 },
-  { label: 'Library', x: 36, y: 12 },
-  { label: 'Cafe', x: 16, y: 14 },
-  { label: 'Activity Center', x: 48, y: 12 },
-  { label: 'Residence', x: 42, y: 36 },
+  { label: 'Plaza', x: 61, y: 18 },
+  { label: 'Civic Hall', x: 71, y: 19 },
+  { label: 'Café', x: 41, y: 39 },
+  { label: 'Activity Center', x: 55, y: 34 },
+  { label: 'Residence', x: 44, y: 31 },
 ];
 
 const HoverLabel = PixiComponent('HoverLabel', {
@@ -137,8 +137,8 @@ export const PixiGame = (props: {
     >
       {/* Ground layers (below agents) */}
       <TiledMapRenderer
-        mapUrl="/assets/town-v2-map.tmj"
-        tilesetUrl="/assets/tilesets/town-v2-tileset.png"
+        mapUrl="/assets/town-center.tmj"
+        tilesetUrl="/assets/tilesets/oga-jrpg-tileset.png"
         layers={['Ground_Base', 'Ground_Detail', 'Water_Back', 'Terrain_Structures', 'Buildings_Base', 'Props_Back', 'Animation_Back']}
         onMapLoaded={setMapDims}
       />
@@ -166,9 +166,9 @@ export const PixiGame = (props: {
       </Container>
       {/* Foreground layers (above agents) */}
       <TiledMapRenderer
-        mapUrl="/assets/town-v2-map.tmj"
-        tilesetUrl="/assets/tilesets/town-v2-tileset.png"
-        layers={['Props_Front', 'Foreground_Low', 'Foreground_High']}
+        mapUrl="/assets/town-center.tmj"
+        tilesetUrl="/assets/tilesets/oga-jrpg-tileset.png"
+        layers={['Props_Front', 'Foreground_Low', 'Foreground_High', 'Animation_Front']}
       />
     </PixiViewport>
   );
