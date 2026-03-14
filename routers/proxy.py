@@ -93,6 +93,13 @@ async def proxy_request(
     request: Request,
 ):
     """Forward request to upstream API with Isol8's key."""
+    logger.info(
+        "Proxy request: %s %s/%s from %s",
+        request.method,
+        service,
+        path,
+        request.client.host if request.client else "unknown",
+    )
     if service not in UPSTREAM_URLS:
         raise HTTPException(status_code=404, detail=f"Unknown proxy service: {service}")
 
@@ -120,16 +127,23 @@ async def proxy_request(
             except (json.JSONDecodeError, TypeError):
                 pass
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            upstream_resp = await client.request(
-                method=request.method,
-                url=upstream_url,
-                content=body,
-                headers={
-                    "Authorization": f"Bearer {upstream_key}",
-                    "Content-Type": request.headers.get("content-type", "application/json"),
-                },
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                upstream_resp = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    content=body,
+                    headers={
+                        "Authorization": f"Bearer {upstream_key}",
+                        "Content-Type": request.headers.get("content-type", "application/json"),
+                    },
+                )
+            logger.info(
+                "Proxy upstream response: %s %s for user %s", upstream_resp.status_code, upstream_url, container.user_id
             )
+        except Exception as e:
+            logger.error("Proxy upstream error for user %s: %s — %s", container.user_id, upstream_url, e)
+            raise
 
         # Record usage only on successful upstream response
         if upstream_resp.is_success:

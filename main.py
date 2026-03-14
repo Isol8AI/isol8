@@ -10,6 +10,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
+from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
@@ -146,6 +147,11 @@ app = FastAPI(
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
+
+# Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
+# Without this, FastAPI generates http:// URLs in redirects (e.g. redirect_slashes),
+# which breaks clients behind HTTPS.
+app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")
 
 # CORS Middleware
 app.add_middleware(
