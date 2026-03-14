@@ -1,60 +1,115 @@
 """A* pathfinding for GooseTown agents.
 
-Uses the collision layer from town-map.tmj (Tiled JSON) to route agents
-around buildings and obstacles on the 96x64 tile grid.
+Derives walkability from the town-v2-map.tmj tile layers:
+- Ground_Base: water and canal wall tiles are blocked
+- Buildings_Base: any non-empty tile is blocked (buildings)
+- Terrain_Structures: any non-empty tile is blocked
+- Collision (object layer): rectangles mark blocked regions
+- Props_Back: large prop bases block movement
 """
 
 import heapq
 import json
 import logging
+import math
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 # Type alias for a grid point
 Point = Tuple[int, int]
 
+# Tile GIDs that are NOT walkable on Ground_Base (firstgid=1)
+# water = local 192 -> GID 193, canal_wall = local 197 -> GID 198
+_BLOCKED_GROUND_GIDS: Set[int] = {193, 198}
+
+# Wang water_shore transition tiles (local 0-15 -> GIDs 1-16)
+# These contain water and should block movement
+_BLOCKED_GROUND_GIDS.update(range(1, 17))
+
 
 def _load_objmap() -> List[List[int]]:
-    """Load the walkability grid from town-map.tmj (Tiled JSON).
+    """Load the walkability grid from town-v2-map.tmj.
 
-    Reads the 'collision' layer and transposes from row-major TMJ format
-    to grid[x][y] where 0 = walkable, -1 = blocked.
+    Scans multiple layers to build a comprehensive collision grid:
+    1. Ground_Base: water (GID 193) and canal wall (GID 198) are blocked,
+       wang water_shore transitions (GIDs 1-16) are blocked
+    2. Buildings_Base: any tile present = blocked
+    3. Terrain_Structures: any tile present = blocked
+    4. Collision object layer: rectangles converted to blocked tiles
+    5. Empty ground (GID 0) = blocked (off the island)
+
+    Returns grid[x][y] where 0 = walkable, -1 = blocked.
     """
-    map_path = Path(__file__).parent.parent.parent / "data" / "town-map.tmj"
+    map_path = Path(__file__).parent.parent.parent / "data" / "town-v2-map.tmj"
     if not map_path.exists():
-        logger.warning("town-map.tmj not found, pathfinding disabled")
+        logger.warning("town-v2-map.tmj not found, pathfinding disabled")
         return []
     with open(map_path) as f:
         tmj = json.load(f)
 
-    # Find the collision layer by name
-    collision_layer = None
-    for layer in tmj.get("layers", []):
-        if layer.get("name") == "collision" and layer.get("type") == "tilelayer":
-            collision_layer = layer
-            break
-
-    if collision_layer is None:
-        logger.warning("No 'collision' tilelayer found in town-map.tmj, pathfinding disabled")
-        return []
-
     width = tmj["width"]
     height = tmj["height"]
-    data = collision_layer["data"]
+    tile_dim = tmj["tilewidth"]
 
-    # Build grid[x][y] — transpose from row-major TMJ data
-    # TMJ index = y * width + x
-    # GID 0 = walkable (0), GID > 0 = blocked (-1)
-    # Mask with 0x1FFFFFFF to strip Tiled flip flags
-    grid: List[List[int]] = []
-    for x in range(width):
-        column: List[int] = []
-        for y in range(height):
-            gid = data[y * width + x] & 0x1FFFFFFF
-            column.append(0 if gid == 0 else -1)
-        grid.append(column)
+    # Index layers by name
+    layers = {layer["name"]: layer for layer in tmj.get("layers", [])}
+
+    # Start with all tiles blocked, then mark walkable from Ground_Base
+    grid: List[List[int]] = [[-1] * height for _ in range(width)]
+
+    # 1. Ground_Base — mark walkable terrain
+    ground = layers.get("Ground_Base")
+    if ground and ground.get("type") == "tilelayer":
+        data = ground["data"]
+        for x in range(width):
+            for y in range(height):
+                gid = data[y * width + x] & 0x1FFFFFFF
+                if gid != 0 and gid not in _BLOCKED_GROUND_GIDS:
+                    grid[x][y] = 0  # walkable
+
+    # 2. Buildings_Base — any placed tile blocks movement
+    buildings = layers.get("Buildings_Base")
+    if buildings and buildings.get("type") == "tilelayer":
+        data = buildings["data"]
+        for x in range(width):
+            for y in range(height):
+                gid = data[y * width + x] & 0x1FFFFFFF
+                if gid != 0:
+                    grid[x][y] = -1
+
+    # 3. Terrain_Structures — structural elements block movement
+    structures = layers.get("Terrain_Structures")
+    if structures and structures.get("type") == "tilelayer":
+        data = structures["data"]
+        for x in range(width):
+            for y in range(height):
+                gid = data[y * width + x] & 0x1FFFFFFF
+                if gid != 0:
+                    grid[x][y] = -1
+
+    # 4. Collision object layer — rectangles define blocked regions
+    collision = layers.get("Collision")
+    if collision and collision.get("type") == "objectgroup":
+        for obj in collision.get("objects", []):
+            # Convert pixel coords to tile coords
+            ox = int(obj.get("x", 0) / tile_dim)
+            oy = int(obj.get("y", 0) / tile_dim)
+            ow = max(1, math.ceil(obj.get("width", tile_dim) / tile_dim))
+            oh = max(1, math.ceil(obj.get("height", tile_dim) / tile_dim))
+            for bx in range(ox, min(ox + ow, width)):
+                for by in range(oy, min(oy + oh, height)):
+                    grid[bx][by] = -1
+
+    walkable_count = sum(1 for x in range(width) for y in range(height) if grid[x][y] == 0)
+    logger.info(
+        "Loaded town pathfinding grid %dx%d: %d walkable, %d blocked",
+        width,
+        height,
+        walkable_count,
+        width * height - walkable_count,
+    )
 
     return grid
 
