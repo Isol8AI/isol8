@@ -1,0 +1,113 @@
+{
+  "seed": 42,
+  "width": 128,
+  "height": 96,
+  "tileDim": 16,
+  "spawns": [
+    {
+      "name": "plaza",
+      "x": 61,
+      "y": 18
+    },
+    {
+      "name": "civic_hall",
+      "x": 71,
+      "y": 19
+    },
+    {
+      "name": "cafe",
+      "x": 41,
+      "y": 39
+    },
+    {
+      "name": "activity_center",
+      "x": 55,
+      "y": 34
+    },
+    {
+      "name": "residence",
+      "x": 44,
+      "y": 31
+    }
+  ],
+  "locations": [
+    {
+      "name": "civic",
+      "label": "civic",
+      "x": 73,
+      "y": 16
+    },
+    {
+      "name": "shop",
+      "label": "shop",
+      "x": 42,
+      "y": 36
+    },
+    {
+      "name": "shop",
+      "label": "shop",
+      "x": 56,
+      "y": 31
+    },
+    {
+      "name": "shop",
+      "label": "shop",
+      "x": 68,
+      "y": 58
+    },
+    {
+      "name": "shop",
+      "label": "shop",
+      "x": 19,
+      "y": 18
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 44,
+      "y": 28
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 111,
+      "y": 59
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 59,
+      "y": 82
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 49,
+      "y": 28
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 102,
+      "y": 79
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 76,
+      "y": 78
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 68,
+      "y": 38
+    },
+    {
+      "name": "house_small",
+      "label": "house small",
+      "x": 114,
+      "y": 81
+    }
+  ]
+}
