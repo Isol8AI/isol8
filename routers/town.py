@@ -70,11 +70,11 @@ async def get_town_token_user(
 def _load_map_data() -> dict:
     """Return map metadata. Tile rendering is handled by the frontend via TMJ."""
     return {
-        "width": 64,
-        "height": 48,
-        "tileDim": 32,
-        "tileSetUrl": "/assets/tilesets/town-v2-tileset.png",
-        "mapUrl": "/assets/town-v2-map.tmj",
+        "width": 128,
+        "height": 96,
+        "tileDim": 16,
+        "tileSetUrl": "/assets/tilesets/oga-jrpg-tileset.png",
+        "mapUrl": "/assets/town-center.tmj",
     }
 
 
