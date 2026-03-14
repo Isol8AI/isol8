@@ -12,13 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_mcporter_config, write_openclaw_config
+from core.containers.config import write_mcporter_config, write_openclaw_config, write_paired_devices_config
+from core.containers.device_identity import generate_device_identity
 from core.containers.ecs_manager import EcsManagerError
 from core.containers.workspace import WorkspaceError
 from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
 from models.billing import BillingAccount
+from models.container import Container
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -228,13 +230,22 @@ async def handle_stripe_webhook(
                 # the directory exists with proper permissions.
                 service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
 
-                # Write openclaw.json config to EFS (root can write to
+                # Generate device identity for pre-paired auth
+                identity = generate_device_identity()
+                container_result = await db.execute(select(Container).where(Container.user_id == user_id))
+                container_row = container_result.scalar_one_or_none()
+                if container_row:
+                    container_row.device_private_key_pem = identity["private_key_pem"]
+                    await db.commit()
+
+                # Write configs to EFS (root can write to
                 # UID=1000-owned directory; container can read 644 files)
                 config_json = write_openclaw_config(
                     region=settings.AWS_REGION,
                     gateway_token=gateway_token,
                     proxy_base_url=settings.PROXY_BASE_URL,
                 )
+                get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
                 get_workspace().write_file(user_id, "openclaw.json", config_json)
                 get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
 

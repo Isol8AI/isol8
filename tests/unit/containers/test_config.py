@@ -272,3 +272,59 @@ class TestDeepMerge:
     def test_non_dict_override(self):
         """Non-dict values replace entire base."""
         assert _deep_merge({"a": {"b": 1}}, {"a": "string"}) == {"a": "string"}
+
+
+class TestWritePairedDevicesConfig:
+    """Test paired.json generation for pre-pairing device auth."""
+
+    def test_returns_valid_json(self):
+        from core.containers.device_identity import generate_device_identity
+        from core.containers.config import write_paired_devices_config
+
+        identity = generate_device_identity()
+        result = write_paired_devices_config(identity)
+        config = json.loads(result)
+        assert isinstance(config, dict)
+
+    def test_keyed_by_device_id(self):
+        from core.containers.device_identity import generate_device_identity
+        from core.containers.config import write_paired_devices_config
+
+        identity = generate_device_identity()
+        config = json.loads(write_paired_devices_config(identity))
+        assert identity["device_id"] in config
+
+    def test_device_entry_has_required_fields(self):
+        from core.containers.device_identity import generate_device_identity
+        from core.containers.config import write_paired_devices_config
+
+        identity = generate_device_identity()
+        config = json.loads(write_paired_devices_config(identity))
+        entry = config[identity["device_id"]]
+        assert entry["deviceId"] == identity["device_id"]
+        assert entry["role"] == "operator"
+        assert entry["roles"] == ["operator"]
+        assert entry["scopes"] == ["operator.admin"]
+        assert entry["approvedScopes"] == ["operator.admin"]
+        assert entry["platform"] == "linux"
+        assert entry["clientId"] == "gateway-client"
+        assert entry["clientMode"] == "backend"
+        assert isinstance(entry["createdAtMs"], int)
+        assert isinstance(entry["approvedAtMs"], int)
+
+    def test_public_key_matches_identity(self):
+        import base64
+        import hashlib
+        from core.containers.device_identity import generate_device_identity
+        from core.containers.config import write_paired_devices_config
+
+        identity = generate_device_identity()
+        config = json.loads(write_paired_devices_config(identity))
+        entry = config[identity["device_id"]]
+        # Decode the base64url publicKey and verify it matches
+        pub_key_b64 = entry["publicKey"]
+        padded = pub_key_b64 + "=" * (-len(pub_key_b64) % 4)
+        decoded = base64.urlsafe_b64decode(padded)
+        assert decoded == identity["public_key_raw"]
+        # Verify device_id is SHA-256 of decoded public key
+        assert hashlib.sha256(decoded).hexdigest() == identity["device_id"]

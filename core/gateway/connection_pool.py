@@ -9,8 +9,6 @@ req/res/event protocol. Background reader task handles incoming messages:
 """
 
 import asyncio
-import base64
-import hashlib
 import json
 import logging
 import time
@@ -18,14 +16,13 @@ import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives.serialization import (
-    Encoding,
-    NoEncryption,
-    PrivateFormat,
-    PublicFormat,
-)
 from websockets import connect as ws_connect
 
+from core.containers.device_identity import (
+    base64url_encode,
+    generate_device_identity,
+    load_device_identity,
+)
 from core.containers.ecs_manager import GATEWAY_PORT
 
 logger = logging.getLogger(__name__)
@@ -33,50 +30,6 @@ logger = logging.getLogger(__name__)
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
-
-
-# ---------------------------------------------------------------------------
-# Ed25519 device identity helpers (matches OpenClaw device-auth protocol)
-# ---------------------------------------------------------------------------
-
-
-def _base64url_encode(data: bytes) -> str:
-    """Base64url encode without padding (RFC 7515)."""
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
-def _generate_device_identity() -> dict:
-    """Generate a new Ed25519 device identity (keypair + derived device ID).
-
-    Returns dict with keys: private_key, public_key_raw, device_id, private_key_pem.
-    """
-    private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key()
-    public_key_raw = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
-    device_id = hashlib.sha256(public_key_raw).hexdigest()
-    private_key_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
-    return {
-        "private_key": private_key,
-        "public_key_raw": public_key_raw,
-        "device_id": device_id,
-        "private_key_pem": private_key_pem,
-    }
-
-
-def _load_device_identity(private_key_pem: str) -> dict:
-    """Reconstruct device identity from a stored PEM private key."""
-    from cryptography.hazmat.primitives.serialization import load_pem_private_key
-
-    private_key = load_pem_private_key(private_key_pem.encode("ascii"), password=None)
-    public_key = private_key.public_key()
-    public_key_raw = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
-    device_id = hashlib.sha256(public_key_raw).hexdigest()
-    return {
-        "private_key": private_key,
-        "public_key_raw": public_key_raw,
-        "device_id": device_id,
-        "private_key_pem": private_key_pem,
-    }
 
 
 def _build_device_auth_payload_v3(
@@ -116,7 +69,7 @@ def _build_device_auth_payload_v3(
 def _sign_device_payload(private_key: Ed25519PrivateKey, payload: str) -> str:
     """Sign payload with Ed25519 and return base64url-encoded signature."""
     sig = private_key.sign(payload.encode("utf-8"))
-    return _base64url_encode(sig)
+    return base64url_encode(sig)
 
 
 class GatewayConnection:
@@ -223,7 +176,7 @@ class GatewayConnection:
                 "auth": {"token": self.token},
                 "device": {
                     "id": identity["device_id"],
-                    "publicKey": _base64url_encode(identity["public_key_raw"]),
+                    "publicKey": base64url_encode(identity["public_key_raw"]),
                     "signature": signature,
                     "signedAt": signed_at_ms,
                     "nonce": nonce,
@@ -564,9 +517,9 @@ class GatewayConnectionPool:
             pem = row[0] if row else None
 
             if pem:
-                identity = _load_device_identity(pem)
+                identity = load_device_identity(pem)
             else:
-                identity = _generate_device_identity()
+                identity = generate_device_identity()
                 await session.execute(
                     update(Container)
                     .where(Container.user_id == user_id)

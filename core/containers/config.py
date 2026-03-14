@@ -7,6 +7,9 @@ Each container gets a gateway auth token so it can bind to LAN
 """
 
 import json
+import time
+
+from core.containers.device_identity import base64url_encode
 
 
 def write_openclaw_config(
@@ -312,6 +315,34 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     """
     config = {"servers": servers or {}}
     return json.dumps(config, indent=2)
+
+
+def write_paired_devices_config(device_identity: dict) -> str:
+    """Generate a paired.json config for pre-pairing a device with OpenClaw.
+
+    Args:
+        device_identity: Dict from generate_device_identity() with keys:
+            device_id, public_key_raw, private_key, private_key_pem.
+
+    Returns:
+        JSON string of the paired devices config.
+    """
+    now_ms = int(time.time() * 1000)
+    device_id = device_identity["device_id"]
+    paired_device = {
+        "deviceId": device_id,
+        "publicKey": base64url_encode(device_identity["public_key_raw"]),
+        "platform": "linux",
+        "clientId": "gateway-client",
+        "clientMode": "backend",
+        "role": "operator",
+        "roles": ["operator"],
+        "scopes": ["operator.admin"],
+        "approvedScopes": ["operator.admin"],
+        "createdAtMs": now_ms,
+        "approvedAtMs": now_ms,
+    }
+    return json.dumps({device_id: paired_device}, indent=2)
 
 
 def patch_openclaw_config(

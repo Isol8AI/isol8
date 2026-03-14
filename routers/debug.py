@@ -14,7 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.auth import AuthContext, get_current_user
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_mcporter_config, write_openclaw_config
+from core.containers.config import write_mcporter_config, write_openclaw_config, write_paired_devices_config
+from core.containers.device_identity import generate_device_identity, load_device_identity
 from core.containers.ecs_manager import EcsManagerError
 from core.database import get_db
 from models.container import Container
@@ -67,12 +68,21 @@ async def provision_container(
         # Create ECS service first (creates access point → dir with UID=1000)
         service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
 
-        # Then write config to EFS (access point already created the dir)
+        # Generate device identity for pre-paired auth
+        identity = generate_device_identity()
+        container_result = await db.execute(select(Container).where(Container.user_id == user_id))
+        container_row = container_result.scalar_one_or_none()
+        if container_row:
+            container_row.device_private_key_pem = identity["private_key_pem"]
+            await db.commit()
+
+        # Write configs to EFS (access point already created the dir)
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
         )
+        get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
         get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
 
@@ -113,11 +123,20 @@ async def redeploy_container(
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
+        # Load or generate device identity for paired.json
+        if container.device_private_key_pem:
+            identity = load_device_identity(container.device_private_key_pem)
+        else:
+            identity = generate_device_identity()
+            container.device_private_key_pem = identity["private_key_pem"]
+            await db.commit()
+
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=container.gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
         )
+        get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
 
         await get_ecs_manager().start_user_service(user_id, db)
