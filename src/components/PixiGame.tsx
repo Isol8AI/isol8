@@ -135,11 +135,11 @@ export const PixiGame = (props: {
       worldHeight={height * tileDim}
       viewportRef={viewportRef}
     >
-      {/* Ground + objects layers (below agents) */}
+      {/* Ground layers (below agents) */}
       <TiledMapRenderer
         mapUrl="/assets/town-map.tmj"
         tilesetUrl="/assets/town-tileset.png"
-        layers={['background', 'ground', 'objects']}
+        layers={['background', 'ground']}
         onMapLoaded={setMapDims}
       />
       {/* Location labels (hover-only) */}
