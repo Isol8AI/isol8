@@ -255,7 +255,7 @@ class TestStripeSubscriptionWebhooks:
         mock_workspace = MagicMock()
 
         with (
-            patch("core.services.billing_service.stripe") as _stripe_mock,
+            patch("core.services.billing_service.stripe") as stripe_mock,  # noqa: F841
             patch("routers.billing.stripe") as billing_stripe_mock,
             patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
             patch("routers.billing.get_workspace", return_value=mock_workspace),
