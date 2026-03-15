@@ -1,2 +1,0 @@
-*.wasm !text !filter !merge !diff
-*.pck !text !filter !merge !diff

@@ -11,7 +11,6 @@ import { useSearchParams } from 'react-router-dom';
 import GodotCanvas from './GodotCanvas';
 import { useTownGame } from './TownProvider';
 import { useGodotBridge } from '../hooks/useGodotBridge';
-import type { TownPlayer, PlayerDescription } from '../types/town';
 
 export default function GodotGame() {
   const { game } = useTownGame();
@@ -19,7 +18,7 @@ export default function GodotGame() {
   const [searchParams, setSearchParams] = useSearchParams();
   const hasFocused = useRef(false);
   const prevPlayerIds = useRef<Set<string>>(new Set());
-  const [selectedPlayerId, setSelectedPlayerId] = useState<string>();
+  const [_selectedPlayerId, setSelectedPlayerId] = useState<string>();
 
   // Handle agent click events from Godot
   useEffect(() => {
