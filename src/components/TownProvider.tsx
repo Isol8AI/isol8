@@ -1,18 +1,16 @@
 import { ReactNode, createContext, useContext, useCallback } from 'react';
 import { ClerkProvider, useAuth } from '@clerk/clerk-react';
 import { useTownState } from '../hooks/useTownState';
-import type { TownGameState, TownPlayer } from '../types/town';
+import type { TownGameState } from '../types/town';
 
 const CLERK_PUBLISHABLE_KEY = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY as string;
 
 interface TownContextValue {
   game: TownGameState | undefined;
-  lerpPlayers: () => TownPlayer[];
 }
 
 const TownContext = createContext<TownContextValue>({
   game: undefined,
-  lerpPlayers: () => [],
 });
 
 export function useTownGame() {
@@ -22,20 +20,20 @@ export function useTownGame() {
 function TownStateProvider({ children }: { children: ReactNode }) {
   const { getToken } = useAuth();
   const getTokenFn = useCallback(() => getToken(), [getToken]);
-  const { game, lerpPlayers } = useTownState(getTokenFn);
+  const { game } = useTownState(getTokenFn);
 
   return (
-    <TownContext.Provider value={{ game, lerpPlayers }}>
+    <TownContext.Provider value={{ game }}>
       {children}
     </TownContext.Provider>
   );
 }
 
 function UnauthTownStateProvider({ children }: { children: ReactNode }) {
-  const { game, lerpPlayers } = useTownState();
+  const { game } = useTownState();
 
   return (
-    <TownContext.Provider value={{ game, lerpPlayers }}>
+    <TownContext.Provider value={{ game }}>
       {children}
     </TownContext.Provider>
   );

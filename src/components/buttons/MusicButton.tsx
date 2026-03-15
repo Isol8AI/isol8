@@ -1,16 +1,28 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import volumeImg from '../../../assets/volume.svg';
-import { sound } from '@pixi/sound';
 import Button from './Button';
+
+const MUSIC_URL = '/ai-town/assets/background.mp3';
 
 export default function MusicButton() {
   const [isPlaying, setPlaying] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  const getAudio = () => {
+    if (!audioRef.current) {
+      const audio = new Audio(MUSIC_URL);
+      audio.loop = true;
+      audioRef.current = audio;
+    }
+    return audioRef.current;
+  };
 
   const flipSwitch = async () => {
+    const audio = getAudio();
     if (isPlaying) {
-      sound.stop('background');
+      audio.pause();
     } else {
-      await sound.play('background');
+      await audio.play();
     }
     setPlaying(!isPlaying);
   };
@@ -28,6 +40,13 @@ export default function MusicButton() {
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, [handleKeyPress]);
+
+  useEffect(() => {
+    return () => {
+      audioRef.current?.pause();
+      audioRef.current = null;
+    };
+  }, []);
 
   return (
     <Button

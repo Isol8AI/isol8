@@ -5,21 +5,18 @@
  * 1. WebSocket push (town_state messages) — real-time, ~2s tick
  * 2. REST polling fallback — every 2s for unauthenticated observers
  *
- * Also provides lerp-interpolated player positions for smooth rendering
- * between the 2-second backend ticks.
+ * Godot handles visual interpolation, so this hook provides raw server state only.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type {
   TownGameState,
   TownStateResponse,
   TownDescriptionsResponse,
-  TownPlayer,
   TownWsMessage,
   PlayerDescription,
   AgentDescription,
   SpeechBubble,
-  WorldMap,
 } from '../types/town';
 
 const API_URL =
@@ -31,73 +28,10 @@ const WS_URL: string | null =
 
 const POLL_INTERVAL = 2000;
 
-// -- Lerp interpolation for smooth movement ----------------------------------
-
-interface LerpState {
-  prev: { x: number; y: number };
-  target: { x: number; y: number };
-  startTime: number;
-  duration: number; // ms — matches tick interval
-}
-
-function lerpPosition(lerp: LerpState, now: number): { x: number; y: number } {
-  const elapsed = now - lerp.startTime;
-  const t = Math.min(1, elapsed / lerp.duration);
-  return {
-    x: lerp.prev.x + (lerp.target.x - lerp.prev.x) * t,
-    y: lerp.prev.y + (lerp.target.y - lerp.prev.y) * t,
-  };
-}
-
-// -- Hook --------------------------------------------------------------------
-
 export function useTownState(getToken?: () => Promise<string | null>): {
   game: TownGameState | undefined;
-  lerpPlayers: () => TownPlayer[];
 } {
   const [game, setGame] = useState<TownGameState>();
-  const lerpStates = useRef<Map<string, LerpState>>(new Map());
-  const latestPlayers = useRef<TownPlayer[]>([]);
-
-  // Update lerp states when new server data arrives
-  const updateLerpStates = useCallback((players: TownPlayer[]) => {
-    const now = performance.now();
-    const newMap = new Map<string, LerpState>();
-    for (const p of players) {
-      const existing = lerpStates.current.get(p.id);
-      if (existing) {
-        // Use current interpolated position as prev, new server position as target
-        const currentPos = lerpPosition(existing, now);
-        newMap.set(p.id, {
-          prev: currentPos,
-          target: p.position,
-          startTime: now,
-          duration: POLL_INTERVAL,
-        });
-      } else {
-        // First time seeing this player — snap to position
-        newMap.set(p.id, {
-          prev: p.position,
-          target: p.position,
-          startTime: now,
-          duration: POLL_INTERVAL,
-        });
-      }
-    }
-    lerpStates.current = newMap;
-    latestPlayers.current = players;
-  }, []);
-
-  // Returns players with lerp-interpolated positions (call per render frame)
-  const lerpPlayers = useCallback((): TownPlayer[] => {
-    const now = performance.now();
-    return latestPlayers.current.map((p) => {
-      const lerp = lerpStates.current.get(p.id);
-      if (!lerp) return p;
-      const pos = lerpPosition(lerp, now);
-      return { ...p, position: pos };
-    });
-  }, []);
 
   // Process incoming state data (from REST or WS)
   const processState = useCallback(
@@ -115,8 +49,6 @@ export function useTownState(getToken?: () => Promise<string | null>): {
         agentDescs.set(ad.agentId, ad);
       }
 
-      updateLerpStates(stateResp.world.players);
-
       setGame({
         world: stateResp.world,
         engine: stateResp.engine,
@@ -126,7 +58,7 @@ export function useTownState(getToken?: () => Promise<string | null>): {
         speechBubbles: speechBubbles ?? stateResp.speechBubbles ?? [],
       });
     },
-    [updateLerpStates],
+    [],
   );
 
   // -- WebSocket subscription -------------------------------------------------
@@ -235,5 +167,5 @@ export function useTownState(getToken?: () => Promise<string | null>): {
     };
   }, [processState]);
 
-  return { game, lerpPlayers };
+  return { game };
 }

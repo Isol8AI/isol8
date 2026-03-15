@@ -1,5 +1,26 @@
 {
   "framework": "vite",
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "Cross-Origin-Opener-Policy", "value": "same-origin" },
+        { "key": "Cross-Origin-Embedder-Policy", "value": "require-corp" }
+      ]
+    },
+    {
+      "source": "/godot/(.*).wasm",
+      "headers": [
+        { "key": "Content-Type", "value": "application/wasm" }
+      ]
+    },
+    {
+      "source": "/godot/(.*).pck",
+      "headers": [
+        { "key": "Content-Type", "value": "application/octet-stream" }
+      ]
+    }
+  ],
   "rewrites": [
     {
       "source": "/ai-town/:match*",
@@ -10,7 +31,7 @@
       "destination": "/index.html"
     },
     {
-      "source": "/((?!assets/).*)",
+      "source": "/((?!assets/|godot/).*)",
       "destination": "/index.html"
     }
   ]

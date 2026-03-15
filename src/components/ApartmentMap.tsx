@@ -1,12 +1,11 @@
-import { Stage, Sprite } from '@pixi/react';
-import { useApp } from '@pixi/react';
+import { Stage, Sprite, Container } from '@pixi/react';
 import { useElementSize } from 'usehooks-ts';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { Character } from './Character.tsx';
-import { data as pixellab48Data } from '../../data/spritesheets/pixellab48';
-import PixiViewport from './PixiViewport.tsx';
+import { characters } from '../../data/characters.ts';
 import type { ApartmentAgent } from '../hooks/useApartment';
 
+// Apartment grid: 12x8 tiles at 32px each = 384x256
 const TILE_DIM = 32;
 const GRID_WIDTH = 12;
 const GRID_HEIGHT = 8;
@@ -22,22 +21,16 @@ function orientationDegrees(dx: number, dy: number): number {
   return (radians / twoPi) * 360;
 }
 
-function ApartmentMapInner({
-  agents,
-  lerpAgents,
-  width,
-  height,
-  viewportRef,
-}: {
+interface Props {
   agents: ApartmentAgent[];
   lerpAgents: () => ApartmentAgent[];
-  width: number;
-  height: number;
-  viewportRef: React.MutableRefObject<any>;
-}) {
-  const pixiApp = useApp();
+}
+
+export default function ApartmentMap({ agents, lerpAgents }: Props) {
+  const [containerRef, { width, height }] = useElementSize();
   const [interpolated, setInterpolated] = useState<ApartmentAgent[]>(agents);
 
+  // Re-interpolate positions on every animation frame for smooth movement
   useEffect(() => {
     let raf: number;
     const tick = () => {
@@ -48,23 +41,12 @@ function ApartmentMapInner({
     return () => cancelAnimationFrame(raf);
   }, [lerpAgents]);
 
-  // Ctrl/Cmd + wheel = zoom
-  useEffect(() => {
-    const canvas = pixiApp.view as HTMLCanvasElement;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      if (!e.ctrlKey && !e.metaKey) return;
-      const viewport = viewportRef.current;
-      if (!viewport) return;
-      const zoomFactor = e.deltaY > 0 ? 0.9 : 1.1;
-      const fitScale = Math.min(width / APT_WIDTH, height / APT_HEIGHT);
-      const newScale = Math.min(6.0, Math.max(fitScale, viewport.scale.x * zoomFactor));
-      viewport.setZoom(newScale, true);
-    };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, [pixiApp, width, height]);
+  const scale = Math.min(
+    width > 0 ? width / APT_WIDTH : 1,
+    height > 0 ? height / APT_HEIGHT : 1,
+  );
 
+  // Show agents in apartment context
   const apartmentAgents = interpolated.filter(
     (a) => a.location_context === 'apartment' && a.is_active,
   );
@@ -72,92 +54,51 @@ function ApartmentMapInner({
   const characterScale = (TILE_DIM / 32) * 0.8;
 
   return (
-    <PixiViewport
-      app={pixiApp}
-      screenWidth={width}
-      screenHeight={height}
-      worldWidth={APT_WIDTH}
-      worldHeight={APT_HEIGHT}
-      viewportRef={viewportRef}
-    >
-      <Sprite
-        image="/assets/apartment.png"
-        x={0}
-        y={0}
-        width={APT_WIDTH}
-        height={APT_HEIGHT}
-      />
-      {apartmentAgents.map((agent) => {
-        // Only render agents with a custom PixelLab sprite
-        if (!agent.sprite_url) return null;
-        const textureUrl = agent.sprite_url;
-        const spritesheetData = pixellab48Data;
-
-        return (
-          <Character
-            key={agent.agent_id}
-            textureUrl={textureUrl}
-            spritesheetData={spritesheetData}
-            x={agent.position_x * TILE_DIM + TILE_DIM / 2}
-            y={agent.position_y * TILE_DIM + TILE_DIM / 2}
-            orientation={orientationDegrees(agent.facing_x, agent.facing_y)}
-            isMoving={agent.speed > 0}
-            isThinking={false}
-            isSpeaking={false}
-            isViewer={false}
-            speed={0.1}
-            scale={characterScale}
-            onClick={() => {}}
-          />
-        );
-      })}
-    </PixiViewport>
-  );
-}
-
-interface Props {
-  agents: ApartmentAgent[];
-  lerpAgents: () => ApartmentAgent[];
-}
-
-export default function ApartmentMap({ agents, lerpAgents }: Props) {
-  const [containerRef, { width, height }] = useElementSize();
-  const viewportRef = useRef<any>(null);
-
-  return (
-    <div ref={containerRef} className="w-full h-full relative">
+    <div ref={containerRef} className="w-full h-full">
       {width > 0 && height > 0 && (
         <Stage
           width={width}
           height={height}
           options={{ backgroundColor: 0x2a1f1a }}
         >
-          <ApartmentMapInner
-            agents={agents}
-            lerpAgents={lerpAgents}
-            width={width}
-            height={height}
-            viewportRef={viewportRef}
-          />
+          <Container
+            x={(width - APT_WIDTH * scale) / 2}
+            y={(height - APT_HEIGHT * scale) / 2}
+            scale={scale}
+          >
+            <Sprite
+              image="/assets/apartment.png"
+              x={0}
+              y={0}
+              width={APT_WIDTH}
+              height={APT_HEIGHT}
+            />
+            {apartmentAgents.map((agent) => {
+              const characterId = agent.character ?? 'c6';
+              const character = characters.find((c) => c.name === characterId);
+              if (!character) return null;
+
+              return (
+                <Character
+                  key={agent.agent_id}
+                  textureUrl={character.textureUrl}
+                  spritesheetData={character.spritesheetData}
+                  x={agent.position_x * TILE_DIM + TILE_DIM / 2}
+                  y={agent.position_y * TILE_DIM + TILE_DIM / 2}
+                  orientation={orientationDegrees(agent.facing_x, agent.facing_y)}
+                  isMoving={agent.speed > 0}
+                  isThinking={false}
+                  isSpeaking={false}
+                  isViewer={false}
+                  speed={character.speed}
+                  scale={characterScale}
+                  onClick={() => {}}
+                />
+              );
+            })}
+          </Container>
         </Stage>
       )}
-      {/* Zoom controls */}
-      <div className="absolute bottom-4 right-4 z-10 flex flex-col gap-1">
-        <button
-          className="w-8 h-8 bg-clay-700/80 hover:bg-clay-600 text-brown-100 rounded text-lg font-bold"
-          onClick={() => {
-            const vp = viewportRef.current;
-            if (vp) vp.animate({ scale: Math.min(6.0, vp.scale.x * 1.3), time: 200 });
-          }}
-        >+</button>
-        <button
-          className="w-8 h-8 bg-clay-700/80 hover:bg-clay-600 text-brown-100 rounded text-lg font-bold"
-          onClick={() => {
-            const vp = viewportRef.current;
-            if (vp) vp.animate({ scale: Math.max(0.8, vp.scale.x / 1.3), time: 200 });
-          }}
-        >{'\u2212'}</button>
-      </div>
     </div>
   );
 }

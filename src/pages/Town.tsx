@@ -1,5 +1,5 @@
-import Game from '../components/Game.tsx';
+import GodotGame from '../components/GodotGame.tsx';
 
 export default function Town() {
-  return <Game />;
+  return <GodotGame />;
 }

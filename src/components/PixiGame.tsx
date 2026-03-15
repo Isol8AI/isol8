@@ -1,5 +1,5 @@
 import * as PIXI from 'pixi.js';
-import { useApp, Container, PixiComponent } from '@pixi/react';
+import { useApp, PixiComponent } from '@pixi/react';
 import { Player } from './Player.tsx';
 import { useEffect, useRef, useState } from 'react';
 import { TiledMapRenderer, type MapDimensions } from './TiledMapRenderer.tsx';
@@ -8,11 +8,11 @@ import type { TownGameState, TownPlayer } from '../types/town';
 
 // Location labels to render on the map (hover-only)
 const LOCATION_LABELS: { label: string; x: number; y: number }[] = [
-  { label: 'Plaza', x: 61, y: 18 },
-  { label: 'Civic Hall', x: 71, y: 19 },
-  { label: 'Café', x: 41, y: 39 },
-  { label: 'Activity Center', x: 55, y: 34 },
-  { label: 'Residence', x: 44, y: 31 },
+  { label: 'Plaza', x: 40, y: 22 },          // area, label above bounds
+  { label: 'Library', x: 40, y: 11 },        // label on building, agents walk to (40,13)
+  { label: 'Cafe', x: 10, y: 15 },           // label on building, agents walk to (10,17)
+  { label: 'Activity Center', x: 65, y: 8 }, // label on building, agents walk to (65,10)
+  { label: 'Residence', x: 69, y: 22 },      // label on building, agents walk to (69,25)
 ];
 
 const HoverLabel = PixiComponent('HoverLabel', {
@@ -112,9 +112,9 @@ export const PixiGame = (props: {
   useEffect(() => {
     if (!viewportRef.current || hasAnimatedInitial.current) return;
     hasAnimatedInitial.current = true;
-    // Focus on central plaza
-    const focusX = 34 * tileDim;
-    const focusY = 22 * tileDim;
+    // Focus on Residence spawn point (69, 25)
+    const focusX = 69 * tileDim;
+    const focusY = 25 * tileDim;
     viewportRef.current.animate({
       position: new PIXI.Point(focusX, focusY),
       scale: 1.5,
@@ -135,11 +135,9 @@ export const PixiGame = (props: {
       worldHeight={height * tileDim}
       viewportRef={viewportRef}
     >
-      {/* Ground layers (below agents) */}
       <TiledMapRenderer
-        mapUrl="/assets/town-center.tmj"
-        tilesetUrl="/assets/tilesets/oga-jrpg-tileset.png"
-        layers={['Ground_Base', 'Ground_Detail', 'Water_Back', 'Terrain_Structures', 'Buildings_Base', 'Props_Back', 'Animation_Back']}
+        mapUrl="/assets/town-map.tmj"
+        tilesetUrl="/assets/town-tileset.png"
         onMapLoaded={setMapDims}
       />
       {/* Location labels (hover-only) */}
@@ -152,24 +150,16 @@ export const PixiGame = (props: {
           tileDim={tileDim}
         />
       ))}
-      {/* Players with smooth interpolation, Y-sorted */}
-      <Container sortableChildren={true}>
-        {interpolatedPlayers.map((p) => (
-          <Player
-            key={`player-${p.id}`}
-            game={props.game}
-            player={p}
-            onClick={(id) => props.setSelectedPlayerId(id)}
-            tileDim={tileDim}
-          />
-        ))}
-      </Container>
-      {/* Foreground layers (above agents) */}
-      <TiledMapRenderer
-        mapUrl="/assets/town-center.tmj"
-        tilesetUrl="/assets/tilesets/oga-jrpg-tileset.png"
-        layers={['Props_Front', 'Foreground_Low', 'Foreground_High', 'Animation_Front']}
-      />
+      {/* Players with smooth interpolation */}
+      {interpolatedPlayers.map((p) => (
+        <Player
+          key={`player-${p.id}`}
+          game={props.game}
+          player={p}
+          onClick={(id) => props.setSelectedPlayerId(id)}
+          tileDim={tileDim}
+        />
+      ))}
     </PixiViewport>
   );
 };

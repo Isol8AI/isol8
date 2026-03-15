@@ -1,4 +1,8 @@
-import { data as pixellab48Data } from './spritesheets/pixellab48';
+import { data as c1SpritesheetData } from './spritesheets/c1';
+import { data as c2SpritesheetData } from './spritesheets/c2';
+import { data as c3SpritesheetData } from './spritesheets/c3';
+import { data as c4SpritesheetData } from './spritesheets/c4';
+import { data as c5SpritesheetData } from './spritesheets/c5';
 
 export const Descriptions = [
   {
@@ -31,63 +35,39 @@ export const Descriptions = [
     identity: `Pete is deeply religious and sees the hand of god or of the work of the devil everywhere. He can't have a conversation without bringing up his deep faith. Or warning others about the perils of hell.`,
     plan: 'You want to convert everyone to your religion.',
   },
-  {
-    name: 'Scholar',
-    character: 'c6',
-    identity: `Scholar is a studious young woman who spends most of her time in the library. She loves knowledge above all else and can recite obscure facts about almost anything.`,
-    plan: 'You want to learn something new from everyone you meet.',
-  },
-  {
-    name: 'Knight',
-    character: 'c7',
-    identity: `Knight is a brave protector who takes his duty very seriously. He patrols the town looking for trouble and always stands up for the weak.`,
-    plan: 'You want to keep everyone safe and maintain order.',
-  },
-  {
-    name: 'Merchant',
-    character: 'c8',
-    identity: `Merchant is a shrewd trader who always has something to sell. He knows the value of everything and the price of nothing. Always looking for the next deal.`,
-    plan: 'You want to make profitable trades with everyone.',
-  },
-  {
-    name: 'Bard',
-    character: 'c9',
-    identity: `Bard is a charismatic performer who loves to sing and tell stories. He knows every rumor in town and loves to spread them through his songs.`,
-    plan: 'You want to collect stories and entertain everyone.',
-  },
-  {
-    name: 'Ranger',
-    character: 'c10',
-    identity: `Ranger is a wilderness explorer who prefers the company of animals to people. He's quiet and observant, always noticing things others miss.`,
-    plan: 'You want to explore every corner of the world.',
-  },
-  {
-    name: 'Healer',
-    character: 'c11',
-    identity: `Healer is a gentle caretaker who tends to the sick and wounded. She has a calming presence and always knows the right herbs to use.`,
-    plan: 'You want to help anyone who is in need.',
-  },
-  {
-    name: 'Tinkerer',
-    character: 'c12',
-    identity: `Tinkerer is an inventive builder who is always working on some new contraption. He's enthusiastic about engineering and loves to explain how things work.`,
-    plan: 'You want to build something amazing.',
-  },
 ];
 
 export const characters = [
-  { name: 'c1', textureUrl: '/assets/sprites/lucky-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c2', textureUrl: '/assets/sprites/bob-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c3', textureUrl: '/assets/sprites/stella-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c4', textureUrl: '/assets/sprites/alice-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c5', textureUrl: '/assets/sprites/pete-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c6', textureUrl: '/assets/sprites/scholar-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c7', textureUrl: '/assets/sprites/knight-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c8', textureUrl: '/assets/sprites/merchant-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c9', textureUrl: '/assets/sprites/bard-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c10', textureUrl: '/assets/sprites/ranger-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c11', textureUrl: '/assets/sprites/healer-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
-  { name: 'c12', textureUrl: '/assets/sprites/tinkerer-sheet.png', spritesheetData: pixellab48Data, speed: 0.1 },
+  {
+    name: 'c1',
+    textureUrl: '/assets/town-characters.png',
+    spritesheetData: c1SpritesheetData,
+    speed: 0.1,
+  },
+  {
+    name: 'c2',
+    textureUrl: '/assets/town-characters.png',
+    spritesheetData: c2SpritesheetData,
+    speed: 0.1,
+  },
+  {
+    name: 'c3',
+    textureUrl: '/assets/town-characters.png',
+    spritesheetData: c3SpritesheetData,
+    speed: 0.1,
+  },
+  {
+    name: 'c4',
+    textureUrl: '/assets/town-characters.png',
+    spritesheetData: c4SpritesheetData,
+    speed: 0.1,
+  },
+  {
+    name: 'c5',
+    textureUrl: '/assets/town-characters.png',
+    spritesheetData: c5SpritesheetData,
+    speed: 0.1,
+  },
 ];
 
 // Characters move at 0.75 tiles per second.
