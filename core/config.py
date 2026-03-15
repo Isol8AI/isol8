@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     # --- IAM ---
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
+    # --- KMS ---
+    KMS_API_KEY_ID: str = os.getenv("KMS_API_KEY_ID", "")  # CMK ARN/alias for BYOK key encryption
+
     # --- OpenClaw ---
     OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
 
