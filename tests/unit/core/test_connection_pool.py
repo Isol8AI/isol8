@@ -184,10 +184,12 @@ class TestGatewayConnectionHandshake:
 
     @pytest.fixture
     def connection(self):
+        from core.containers.device_identity import generate_device_identity
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
+            device_identity=generate_device_identity(),
             management_api=MagicMock(),
         )
 
@@ -207,7 +209,7 @@ class TestGatewayConnectionHandshake:
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
             side_effect=[
-                json.dumps({"event": "connect.challenge", "challenge": "xyz"}),
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "test-nonce-123"}}),
                 json.dumps({"ok": False, "error": {"message": "invalid token"}}),
             ]
         )
@@ -222,7 +224,7 @@ class TestGatewayConnectionHandshake:
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
             side_effect=[
-                json.dumps({"event": "connect.challenge"}),
+                json.dumps({"event": "connect.challenge", "payload": {"nonce": "test-nonce-abc"}}),
                 json.dumps({"ok": True}),
             ]
         )
@@ -346,6 +348,7 @@ class TestFireUsageCallback:
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
+            device_identity={"id": "test-device"},
             management_api=MagicMock(),
             on_usage=callback,
         )
@@ -391,6 +394,7 @@ class TestFireUsageCallback:
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
+            device_identity={"id": "test-device"},
             management_api=MagicMock(),
             on_usage=None,
         )
@@ -409,6 +413,7 @@ class TestHandleMessageChatEvents:
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
+            device_identity={"id": "test-device"},
             management_api=mgmt,
         )
         conn._frontend_connections.add("frontend-1")
@@ -507,6 +512,7 @@ class TestReaderLoopCrash:
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
+            device_identity={"id": "test-device"},
             management_api=MagicMock(),
         )
         conn._ws = _CrashingWs("unexpected disconnect")
@@ -531,6 +537,7 @@ class TestReaderLoopCrash:
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
+            device_identity={"id": "test-device"},
             management_api=MagicMock(),
         )
         conn._closed = True
