@@ -66,8 +66,10 @@ class TestUserSignupViaWebhook:
             },
         }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify, \
-             patch("core.services.billing_service.stripe", _make_stripe_mock()):
+        with (
+            patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify,
+            patch("core.services.billing_service.stripe", _make_stripe_mock()),
+        ):
             mock_verify.return_value = payload
             app.dependency_overrides[get_session_factory] = override_get_session_factory
 
@@ -101,8 +103,10 @@ class TestUserSignupViaWebhook:
             },
         }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify, \
-             patch("core.services.billing_service.stripe", stripe_mock):
+        with (
+            patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify,
+            patch("core.services.billing_service.stripe", stripe_mock),
+        ):
             mock_verify.return_value = payload
             app.dependency_overrides[get_session_factory] = override_get_session_factory
 
@@ -139,8 +143,10 @@ class TestUserSignupViaWebhook:
             },
         }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify, \
-             patch("core.services.billing_service.stripe", stripe_mock):
+        with (
+            patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify,
+            patch("core.services.billing_service.stripe", stripe_mock),
+        ):
             mock_verify.return_value = payload
             app.dependency_overrides[get_session_factory] = override_get_session_factory
 
@@ -183,8 +189,10 @@ class TestUserSignupViaWebhook:
             },
         }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify, \
-             patch("core.services.billing_service.stripe", stripe_mock):
+        with (
+            patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify,
+            patch("core.services.billing_service.stripe", stripe_mock),
+        ):
             mock_verify.return_value = payload
             app.dependency_overrides[get_session_factory] = override_get_session_factory
 
@@ -226,12 +234,9 @@ class TestStripeSubscriptionWebhooks:
         return account
 
     @pytest.mark.asyncio
-    async def test_subscription_created_upgrades_plan(
-        self, db_session, billing_account, override_get_db
-    ):
+    async def test_subscription_created_upgrades_plan(self, db_session, billing_account, override_get_db):
         """customer.subscription.created updates plan_tier and subscription_id."""
         from main import app
-        from core.auth import get_current_user
         from core.database import get_db
 
         stripe_event_body = json.dumps(
@@ -249,11 +254,12 @@ class TestStripeSubscriptionWebhooks:
         mock_ecs.create_user_service = AsyncMock(return_value="svc-user_int_stripe_1")
         mock_workspace = MagicMock()
 
-        with patch("core.services.billing_service.stripe") as stripe_mock, \
-             patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs), \
-             patch("routers.billing.get_workspace", return_value=mock_workspace):
-
+        with (
+            patch("core.services.billing_service.stripe") as _stripe_mock,
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+            patch("routers.billing.get_workspace", return_value=mock_workspace),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(stripe_event_body)
             billing_stripe_mock.STRIPE_WEBHOOK_SECRET = ""
 
@@ -274,9 +280,7 @@ class TestStripeSubscriptionWebhooks:
         assert billing_account.stripe_subscription_id == "sub_int_1"
 
     @pytest.mark.asyncio
-    async def test_subscription_created_provisions_ecs_service(
-        self, db_session, billing_account, override_get_db
-    ):
+    async def test_subscription_created_provisions_ecs_service(self, db_session, billing_account, override_get_db):
         """customer.subscription.created triggers ECS service creation."""
         from main import app
         from core.database import get_db
@@ -296,10 +300,11 @@ class TestStripeSubscriptionWebhooks:
         mock_ecs.create_user_service = AsyncMock(return_value="svc-user_int_stripe_1")
         mock_workspace = MagicMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs), \
-             patch("routers.billing.get_workspace", return_value=mock_workspace):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+            patch("routers.billing.get_workspace", return_value=mock_workspace),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(stripe_event_body)
 
             app.dependency_overrides[get_db] = override_get_db
@@ -317,9 +322,7 @@ class TestStripeSubscriptionWebhooks:
         assert call_args[0][0] == "user_int_stripe_1"  # user_id
 
     @pytest.mark.asyncio
-    async def test_subscription_deleted_reverts_to_free(
-        self, db_session, billing_account, override_get_db
-    ):
+    async def test_subscription_deleted_reverts_to_free(self, db_session, billing_account, override_get_db):
         """customer.subscription.deleted reverts plan to free and clears subscription_id."""
         from main import app
         from core.database import get_db
@@ -342,9 +345,10 @@ class TestStripeSubscriptionWebhooks:
         mock_ecs = MagicMock()
         mock_ecs.stop_user_service = AsyncMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(stripe_event_body)
 
             app.dependency_overrides[get_db] = override_get_db
@@ -364,9 +368,7 @@ class TestStripeSubscriptionWebhooks:
         assert billing_account.stripe_subscription_id is None
 
     @pytest.mark.asyncio
-    async def test_subscription_deleted_stops_ecs_service(
-        self, db_session, billing_account, override_get_db
-    ):
+    async def test_subscription_deleted_stops_ecs_service(self, db_session, billing_account, override_get_db):
         """customer.subscription.deleted calls ECS stop_user_service."""
         from main import app
         from core.database import get_db
@@ -388,9 +390,10 @@ class TestStripeSubscriptionWebhooks:
         mock_ecs = MagicMock()
         mock_ecs.stop_user_service = AsyncMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(stripe_event_body)
 
             app.dependency_overrides[get_db] = override_get_db
@@ -429,10 +432,11 @@ class TestStripeSubscriptionWebhooks:
         mock_ecs.create_user_service = AsyncMock(side_effect=EcsManagerError("ECS unavailable"))
         mock_workspace = MagicMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs), \
-             patch("routers.billing.get_workspace", return_value=mock_workspace):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+            patch("routers.billing.get_workspace", return_value=mock_workspace),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(stripe_event_body)
 
             app.dependency_overrides[get_db] = override_get_db
@@ -525,9 +529,7 @@ class TestUsageRecordingFlow:
                 source="chat",
             )
 
-        result = await db_session.execute(
-            select(UsageDaily).where(UsageDaily.billing_account_id == account.id)
-        )
+        result = await db_session.execute(select(UsageDaily).where(UsageDaily.billing_account_id == account.id))
         rows = result.scalars().all()
         assert len(rows) == 1
         assert rows[0].total_input_tokens == 500
@@ -554,9 +556,7 @@ class TestUsageRecordingFlow:
                     source="chat",
                 )
 
-        result = await db_session.execute(
-            select(UsageDaily).where(UsageDaily.billing_account_id == account.id)
-        )
+        result = await db_session.execute(select(UsageDaily).where(UsageDaily.billing_account_id == account.id))
         daily = result.scalar_one()
         assert daily.total_input_tokens == 300
         assert daily.total_output_tokens == 150
@@ -718,9 +718,7 @@ class TestBillingDashboardApi:
         assert resp.json()["plan_tier"] == "free"
         assert resp.json()["has_subscription"] is False
 
-        result = await db_session.execute(
-            select(BillingAccount).where(BillingAccount.clerk_user_id == "user_test_123")
-        )
+        result = await db_session.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == "user_test_123"))
         assert result.scalar_one_or_none() is not None
 
 
@@ -760,8 +758,10 @@ class TestFullUserLifecycleFlow:
             },
         }
 
-        with patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify, \
-             patch("core.services.billing_service.stripe", stripe_mock):
+        with (
+            patch("routers.webhooks.verify_webhook", new_callable=AsyncMock) as mock_verify,
+            patch("core.services.billing_service.stripe", stripe_mock),
+        ):
             mock_verify.return_value = clerk_payload
             app.dependency_overrides[get_session_factory] = override_get_session_factory
 
@@ -776,9 +776,7 @@ class TestFullUserLifecycleFlow:
         # Verify user + billing account created
         result = await db_session.execute(select(User).where(User.id == USER_ID))
         assert result.scalar_one_or_none() is not None
-        result = await db_session.execute(
-            select(BillingAccount).where(BillingAccount.clerk_user_id == USER_ID)
-        )
+        result = await db_session.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == USER_ID))
         account = result.scalar_one()
         assert account.plan_tier == "free"
 
@@ -798,10 +796,11 @@ class TestFullUserLifecycleFlow:
         mock_ecs.create_user_service = AsyncMock(return_value=f"svc-{USER_ID}")
         mock_workspace = MagicMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs), \
-             patch("routers.billing.get_workspace", return_value=mock_workspace):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+            patch("routers.billing.get_workspace", return_value=mock_workspace),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(sub_event_body)
             app.dependency_overrides[get_db] = override_get_db
 
@@ -829,6 +828,7 @@ class TestFullUserLifecycleFlow:
         await db_session.flush()
 
         from core.services.usage_service import UsageService
+
         svc = UsageService(db_session)
 
         with patch("core.services.usage_service.stripe") as stripe_mock:
@@ -874,9 +874,10 @@ class TestFullUserLifecycleFlow:
 
         mock_ecs.stop_user_service = AsyncMock()
 
-        with patch("routers.billing.stripe") as billing_stripe_mock, \
-             patch("routers.billing.get_ecs_manager", return_value=mock_ecs):
-
+        with (
+            patch("routers.billing.stripe") as billing_stripe_mock,
+            patch("routers.billing.get_ecs_manager", return_value=mock_ecs),
+        ):
             billing_stripe_mock.Webhook.construct_event.return_value = json.loads(cancel_event_body)
             app.dependency_overrides[get_db] = override_get_db
 

@@ -157,7 +157,7 @@ class TestGatewayConnectionPool:
         mock_conn._frontend_connections = set()
         pool._connections["user-gc"] = mock_conn
 
-        with patch.object(pool, "_grace_close", AsyncMock()) as mock_grace:
+        with patch.object(pool, "_grace_close", AsyncMock()) as _mock_grace:
             pool.remove_frontend_connection("user-gc", "conn-1")
             # Grace task should have been created
             assert "user-gc" in pool._grace_tasks
@@ -185,6 +185,7 @@ class TestGatewayConnectionHandshake:
     @pytest.fixture
     def connection(self):
         from core.containers.device_identity import generate_device_identity
+
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -357,30 +358,36 @@ class TestFireUsageCallback:
     def test_fires_callback_with_camel_case_tokens(self, connection_with_callback):
         conn, callback = connection_with_callback
         with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({
-                "inputTokens": 100,
-                "outputTokens": 50,
-                "model": "claude-3-5-sonnet",
-            })
+            conn._fire_usage_callback(
+                {
+                    "inputTokens": 100,
+                    "outputTokens": 50,
+                    "model": "claude-3-5-sonnet",
+                }
+            )
             mock_create_task.assert_called_once()
 
     def test_fires_callback_with_snake_case_tokens(self, connection_with_callback):
         conn, callback = connection_with_callback
         with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({
-                "input_tokens": 200,
-                "output_tokens": 80,
-                "model": "claude-3",
-            })
+            conn._fire_usage_callback(
+                {
+                    "input_tokens": 200,
+                    "output_tokens": 80,
+                    "model": "claude-3",
+                }
+            )
             mock_create_task.assert_called_once()
 
     def test_fires_callback_with_nested_usage_object(self, connection_with_callback):
         conn, callback = connection_with_callback
         with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({
-                "model": "claude-3",
-                "usage": {"inputTokens": 300, "outputTokens": 120},
-            })
+            conn._fire_usage_callback(
+                {
+                    "model": "claude-3",
+                    "usage": {"inputTokens": 300, "outputTokens": 120},
+                }
+            )
             mock_create_task.assert_called_once()
 
     def test_does_not_fire_when_tokens_missing(self, connection_with_callback):
@@ -422,25 +429,29 @@ class TestHandleMessageChatEvents:
     def test_chat_final_sends_done(self, connection):
         """chat state=final forwards a done message to frontends."""
         conn, mgmt = connection
-        conn._handle_message({
-            "type": "event",
-            "event": "chat",
-            "payload": {"state": "final", "message": {"content": []}},
-        })
+        conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "final", "message": {"content": []}},
+            }
+        )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done"} in calls
 
     def test_chat_final_sends_text_chunk_if_present(self, connection):
         """chat state=final with text forwards a chunk before done."""
         conn, mgmt = connection
-        conn._handle_message({
-            "type": "event",
-            "event": "chat",
-            "payload": {
-                "state": "final",
-                "message": {"content": [{"type": "text", "text": "complete answer"}]},
-            },
-        })
+        conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "message": {"content": [{"type": "text", "text": "complete answer"}]},
+                },
+            }
+        )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "chunk", "content": "complete answer"} in calls
         assert {"type": "done"} in calls
@@ -448,11 +459,13 @@ class TestHandleMessageChatEvents:
     def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""
         conn, mgmt = connection
-        conn._handle_message({
-            "type": "event",
-            "event": "chat",
-            "payload": {"state": "error", "error": {"message": "timeout"}},
-        })
+        conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "error", "error": {"message": "timeout"}},
+            }
+        )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
         assert any("timeout" in c.get("message", "") for c in calls)
@@ -460,22 +473,26 @@ class TestHandleMessageChatEvents:
     def test_chat_aborted_sends_error_message(self, connection):
         """chat state=aborted forwards a cancellation error."""
         conn, mgmt = connection
-        conn._handle_message({
-            "type": "event",
-            "event": "chat",
-            "payload": {"state": "aborted"},
-        })
+        conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "aborted"},
+            }
+        )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert any(c.get("type") == "error" for c in calls)
 
     def test_chat_delta_is_ignored(self, connection):
         """chat state=delta is silently ignored (agent events handle streaming)."""
         conn, mgmt = connection
-        conn._handle_message({
-            "type": "event",
-            "event": "chat",
-            "payload": {"state": "delta"},
-        })
+        conn._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {"state": "delta"},
+            }
+        )
         mgmt.send_message.assert_not_called()
 
     def test_other_events_forwarded_as_is(self, connection):
