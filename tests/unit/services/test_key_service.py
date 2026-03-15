@@ -17,6 +17,7 @@ _TEST_ENCRYPTION_KEY = Fernet.generate_key().decode()
 def encryption_key():
     """Inject a test ENCRYPTION_KEY for all tests in this module."""
     from core.config import settings as _settings
+
     with patch.object(_settings, "ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY):
         yield
 
@@ -217,6 +218,7 @@ class TestKeyServiceListKeys:
         assert result[0]["created_at"] is not None
         # Should be a parseable ISO string
         from datetime import datetime
+
         datetime.fromisoformat(result[0]["created_at"])
 
     @pytest.mark.asyncio
@@ -266,6 +268,7 @@ class TestFernetEncryption:
     def test_encrypt_raises_without_key(self):
         """encrypt raises RuntimeError when ENCRYPTION_KEY is not set."""
         from core.config import settings as _settings
+
         with patch.object(_settings, "ENCRYPTION_KEY", ""):
             with pytest.raises(RuntimeError, match="ENCRYPTION_KEY"):
                 encrypt("some-key")
