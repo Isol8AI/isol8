@@ -63,7 +63,7 @@ const CHANNELS: ChannelDef[] = [
         label: "Your Telegram User ID",
         placeholder: "7895038573",
         sensitive: false,
-        help: "Send any message to your bot to see your user ID",
+        help: "Message @RawDataBot on Telegram — your ID is in the response",
       },
     ],
   },

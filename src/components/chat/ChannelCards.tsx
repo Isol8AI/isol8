@@ -61,7 +61,8 @@ const CHANNELS: ChannelDef[] = [
       "Open Telegram and search for @BotFather",
       "Send /newbot and follow the prompts to create a bot",
       "Copy the bot token BotFather gives you",
-      "Paste the token below and click Connect",
+      "Message @RawDataBot on Telegram to get your numerical user ID",
+      "Paste the token and user ID below and click Connect",
     ],
     fields: [
       {
@@ -76,7 +77,7 @@ const CHANNELS: ChannelDef[] = [
         label: "Your Telegram User ID",
         placeholder: "7895038573",
         sensitive: false,
-        help: "Send any message to your bot to see your user ID",
+        help: "Message @RawDataBot on Telegram — your ID is in the response",
       },
     ],
   },
