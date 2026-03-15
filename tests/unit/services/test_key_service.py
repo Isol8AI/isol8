@@ -1,12 +1,24 @@
 """Tests for KeyService (user BYOK API key management)."""
 
-import base64
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
+from cryptography.fernet import Fernet
 from sqlalchemy import select
 
-from core.services.key_service import KeyService, SUPPORTED_TOOLS, _encrypt, _decrypt
+from core.services.key_service import KeyService, SUPPORTED_TOOLS
+from core.encryption import encrypt, decrypt
 from models.user_api_key import UserApiKey
+
+# Generate a stable test key for the entire module
+_TEST_ENCRYPTION_KEY = Fernet.generate_key().decode()
+
+
+@pytest.fixture(autouse=True)
+def encryption_key():
+    """Inject a test ENCRYPTION_KEY for all tests in this module."""
+    from core.config import settings as _settings
+    with patch.object(_settings, "ENCRYPTION_KEY", _TEST_ENCRYPTION_KEY):
+        yield
 
 
 class TestKeyServiceSetKey:
@@ -20,9 +32,9 @@ class TestKeyServiceSetKey:
 
         assert key.user_id == "user_ks_1"
         assert key.tool_id == "perplexity"
-        assert key.encrypted_key == "pplx-secret-123"
+        assert key.encrypted_key != "pplx-secret-123"  # stored value is ciphertext
 
-        # Verify persisted in DB
+        # Verify persisted in DB and decrypts correctly
         result = await db_session.execute(
             select(UserApiKey).where(
                 UserApiKey.user_id == "user_ks_1",
@@ -30,7 +42,7 @@ class TestKeyServiceSetKey:
             )
         )
         stored = result.scalar_one()
-        assert stored.encrypted_key == "pplx-secret-123"
+        assert decrypt(stored.encrypted_key) == "pplx-secret-123"
 
     @pytest.mark.asyncio
     async def test_updates_existing_key(self, db_session):
@@ -47,7 +59,7 @@ class TestKeyServiceSetKey:
         )
         rows = result.scalars().all()
         assert len(rows) == 1  # No duplicate rows
-        assert rows[0].encrypted_key == "new-key"
+        assert decrypt(rows[0].encrypted_key) == "new-key"
 
     @pytest.mark.asyncio
     async def test_raises_for_unsupported_tool(self, db_session):
@@ -230,108 +242,53 @@ class TestKeyServiceListKeys:
         assert result[0]["tool_id"] == "perplexity"
 
 
-class TestKmsEncryption:
-    """Test KMS encrypt/decrypt helpers."""
+class TestFernetEncryption:
+    """Test Fernet encrypt/decrypt helpers from core.encryption."""
 
-    def test_encrypt_without_kms_returns_plaintext(self):
-        """When KMS_API_KEY_ID is unset, _encrypt returns the value unchanged."""
-        with patch("core.services.key_service.settings") as mock_settings:
-            mock_settings.KMS_API_KEY_ID = ""
-            result = _encrypt("my-secret-key")
+    def test_encrypt_returns_non_empty_string(self):
+        """encrypt returns a non-empty string different from the input."""
+        # autouse encryption_key fixture provides the ENCRYPTION_KEY
+        result = encrypt("my-secret-key")
+        assert result != "my-secret-key"
+        assert len(result) > 0
+
+    def test_decrypt_recovers_plaintext(self):
+        """decrypt reverses encrypt."""
+        ciphertext = encrypt("my-secret-key")
+        result = decrypt(ciphertext)
         assert result == "my-secret-key"
 
-    def test_decrypt_without_kms_returns_plaintext(self):
-        """When KMS_API_KEY_ID is unset, _decrypt returns the value unchanged."""
-        with patch("core.services.key_service.settings") as mock_settings:
-            mock_settings.KMS_API_KEY_ID = ""
-            result = _decrypt("stored-value")
-        assert result == "stored-value"
-
-    def test_encrypt_calls_kms_when_configured(self):
-        """When KMS_API_KEY_ID is set, _encrypt calls KMS and returns base64 ciphertext."""
-        fake_ciphertext = b"\xde\xad\xbe\xef"
-        mock_kms = MagicMock()
-        mock_kms.encrypt.return_value = {"CiphertextBlob": fake_ciphertext}
-
-        with patch("core.services.key_service.settings") as mock_settings, \
-             patch("core.services.key_service._get_kms_client", return_value=mock_kms):
-            mock_settings.KMS_API_KEY_ID = "arn:aws:kms:us-east-1:123:key/test-key"
-            result = _encrypt("my-secret-key")
-
-        mock_kms.encrypt.assert_called_once_with(
-            KeyId="arn:aws:kms:us-east-1:123:key/test-key",
-            Plaintext=b"my-secret-key",
-        )
-        assert result == base64.b64encode(fake_ciphertext).decode("utf-8")
-
-    def test_decrypt_calls_kms_when_configured(self):
-        """When KMS_API_KEY_ID is set, _decrypt calls KMS and returns the plaintext."""
-        fake_ciphertext = b"\xde\xad\xbe\xef"
-        stored = base64.b64encode(fake_ciphertext).decode("utf-8")
-
-        mock_kms = MagicMock()
-        mock_kms.decrypt.return_value = {"Plaintext": b"my-secret-key"}
-
-        with patch("core.services.key_service.settings") as mock_settings, \
-             patch("core.services.key_service._get_kms_client", return_value=mock_kms):
-            mock_settings.KMS_API_KEY_ID = "arn:aws:kms:us-east-1:123:key/test-key"
-            result = _decrypt(stored)
-
-        mock_kms.decrypt.assert_called_once_with(
-            KeyId="arn:aws:kms:us-east-1:123:key/test-key",
-            CiphertextBlob=fake_ciphertext,
-        )
-        assert result == "my-secret-key"
-
-    def test_encrypt_decrypt_roundtrip_with_kms(self):
-        """_encrypt + _decrypt round-trips correctly through KMS."""
+    def test_encrypt_decrypt_roundtrip(self):
+        """encrypt + decrypt round-trips any plaintext."""
         plaintext = "super-secret-api-key-12345"
-        fake_ciphertext = b"encrypted-blob"
-        stored = base64.b64encode(fake_ciphertext).decode("utf-8")
+        assert decrypt(encrypt(plaintext)) == plaintext
 
-        mock_kms = MagicMock()
-        mock_kms.encrypt.return_value = {"CiphertextBlob": fake_ciphertext}
-        mock_kms.decrypt.return_value = {"Plaintext": plaintext.encode("utf-8")}
+    def test_encrypt_raises_without_key(self):
+        """encrypt raises RuntimeError when ENCRYPTION_KEY is not set."""
+        from core.config import settings as _settings
+        with patch.object(_settings, "ENCRYPTION_KEY", ""):
+            with pytest.raises(RuntimeError, match="ENCRYPTION_KEY"):
+                encrypt("some-key")
 
-        with patch("core.services.key_service.settings") as mock_settings, \
-             patch("core.services.key_service._get_kms_client", return_value=mock_kms):
-            mock_settings.KMS_API_KEY_ID = "arn:aws:kms:us-east-1:123:key/test-key"
-            encrypted = _encrypt(plaintext)
-            decrypted = _decrypt(encrypted)
-
-        assert decrypted == plaintext
+    def test_decrypt_raises_for_invalid_ciphertext(self):
+        """decrypt raises ValueError for corrupted or wrong-key ciphertext."""
+        with pytest.raises(ValueError, match="Failed to decrypt"):
+            decrypt("not-valid-ciphertext")
 
     @pytest.mark.asyncio
     async def test_set_key_encrypts_before_storing(self, db_session):
-        """set_key should pass the key through _encrypt before writing to DB."""
-        fake_ciphertext = b"\xca\xfe\xba\xbe"
-        mock_kms = MagicMock()
-        mock_kms.encrypt.return_value = {"CiphertextBlob": fake_ciphertext}
-        expected_stored = base64.b64encode(fake_ciphertext).decode("utf-8")
+        """set_key stores an encrypted value, not the raw plaintext."""
+        svc = KeyService(db_session)
+        key_row = await svc.set_key("user_fernet_1", "perplexity", "plaintext-key")
 
-        with patch("core.services.key_service.settings") as mock_settings, \
-             patch("core.services.key_service._get_kms_client", return_value=mock_kms):
-            mock_settings.KMS_API_KEY_ID = "arn:aws:kms:us-east-1:123:key/test-key"
-            svc = KeyService(db_session)
-            key = await svc.set_key("user_kms_1", "perplexity", "plaintext-key")
-
-        assert key.encrypted_key == expected_stored
-        mock_kms.encrypt.assert_called_once()
+        assert key_row.encrypted_key != "plaintext-key"
+        assert len(key_row.encrypted_key) > 0
 
     @pytest.mark.asyncio
     async def test_get_key_decrypts_on_retrieval(self, db_session):
-        """get_key should pass the stored value through _decrypt before returning."""
-        fake_ciphertext = b"\xca\xfe\xba\xbe"
-        mock_kms = MagicMock()
-        mock_kms.encrypt.return_value = {"CiphertextBlob": fake_ciphertext}
-        mock_kms.decrypt.return_value = {"Plaintext": b"original-key"}
-
-        with patch("core.services.key_service.settings") as mock_settings, \
-             patch("core.services.key_service._get_kms_client", return_value=mock_kms):
-            mock_settings.KMS_API_KEY_ID = "arn:aws:kms:us-east-1:123:key/test-key"
-            svc = KeyService(db_session)
-            await svc.set_key("user_kms_2", "firecrawl", "original-key")
-            retrieved = await svc.get_key("user_kms_2", "firecrawl")
+        """get_key returns the original plaintext after round-tripping through DB."""
+        svc = KeyService(db_session)
+        await svc.set_key("user_fernet_2", "firecrawl", "original-key")
+        retrieved = await svc.get_key("user_fernet_2", "firecrawl")
 
         assert retrieved == "original-key"
-        mock_kms.decrypt.assert_called_once()
