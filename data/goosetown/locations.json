@@ -1,0 +1,47 @@
+{
+  "exported_at": "2026-03-15T17:52:19",
+  "locations": {
+    "activity_center": {
+      "pixel_x": 1061,
+      "pixel_y": 210,
+      "x": 33.0,
+      "y": 7.0
+    },
+    "bank": {
+      "pixel_x": 292,
+      "pixel_y": 264,
+      "x": 9.0,
+      "y": 8.0
+    },
+    "cafe": {
+      "pixel_x": 859,
+      "pixel_y": 611,
+      "x": 27.0,
+      "y": 19.0
+    },
+    "library": {
+      "pixel_x": 499,
+      "pixel_y": 612,
+      "x": 16.0,
+      "y": 19.0
+    },
+    "player_spawn": {
+      "pixel_x": 672,
+      "pixel_y": 441,
+      "x": 21.0,
+      "y": 14.0
+    },
+    "plaza": {
+      "pixel_x": 251,
+      "pixel_y": 420,
+      "x": 8.0,
+      "y": 13.0
+    },
+    "residence": {
+      "pixel_x": 672,
+      "pixel_y": 441,
+      "x": 21.0,
+      "y": 14.0
+    }
+  }
+}

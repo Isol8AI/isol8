@@ -1,83 +1,66 @@
 """A* pathfinding for GooseTown agents.
 
-Derives walkability from the town-center.tmj tile layers in a tileset-agnostic way:
-- Ground_Base: any tile with GID > 0 is walkable
-- Collision (object layer): rectangles mark blocked regions (overrides Ground_Base)
+Reads a pre-computed walkability grid exported from the Godot map editor.
+Grid format: grid[x][y] where 0 = walkable, -1 = blocked.
+
+Falls back to legacy PixelLab terrain-map.json if no Godot export exists.
 """
 
 import heapq
 import json
 import logging
-import math
 from pathlib import Path
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-# Type alias for a grid point
 Point = Tuple[int, int]
+
+MAP_WIDTH = 44
+MAP_HEIGHT = 27
+TILE_SIZE = 32
+
+
+def _load_objmap_from_walkability(data: dict) -> List[List[int]]:
+    """Parse a walkability.json payload into a grid[x][y] array."""
+    width = data.get("width", MAP_WIDTH)
+    height = data.get("height", MAP_HEIGHT)
+    raw_grid = data.get("grid", [])
+
+    grid: List[List[int]] = [[-1] * height for _ in range(width)]
+    for x in range(min(width, len(raw_grid))):
+        col = raw_grid[x]
+        for y in range(min(height, len(col))):
+            grid[x][y] = col[y]
+
+    return grid
 
 
 def _load_objmap() -> List[List[int]]:
-    """Load the walkability grid from town-center.tmj.
+    """Load walkability grid from exported Godot map data.
 
-    Derives walkability in a tileset-agnostic way:
-    1. Start: all tiles blocked (False / -1)
-    2. Pass 1 — Ground_Base: any tile with GID > 0 → walkable (0)
-    3. Pass 2 — Collision objectgroup: rectangle areas → blocked (-1)
-
-    Returns grid[x][y] where 0 = walkable, -1 = blocked.
+    Looks for backend/data/goosetown/walkability.json first,
+    falls back to old isol88-export/terrain-map.json format.
     """
-    map_path = Path(__file__).parent.parent.parent / "data" / "town-center.tmj"
-    if not map_path.exists():
-        logger.warning("town-center.tmj not found, pathfinding disabled")
-        return []
-    with open(map_path) as f:
-        tmj = json.load(f)
+    goosetown_dir = Path(__file__).parent.parent.parent / "data" / "goosetown"
+    walkability_path = goosetown_dir / "walkability.json"
 
-    width = tmj["width"]
-    height = tmj["height"]
-    tile_dim = tmj["tilewidth"]
+    if walkability_path.exists():
+        with open(walkability_path) as f:
+            data = json.load(f)
+        grid = _load_objmap_from_walkability(data)
+        exported_at = data.get("exported_at", "unknown")
+        walkable_count = sum(1 for x in range(len(grid)) for y in range(len(grid[0])) if grid[x][y] == 0)
+        logger.info(
+            "Loaded town walkability from Godot export (exported_at=%s): %d walkable, %d blocked",
+            exported_at,
+            walkable_count,
+            len(grid) * len(grid[0]) - walkable_count,
+        )
+        return grid
 
-    # Index layers by name
-    layers = {layer["name"]: layer for layer in tmj.get("layers", [])}
-
-    # Start with all tiles blocked
-    grid: List[List[int]] = [[-1] * height for _ in range(width)]
-
-    # Pass 1 — Ground_Base: any non-zero GID is walkable
-    ground = layers.get("Ground_Base")
-    if ground and ground.get("type") == "tilelayer":
-        data = ground["data"]
-        for x in range(width):
-            for y in range(height):
-                gid = data[y * width + x] & 0x1FFFFFFF
-                if gid > 0:
-                    grid[x][y] = 0  # walkable
-
-    # Pass 2 — Collision objectgroup: rectangles override walkable tiles → blocked
-    collision = layers.get("Collision")
-    if collision and collision.get("type") == "objectgroup":
-        for obj in collision.get("objects", []):
-            # Convert pixel coords to tile coords
-            ox = int(obj.get("x", 0) / tile_dim)
-            oy = int(obj.get("y", 0) / tile_dim)
-            ow = max(1, math.ceil(obj.get("width", tile_dim) / tile_dim))
-            oh = max(1, math.ceil(obj.get("height", tile_dim) / tile_dim))
-            for bx in range(ox, min(ox + ow, width)):
-                for by in range(oy, min(oy + oh, height)):
-                    grid[bx][by] = -1
-
-    walkable_count = sum(1 for x in range(width) for y in range(height) if grid[x][y] == 0)
-    logger.info(
-        "Loaded town pathfinding grid %dx%d: %d walkable, %d blocked",
-        width,
-        height,
-        walkable_count,
-        width * height - walkable_count,
-    )
-
-    return grid
+    logger.error("walkability.json not found at %s — run the Godot export script", walkability_path)
+    return []
 
 
 # Module-level cache
