@@ -68,13 +68,13 @@ async def get_town_token_user(
 
 
 def _load_map_data() -> dict:
-    """Return map metadata. Tile rendering is handled by the frontend via TMJ."""
+    """Return map metadata. Rendering is handled by Godot HTML5 export."""
     return {
-        "width": 128,
-        "height": 96,
-        "tileDim": 16,
-        "tileSetUrl": "/assets/tilesets/oga-jrpg-tileset.png",
-        "mapUrl": "/assets/town-center.tmj",
+        "width": 44,
+        "height": 27,
+        "tileDim": 32,
+        "tileSetUrl": "",
+        "mapUrl": "",
     }
 
 
