@@ -224,13 +224,14 @@ async def handle_stripe_webhook(
                 user_id = account.clerk_user_id
                 gateway_token = secrets.token_urlsafe(32)
 
-                # Create ECS Service first — this creates the per-user EFS
-                # access point, which in turn creates the user directory with
-                # correct UID=1000 ownership. Config must be written AFTER so
-                # the directory exists with proper permissions.
+                # Step 1: Create ECS service (desiredCount=0) — creates the
+                # per-user EFS access point and directory, but does NOT start
+                # the container yet.
                 service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
 
-                # Generate device identity for pre-paired auth
+                # Step 2: Generate device identity and write all configs to
+                # EFS BEFORE the container boots, so paired.json is in place
+                # when OpenClaw starts.
                 identity = generate_device_identity()
                 container_result = await db.execute(select(Container).where(Container.user_id == user_id))
                 container_row = container_result.scalar_one_or_none()
@@ -238,8 +239,6 @@ async def handle_stripe_webhook(
                     container_row.device_private_key_pem = identity["private_key_pem"]
                     await db.commit()
 
-                # Write configs to EFS (root can write to
-                # UID=1000-owned directory; container can read 644 files)
                 config_json = write_openclaw_config(
                     region=settings.AWS_REGION,
                     gateway_token=gateway_token,
@@ -248,6 +247,9 @@ async def handle_stripe_webhook(
                 get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
                 get_workspace().write_file(user_id, "openclaw.json", config_json)
                 get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+                # Step 3: Now start the container — configs are on EFS.
+                await get_ecs_manager().start_user_service(user_id, db)
 
                 logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
             except (EcsManagerError, WorkspaceError) as e:

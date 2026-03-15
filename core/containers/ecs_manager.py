@@ -280,12 +280,14 @@ class EcsManager:
                 substatus="task_registered",
             )
 
-            # Step 3: Create ECS service with per-user task definition
+            # Step 3: Create ECS service with desiredCount=0 so the container
+            # does NOT start yet — the caller writes config files (openclaw.json,
+            # paired.json) to EFS before calling start_user_service().
             create_kwargs = dict(
                 cluster=self._cluster,
                 serviceName=service_name,
                 taskDefinition=task_def_arn,
-                desiredCount=1,
+                desiredCount=0,
                 launchType="FARGATE",
                 networkConfiguration={
                     "awsvpcConfiguration": {

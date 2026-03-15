@@ -65,10 +65,11 @@ async def provision_container(
     try:
         gateway_token = secrets.token_urlsafe(32)
 
-        # Create ECS service first (creates access point → dir with UID=1000)
+        # Step 1: Create ECS service (desiredCount=0) — creates access
+        # point and EFS dir, but does NOT start the container yet.
         service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
 
-        # Generate device identity for pre-paired auth
+        # Step 2: Write all configs to EFS before the container boots.
         identity = generate_device_identity()
         container_result = await db.execute(select(Container).where(Container.user_id == user_id))
         container_row = container_result.scalar_one_or_none()
@@ -76,7 +77,6 @@ async def provision_container(
             container_row.device_private_key_pem = identity["private_key_pem"]
             await db.commit()
 
-        # Write configs to EFS (access point already created the dir)
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
@@ -85,6 +85,9 @@ async def provision_container(
         get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
         get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+        # Step 3: Now start the container — configs are on EFS.
+        await get_ecs_manager().start_user_service(user_id, db)
 
         return {
             "status": "provisioned",

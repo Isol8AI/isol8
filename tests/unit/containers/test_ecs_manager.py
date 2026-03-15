@@ -316,7 +316,7 @@ class TestCreateUserService:
         assert call_kwargs["cluster"] == manager._cluster
         assert call_kwargs["serviceName"] == "openclaw-user_test_123-f4ae64abb2db"
         assert "task-definition" in call_kwargs["taskDefinition"]
-        assert call_kwargs["desiredCount"] == 1
+        assert call_kwargs["desiredCount"] == 0
         assert call_kwargs["launchType"] == "FARGATE"
         assert call_kwargs["networkConfiguration"]["awsvpcConfiguration"]["subnets"] == ["subnet-aaa", "subnet-bbb"]
         assert call_kwargs["networkConfiguration"]["awsvpcConfiguration"]["assignPublicIp"] == "DISABLED"
