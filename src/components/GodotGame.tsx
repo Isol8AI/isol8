@@ -12,6 +12,10 @@ import GodotCanvas from './GodotCanvas';
 import { useTownGame } from './TownProvider';
 import { useGodotBridge } from '../hooks/useGodotBridge';
 
+// Backend sends tile coordinates; Godot needs pixel coordinates
+const TILE_SIZE = 32;
+const toPixel = (tile: number) => tile * TILE_SIZE;
+
 export default function GodotGame() {
   const { game } = useTownGame();
   const { ready, bridge, onEvent } = useGodotBridge();
@@ -49,7 +53,7 @@ export default function GodotGame() {
 
     hasFocused.current = true;
     setSelectedPlayerId(matchedPlayerId);
-    bridge.setCamera(player.position.x, player.position.y, 2.0);
+    bridge.setCamera(toPixel(player.position.x), toPixel(player.position.y), 2.0);
     setSearchParams({}, { replace: true });
   }, [searchParams, game, ready, bridge, setSearchParams]);
 
@@ -71,8 +75,8 @@ export default function GodotGame() {
         bridge.spawnAgent(
           player.id,
           spriteUrl,
-          player.position.x,
-          player.position.y,
+          toPixel(player.position.x),
+          toPixel(player.position.y),
           facingJson,
           displayName,
         );
@@ -80,10 +84,10 @@ export default function GodotGame() {
         // Existing player — move
         bridge.moveAgent(
           player.id,
-          player.position.x,
-          player.position.y,
+          toPixel(player.position.x),
+          toPixel(player.position.y),
           facingJson,
-          player.speed,
+          player.speed * TILE_SIZE,
         );
       }
 
