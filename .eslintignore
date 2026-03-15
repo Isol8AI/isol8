@@ -5,3 +5,4 @@ tailwind.config.js
 postcss.config.js
 convex/_generated/*
 dist/*
+public/godot/*
