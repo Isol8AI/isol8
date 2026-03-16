@@ -26,37 +26,54 @@ This includes environment variables -- use Terraform, GitHub secrets, and AWS Se
 - Instead of `sleep`: use `gh run watch` for CI/CD, or tool-based polling
 - Instead of `tail`: use the Read tool to read files, or run commands without piping through tail
 
+### Monorepo Setup
+
+This is a **Turborepo monorepo** using **pnpm** for JS and **uv** for Python.
+
+```bash
+pnpm install                          # All JS deps (from repo root)
+cd apps/backend && uv sync            # Python deps
+```
+
 ### Individual Services
 
 **Database:** Local Docker PostgreSQL (`pgvector/pgvector:pg15`, port 5432, database `securechat`). Production uses Supabase PostgreSQL.
 
+**All services (via Turborepo):**
+```bash
+turbo run dev                         # Start all services in parallel
+turbo run dev --filter=@isol8/frontend    # Frontend only
+turbo run dev --filter=@isol8/backend     # Backend only
+turbo run dev --filter=@isol8/goosetown   # GooseTown only
+```
+
 **Backend:**
 ```bash
-cd backend
-source env/bin/activate       # Python 3.12 virtualenv
-python init_db.py --reset     # Drop and recreate all tables
-uvicorn main:app --reload --port 8000
+cd apps/backend
+uv run uvicorn main:app --reload --port 8000
+uv run python init_db.py --reset     # Drop and recreate all tables
 ```
 
 **Frontend:**
 ```bash
-cd frontend
-npm run dev                   # localhost:3000
-npm run build                 # Production build
-npm run lint                  # ESLint
+cd apps/frontend
+pnpm run dev                   # localhost:3000
+pnpm run build                 # Production build
+pnpm run lint                  # ESLint
 ```
 
 ### Running Tests
 
 ```bash
-./run_tests.sh                        # All tests
-./run_tests.sh --backend-only         # Backend only (pytest)
-./run_tests.sh --frontend-only        # Frontend only (Vitest + Playwright)
+turbo run test                        # All tests (parallel, cached)
+turbo run test --filter=@isol8/backend    # Backend only
+turbo run test --filter=@isol8/frontend   # Frontend only
+turbo run lint                        # All linting
 ```
 
-Backend: `cd backend && python -m pytest tests/ -v`
-Frontend unit: `cd frontend && npm test`
-Frontend E2E: `cd frontend && npm run test:e2e`
+Backend: `cd apps/backend && uv run pytest tests/ -v`
+Frontend unit: `cd apps/frontend && pnpm test`
+Frontend E2E: `cd apps/frontend && pnpm run test:e2e`
 
 ### Container Re-provisioning (Dev)
 
@@ -77,9 +94,14 @@ Debug endpoints return 403 in production.
 ### CI/CD Monitoring
 
 ```bash
-gh run watch <run-id> --repo Isol8AI/<repo> --exit-status
-gh run view <run-id> --repo Isol8AI/<repo> --json status,jobs
+gh run watch <run-id> --repo Isol8AI/isol8 --exit-status
+gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 ```
+
+**Deployment methods:**
+- **Frontend + GooseTown:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
+- **Backend:** GitHub Actions → ECR Docker build → ASG instance refresh
+- **Terraform:** GitHub Actions → plan → apply (dev only, staging/prod disabled)
 
 ---
 
@@ -99,16 +121,16 @@ Client --> wss://ws-dev.isol8.co --> API Gateway --> Lambda Auth --> VPC Link V1
 ### Production Infrastructure
 
 ```
-freebird/                    # Parent folder (not a git repo)
-+-- frontend/                # Git repo - Next.js 16 (Vercel)
-+-- backend/                 # Git repo - FastAPI (AWS EC2)
-+-- goosetown/               # Git repo - GooseTown simulation (Vercel)
-+-- goosetown-skill/         # OpenClaw skill plugin for GooseTown
-+-- desktop/                 # Electron desktop app (isol8:// deep links)
-+-- terraform/               # Git repo - Infrastructure as Code (AWS)
-+-- openclaw_reference/      # Reference copy of OpenClaw repo
-+-- scripts/                 # GooseTown map/asset generation utilities
-+-- docs/plans/              # Design documents
+isol8/                       # Turborepo monorepo (Isol8AI/isol8)
++-- apps/
+|   +-- frontend/            # Next.js 16 (Vercel auto-deploy)
+|   +-- backend/             # FastAPI (AWS EC2, uv managed)
+|   +-- goosetown/           # GooseTown simulation (Vercel auto-deploy)
+|   +-- terraform/           # Infrastructure as Code (AWS)
++-- packages/                # Shared packages (future)
++-- turbo.json               # Task orchestration
++-- pnpm-workspace.yaml      # Workspace definitions
++-- package.json             # Root (devDeps: turbo)
 ```
 
 ```
