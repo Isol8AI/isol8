@@ -44,3 +44,4 @@ secrets.auto.tfvars
 # OS
 .DS_Store
 Thumbs.db
+.vercel
