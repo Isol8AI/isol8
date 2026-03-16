@@ -1,0 +1,14 @@
+{
+  "name": "isol8",
+  "private": true,
+  "devDependencies": {
+    "turbo": "^2"
+  },
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint"
+  },
+  "packageManager": "pnpm@9.15.0"
+}
