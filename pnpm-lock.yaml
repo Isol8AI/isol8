@@ -16,7 +16,7 @@ importers:
     dependencies:
       '@clerk/nextjs':
         specifier: ^6.36.5
-        version: 6.39.0(next@16.1.1(@babel/core@7.29.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+        version: 6.39.0(next@16.1.1(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@noble/curves':
         specifier: ^1.8.1
         version: 1.9.7
@@ -70,7 +70,7 @@ importers:
         version: 5.1.7
       next:
         specifier: 16.1.1
-        version: 16.1.1(@babel/core@7.29.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+        version: 16.1.1(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       pako:
         specifier: ^2.1.0
         version: 2.1.0
@@ -186,12 +186,6 @@ importers:
       '@types/node':
         specifier: 20.2.5
         version: 20.2.5
-      '@types/react':
-        specifier: 18.2.8
-        version: 18.2.8
-      '@types/react-dom':
-        specifier: 18.2.4
-        version: 18.2.4
       clsx:
         specifier: ^2.0.0
         version: 2.1.1
@@ -247,6 +241,12 @@ importers:
       '@types/jest':
         specifier: ^29.5.4
         version: 29.5.14
+      '@types/react':
+        specifier: 18.2.8
+        version: 18.2.8
+      '@types/react-dom':
+        specifier: 18.2.4
+        version: 18.2.4
       '@types/react-modal':
         specifier: ^3.16.0
         version: 3.16.3
@@ -6177,13 +6177,13 @@ snapshots:
       react-dom: 19.2.3(react@19.2.3)
       tslib: 2.8.1
 
-  '@clerk/nextjs@6.39.0(next@16.1.1(@babel/core@7.29.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
+  '@clerk/nextjs@6.39.0(next@16.1.1(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
     dependencies:
       '@clerk/backend': 2.33.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@clerk/clerk-react': 5.61.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@clerk/shared': 3.47.2(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       '@clerk/types': 4.101.20(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      next: 16.1.1(@babel/core@7.29.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      next: 16.1.1(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
       server-only: 0.0.1
@@ -10677,7 +10677,7 @@ snapshots:
 
   neo-async@2.6.2: {}
 
-  next@16.1.1(@babel/core@7.29.0)(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
+  next@16.1.1(@playwright/test@1.58.2)(babel-plugin-react-compiler@1.0.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3):
     dependencies:
       '@next/env': 16.1.1
       '@swc/helpers': 0.5.15
@@ -10686,7 +10686,7 @@ snapshots:
       postcss: 8.4.31
       react: 19.2.3
       react-dom: 19.2.3(react@19.2.3)
-      styled-jsx: 5.1.6(@babel/core@7.29.0)(react@19.2.3)
+      styled-jsx: 5.1.6(react@19.2.3)
     optionalDependencies:
       '@next/swc-darwin-arm64': 16.1.1
       '@next/swc-darwin-x64': 16.1.1
@@ -11597,12 +11597,10 @@ snapshots:
     dependencies:
       inline-style-parser: 0.2.7
 
-  styled-jsx@5.1.6(@babel/core@7.29.0)(react@19.2.3):
+  styled-jsx@5.1.6(react@19.2.3):
     dependencies:
       client-only: 0.0.1
       react: 19.2.3
-    optionalDependencies:
-      '@babel/core': 7.29.0
 
   sucrase@3.35.1:
     dependencies:
