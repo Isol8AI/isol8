@@ -1,0 +1,47 @@
+# =============================================================================
+# Dev Environment Configuration
+# =============================================================================
+
+environment = "dev"
+aws_region  = "us-east-1"
+
+# VPC
+vpc_cidr           = "10.0.0.0/16"
+availability_zones = ["us-east-1a", "us-east-1b"]
+
+# EC2
+ec2_instance_type = "r5.xlarge"
+ec2_desired_count = 1
+ec2_min_count     = 1
+ec2_max_count     = 2
+
+# Domain
+domain_name       = "api-dev.isol8.co"
+root_domain       = "isol8.co"
+frontend_url      = "https://dev.isol8.co"
+town_frontend_url = "https://dev.town.isol8.co"
+
+# Clerk (using production Clerk with custom domain)
+clerk_issuer   = "https://clerk.isol8.co"
+clerk_jwks_url = "https://clerk.isol8.co/.well-known/jwks.json"
+
+# GitHub (for CI/CD OIDC) - trust both backend and terraform repos
+github_org   = "Isol8AI"
+github_repos = ["backend", "terraform"]
+
+# Stripe billing (test mode)
+stripe_starter_fixed_price_id = "price_1T5f8qEfizkJ25sAAWOd8UYo"
+stripe_pro_fixed_price_id     = "price_1T5fAdEfizkJ25sA2n6bPqPW"
+stripe_metered_price_id       = "price_1T5f90EfizkJ25sAebYrGVyk"
+stripe_meter_id               = "mtr_test_61UF36IlRmFY2XJYU41EfizkJ25sA2T2"
+
+# GooseTown sprite CDN (CloudFront + S3)
+town_assets_cert_arn = "arn:aws:acm:us-east-1:877352799272:certificate/24b2c113-a8ec-4d72-84af-044807ff8d87"
+
+# =============================================================================
+# SENSITIVE VALUES - Set via environment variables, not in this file!
+# =============================================================================
+# export TF_VAR_supabase_connection_string="postgresql://..."
+# export TF_VAR_huggingface_token="hf_..."
+# export TF_VAR_clerk_webhook_secret="whsec_..."
+# =============================================================================
