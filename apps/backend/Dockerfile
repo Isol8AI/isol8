@@ -18,19 +18,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-WORKDIR /app
-
-# Install Python dependencies
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-editable
-
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash appuser
 
+WORKDIR /app
+
+# Install Python dependencies
+COPY --chown=appuser:appuser pyproject.toml uv.lock ./
+RUN chown appuser:appuser /app
+USER appuser
+RUN uv sync --frozen --no-dev --no-editable
+
 # Copy application code
 COPY --chown=appuser:appuser . .
-
-USER appuser
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
