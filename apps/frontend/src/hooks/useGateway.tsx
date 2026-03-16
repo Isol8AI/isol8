@@ -138,7 +138,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
           const parts: string[] = [String(errMsg)];
           if (errObj?.code) parts.push(`[${errObj.code}]`);
           if (errObj?.details) parts.push(String(errObj.details));
-          if (Array.isArray(errObj?.issues)) {
+          if (errObj && Array.isArray(errObj.issues)) {
             const issueTexts = (errObj.issues as { path?: string; message?: string }[])
               .map(i => i.path ? `${i.path}: ${i.message}` : i.message)
               .filter(Boolean);
