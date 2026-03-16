@@ -1,11 +1,12 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
 
   turbopack: {
-    root: '../../',
+    root: path.resolve(__dirname, '../../'),
   },
 
   // Exclude heavy ML packages from Vercel's output file tracing
