@@ -27,7 +27,7 @@ clerk_jwks_url = "https://clerk.isol8.co/.well-known/jwks.json"
 
 # GitHub (for CI/CD OIDC) - trust both backend and terraform repos
 github_org   = "Isol8AI"
-github_repos = ["backend", "terraform"]
+github_repos = ["backend", "terraform", "isol8"]
 
 # Stripe billing (test mode)
 stripe_starter_fixed_price_id = "price_1T5f8qEfizkJ25sAAWOd8UYo"

@@ -26,4 +26,4 @@ clerk_issuer = "https://clerk.isol8.co"
 
 # GitHub (for CI/CD OIDC)
 github_org   = "Isol8AI"
-github_repos = ["backend", "terraform"]
+github_repos = ["backend", "terraform", "isol8"]
