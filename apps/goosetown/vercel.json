@@ -1,7 +1,7 @@
 {
   "framework": "vite",
   "installCommand": "pnpm install --frozen-lockfile",
-  "buildCommand": "pnpm run build",
+  "buildCommand": "cd ../.. && npx turbo run build --filter=@isol8/goosetown",
   "headers": [
     {
       "source": "/(.*)",
