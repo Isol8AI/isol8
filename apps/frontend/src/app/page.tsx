@@ -6,6 +6,7 @@ import { Pricing } from "@/components/landing/Pricing";
 import { Footer } from "@/components/landing/Footer";
 
 export default function LandingPage() {
+  console.log("[isol8] Vercel preview test - frontend landing page loaded");
   return (
     <SmoothScroll>
     <main className="min-h-screen bg-black relative selection:bg-white/20">
