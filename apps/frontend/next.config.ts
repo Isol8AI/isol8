@@ -4,7 +4,9 @@ const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
 
-  turbopack: {},
+  turbopack: {
+    root: '../../',
+  },
 
   // Exclude heavy ML packages from Vercel's output file tracing
   // We do CLIENT-SIDE inference only, so we don't need onnxruntime-node at all
