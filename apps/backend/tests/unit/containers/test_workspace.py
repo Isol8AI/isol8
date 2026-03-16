@@ -1,0 +1,264 @@
+"""Tests for Workspace (EFS-backed per-user OpenClaw workspaces).
+
+Uses tmp_path fixture for real filesystem operations -- no mocking needed.
+"""
+
+import pytest
+
+from core.containers.workspace import Workspace, WorkspaceError
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def workspace(tmp_path):
+    """Create a Workspace backed by a temporary directory."""
+    return Workspace(mount_path=str(tmp_path))
+
+
+@pytest.fixture
+def user_id():
+    """A sample user ID for testing."""
+    return "user_abc123"
+
+
+# ---------------------------------------------------------------------------
+# Init
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceInit:
+    """Test Workspace initialization."""
+
+    def test_stores_mount_path(self, workspace, tmp_path):
+        """Mount path is stored on the instance as a Path."""
+        assert workspace._mount == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# user_path
+# ---------------------------------------------------------------------------
+
+
+class TestUserPath:
+    """Test user_path helper."""
+
+    def test_returns_user_subdirectory(self, workspace, tmp_path, user_id):
+        """user_path returns mount/{user_id}."""
+        assert workspace.user_path(user_id) == tmp_path / user_id
+
+    def test_with_special_chars(self, workspace, tmp_path):
+        """User IDs with underscores and hyphens are preserved."""
+        assert workspace.user_path("user_test-long_id-456") == tmp_path / "user_test-long_id-456"
+
+
+# ---------------------------------------------------------------------------
+# ensure_user_dir
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureUserDir:
+    """Test creating user workspace directories."""
+
+    def test_creates_directory(self, workspace, user_id):
+        """ensure_user_dir creates the user directory."""
+        path = workspace.ensure_user_dir(user_id)
+        assert path.is_dir()
+
+    def test_returns_path(self, workspace, tmp_path, user_id):
+        """ensure_user_dir returns the Path to the user directory."""
+        path = workspace.ensure_user_dir(user_id)
+        assert path == tmp_path / user_id
+
+    def test_idempotent(self, workspace, user_id):
+        """ensure_user_dir succeeds when directory already exists."""
+        workspace.ensure_user_dir(user_id)
+        path = workspace.ensure_user_dir(user_id)
+        assert path.is_dir()
+
+
+# ---------------------------------------------------------------------------
+# list_agents
+# ---------------------------------------------------------------------------
+
+
+class TestListAgents:
+    """Test listing agent directories."""
+
+    def test_empty_when_no_agents_dir(self, workspace, user_id):
+        """list_agents returns empty list when agents/ does not exist."""
+        workspace.ensure_user_dir(user_id)
+        assert workspace.list_agents(user_id) == []
+
+    def test_empty_when_user_dir_missing(self, workspace, user_id):
+        """list_agents returns empty list when user directory does not exist."""
+        assert workspace.list_agents(user_id) == []
+
+    def test_lists_agent_directories(self, workspace, user_id):
+        """list_agents returns sorted names of subdirectories under agents/."""
+        agents_dir = workspace.user_path(user_id) / "agents"
+        (agents_dir / "zeta-agent").mkdir(parents=True)
+        (agents_dir / "alpha-agent").mkdir(parents=True)
+
+        result = workspace.list_agents(user_id)
+        assert result == ["alpha-agent", "zeta-agent"]
+
+    def test_ignores_files(self, workspace, user_id):
+        """list_agents only returns directories, not files."""
+        agents_dir = workspace.user_path(user_id) / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "my-agent").mkdir()
+        (agents_dir / "README.md").write_text("ignore me")
+
+        result = workspace.list_agents(user_id)
+        assert result == ["my-agent"]
+
+
+# ---------------------------------------------------------------------------
+# read_file
+# ---------------------------------------------------------------------------
+
+
+class TestReadFile:
+    """Test reading files from a user's workspace."""
+
+    def test_reads_file_content(self, workspace, user_id):
+        """read_file returns the text content of a file."""
+        user_dir = workspace.ensure_user_dir(user_id)
+        (user_dir / "agents").mkdir()
+        (user_dir / "agents" / "SOUL.md").write_text("Hello, world!", encoding="utf-8")
+
+        result = workspace.read_file(user_id, "agents/SOUL.md")
+        assert result == "Hello, world!"
+
+    def test_raises_on_missing_file(self, workspace, user_id):
+        """read_file raises WorkspaceError when the file does not exist."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError, match="File not found"):
+            workspace.read_file(user_id, "agents/nonexistent.txt")
+
+    def test_path_traversal_blocked(self, workspace, user_id):
+        """read_file raises WorkspaceError on path traversal attempts."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError, match="Path traversal denied"):
+            workspace.read_file(user_id, "../../etc/passwd")
+
+    def test_error_includes_user_id(self, workspace, user_id):
+        """WorkspaceError from read_file includes the user_id."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError) as exc_info:
+            workspace.read_file(user_id, "missing.txt")
+        assert exc_info.value.user_id == user_id
+
+
+# ---------------------------------------------------------------------------
+# write_file
+# ---------------------------------------------------------------------------
+
+
+class TestWriteFile:
+    """Test writing files into a user's workspace."""
+
+    def test_writes_content(self, workspace, user_id):
+        """write_file creates a file with the given content."""
+        workspace.ensure_user_dir(user_id)
+        workspace.write_file(user_id, "test.txt", "hello")
+
+        result = workspace.read_file(user_id, "test.txt")
+        assert result == "hello"
+
+    def test_creates_parent_directories(self, workspace, user_id):
+        """write_file creates intermediate directories as needed."""
+        workspace.ensure_user_dir(user_id)
+        workspace.write_file(user_id, "agents/my-agent/SOUL.md", "I am helpful.")
+
+        result = workspace.read_file(user_id, "agents/my-agent/SOUL.md")
+        assert result == "I am helpful."
+
+    def test_overwrites_existing_file(self, workspace, user_id):
+        """write_file overwrites an existing file."""
+        workspace.ensure_user_dir(user_id)
+        workspace.write_file(user_id, "test.txt", "original")
+        workspace.write_file(user_id, "test.txt", "updated")
+
+        result = workspace.read_file(user_id, "test.txt")
+        assert result == "updated"
+
+    def test_path_traversal_blocked(self, workspace, user_id):
+        """write_file raises WorkspaceError on path traversal attempts."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError, match="Path traversal denied"):
+            workspace.write_file(user_id, "../other_user/secret.txt", "bad")
+
+    def test_error_includes_user_id(self, workspace, user_id):
+        """WorkspaceError from write_file includes the user_id."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError) as exc_info:
+            workspace.write_file(user_id, "../../escape.txt", "bad")
+        assert exc_info.value.user_id == user_id
+
+
+# ---------------------------------------------------------------------------
+# delete_file
+# ---------------------------------------------------------------------------
+
+
+class TestDeleteFile:
+    """Test deleting files from a user's workspace."""
+
+    def test_deletes_existing_file(self, workspace, user_id):
+        """delete_file removes the file from disk."""
+        workspace.ensure_user_dir(user_id)
+        workspace.write_file(user_id, "test.txt", "to be deleted")
+        workspace.delete_file(user_id, "test.txt")
+
+        with pytest.raises(WorkspaceError, match="File not found"):
+            workspace.read_file(user_id, "test.txt")
+
+    def test_idempotent_on_missing_file(self, workspace, user_id):
+        """delete_file succeeds silently when the file does not exist."""
+        workspace.ensure_user_dir(user_id)
+        workspace.delete_file(user_id, "nonexistent.txt")  # Should not raise
+
+    def test_path_traversal_blocked(self, workspace, user_id):
+        """delete_file raises WorkspaceError on path traversal attempts."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError, match="Path traversal denied"):
+            workspace.delete_file(user_id, "../../etc/passwd")
+
+    def test_error_includes_user_id(self, workspace, user_id):
+        """WorkspaceError from delete_file includes the user_id."""
+        workspace.ensure_user_dir(user_id)
+
+        with pytest.raises(WorkspaceError) as exc_info:
+            workspace.delete_file(user_id, "../../../escape.txt")
+        assert exc_info.value.user_id == user_id
+
+
+# ---------------------------------------------------------------------------
+# WorkspaceError
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceError:
+    """Test custom exception."""
+
+    def test_error_message(self):
+        """WorkspaceError stores message."""
+        err = WorkspaceError("something failed", user_id="user_123")
+        assert str(err) == "something failed"
+        assert err.user_id == "user_123"
+
+    def test_error_without_user_id(self):
+        """WorkspaceError defaults user_id to empty string."""
+        err = WorkspaceError("generic failure")
+        assert err.user_id == ""
