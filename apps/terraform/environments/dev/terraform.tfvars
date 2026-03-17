@@ -30,10 +30,10 @@ github_org   = "Isol8AI"
 github_repos = ["backend", "terraform", "isol8"]
 
 # Stripe billing (test mode)
-stripe_starter_fixed_price_id = "price_1T5f8qEfizkJ25sAAWOd8UYo"
-stripe_pro_fixed_price_id     = "price_1T5fAdEfizkJ25sA2n6bPqPW"
-stripe_metered_price_id       = "price_1T5f90EfizkJ25sAebYrGVyk"
-stripe_meter_id               = "mtr_test_61UF36IlRmFY2XJYU41EfizkJ25sA2T2"
+stripe_starter_fixed_price_id = "price_1TBm0NI54BysGS3r57fcRXOJ"
+stripe_pro_fixed_price_id     = "price_1TBm0PI54BysGS3rFjUOtmrR"
+stripe_metered_price_id       = "price_1TBm0fI54BysGS3rrqTaZ5Zz"
+stripe_meter_id               = "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC"
 
 # GooseTown sprite CDN (CloudFront + S3)
 town_assets_cert_arn = "arn:aws:acm:us-east-1:877352799272:certificate/24b2c113-a8ec-4d72-84af-044807ff8d87"
