@@ -8,11 +8,13 @@ on:
     branches: [main]
     paths:
       - 'apps/backend/**'
+      - 'apps/terraform/**'
       - '.github/workflows/backend.yml'
   pull_request:
     branches: [main]
     paths:
       - 'apps/backend/**'
+      - 'apps/terraform/**'
       - '.github/workflows/backend.yml'
   workflow_dispatch:
     inputs:
