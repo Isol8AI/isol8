@@ -251,7 +251,7 @@ async def root():
 async def health_check(db=Depends(get_db)):
     try:
         await db.execute(text("SELECT 1"))
-        return {"status": "healthy", "database": "connected"}
+        return {"status": "healthy", "database": "connected", "version": "ci-test-1"}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "disconnected"})

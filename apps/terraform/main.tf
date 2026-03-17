@@ -153,8 +153,8 @@ resource "aws_s3_bucket_policy" "town_sprites" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowCloudFrontOAI"
-        Effect    = "Allow"
+        Sid    = "AllowCloudFrontOAI"
+        Effect = "Allow"
         Principal = {
           AWS = aws_cloudfront_origin_access_identity.town_sprites.iam_arn
         }

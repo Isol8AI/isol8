@@ -450,8 +450,8 @@ resource "aws_iam_role_policy" "ec2_ecs_management" {
         Resource = "arn:aws:elasticfilesystem:*:${data.aws_caller_identity.current.account_id}:access-point/*"
       },
       {
-        Effect   = "Allow"
-        Action   = [
+        Effect = "Allow"
+        Action = [
           "ecs:RegisterTaskDefinition",
           "ecs:DeregisterTaskDefinition",
           "ecs:DescribeTaskDefinition"
