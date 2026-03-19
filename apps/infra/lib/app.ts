@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
+import { Aspects } from "aws-cdk-lib";
+import * as iam from "aws-cdk-lib/aws-iam";
+import { AwsSolutionsChecks } from "cdk-nag";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { ComputeStack } from "./stacks/compute-stack";
@@ -76,3 +79,40 @@ new ApiStack(app, `isol8-${env}-api`, {
   nlbArn: compute.nlb.loadBalancerArn,
   nlbDnsName: compute.nlbDnsName,
 });
+
+// --- GitHub Actions OIDC Role ---
+const oidcProviderArn =
+  "arn:aws:iam::877352799272:oidc-provider/token.actions.githubusercontent.com";
+const oidcProvider =
+  iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+    auth,
+    "GitHubOidcProvider",
+    oidcProviderArn,
+  );
+
+const githubActionsRole = new iam.Role(
+  auth,
+  `isol8-${env}-github-actions`,
+  {
+    roleName: `isol8-${env}-github-actions`,
+    assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
+      StringLike: {
+        "token.actions.githubusercontent.com:sub": "repo:Isol8AI/isol8:*",
+      },
+      StringEquals: {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+      },
+    }),
+    managedPolicies: [
+      iam.ManagedPolicy.fromAwsManagedPolicyName("AdministratorAccess"),
+    ],
+    description: "GitHub Actions OIDC role for CI/CD deployments",
+  },
+);
+
+// --- CDK Nag ---
+Aspects.of(app).add(new AwsSolutionsChecks());
+
+// --- Tags ---
+cdk.Tags.of(app).add("Project", "isol8");
+cdk.Tags.of(app).add("Environment", env);
