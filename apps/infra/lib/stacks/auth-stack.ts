@@ -8,7 +8,6 @@ export interface AuthSecrets {
   clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
-  huggingfaceToken: secretsmanager.ISecret;
   perplexityApiKey: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
 }
@@ -33,30 +32,17 @@ export class AuthStack extends cdk.Stack {
       alias: `isol8-${env}-general`,
     });
 
-    // Helper to create a Secrets Manager secret with a specific name
-    const createSecret = (
-      logicalId: string,
-      secretName: string,
-    ): secretsmanager.Secret =>
-      new secretsmanager.Secret(this, logicalId, {
-        secretName: `isol8/${env}/${secretName}`,
-        description: `Isol8 ${env} ${secretName} — value populated out-of-band`,
-      });
+    // Import existing secrets (created by terraform, values already populated)
+    const importSecret = (logicalId: string, secretName: string): secretsmanager.ISecret =>
+      secretsmanager.Secret.fromSecretNameV2(this, logicalId, `isol8/${env}/${secretName}`);
 
     this.secrets = {
-      clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
-      clerkWebhookSecret: createSecret(
-        "ClerkWebhookSecret",
-        "clerk_webhook_secret",
-      ),
-      stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
-      stripeWebhookSecret: createSecret(
-        "StripeWebhookSecret",
-        "stripe_webhook_secret",
-      ),
-      huggingfaceToken: createSecret("HuggingfaceToken", "huggingface_token"),
-      perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
-      encryptionKey: createSecret("EncryptionKey", "encryption_key"),
+      clerkSecretKey: importSecret("ClerkSecretKey", "clerk_secret_key"),
+      clerkWebhookSecret: importSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
+      stripeSecretKey: importSecret("StripeSecretKey", "stripe_secret_key"),
+      stripeWebhookSecret: importSecret("StripeWebhookSecret", "stripe_webhook_secret"),
+      perplexityApiKey: importSecret("PerplexityApiKey", "perplexity_api_key"),
+      encryptionKey: importSecret("EncryptionKey", "encryption_key"),
     };
   }
 }
