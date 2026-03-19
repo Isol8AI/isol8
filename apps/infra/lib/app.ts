@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
 import { AuthStack } from "./stacks/auth-stack";
+import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
@@ -25,6 +26,13 @@ const network = new NetworkStack(app, `isol8-${env}-network`, {
 });
 
 const database = new DatabaseStack(app, `isol8-${env}-database`, {
+  env: awsEnv,
+  environment: env,
+  vpc: network.vpc,
+  kmsKey: auth.kmsKey,
+});
+
+const container = new ContainerStack(app, `isol8-${env}-container`, {
   env: awsEnv,
   environment: env,
   vpc: network.vpc,
