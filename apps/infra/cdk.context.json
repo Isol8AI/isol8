@@ -6,5 +6,9 @@
     "us-east-1d",
     "us-east-1e",
     "us-east-1f"
-  ]
+  ],
+  "hosted-zone:account=877352799272:domainName=isol8.co:region=us-east-1": {
+    "Id": "/hostedzone/Z09248243AOUC775CDUI4",
+    "Name": "isol8.co."
+  }
 }

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
 import { AuthStack } from "./stacks/auth-stack";
+import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 
 const app = new cdk.App();
@@ -8,6 +9,11 @@ const env = app.node.tryGetContext("env") || "dev";
 const awsEnv = { account: "877352799272", region: "us-east-1" };
 
 const auth = new AuthStack(app, `isol8-${env}-auth`, {
+  env: awsEnv,
+  environment: env,
+});
+
+const dns = new DnsStack(app, `isol8-${env}-dns`, {
   env: awsEnv,
   environment: env,
 });
