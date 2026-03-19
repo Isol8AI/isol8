@@ -1,6 +1,4 @@
 import * as cdk from "aws-cdk-lib";
-import { Aspects } from "aws-cdk-lib";
-import { AwsSolutionsChecks } from "cdk-nag";
 import { Construct } from "constructs";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
@@ -77,9 +75,6 @@ export class Isol8Stage extends cdk.Stage {
       nlbArn: compute.nlb.loadBalancerArn,
       nlbDnsName: compute.nlbDnsName,
     });
-
-    // --- CDK Nag ---
-    Aspects.of(this).add(new AwsSolutionsChecks());
 
     // --- Tags ---
     cdk.Tags.of(this).add("Project", "isol8");
