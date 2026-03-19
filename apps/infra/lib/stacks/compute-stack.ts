@@ -69,9 +69,14 @@ const ENV_CONFIG: Record<
 
 export class ComputeStack extends cdk.Stack {
   public readonly alb: elbv2.ApplicationLoadBalancer;
+  public readonly albSecurityGroup: ec2.SecurityGroup;
+  public readonly albHttpsListenerArn: string;
+  public readonly nlb: elbv2.NetworkLoadBalancer;
+  public readonly nlbDnsName: string;
   public readonly asg: autoscaling.AutoScalingGroup;
   public readonly repository: ecr.Repository;
   public readonly ec2SecurityGroup: ec2.SecurityGroup;
+  public readonly ec2Role: iam.Role;
 
   constructor(scope: Construct, id: string, props: ComputeStackProps) {
     super(scope, id, props);
@@ -107,19 +112,19 @@ export class ComputeStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // ALB
     // -------------------------------------------------------------------------
-    const albSecurityGroup = new ec2.SecurityGroup(this, "AlbSecurityGroup", {
+    this.albSecurityGroup = new ec2.SecurityGroup(this, "AlbSecurityGroup", {
       vpc: props.vpc,
       description: `Isol8 ${env} internal ALB security group`,
       allowAllOutbound: true,
     });
 
     // ALB accepts traffic from within VPC (API Gateway VPC Link)
-    albSecurityGroup.addIngressRule(
+    this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
       ec2.Port.tcp(443),
       "HTTPS from VPC (API Gateway)",
     );
-    albSecurityGroup.addIngressRule(
+    this.albSecurityGroup.addIngressRule(
       ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
       ec2.Port.tcp(80),
       "HTTP from VPC (API Gateway)",
@@ -129,7 +134,7 @@ export class ComputeStack extends cdk.Stack {
       vpc: props.vpc,
       internetFacing: false,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
-      securityGroup: albSecurityGroup,
+      securityGroup: this.albSecurityGroup,
       idleTimeout: cdk.Duration.seconds(300),
       deletionProtection: env === "prod",
     });
@@ -152,7 +157,7 @@ export class ComputeStack extends cdk.Stack {
     });
 
     // HTTPS listener
-    this.alb.addListener("HttpsListener", {
+    const httpsListener = this.alb.addListener("HttpsListener", {
       port: 443,
       protocol: elbv2.ApplicationProtocol.HTTPS,
       certificates: [props.certificate],
@@ -171,13 +176,15 @@ export class ComputeStack extends cdk.Stack {
       }),
     });
 
+    this.albHttpsListenerArn = httpsListener.listenerArn;
+
     // -------------------------------------------------------------------------
     // EC2 Security Group ingress rules
     // -------------------------------------------------------------------------
 
     // Allow traffic from ALB on port 8000
     this.ec2SecurityGroup.addIngressRule(
-      albSecurityGroup,
+      this.albSecurityGroup,
       ec2.Port.tcp(8000),
       "HTTP from ALB",
     );
@@ -225,7 +232,7 @@ export class ComputeStack extends cdk.Stack {
     // -------------------------------------------------------------------------
     // IAM Role for EC2 instances
     // -------------------------------------------------------------------------
-    const ec2Role = new iam.Role(this, "Ec2Role", {
+    this.ec2Role = new iam.Role(this, "Ec2Role", {
       assumedBy: new iam.ServicePrincipal("ec2.amazonaws.com"),
       description: `Isol8 ${env} EC2 instance role`,
       managedPolicies: [
@@ -236,7 +243,7 @@ export class ComputeStack extends cdk.Stack {
     });
 
     // ECR pull
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "EcrAccess",
         actions: [
@@ -250,7 +257,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // ECS management (per-user Fargate tasks)
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "EcsManagement",
         actions: [
@@ -272,7 +279,7 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "EcsTaskDefinition",
         actions: [
@@ -285,7 +292,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // IAM PassRole for ECS task roles
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "IamPassRole",
         actions: ["iam:PassRole"],
@@ -294,7 +301,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // Secrets Manager
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "SecretsAccess",
         actions: [
@@ -308,10 +315,10 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // Also allow access to the RDS auto-generated secret
-    props.database.dbSecret.grantRead(ec2Role);
+    props.database.dbSecret.grantRead(this.ec2Role);
 
     // Bedrock
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "BedrockInvoke",
         actions: [
@@ -326,7 +333,7 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "BedrockList",
         actions: [
@@ -337,7 +344,7 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "Marketplace",
         actions: [
@@ -350,7 +357,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // CloudWatch Logs
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "CloudWatchLogs",
         actions: [
@@ -364,7 +371,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // Cloud Map (service discovery)
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "CloudMapAccess",
         actions: [
@@ -380,7 +387,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // KMS
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "KmsAccess",
         actions: ["kms:Decrypt", "kms:GenerateDataKey"],
@@ -389,7 +396,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // EC2 self-discovery
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "Ec2SelfDiscovery",
         actions: ["ec2:DescribeInstances", "ec2:DescribeTags"],
@@ -398,7 +405,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // STS
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "StsAccess",
         actions: ["sts:GetCallerIdentity", "sts:AssumeRole"],
@@ -407,7 +414,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // EFS access points management
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "EfsAccessPoints",
         actions: [
@@ -421,7 +428,7 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "EfsDeleteAccessPoints",
         actions: [
@@ -435,7 +442,7 @@ export class ComputeStack extends cdk.Stack {
     );
 
     // S3 (OpenClaw config bucket — future needs)
-    ec2Role.addToPolicy(
+    this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "S3Access",
         actions: [
@@ -504,7 +511,7 @@ export class ComputeStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       instanceType: config.instanceType,
       machineImage: ec2.MachineImage.latestAmazonLinux2023(),
-      role: ec2Role,
+      role: this.ec2Role,
       userData,
       securityGroup: this.ec2SecurityGroup,
       minCapacity: config.minCapacity,
@@ -533,6 +540,49 @@ export class ComputeStack extends cdk.Stack {
 
     // Register ASG with ALB target group
     this.asg.attachToApplicationTargetGroup(targetGroup);
+
+    // -------------------------------------------------------------------------
+    // NLB (for WebSocket VPC Link v1 — targets EC2 instances on port 8000)
+    // -------------------------------------------------------------------------
+    // VPC Link V1 (required for WebSocket APIs) only supports NLB targets.
+    // NLB is co-located with compute to avoid circular stack dependencies.
+    this.nlb = new elbv2.NetworkLoadBalancer(this, "WebSocketNlb", {
+      vpc: props.vpc,
+      internetFacing: false,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      crossZoneEnabled: true,
+    });
+
+    const nlbTargetGroup = new elbv2.NetworkTargetGroup(
+      this,
+      "NlbTargetGroup",
+      {
+        vpc: props.vpc,
+        port: 8000,
+        protocol: elbv2.Protocol.TCP,
+        targetType: elbv2.TargetType.INSTANCE,
+        healthCheck: {
+          enabled: true,
+          protocol: elbv2.Protocol.HTTP,
+          path: "/health",
+          port: "traffic-port",
+          healthyThresholdCount: 2,
+          unhealthyThresholdCount: 2,
+          interval: cdk.Duration.seconds(30),
+        },
+      },
+    );
+
+    this.nlb.addListener("NlbTcpListener", {
+      port: 80,
+      protocol: elbv2.Protocol.TCP,
+      defaultTargetGroups: [nlbTargetGroup],
+    });
+
+    // Register ASG instances with NLB target group
+    this.asg.attachToNetworkTargetGroup(nlbTargetGroup);
+
+    this.nlbDnsName = this.nlb.loadBalancerDnsName;
 
     // -------------------------------------------------------------------------
     // Tags

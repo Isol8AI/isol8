@@ -1,0 +1,2 @@
+pyjwt[crypto]>=2.9
+requests>=2.32

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from "aws-cdk-lib";
+import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
 import { ComputeStack } from "./stacks/compute-stack";
 import { ContainerStack } from "./stacks/container-stack";
@@ -61,4 +62,17 @@ const compute = new ComputeStack(app, `isol8-${env}-compute`, {
     containerSecurityGroup: container.containerSecurityGroup,
     taskExecutionRole: container.taskExecutionRole,
   },
+});
+
+new ApiStack(app, `isol8-${env}-api`, {
+  env: awsEnv,
+  environment: env,
+  vpc: network.vpc,
+  certificate: dns.certificate,
+  hostedZone: dns.hostedZone,
+  ec2Role: compute.ec2Role,
+  albListenerArn: compute.albHttpsListenerArn,
+  albSecurityGroupId: compute.albSecurityGroup.securityGroupId,
+  nlbArn: compute.nlb.loadBalancerArn,
+  nlbDnsName: compute.nlbDnsName,
 });
