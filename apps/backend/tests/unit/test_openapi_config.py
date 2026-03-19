@@ -17,7 +17,6 @@ EXPECTED_TAGS = [
     "users",
     "webhooks",
     "websocket",
-    "town",
     "billing",
     "container",
     "debug",

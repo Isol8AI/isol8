@@ -84,7 +84,6 @@ resource "aws_lambda_function" "authorizer" {
     variables = {
       CLERK_JWKS_URL    = var.clerk_jwks_url
       CLERK_ISSUER      = var.clerk_issuer
-      TOWN_TOKEN_SECRET = var.town_token_secret
     }
   }
 

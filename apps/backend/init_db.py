@@ -56,21 +56,6 @@ async def init_models(reset: bool = False):
                 print(f"Creating SQLAlchemy tables in '{schema}' schema...")
                 await conn.run_sync(Base.metadata.create_all)
 
-                # Fix agents missing location_context (column added after rows existed)
-                print("Fixing apartment agent data...")
-                await conn.execute(
-                    text("UPDATE town_state SET location_context = 'apartment' WHERE location_context IS NULL")
-                )
-                # Fix agents with apartment context but town-scale positions
-                await conn.execute(
-                    text(
-                        "UPDATE town_state SET position_x = 9, position_y = 6, "
-                        "current_location = 'bedroom' "
-                        "WHERE location_context = 'apartment' "
-                        "AND (position_x >= 12 OR position_y >= 8)"
-                    )
-                )
-
             print(f"Database initialization complete for schema '{schema}'.")
             return
         except OperationalError as e:

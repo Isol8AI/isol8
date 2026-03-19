@@ -19,7 +19,6 @@ ec2_max_count     = 0
 domain_name       = "api-staging.isol8.co"
 root_domain       = "isol8.co"
 frontend_url      = "https://staging.isol8.co"
-town_frontend_url = "https://staging.town.isol8.co"
 
 # Clerk (production Clerk with custom domain)
 clerk_issuer = "https://clerk.isol8.co"

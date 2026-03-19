@@ -73,13 +73,6 @@ class Settings(BaseSettings):
     STRIPE_METER_ID: str = os.getenv("STRIPE_METER_ID", "")
     BILLING_MARKUP: float = float(os.getenv("BILLING_MARKUP", "1.4"))
 
-    # PixelLab sprite generation
-    pixellab_api_key: str = os.getenv("PIXELLAB_API_KEY", "")
-
-    # Sprite storage (S3 + CloudFront)
-    SPRITE_S3_BUCKET: str = os.getenv("SPRITE_S3_BUCKET", "")
-    SPRITE_CDN_URL: str = os.getenv("SPRITE_CDN_URL", "")
-
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 

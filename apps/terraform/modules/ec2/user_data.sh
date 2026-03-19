@@ -10,10 +10,8 @@ ENVIRONMENT="${environment}"
 SECRETS_ARN_PREFIX="${secrets_arn_prefix}"
 REGION="${aws_region}"
 FRONTEND_URL="${frontend_url}"
-TOWN_FRONTEND_URL="${town_frontend_url}"
 WS_CONNECTIONS_TABLE="${ws_connections_table}"
 WS_MANAGEMENT_API_URL="${ws_management_api_url}"
-TOWN_TOKEN_SECRET="${town_token_secret}"
 
 # Logging
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
@@ -87,11 +85,6 @@ ENCRYPTION_KEY=$(aws secretsmanager get-secret-value \
     --secret-id "$${SECRETS_ARN_PREFIX}encryption_key" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
-PIXELLAB_API_KEY=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}pixellab_api_key" \
-    --query 'SecretString' --output text 2>/dev/null || echo "")
-
 # -----------------------------------------------------------------------------
 # Create environment file
 # -----------------------------------------------------------------------------
@@ -103,7 +96,7 @@ OM_PG_SCHEMA=$ENVIRONMENT
 HUGGINGFACE_TOKEN=$HUGGINGFACE_TOKEN
 CLERK_ISSUER=$CLERK_ISSUER
 CLERK_WEBHOOK_SECRET=$CLERK_WEBHOOK_SECRET
-CORS_ORIGINS=$FRONTEND_URL,$TOWN_FRONTEND_URL
+CORS_ORIGINS=$FRONTEND_URL
 ENVIRONMENT=$ENVIRONMENT
 DEBUG=false
 WS_CONNECTIONS_TABLE=$WS_CONNECTIONS_TABLE
@@ -119,8 +112,6 @@ STRIPE_METER_ID=${stripe_meter_id}
 FRONTEND_URL=$FRONTEND_URL
 PERPLEXITY_API_KEY=$PERPLEXITY_API_KEY
 ENCRYPTION_KEY=$ENCRYPTION_KEY
-PIXELLAB_API_KEY=$PIXELLAB_API_KEY
-TOWN_TOKEN_SECRET=$TOWN_TOKEN_SECRET
 PROXY_BASE_URL=https://${domain_name}/api/v1/proxy
 CONTAINER_EXECUTION_ROLE_ARN=${container_execution_role_arn}
 ECS_CLUSTER_ARN=${ecs_cluster_arn}
@@ -133,8 +124,6 @@ S3_CONFIG_BUCKET=${s3_config_bucket}
 CLOUD_MAP_NAMESPACE_ID=${cloud_map_namespace_id}
 CLOUD_MAP_SERVICE_ID=${cloud_map_service_id}
 CLOUD_MAP_SERVICE_ARN=${cloud_map_service_arn}
-SPRITE_S3_BUCKET=${sprite_s3_bucket}
-SPRITE_CDN_URL=${sprite_cdn_url}
 EOF
 
 chmod 600 /home/ec2-user/.env
