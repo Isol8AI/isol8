@@ -483,7 +483,14 @@ export class ComputeStack extends cdk.Stack {
       cdk.Fn.sub(userDataScript, {
         Project: "isol8",
         Environment: env,
-        SecretsArnPrefix: `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/`,
+        SecretPrefix: `isol8/${env}`,
+        SecretDatabaseUrl: `isol8/${env}/database_url`,
+        SecretClerkIssuer: `isol8/${env}/clerk_issuer`,
+        SecretClerkWebhookSecret: `isol8/${env}/clerk_webhook_secret`,
+        SecretStripeSecretKey: `isol8/${env}/stripe_secret_key`,
+        SecretStripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
+        SecretPerplexityApiKey: `isol8/${env}/perplexity_api_key`,
+        SecretEncryptionKey: `isol8/${env}/encryption_key`,
         Region: this.region,
         FrontendUrl:
           env === "prod"

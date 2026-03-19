@@ -1,25 +1,23 @@
 #!/bin/bash
 # =============================================================================
 # EC2 User Data Script - Isol8 Backend
-# =============================================================================
-# Variables are injected by CDK via CloudFormation Fn::Sub.
-# ${CamelCase} placeholders are substituted by CDK (Fn::Sub) at deploy time.
-# Shell variables use $VAR (no braces) or $${VAR} to escape from Fn::Sub.
+# All variables use CDK Fn::Sub CamelCase placeholders.
+# No shell braces allowed -- CloudFormation resolves all curly-brace patterns.
 # =============================================================================
 set -euo pipefail
-
-# Variables from CDK (Fn::Sub)
-PROJECT="${Project}"
-ENVIRONMENT="${Environment}"
-SECRETS_ARN_PREFIX="${SecretsArnPrefix}"
-REGION="${Region}"
-FRONTEND_URL="${FrontendUrl}"
-WS_CONNECTIONS_TABLE="${WsConnectionsTable}"
-WS_MANAGEMENT_API_URL="${WsManagementApiUrl}"
 
 # Logging
 exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
 echo "Starting Isol8 backend setup..."
+
+# Variables from CDK (Fn::Sub)
+PROJECT="${Project}"
+ENVIRONMENT="${Environment}"
+REGION="${Region}"
+FRONTEND_URL="${FrontendUrl}"
+WS_CONNECTIONS_TABLE="${WsConnectionsTable}"
+WS_MANAGEMENT_API_URL="${WsManagementApiUrl}"
+SECRET_PREFIX="${SecretPrefix}"
 
 # -----------------------------------------------------------------------------
 # Install dependencies
@@ -43,40 +41,20 @@ usermod -aG docker ec2-user
 # -----------------------------------------------------------------------------
 echo "Fetching secrets from region: $REGION"
 
-DATABASE_URL=$(aws secretsmanager get-secret-value \
+fetch_secret() {
+  aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}database_url" \
-    --query 'SecretString' --output text)
+    --secret-id "$1" \
+    --query 'SecretString' --output text 2>/dev/null || echo ""
+}
 
-CLERK_ISSUER=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}clerk_issuer" \
-    --query 'SecretString' --output text)
-
-CLERK_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}clerk_webhook_secret" \
-    --query 'SecretString' --output text)
-
-STRIPE_SECRET_KEY=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}stripe_secret_key" \
-    --query 'SecretString' --output text 2>/dev/null || echo "")
-
-STRIPE_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}stripe_webhook_secret" \
-    --query 'SecretString' --output text 2>/dev/null || echo "")
-
-PERPLEXITY_API_KEY=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}perplexity_api_key" \
-    --query 'SecretString' --output text 2>/dev/null || echo "")
-
-ENCRYPTION_KEY=$(aws secretsmanager get-secret-value \
-    --region "$REGION" \
-    --secret-id "$${SECRETS_ARN_PREFIX}encryption_key" \
-    --query 'SecretString' --output text 2>/dev/null || echo "")
+DATABASE_URL=$(fetch_secret "${SecretDatabaseUrl}")
+CLERK_ISSUER=$(fetch_secret "${SecretClerkIssuer}")
+CLERK_WEBHOOK_SECRET=$(fetch_secret "${SecretClerkWebhookSecret}")
+STRIPE_SECRET_KEY=$(fetch_secret "${SecretStripeSecretKey}")
+STRIPE_WEBHOOK_SECRET=$(fetch_secret "${SecretStripeWebhookSecret}")
+PERPLEXITY_API_KEY=$(fetch_secret "${SecretPerplexityApiKey}")
+ENCRYPTION_KEY=$(fetch_secret "${SecretEncryptionKey}")
 
 # -----------------------------------------------------------------------------
 # Create environment file
