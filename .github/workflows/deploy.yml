@@ -30,6 +30,34 @@ jobs:
           name: cdk.out
           path: cdk.out
           include-hidden-files: true
+  Assets-DockerAsset1:
+    name: Publish Assets Assets-DockerAsset1
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - id: Publish
+        name: Publish Assets-DockerAsset1
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-DockerAsset1-step.sh
   Assets-FileAsset1:
     name: Publish Assets Assets-FileAsset1
     needs:
@@ -704,6 +732,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset7
+      - Assets-DockerAsset1
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1019,6 +1048,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset16
+      - Assets-DockerAsset1
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
       - prod-isol8-prod-container-Deploy

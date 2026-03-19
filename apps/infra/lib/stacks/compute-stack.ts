@@ -5,6 +5,7 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as autoscaling from "aws-cdk-lib/aws-autoscaling";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
+import { DockerImageAsset, Platform } from "aws-cdk-lib/aws-ecr-assets";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
@@ -98,6 +99,14 @@ export class ComputeStack extends cdk.Stack {
           description: "Keep last 10 images",
         },
       ],
+    });
+
+    // -------------------------------------------------------------------------
+    // Docker Image Asset (built & pushed by CDK Pipeline)
+    // -------------------------------------------------------------------------
+    const backendImage = new DockerImageAsset(this, "BackendImage", {
+      directory: path.join(__dirname, "..", "..", "..", "backend"),
+      platform: Platform.LINUX_AMD64,
     });
 
     // -------------------------------------------------------------------------
@@ -499,7 +508,7 @@ export class ComputeStack extends cdk.Stack {
           props.container.cloudMapNamespace.namespaceId,
         CloudMapServiceId: props.container.cloudMapService.serviceId,
         CloudMapServiceArn: props.container.cloudMapService.serviceArn,
-        EcrRepoName: `isol8-${env}-backend`,
+        ImageUri: backendImage.imageUri,
       }),
     );
 

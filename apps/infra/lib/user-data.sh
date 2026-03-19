@@ -117,14 +117,16 @@ chmod 600 /home/ec2-user/.env
 chown ec2-user:ec2-user /home/ec2-user/.env
 
 # -----------------------------------------------------------------------------
-# Login to ECR and pull images
+# Login to ECR and pull image (URI injected by CDK with content hash tag)
 # -----------------------------------------------------------------------------
-echo "Pulling container images..."
-AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-ECR_REPO="$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/${EcrRepoName}"
+echo "Pulling container image..."
+IMAGE_URI="${ImageUri}"
 
-aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
-docker pull "$ECR_REPO:latest" || docker pull "$ECR_REPO:$ENVIRONMENT" || true
+AWS_ACCOUNT_ID=$(echo "$IMAGE_URI" | cut -d'.' -f1)
+ECR_DOMAIN="$AWS_ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com"
+aws ecr get-login-password --region "$REGION" | docker login --username AWS --password-stdin "$ECR_DOMAIN"
+
+docker pull "$IMAGE_URI"
 
 # -----------------------------------------------------------------------------
 # Mount EFS for workspaces
@@ -163,7 +165,7 @@ ExecStart=/usr/bin/docker run --rm \
     --env-file /home/ec2-user/.env \
     -v /mnt/efs:/mnt/efs \
     --network=host \
-    $ECR_REPO:latest
+    $IMAGE_URI
 
 [Install]
 WantedBy=multi-user.target
