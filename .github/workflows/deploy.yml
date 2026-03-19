@@ -28,7 +28,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: cdk.out
-          path: cdk.out
+          path: apps/infra/cdk.out
           include-hidden-files: true
   Assets-DockerAsset1:
     name: Publish Assets Assets-DockerAsset1

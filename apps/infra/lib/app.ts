@@ -17,6 +17,7 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       "npm ci",
       "npx cdk synth",
     ],
+    primaryOutputDirectory: "apps/infra/cdk.out",
   }),
   awsCreds: AwsCredentials.fromOpenIdConnect({
     gitHubActionRoleArn: "arn:aws:iam::877352799272:role/isol8-dev-github-actions",
