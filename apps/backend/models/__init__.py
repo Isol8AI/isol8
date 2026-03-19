@@ -5,7 +5,6 @@ from .user import User
 from .audit_log import AuditLog, AuditEventType
 from .billing import ModelPricing, ToolPricing, BillingAccount, UsageEvent, UsageDaily
 from .container import Container
-from .town import TownAgent, TownState, TownConversation, TownRelationship
 from .user_api_key import UserApiKey
 
 __all__ = [
@@ -19,9 +18,5 @@ __all__ = [
     "UsageEvent",
     "UsageDaily",
     "Container",
-    "TownAgent",
-    "TownState",
-    "TownConversation",
-    "TownRelationship",
     "UserApiKey",
 ]

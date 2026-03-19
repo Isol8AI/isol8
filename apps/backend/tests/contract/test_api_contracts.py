@@ -11,7 +11,7 @@ fuzz testing since they cannot be meaningfully tested without infrastructure.
 
 import schemathesis
 from schemathesis.checks import not_a_server_error
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from core.auth import AuthContext
 
@@ -67,14 +67,6 @@ def _make_app():
     app.dependency_overrides[get_session_factory] = mock_get_session_factory
     return app
 
-
-# Patch TownSimulation before loading schema
-# so schemathesis can create its internal ASGI client without lifespan errors.
-_town_sim_patch = patch("main.TownSimulation")
-
-_mock_town = _town_sim_patch.start()
-_mock_town.return_value.start = AsyncMock()
-_mock_town.return_value.stop = AsyncMock()
 
 app = _make_app()
 

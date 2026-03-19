@@ -116,20 +116,3 @@ output "cloud_map_service_arn" {
   value       = module.ecs.cloud_map_service_arn
 }
 
-# -----------------------------------------------------------------------------
-# GooseTown Sprite Assets
-# -----------------------------------------------------------------------------
-output "town_sprites_bucket" {
-  description = "S3 bucket for GooseTown sprite assets"
-  value       = aws_s3_bucket.town_sprites.id
-}
-
-output "town_sprites_cdn_url" {
-  description = "CloudFront CDN URL for GooseTown sprite assets"
-  value       = var.town_assets_cert_arn != "" ? "https://assets.town.${var.root_domain}" : ""
-}
-
-output "town_sprites_cdn_domain" {
-  description = "CloudFront distribution domain name for GooseTown sprites"
-  value       = var.town_assets_cert_arn != "" ? aws_cloudfront_distribution.town_sprites[0].domain_name : ""
-}

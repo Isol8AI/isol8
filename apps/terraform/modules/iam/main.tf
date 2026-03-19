@@ -532,26 +532,6 @@ resource "aws_iam_role_policy" "ec2_websocket_dynamodb" {
   })
 }
 
-# EC2 Policy - S3 PutObject for GooseTown sprite uploads
-resource "aws_iam_role_policy" "ec2_sprite_s3" {
-  count = var.sprite_s3_bucket_name != "" ? 1 : 0
-  name  = "sprite-s3-upload"
-  role  = aws_iam_role.ec2.id
-
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "s3:PutObject",
-        ]
-        Resource = "arn:aws:s3:::${var.sprite_s3_bucket_name}/*"
-      }
-    ]
-  })
-}
-
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC Provider (use existing one created by bootstrap)
 # -----------------------------------------------------------------------------

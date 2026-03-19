@@ -76,9 +76,3 @@ variable "cloud_map_service_arn" {
   type    = string
   default = ""
 }
-
-variable "sprite_s3_bucket_name" {
-  description = "S3 bucket name for GooseTown sprite assets (empty to skip)"
-  type        = string
-  default     = ""
-}

@@ -19,7 +19,6 @@ from core.auth import get_current_user
 from core.config import settings
 from core.database import get_db
 from core.containers import startup_containers, shutdown_containers
-from core.services.town_simulation import TownSimulation
 from core.services.usage_poller import UsagePoller
 from routers import (
     billing,
@@ -30,7 +29,6 @@ from routers import (
     integrations,
     proxy,
     settings_keys,
-    town,
     users,
     webhooks,
     websocket_chat,
@@ -38,28 +36,21 @@ from routers import (
 
 logger = logging.getLogger(__name__)
 
-_town_simulation: TownSimulation | None = None
 _usage_poller: UsagePoller | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global _town_simulation, _usage_poller
+    global _usage_poller
 
     # Startup
     logger.info("Starting application...")
     await startup_containers()
 
-    # Start GooseTown simulation
     from core.database import get_session_factory
 
-    from routers.town import _notify_state_changed
-
     db_factory = get_session_factory()
-
-    _town_simulation = TownSimulation(db_factory=db_factory, notify_fn=_notify_state_changed)
-    await _town_simulation.start()
 
     # Start usage poller (syncs gateway session usage into billing)
     _usage_poller = UsagePoller(db_factory=db_factory)
@@ -71,9 +62,6 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down application...")
     if _usage_poller:
         await _usage_poller.stop()
-
-    if _town_simulation:
-        await _town_simulation.stop()
 
     await shutdown_containers()
 
@@ -90,10 +78,6 @@ openapi_tags = [
     {
         "name": "websocket",
         "description": "WebSocket connect, disconnect, and message endpoints (API Gateway integration).",
-    },
-    {
-        "name": "town",
-        "description": "GooseTown AI agent simulation endpoints.",
     },
     {
         "name": "billing",
@@ -219,9 +203,6 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
-
-# GooseTown routes
-app.include_router(town.router, prefix="/api/v1/town", tags=["town"])
 
 
 @app.get(

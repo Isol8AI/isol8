@@ -103,7 +103,6 @@ resource "aws_launch_template" "main" {
     secrets_arn_prefix            = var.secrets_arn_prefix
     aws_region                    = var.aws_region
     frontend_url                  = var.frontend_url
-    town_frontend_url             = var.town_frontend_url
     ws_connections_table          = var.ws_connections_table
     ws_management_api_url         = var.ws_management_api_url
     stripe_starter_fixed_price_id = var.stripe_starter_fixed_price_id
@@ -121,9 +120,6 @@ resource "aws_launch_template" "main" {
     cloud_map_service_id          = var.cloud_map_service_id
     cloud_map_service_arn         = var.cloud_map_service_arn
     domain_name                   = var.domain_name
-    town_token_secret             = var.town_token_secret
-    sprite_s3_bucket              = var.sprite_s3_bucket
-    sprite_cdn_url                = var.sprite_cdn_url
   }))
 
   # Metadata options (IMDSv2 required for security)

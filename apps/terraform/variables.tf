@@ -89,12 +89,6 @@ variable "frontend_url" {
   type        = string
 }
 
-variable "town_frontend_url" {
-  description = "GooseTown frontend URL for CORS (e.g., https://dev.town.isol8.co)"
-  type        = string
-  default     = ""
-}
-
 # -----------------------------------------------------------------------------
 # Secrets (passed via environment variables, not in tfvars)
 # -----------------------------------------------------------------------------
@@ -119,12 +113,6 @@ variable "clerk_issuer" {
 variable "clerk_jwks_url" {
   description = "Clerk JWKS URL for JWT validation (e.g., https://<clerk-domain>/.well-known/jwks.json)"
   type        = string
-}
-
-variable "town_token_secret" {
-  description = "Shared HMAC secret for signing/verifying GooseTown agent tokens"
-  type        = string
-  sensitive   = true
 }
 
 variable "clerk_secret_key" {
@@ -168,13 +156,6 @@ variable "encryption_key" {
   default     = ""
 }
 
-variable "pixellab_api_key" {
-  description = "PixelLab API key for AI-generated pixel art sprites"
-  type        = string
-  sensitive   = true
-  default     = ""
-}
-
 # Stripe billing configuration (non-secret price IDs)
 variable "stripe_starter_fixed_price_id" {
   description = "Stripe Price ID for Starter plan ($25/mo)"
@@ -203,18 +184,6 @@ variable "stripe_meter_id" {
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC (for CI/CD)
 # -----------------------------------------------------------------------------
-
-variable "town_assets_cert_arn" {
-  description = "ACM certificate ARN for assets.town.isol8.co CloudFront distribution"
-  type        = string
-  default     = ""
-}
-
-variable "town_zone_id" {
-  description = "Route53 hosted zone ID for town.isol8.co (if different from root_domain zone)"
-  type        = string
-  default     = ""
-}
 
 # -----------------------------------------------------------------------------
 # GitHub Actions OIDC (for CI/CD)
