@@ -195,7 +195,6 @@ async def ws_message(
     if msg_type == "pong":
         return Response(status_code=200)
 
-
     if msg_type == "req":
         req_id = body.get("id")
         method = body.get("method")
