@@ -19,30 +19,36 @@ export class Isol8Stage extends cdk.Stage {
     const env = props.environment;
 
     const auth = new AuthStack(this, `isol8-${env}-auth`, {
+      stackName: `isol8-${env}-auth`,
       environment: env,
     });
 
     const dns = new DnsStack(this, `isol8-${env}-dns`, {
+      stackName: `isol8-${env}-dns`,
       environment: env,
     });
 
     const network = new NetworkStack(this, `isol8-${env}-network`, {
+      stackName: `isol8-${env}-network`,
       environment: env,
     });
 
     const database = new DatabaseStack(this, `isol8-${env}-database`, {
+      stackName: `isol8-${env}-database`,
       environment: env,
       vpc: network.vpc,
       kmsKey: auth.kmsKey,
     });
 
     const container = new ContainerStack(this, `isol8-${env}-container`, {
+      stackName: `isol8-${env}-container`,
       environment: env,
       vpc: network.vpc,
       kmsKey: auth.kmsKey,
     });
 
     const compute = new ComputeStack(this, `isol8-${env}-compute`, {
+      stackName: `isol8-${env}-compute`,
       environment: env,
       vpc: network.vpc,
       database: {
@@ -65,6 +71,7 @@ export class Isol8Stage extends cdk.Stage {
     });
 
     new ApiStack(this, `isol8-${env}-api`, {
+      stackName: `isol8-${env}-api`,
       environment: env,
       vpc: network.vpc,
       certificate: dns.certificate,

@@ -565,7 +565,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-auth
+          name: isol8-dev-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset1.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -602,7 +602,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-dns
+          name: isol8-dev-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset2.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -640,7 +640,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-network
+          name: isol8-dev-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset3.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -679,7 +679,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-container
+          name: isol8-dev-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset5.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -718,7 +718,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-database
+          name: isol8-dev-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset6.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -761,7 +761,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-compute
+          name: isol8-dev-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset7.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -803,7 +803,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: dev-isol8-dev-api
+          name: isol8-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset8.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -848,7 +848,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-auth
+          name: isol8-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset11.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -893,7 +893,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-dns
+          name: isol8-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset12.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -939,7 +939,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-network
+          name: isol8-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset13.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -986,7 +986,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-container
+          name: isol8-prod-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset14.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -1033,7 +1033,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-database
+          name: isol8-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset15.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -1084,7 +1084,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-compute
+          name: isol8-prod-compute
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset16.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
@@ -1134,7 +1134,7 @@ jobs:
       - id: Deploy
         uses: aws-actions/aws-cloudformation-github-deploy@v1
         with:
-          name: prod-isol8-prod-api
+          name: isol8-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset17.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"

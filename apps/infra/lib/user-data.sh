@@ -3,7 +3,8 @@
 # EC2 User Data Script - Isol8 Backend
 # =============================================================================
 # Variables are injected by CDK via CloudFormation Fn::Sub.
-# All ${VarName} placeholders are substituted at deploy time.
+# ${CamelCase} placeholders are substituted by CDK (Fn::Sub) at deploy time.
+# Shell variables use $VAR (no braces) or $${VAR} to escape from Fn::Sub.
 # =============================================================================
 set -euo pipefail
 
@@ -44,37 +45,37 @@ echo "Fetching secrets from region: $REGION"
 
 DATABASE_URL=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}database_url" \
+    --secret-id "$${SECRETS_ARN_PREFIX}database_url" \
     --query 'SecretString' --output text)
 
 CLERK_ISSUER=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}clerk_issuer" \
+    --secret-id "$${SECRETS_ARN_PREFIX}clerk_issuer" \
     --query 'SecretString' --output text)
 
 CLERK_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}clerk_webhook_secret" \
+    --secret-id "$${SECRETS_ARN_PREFIX}clerk_webhook_secret" \
     --query 'SecretString' --output text)
 
 STRIPE_SECRET_KEY=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}stripe_secret_key" \
+    --secret-id "$${SECRETS_ARN_PREFIX}stripe_secret_key" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
 STRIPE_WEBHOOK_SECRET=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}stripe_webhook_secret" \
+    --secret-id "$${SECRETS_ARN_PREFIX}stripe_webhook_secret" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
 PERPLEXITY_API_KEY=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}perplexity_api_key" \
+    --secret-id "$${SECRETS_ARN_PREFIX}perplexity_api_key" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
 ENCRYPTION_KEY=$(aws secretsmanager get-secret-value \
     --region "$REGION" \
-    --secret-id "${!SECRETS_ARN_PREFIX}encryption_key" \
+    --secret-id "$${SECRETS_ARN_PREFIX}encryption_key" \
     --query 'SecretString' --output text 2>/dev/null || echo "")
 
 # -----------------------------------------------------------------------------
