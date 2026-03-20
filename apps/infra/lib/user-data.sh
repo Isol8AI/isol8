@@ -114,14 +114,14 @@ echo "Mounting EFS..."
 mkdir -p /mnt/efs
 EFS_FS_ID="${EfsFileSystemId}"
 for i in 1 2 3 4 5; do
-  mount -t efs -o tls "$EFS_FS_ID":/ /mnt/efs && break
+  mount -t efs -o tls,iam "$EFS_FS_ID":/ /mnt/efs && break
   echo "EFS mount attempt $i failed, retrying in 10s..."
   /bin/sleep 10
 done
 mountpoint -q /mnt/efs || { echo "FATAL: EFS mount failed after 5 attempts"; exit 1; }
 chmod 1777 /mnt/efs
 mkdir -p /mnt/efs/users
-echo "$EFS_FS_ID:/ /mnt/efs efs _netdev,tls 0 0" >> /etc/fstab
+echo "$EFS_FS_ID:/ /mnt/efs efs _netdev,tls,iam 0 0" >> /etc/fstab
 
 # -----------------------------------------------------------------------------
 # Start the application
