@@ -119,7 +119,7 @@ export class ApiStack extends cdk.Stack {
     // --- Stage ---
     const httpStage = new apigatewayv2.CfnStage(this, "HttpStage", {
       apiId: httpApi.ref,
-      stageName: "$default",
+      stageName: env,
       autoDeploy: true,
       defaultRouteSettings: {
         throttlingBurstLimit: throttle.burstLimit,
@@ -160,7 +160,7 @@ export class ApiStack extends cdk.Stack {
     const httpMapping = new apigatewayv2.CfnApiMapping(this, "HttpApiMapping", {
       apiId: httpApi.ref,
       domainName: httpDomainName.ref,
-      stage: httpStage.ref,
+      stage: env,
     });
     httpMapping.addDependency(httpStage);
 
