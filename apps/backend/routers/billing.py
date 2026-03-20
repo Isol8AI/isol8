@@ -1,7 +1,6 @@
 """Billing API endpoints with ECS Fargate container provisioning."""
 
 import logging
-import secrets
 from datetime import date
 
 import stripe
@@ -11,16 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
-from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_mcporter_config, write_openclaw_config, write_paired_devices_config
-from core.containers.device_identity import generate_device_identity
+from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.containers.workspace import WorkspaceError
 from core.database import get_db
 from core.services.billing_service import BillingService
 from core.services.usage_service import UsageService
 from models.billing import BillingAccount
-from models.container import Container
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -222,35 +218,7 @@ async def handle_stripe_webhook(
             # Provision ECS Service for subscriber
             try:
                 user_id = account.clerk_user_id
-                gateway_token = secrets.token_urlsafe(32)
-
-                # Step 1: Create ECS service (desiredCount=0) — creates the
-                # per-user EFS access point and directory, but does NOT start
-                # the container yet.
-                service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
-
-                # Step 2: Generate device identity and write all configs to
-                # EFS BEFORE the container boots, so paired.json is in place
-                # when OpenClaw starts.
-                identity = generate_device_identity()
-                container_result = await db.execute(select(Container).where(Container.user_id == user_id))
-                container_row = container_result.scalar_one_or_none()
-                if container_row:
-                    container_row.device_private_key_pem = identity["private_key_pem"]
-                    await db.commit()
-
-                config_json = write_openclaw_config(
-                    region=settings.AWS_REGION,
-                    gateway_token=gateway_token,
-                    proxy_base_url=settings.PROXY_BASE_URL,
-                )
-                get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
-                get_workspace().write_file(user_id, "openclaw.json", config_json)
-                get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
-
-                # Step 3: Now start the container — configs are on EFS.
-                await get_ecs_manager().start_user_service(user_id, db)
-
+                service_name = await get_ecs_manager().provision_user_container(user_id, db)
                 logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
             except (EcsManagerError, WorkspaceError) as e:
                 logger.error("Failed to provision ECS service for user %s: %s", account.clerk_user_id, e)

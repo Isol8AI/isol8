@@ -23,6 +23,7 @@ from core.services.usage_poller import UsagePoller
 from routers import (
     billing,
     channels,
+    container,
     container_rpc,
     control_ui_proxy,
     debug,
@@ -184,7 +185,10 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
 
-# Container RPC proxy (OpenClaw control panel)
+# Container lifecycle management (GET /status, POST /retry)
+app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
+
+# Container RPC proxy & file uploads (POST /rpc, POST /gateway/restart, POST /files)
 app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
 
 # Control UI proxy (embedded OpenClaw control UI SPA)

@@ -10,6 +10,7 @@ API.
 import hashlib
 import logging
 import re
+import secrets
 import urllib.request
 import urllib.error
 
@@ -600,3 +601,98 @@ class EcsManager:
         """
         result = await db.execute(select(Container).where(Container.user_id == user_id))
         return result.scalar_one_or_none()
+
+    # ------------------------------------------------------------------
+    # Full provisioning flow
+    # ------------------------------------------------------------------
+
+    async def provision_user_container(self, user_id: str, db: AsyncSession) -> str:
+        """Full provisioning flow: create service, write configs, start.
+
+        Safe to call on error/failed containers — cleans up old state first.
+        Only updates DB status after each step succeeds.
+
+        Args:
+            user_id: Clerk user ID.
+            db: Async database session.
+
+        Returns:
+            The ECS service name.
+
+        Raises:
+            EcsManagerError: If any provisioning step fails.
+        """
+        from core.containers import get_workspace
+        from core.containers.config import (
+            write_mcporter_config,
+            write_openclaw_config,
+            write_paired_devices_config,
+        )
+        from core.containers.device_identity import generate_device_identity
+
+        # Step 0: If container exists in error state, clean up old AWS resources
+        result = await db.execute(select(Container).where(Container.user_id == user_id))
+        existing = result.scalar_one_or_none()
+        if existing and existing.status == "error":
+            if existing.task_definition_arn:
+                self._deregister_task_definition(existing.task_definition_arn)
+                existing.task_definition_arn = None
+            if existing.access_point_id:
+                self._delete_access_point(existing.access_point_id)
+                existing.access_point_id = None
+            # Delete ECS service if it exists (ignore errors — may not exist)
+            try:
+                service_name = self._service_name(user_id)
+                self._ecs.update_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    desiredCount=0,
+                )
+                self._ecs.delete_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    force=True,
+                )
+            except Exception:
+                pass  # Service may not exist yet
+            existing.status = "provisioning"
+            existing.substatus = None
+            await db.commit()
+
+        # Step 1: Generate gateway token
+        gateway_token = secrets.token_urlsafe(32)
+
+        # Step 2: Create ECS service (desiredCount=0)
+        service_name = await self.create_user_service(user_id, gateway_token, db)
+
+        # Step 3: Generate device identity and write configs to EFS
+        try:
+            identity = generate_device_identity()
+            container_result = await db.execute(select(Container).where(Container.user_id == user_id))
+            container_row = container_result.scalar_one_or_none()
+            if container_row:
+                container_row.device_private_key_pem = identity["private_key_pem"]
+                await db.commit()
+
+            config_json = write_openclaw_config(
+                region=settings.AWS_REGION,
+                gateway_token=gateway_token,
+                proxy_base_url=settings.PROXY_BASE_URL,
+            )
+            workspace = get_workspace()
+            workspace.write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
+            workspace.write_file(user_id, "openclaw.json", config_json)
+            workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+        except Exception as e:
+            await self._update_container(user_id, status="error", substatus=None)
+            raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
+
+        # Step 4: Start the container
+        try:
+            await self.start_user_service(user_id, db)
+        except EcsManagerError:
+            await self._update_container(user_id, status="error", substatus=None)
+            raise
+
+        logger.info("Provisioned container %s for user %s", service_name, user_id)
+        return service_name
