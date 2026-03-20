@@ -4,12 +4,14 @@ import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 export interface AuthSecrets {
+  clerkIssuer: secretsmanager.ISecret;
   clerkSecretKey: secretsmanager.ISecret;
   clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   perplexityApiKey: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
+  databaseUrl: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -32,17 +34,23 @@ export class AuthStack extends cdk.Stack {
       alias: `isol8-${env}-general`,
     });
 
-    // Import existing secrets (created by terraform, values already populated)
-    const importSecret = (logicalId: string, secretName: string): secretsmanager.ISecret =>
-      secretsmanager.Secret.fromSecretNameV2(this, logicalId, `isol8/${env}/${secretName}`);
+    // Helper to create a CDK-managed secret
+    const createSecret = (logicalId: string, secretName: string): secretsmanager.Secret =>
+      new secretsmanager.Secret(this, logicalId, {
+        secretName: `isol8/${env}/${secretName}`,
+        description: `Isol8 ${env} ${secretName}`,
+        encryptionKey: this.kmsKey,
+      });
 
     this.secrets = {
-      clerkSecretKey: importSecret("ClerkSecretKey", "clerk_secret_key"),
-      clerkWebhookSecret: importSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
-      stripeSecretKey: importSecret("StripeSecretKey", "stripe_secret_key"),
-      stripeWebhookSecret: importSecret("StripeWebhookSecret", "stripe_webhook_secret"),
-      perplexityApiKey: importSecret("PerplexityApiKey", "perplexity_api_key"),
-      encryptionKey: importSecret("EncryptionKey", "encryption_key"),
+      clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
+      clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
+      clerkWebhookSecret: createSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
+      stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
+      stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
+      perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
+      encryptionKey: createSecret("EncryptionKey", "encryption_key"),
+      databaseUrl: createSecret("DatabaseUrl", "database_url"),
     };
   }
 }
