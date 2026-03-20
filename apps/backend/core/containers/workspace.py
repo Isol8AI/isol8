@@ -12,8 +12,21 @@ No S3 or Docker involved -- plain file operations on a mounted volume.
 
 import logging
 from pathlib import Path
+from typing import Optional
+
+from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+_workspace: Optional["Workspace"] = None
+
+
+def get_workspace() -> "Workspace":
+    """Get the EFS workspace singleton."""
+    global _workspace
+    if _workspace is None:
+        _workspace = Workspace(mount_path=settings.EFS_MOUNT_PATH)
+    return _workspace
 
 
 class WorkspaceError(Exception):

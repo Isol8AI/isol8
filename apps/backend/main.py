@@ -17,7 +17,7 @@ from sqlalchemy import text
 
 from core.auth import get_current_user
 from core.config import settings
-from core.database import get_db
+from core.database import get_db, get_session_factory
 from core.containers import startup_containers, shutdown_containers
 from core.services.usage_poller import UsagePoller
 from routers import (
@@ -48,8 +48,6 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting application...")
     await startup_containers()
-
-    from core.database import get_session_factory
 
     db_factory = get_session_factory()
 

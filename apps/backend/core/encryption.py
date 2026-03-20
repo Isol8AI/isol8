@@ -10,6 +10,8 @@ import hashlib
 
 from cryptography.fernet import Fernet, InvalidToken
 
+from core.config import settings
+
 
 def _get_fernet() -> Fernet:
     """Build a Fernet instance from the configured ENCRYPTION_KEY.
@@ -18,7 +20,6 @@ def _get_fernet() -> Fernet:
     used directly.  Otherwise HKDF-SHA256 is used to derive a valid 32-byte
     key from the raw value (so any passphrase-style value will work).
     """
-    from core.config import settings
 
     raw = settings.ENCRYPTION_KEY
     if not raw:

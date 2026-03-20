@@ -16,6 +16,7 @@ import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from sqlalchemy import select, update
 from websockets import connect as ws_connect
 
 from core.containers.device_identity import (
@@ -24,6 +25,8 @@ from core.containers.device_identity import (
     load_device_identity,
 )
 from core.containers.ecs_manager import GATEWAY_PORT
+from core.database import get_session_factory
+from models.container import Container
 
 logger = logging.getLogger(__name__)
 
@@ -505,10 +508,6 @@ class GatewayConnectionPool:
         """Get cached device identity or load/generate from DB."""
         if user_id in self._device_identities:
             return self._device_identities[user_id]
-
-        from core.database import get_session_factory
-        from models.container import Container
-        from sqlalchemy import select, update
 
         session_factory = get_session_factory()
         async with session_factory() as session:

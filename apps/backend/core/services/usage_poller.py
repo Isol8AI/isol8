@@ -13,6 +13,8 @@ from uuid import uuid4
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.containers import get_ecs_manager, get_gateway_pool
+from core.services.usage_service import UsageService
 from models.billing import UsageEvent
 from models.container import Container
 
@@ -58,8 +60,6 @@ class UsagePoller:
 
     async def _poll_all_users(self) -> None:
         """Poll all active containers and sync their usage."""
-        from core.containers import get_ecs_manager, get_gateway_pool
-
         pool = get_gateway_pool()
         ecs = get_ecs_manager()
 
@@ -101,8 +101,6 @@ class UsagePoller:
         ecs,
     ) -> int:
         """Sync usage for a single user. Returns number of sessions synced."""
-        from core.services.usage_service import UsageService
-
         # Resolve container IP
         async with self._db_factory() as db:
             container, ip = await ecs.resolve_running_container(user_id, db)

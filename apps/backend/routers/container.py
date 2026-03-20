@@ -15,7 +15,7 @@ from core.auth import AuthContext, get_current_user
 from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
-from core.database import get_db
+from core.database import get_db, get_session_factory
 from models.billing import BillingAccount
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,6 @@ async def _user_has_subscription(user_id: str, db: AsyncSession) -> bool:
 async def _background_provision(user_id: str) -> None:
     """Run provisioning in the background using a fresh DB session."""
     try:
-        from core.database import get_session_factory
-
         session_factory = get_session_factory()
         async with session_factory() as db:
             await get_ecs_manager().provision_user_container(user_id, db)

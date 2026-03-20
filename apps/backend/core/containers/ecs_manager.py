@@ -19,6 +19,14 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config import settings
+from core.containers.config import (
+    write_mcporter_config,
+    write_openclaw_config,
+    write_paired_devices_config,
+)
+from core.containers.device_identity import generate_device_identity
+from core.containers.workspace import get_workspace
+from core.database import async_session_factory
 from models.container import Container
 
 logger = logging.getLogger(__name__)
@@ -194,10 +202,8 @@ class EcsManager:
     # ------------------------------------------------------------------
 
     def _get_session_factory(self) -> async_sessionmaker:
-        """Return the session factory, importing lazily if not set at init."""
+        """Return the session factory, using the module-level default if not set at init."""
         if self._session_factory is None:
-            from core.database import async_session_factory
-
             self._session_factory = async_session_factory
         return self._session_factory
 
@@ -622,14 +628,6 @@ class EcsManager:
         Raises:
             EcsManagerError: If any provisioning step fails.
         """
-        from core.containers import get_workspace
-        from core.containers.config import (
-            write_mcporter_config,
-            write_openclaw_config,
-            write_paired_devices_config,
-        )
-        from core.containers.device_identity import generate_device_identity
-
         # Step 0: If container exists in error state, clean up old AWS resources
         result = await db.execute(select(Container).where(Container.user_id == user_id))
         existing = result.scalar_one_or_none()

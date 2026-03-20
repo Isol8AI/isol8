@@ -31,6 +31,7 @@ import time
 import httpx
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, Response
+from websockets import connect as ws_connect
 
 from core.auth import _decode_token
 from core.containers import get_ecs_manager
@@ -237,8 +238,6 @@ async def proxy_websocket(ws: WebSocket):
 
     user_id = None
     try:
-        from websockets import connect as ws_connect
-
         # --- Phase 1: Browser handshake (we pretend to be the gateway) ---
 
         # Send connect.challenge to the browser

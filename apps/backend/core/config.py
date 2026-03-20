@@ -3,6 +3,8 @@ import os
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
+from core.services.bedrock_discovery import discover_models
+
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Isol8"
@@ -124,7 +126,5 @@ FALLBACK_MODELS = [
 
 def get_available_models() -> list[dict[str, str]]:
     """Get available models via Bedrock discovery, falling back to hardcoded list."""
-    from core.services.bedrock_discovery import discover_models
-
     models = discover_models(region=settings.AWS_REGION)
     return models if models else FALLBACK_MODELS

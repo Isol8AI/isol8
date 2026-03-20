@@ -8,19 +8,20 @@ discovery for routing.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Optional
+
+from core.database import get_session_factory
+from core.gateway.connection_pool import GatewayConnectionPool
+from core.services.management_api_client import ManagementApiClient
+from core.services.usage_service import UsageService
 
 from core.containers.ecs_manager import EcsManager, EcsManagerError
-from core.containers.workspace import Workspace, WorkspaceError
-
-# GatewayConnectionPool is imported lazily in get_gateway_pool() to avoid
-# circular import: connection_pool → core.containers.ecs_manager → this __init__
+from core.containers.workspace import Workspace, WorkspaceError, get_workspace
 
 logger = logging.getLogger(__name__)
 
 _ecs_manager: Optional[EcsManager] = None
-_workspace: Optional[Workspace] = None
-_gateway_pool = None  # type: Optional[Any]  -- lazy import avoids circular dep
+_gateway_pool: Optional[GatewayConnectionPool] = None
 
 
 def get_ecs_manager() -> EcsManager:
@@ -31,23 +32,10 @@ def get_ecs_manager() -> EcsManager:
     return _ecs_manager
 
 
-def get_workspace() -> Workspace:
-    """Get the EFS workspace singleton."""
-    global _workspace
-    if _workspace is None:
-        from core.config import settings
-
-        _workspace = Workspace(mount_path=settings.EFS_MOUNT_PATH)
-    return _workspace
-
-
 async def _record_gateway_usage(user_id: str, model_id: str, input_tokens: int, output_tokens: int) -> None:
     """Record LLM usage from gateway chat events."""
     try:
-        from core.database import get_session_factory as _db_session_factory
-        from core.services.usage_service import UsageService
-
-        session_factory = _db_session_factory()
+        session_factory = get_session_factory()
         async with session_factory() as db:
             usage_service = UsageService(db)
             account = await usage_service.get_billing_account_for_user(user_id)
@@ -67,13 +55,10 @@ async def _record_gateway_usage(user_id: str, model_id: str, input_tokens: int, 
         logger.exception("Failed to record gateway usage for user %s", user_id)
 
 
-def get_gateway_pool() -> Any:
+def get_gateway_pool() -> GatewayConnectionPool:
     """Get the gateway connection pool singleton (GatewayConnectionPool)."""
     global _gateway_pool
     if _gateway_pool is None:
-        from core.gateway.connection_pool import GatewayConnectionPool
-        from core.services.management_api_client import ManagementApiClient
-
         _gateway_pool = GatewayConnectionPool(
             management_api=ManagementApiClient(),
             on_usage=_record_gateway_usage,

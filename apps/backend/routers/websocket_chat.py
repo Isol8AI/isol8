@@ -10,6 +10,7 @@ Responses are pushed via Management API, not returned in HTTP response body.
 """
 
 import asyncio
+import json
 import logging
 import secrets
 from typing import Any, Dict, Optional
@@ -339,10 +340,8 @@ async def _process_rpc_background(
         # connection_pool serializes the gateway error dict as JSON in the message.
         logger.warning("RPC %s rejected for user %s: %s", method, user_id, e)
         try:
-            import json as _json
-
             try:
-                error_obj = _json.loads(str(e))
+                error_obj = json.loads(str(e))
             except (ValueError, TypeError):
                 error_obj = {"message": str(e)}
             management_api.send_message(

@@ -93,8 +93,7 @@ const approvalStep = new GitHubActionStep("ApproveProduction", {
     {
       name: "Approval Required",
       uses: "trstringer/manual-approval@v1",
-      with: {
-
+      with: { 
         secret: "${{ github.TOKEN }}",
         approvers: "prez2307",
         "issue-title": "Approve production deployment",
