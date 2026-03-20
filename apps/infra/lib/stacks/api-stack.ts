@@ -215,8 +215,12 @@ export class ApiStack extends cdk.Stack {
       ),
       timeout: cdk.Duration.seconds(10),
       environment: {
-        CLERK_ISSUER: `https://clerk.isol8.co`,
-        CLERK_JWKS_URL: "https://clerk.isol8.co/.well-known/jwks.json",
+        CLERK_ISSUER: isProd
+          ? "https://clerk.isol8.co"
+          : "https://up-moth-55.clerk.accounts.dev",
+        CLERK_JWKS_URL: isProd
+          ? "https://clerk.isol8.co/.well-known/jwks.json"
+          : "https://up-moth-55.clerk.accounts.dev/.well-known/jwks.json",
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
