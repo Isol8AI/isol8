@@ -60,7 +60,15 @@ pipeline.addStageWithGitHubOptions(devStage, {
         { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
-        { name: "Build Frontend", run: "vercel build --token=$VERCEL_TOKEN", env: vercelEnv },
+        {
+          name: "Build Frontend",
+          run: "vercel build --token=$VERCEL_TOKEN",
+          env: {
+            ...vercelEnv,
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
+            NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_DEV }}",
+          },
+        },
         {
           name: "Deploy to Vercel (Preview)",
           id: "vercel-deploy-dev",
@@ -122,7 +130,15 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
-        { name: "Build Frontend (Production)", run: "vercel build --prod --token=$VERCEL_TOKEN", env: vercelEnv },
+        {
+          name: "Build Frontend (Production)",
+          run: "vercel build --prod --token=$VERCEL_TOKEN",
+          env: {
+            ...vercelEnv,
+            NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
+            NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_PROD }}",
+          },
+        },
         {
           name: "Deploy to Vercel (Production)",
           id: "vercel-deploy-prod",
