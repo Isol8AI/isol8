@@ -117,7 +117,7 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- Stage ---
-    new apigatewayv2.CfnStage(this, "HttpStage", {
+    const httpStage = new apigatewayv2.CfnStage(this, "HttpStage", {
       apiId: httpApi.ref,
       stageName: "$default",
       autoDeploy: true,
@@ -157,11 +157,12 @@ export class ApiStack extends cdk.Stack {
       },
     );
 
-    new apigatewayv2.CfnApiMapping(this, "HttpApiMapping", {
+    const httpMapping = new apigatewayv2.CfnApiMapping(this, "HttpApiMapping", {
       apiId: httpApi.ref,
       domainName: httpDomainName.ref,
-      stage: "$default",
+      stage: httpStage.ref,
     });
+    httpMapping.addDependency(httpStage);
 
     // --- Route53 A record for HTTP API ---
     new route53.ARecord(this, "HttpApiDnsRecord", {
