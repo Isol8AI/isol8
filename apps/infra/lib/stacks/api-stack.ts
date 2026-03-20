@@ -97,6 +97,7 @@ export class ApiStack extends cdk.Stack {
         integrationMethod: "ANY",
         connectionType: "VPC_LINK",
         connectionId: vpcLinkV2.ref,
+        payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
       },
     );
