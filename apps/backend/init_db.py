@@ -43,7 +43,7 @@ async def init_models(reset: bool = False):
                 # Create schema if it doesn't exist
                 print(f"Creating schema '{schema}' if not exists...")
                 await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
-                await conn.execute(text(f"GRANT ALL ON SCHEMA {schema} TO postgres"))
+                # No explicit GRANT needed — schema creator has full access
 
                 # Set search_path for this connection
                 await conn.execute(text(f"SET search_path TO {schema}"))

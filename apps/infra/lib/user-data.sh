@@ -155,4 +155,16 @@ systemctl daemon-reload
 systemctl enable isol8
 systemctl start isol8
 
+# -----------------------------------------------------------------------------
+# Initialize database schema (idempotent — safe to run on every boot)
+# -----------------------------------------------------------------------------
+echo "Waiting for backend to start..."
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  curl -sf http://localhost:8000/health > /dev/null 2>&1 && break
+  /bin/sleep 5
+done
+
+echo "Running database initialization..."
+docker exec isol8 uv run python init_db.py 2>&1 || echo "WARNING: init_db.py failed (may already be initialized)"
+
 echo "Isol8 backend setup complete!"
