@@ -407,11 +407,15 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    // EC2 self-discovery
+    // EC2 self-discovery + CloudFormation read (for fetching API stack outputs at boot)
     this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "Ec2SelfDiscovery",
-        actions: ["ec2:DescribeInstances", "ec2:DescribeTags"],
+        actions: [
+          "ec2:DescribeInstances",
+          "ec2:DescribeTags",
+          "cloudformation:DescribeStacks",
+        ],
         resources: ["*"],
       }),
     );
