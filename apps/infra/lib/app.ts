@@ -57,12 +57,12 @@ pipeline.addStageWithGitHubOptions(devStage, {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
-        { name: "Pull Vercel Settings", run: "cd apps/frontend && vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
-        { name: "Build Frontend", run: "cd apps/frontend && vercel build --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Build Frontend", run: "vercel build --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Deploy to Vercel (Preview)",
           id: "vercel-deploy-dev",
-          run: 'cd apps/frontend && DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: vercelEnv,
         },
         {
@@ -117,12 +117,12 @@ pipeline.addStageWithGitHubOptions(prodStage, {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
-        { name: "Pull Vercel Settings", run: "cd apps/frontend && vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
-        { name: "Build Frontend (Production)", run: "cd apps/frontend && vercel build --prod --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Build Frontend (Production)", run: "vercel build --prod --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Deploy to Vercel (Production)",
           id: "vercel-deploy-prod",
-          run: 'cd apps/frontend && DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          run: 'DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
           env: vercelEnv,
         },
         {
