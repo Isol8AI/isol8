@@ -13,6 +13,13 @@ import { Isol8Stage } from "./isol8-stage";
 const app = new cdk.App();
 const awsEnv = { account: "877352799272", region: "us-east-1" };
 
+// Vercel env vars used in all Vercel deploy steps
+const vercelEnv = {
+  VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
+  VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
+  VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
+};
+
 // ---------------------------------------------------------------------------
 // CDK Pipeline (generates .github/workflows/deploy.yml)
 // ---------------------------------------------------------------------------
@@ -48,45 +55,20 @@ pipeline.addStageWithGitHubOptions(devStage, {
     // Deploy frontend to Vercel (preview) and alias to dev.isol8.co
     new GitHubActionStep("DeployVercelDev", {
       jobSteps: [
-        {
-          name: "Checkout",
-          uses: "actions/checkout@v4",
-        },
-        {
-          name: "Install Vercel CLI",
-          run: "npm install -g vercel",
-        },
-        {
-          name: "Build Frontend",
-          run: "cd apps/frontend && npx vercel build --token=$VERCEL_TOKEN",
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
-        },
+        { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Install Vercel CLI", run: "npm install -g vercel" },
+        { name: "Pull Vercel Settings", run: "cd apps/frontend && vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Build Frontend", run: "cd apps/frontend && vercel build --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Deploy to Vercel (Preview)",
           id: "vercel-deploy-dev",
-          run: [
-            "cd apps/frontend",
-            "DEPLOY_URL=$(npx vercel deploy --prebuilt --token=$VERCEL_TOKEN)",
-            'echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
-          ].join("\n"),
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
+          run: 'cd apps/frontend && DEPLOY_URL=$(vercel deploy --prebuilt --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          env: vercelEnv,
         },
         {
           name: "Alias to dev.isol8.co",
-          run: "npx vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.isol8.co --token=$VERCEL_TOKEN",
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
+          run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.isol8.co --token=$VERCEL_TOKEN",
+          env: vercelEnv,
         },
       ],
     }),
@@ -133,45 +115,20 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     // Deploy frontend to Vercel (production) and alias to app.isol8.co
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
-        {
-          name: "Checkout",
-          uses: "actions/checkout@v4",
-        },
-        {
-          name: "Install Vercel CLI",
-          run: "npm install -g vercel",
-        },
-        {
-          name: "Build Frontend (Production)",
-          run: "cd apps/frontend && npx vercel build --prod --token=$VERCEL_TOKEN",
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
-        },
+        { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Install Vercel CLI", run: "npm install -g vercel" },
+        { name: "Pull Vercel Settings", run: "cd apps/frontend && vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
+        { name: "Build Frontend (Production)", run: "cd apps/frontend && vercel build --prod --token=$VERCEL_TOKEN", env: vercelEnv },
         {
           name: "Deploy to Vercel (Production)",
           id: "vercel-deploy-prod",
-          run: [
-            "cd apps/frontend",
-            "DEPLOY_URL=$(npx vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)",
-            'echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
-          ].join("\n"),
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
+          run: 'cd apps/frontend && DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN) && echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT',
+          env: vercelEnv,
         },
         {
           name: "Alias to app.isol8.co",
-          run: "npx vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} app.isol8.co --token=$VERCEL_TOKEN",
-          env: {
-            VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
-            VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
-            VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
-          },
+          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} app.isol8.co --token=$VERCEL_TOKEN",
+          env: vercelEnv,
         },
       ],
     }),
