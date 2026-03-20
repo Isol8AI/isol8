@@ -71,6 +71,7 @@ const ENV_CONFIG: Record<
 export class ComputeStack extends cdk.Stack {
   public readonly alb: elbv2.ApplicationLoadBalancer;
   public readonly albSecurityGroup: ec2.SecurityGroup;
+  public readonly albHttpListenerArn: string;
   public readonly albHttpsListenerArn: string;
   public readonly nlb: elbv2.NetworkLoadBalancer;
   public readonly nlbDnsName: string;
@@ -174,17 +175,15 @@ export class ComputeStack extends cdk.Stack {
       defaultTargetGroups: [targetGroup],
     });
 
-    // HTTP listener — redirect to HTTPS
-    this.alb.addListener("HttpListener", {
+    // HTTP listener — forwards to target group
+    // API Gateway VPC Link sends plain HTTP internally (API GW handles public TLS)
+    const httpListener = this.alb.addListener("HttpListener", {
       port: 80,
       protocol: elbv2.ApplicationProtocol.HTTP,
-      defaultAction: elbv2.ListenerAction.redirect({
-        protocol: "HTTPS",
-        port: "443",
-        permanent: true,
-      }),
+      defaultTargetGroups: [targetGroup],
     });
 
+    this.albHttpListenerArn = httpListener.listenerArn;
     this.albHttpsListenerArn = httpsListener.listenerArn;
 
     // -------------------------------------------------------------------------

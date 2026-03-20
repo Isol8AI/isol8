@@ -77,7 +77,7 @@ export class Isol8Stage extends cdk.Stage {
       certificate: dns.certificate,
       hostedZone: dns.hostedZone,
       ec2Role: compute.ec2Role,
-      albListenerArn: compute.albHttpsListenerArn,
+      albListenerArn: compute.albHttpListenerArn,
       albSecurityGroupId: compute.albSecurityGroup.securityGroupId,
       nlbArn: compute.nlb.loadBalancerArn,
       nlbDnsName: compute.nlbDnsName,
