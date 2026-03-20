@@ -496,11 +496,15 @@ export class ComputeStack extends cdk.Stack {
             ? "https://isol8.co"
             : `https://${env}.isol8.co`,
         WsConnectionsTable: `isol8-${env}-ws-connections`,
-        WsManagementApiUrl: "", // Will be set by ApiStack
-        StripeStarterFixedPriceId: "",
-        StripeProFixedPriceId: "",
-        StripeMeteredPriceId: "",
-        StripeMeterIdParam: "",
+        WsManagementApiUrl: "", // Fetched dynamically by user-data from CloudFormation
+        StripeStarterFixedPriceId: env === "prod"
+          ? "price_TODO_PROD" : "price_1TBm0NI54BysGS3r57fcRXOJ",
+        StripeProFixedPriceId: env === "prod"
+          ? "price_TODO_PROD" : "price_1TBm0PI54BysGS3rFjUOtmrR",
+        StripeMeteredPriceId: env === "prod"
+          ? "price_TODO_PROD" : "price_1TBm0fI54BysGS3rrqTaZ5Zz",
+        StripeMeterIdParam: env === "prod"
+          ? "mtr_TODO_PROD" : "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC",
         DomainName: `api-${env}.isol8.co`,
         ContainerExecutionRoleArn:
           props.container.taskExecutionRole.roleArn,

@@ -19,6 +19,18 @@ WS_CONNECTIONS_TABLE="${WsConnectionsTable}"
 WS_MANAGEMENT_API_URL="${WsManagementApiUrl}"
 SECRET_PREFIX="${SecretPrefix}"
 
+# Fetch WebSocket Management API URL from CloudFormation stack output
+# (API stack deploys after compute, so this URL isn't available at launch template time)
+WS_MGMT_URL=$(aws cloudformation describe-stacks \
+  --region "$REGION" \
+  --stack-name "isol8-$ENVIRONMENT-api" \
+  --query "Stacks[0].Outputs[?contains(OutputKey,'ManagementApi')].OutputValue" \
+  --output text 2>/dev/null || echo "")
+if [ -z "$WS_MGMT_URL" ] || [ "$WS_MGMT_URL" = "None" ]; then
+  echo "WARNING: Could not fetch WS_MANAGEMENT_API_URL from CloudFormation"
+  WS_MGMT_URL=""
+fi
+
 # -----------------------------------------------------------------------------
 # Install dependencies
 # -----------------------------------------------------------------------------
@@ -67,7 +79,7 @@ CORS_ORIGINS=$FRONTEND_URL
 ENVIRONMENT=$ENVIRONMENT
 DEBUG=false
 WS_CONNECTIONS_TABLE=$WS_CONNECTIONS_TABLE
-WS_MANAGEMENT_API_URL=$WS_MANAGEMENT_API_URL
+WS_MANAGEMENT_API_URL=$WS_MGMT_URL
 AWS_REGION=$REGION
 AWS_DEFAULT_REGION=$REGION
 STRIPE_SECRET_KEY=$STRIPE_SECRET_KEY
