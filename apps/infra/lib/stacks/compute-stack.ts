@@ -36,6 +36,7 @@ export interface ComputeStackProps extends cdk.StackProps {
     efsSecurityGroup: ec2.ISecurityGroup;
     containerSecurityGroup: ec2.ISecurityGroup;
     taskExecutionRole: iam.IRole;
+    taskRole: iam.IRole;
   };
 }
 
@@ -299,12 +300,15 @@ export class ComputeStack extends cdk.Stack {
       }),
     );
 
-    // IAM PassRole for ECS task roles
+    // IAM PassRole for ECS task roles (both execution role and task role)
     this.ec2Role.addToPolicy(
       new iam.PolicyStatement({
         sid: "IamPassRole",
         actions: ["iam:PassRole"],
-        resources: [props.container.taskExecutionRole.roleArn],
+        resources: [
+          props.container.taskExecutionRole.roleArn,
+          props.container.taskRole.roleArn,
+        ],
       }),
     );
 

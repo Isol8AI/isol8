@@ -67,6 +67,7 @@ export class Isol8Stage extends cdk.Stage {
         efsSecurityGroup: container.efsSecurityGroup,
         containerSecurityGroup: container.containerSecurityGroup,
         taskExecutionRole: container.taskExecutionRole,
+        taskRole: container.taskRole,
       },
     });
 
