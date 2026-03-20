@@ -56,6 +56,8 @@ pipeline.addStageWithGitHubOptions(devStage, {
     new GitHubActionStep("DeployVercelDev", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+        { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --token=$VERCEL_TOKEN", env: vercelEnv },
         { name: "Build Frontend", run: "vercel build --token=$VERCEL_TOKEN", env: vercelEnv },
@@ -116,6 +118,8 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
+        { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
+        { name: "Setup Node.js", uses: "actions/setup-node@v4", with: { "node-version": "20", cache: "pnpm" } },
         { name: "Install Vercel CLI", run: "npm install -g vercel" },
         { name: "Pull Vercel Settings", run: "vercel pull --yes --environment=production --token=$VERCEL_TOKEN", env: vercelEnv },
         { name: "Build Frontend (Production)", run: "vercel build --prod --token=$VERCEL_TOKEN", env: vercelEnv },
