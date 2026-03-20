@@ -809,15 +809,12 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-isol8-prod-auth-Deploy:
-    name: Deploy prodisol8prodauthA33C6000
+  dev-DeployVercelDev:
+    name: DeployVercelDev
     permissions:
-      contents: read
-      id-token: write
-    environment: prod
+      contents: write
+    runs-on: ubuntu-latest
     needs:
-      - Build-Synth
-      - Assets-FileAsset11
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -825,6 +822,79 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - Build-Synth
+    env: {}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+      - name: Build Frontend
+        run: cd apps/frontend && npx vercel build --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Deploy to Vercel (Preview)
+        id: vercel-deploy-dev
+        run: |-
+          cd apps/frontend
+          DEPLOY_URL=$(npx vercel deploy --prebuilt --token=$VERCEL_TOKEN)
+          echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to dev.isol8.co
+        run: npx vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }}
+          dev.isol8.co --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+  prod-ApproveProduction:
+    name: ApproveProduction
+    permissions:
+      issues: write
+    runs-on: ubuntu-latest
+    needs:
+      - Build-Synth
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-compute-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
+    env: {}
+    steps:
+      - name: Approval Required
+        uses: trstringer/manual-approval@v1
+        with:
+          secret: ${{ github.TOKEN }}
+          approvers: prez2307
+          issue-title: Approve production deployment
+          issue-body: A new deployment is ready for production. Review the dev deployment
+            at https://dev.isol8.co and approve or deny.
+          minimum-approvals: "1"
+  prod-isol8-prod-auth-Deploy:
+    name: Deploy prodisol8prodauthA33C6000
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset11
+      - prod-ApproveProduction
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-compute-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -859,10 +929,10 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset12
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -870,6 +940,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -904,11 +975,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset13
       - Assets-FileAsset4
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -916,6 +987,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -950,12 +1022,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset14
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -963,6 +1035,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -997,12 +1070,12 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset15
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -1010,6 +1083,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1044,7 +1118,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset16
@@ -1054,6 +1127,7 @@ jobs:
       - prod-isol8-prod-container-Deploy
       - prod-isol8-prod-database-Deploy
       - prod-isol8-prod-auth-Deploy
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -1061,6 +1135,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1095,7 +1170,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     needs:
       - Build-Synth
       - Assets-FileAsset17
@@ -1104,6 +1178,7 @@ jobs:
       - prod-isol8-prod-compute-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
+      - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
@@ -1111,6 +1186,7 @@ jobs:
       - dev-isol8-dev-database-Deploy
       - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -1140,3 +1216,57 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-DeployVercelProd:
+    name: DeployVercelProd
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    needs:
+      - prod-isol8-prod-auth-Deploy
+      - prod-isol8-prod-dns-Deploy
+      - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-container-Deploy
+      - prod-isol8-prod-database-Deploy
+      - prod-isol8-prod-compute-Deploy
+      - prod-isol8-prod-api-Deploy
+      - Build-Synth
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-compute-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-DeployVercelDev
+    env: {}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Vercel CLI
+        run: npm install -g vercel
+      - name: Build Frontend (Production)
+        run: cd apps/frontend && npx vercel build --prod --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Deploy to Vercel (Production)
+        id: vercel-deploy-prod
+        run: >-
+          cd apps/frontend
+
+          DEPLOY_URL=$(npx vercel deploy --prebuilt --prod
+          --token=$VERCEL_TOKEN)
+
+          echo "DEPLOY_URL=$DEPLOY_URL" >> $GITHUB_OUTPUT
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      - name: Alias to app.isol8.co
+        run: npx vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }}
+          app.isol8.co --token=$VERCEL_TOKEN
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
