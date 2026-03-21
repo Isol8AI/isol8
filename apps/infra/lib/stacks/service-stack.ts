@@ -589,6 +589,7 @@ export class ServiceStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroups: [serviceSg],
       assignPublicIp: false,
+      enableExecuteCommand: true,
     });
 
     // Register with ALB target group
