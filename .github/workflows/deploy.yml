@@ -141,7 +141,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
       - id: Publish
         name: Publish Assets-FileAsset11
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset11-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset11-step.sh
   Assets-FileAsset12:
     name: Publish Assets Assets-FileAsset12
     needs:
@@ -169,7 +169,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
       - id: Publish
         name: Publish Assets-FileAsset12
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset12-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset12-step.sh
   Assets-FileAsset13:
     name: Publish Assets Assets-FileAsset13
     needs:
@@ -197,7 +197,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
       - id: Publish
         name: Publish Assets-FileAsset13
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset13-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset13-step.sh
   Assets-FileAsset14:
     name: Publish Assets Assets-FileAsset14
     needs:
@@ -310,6 +310,62 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset17
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset17-step.sh
+  Assets-FileAsset18:
+    name: Publish Assets Assets-FileAsset18
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset18
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset18-step.sh
+  Assets-FileAsset19:
+    name: Publish Assets Assets-FileAsset19
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset19
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset19-step.sh
   Assets-FileAsset2:
     name: Publish Assets Assets-FileAsset2
     needs:
@@ -338,6 +394,34 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset2
         run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset2-step.sh
+  Assets-FileAsset20:
+    name: Publish Assets Assets-FileAsset20
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset20
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset20-step.sh
   Assets-FileAsset3:
     name: Publish Assets Assets-FileAsset3
     needs:
@@ -617,6 +701,7 @@ jobs:
       - Build-Synth
       - Assets-FileAsset3
       - Assets-FileAsset4
+      - dev-isol8-dev-dns-Deploy
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate Via OIDC Role
@@ -646,127 +731,6 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-isol8-dev-container-Deploy:
-    name: Deploy devisol8devcontainer162BFB81
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset5
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-auth-Deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-dev-container
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset5.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-isol8-dev-database-Deploy:
-    name: Deploy devisol8devdatabase5AB3DBB4
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset6
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-auth-Deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-dev-database
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset6.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  dev-isol8-dev-compute-Deploy:
-    name: Deploy devisol8devcomputeB077F888
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset7
-      - Assets-DockerAsset1
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-dns-Deploy
-      - dev-isol8-dev-container-Deploy
-      - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-auth-Deploy
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-dev-compute
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset7.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   dev-isol8-dev-api-Deploy:
     name: Deploy devisol8devapiE89E0DA7
     permissions:
@@ -774,10 +738,12 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
+      - Assets-FileAsset5
+      - Assets-FileAsset6
+      - Assets-FileAsset7
       - Assets-FileAsset8
       - Assets-FileAsset9
       - Assets-FileAsset10
-      - dev-isol8-dev-compute-Deploy
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-dns-Deploy
     runs-on: ubuntu-latest
@@ -805,7 +771,128 @@ jobs:
         with:
           name: isol8-dev-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset8.outputs.asset-hash }}.json
+            needs.Assets-FileAsset5.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-isol8-dev-container-Deploy:
+    name: Deploy devisol8devcontainer162BFB81
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset11
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-auth-Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-dev-container
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset11.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-isol8-dev-database-Deploy:
+    name: Deploy devisol8devdatabase5AB3DBB4
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset12
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-auth-Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-dev-database
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset12.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  dev-isol8-dev-service-Deploy:
+    name: Deploy devisol8devservice30640A3C
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset13
+      - Assets-DockerAsset1
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-api-Deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-dev-service
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset13.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -818,10 +905,10 @@ jobs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - Build-Synth
     env: {}
     steps:
@@ -875,10 +962,10 @@ jobs:
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     env: {}
     steps:
@@ -898,15 +985,15 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset11
+      - Assets-FileAsset14
       - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
@@ -933,7 +1020,7 @@ jobs:
         with:
           name: isol8-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset11.outputs.asset-hash }}.json
+            needs.Assets-FileAsset14.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -944,15 +1031,15 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset12
+      - Assets-FileAsset15
       - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
@@ -979,7 +1066,7 @@ jobs:
         with:
           name: isol8-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset12.outputs.asset-hash }}.json
+            needs.Assets-FileAsset15.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -990,16 +1077,17 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset13
+      - Assets-FileAsset16
       - Assets-FileAsset4
+      - prod-isol8-prod-dns-Deploy
       - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
@@ -1026,154 +1114,6 @@ jobs:
         with:
           name: isol8-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset13.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-isol8-prod-container-Deploy:
-    name: Deploy prodisol8prodcontainerCF1F02EA
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset14
-      - prod-isol8-prod-network-Deploy
-      - prod-isol8-prod-auth-Deploy
-      - prod-ApproveProduction
-      - dev-isol8-dev-auth-Deploy
-      - dev-isol8-dev-dns-Deploy
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-container-Deploy
-      - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
-      - dev-DeployVercelDev
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-prod-container
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset14.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-isol8-prod-database-Deploy:
-    name: Deploy prodisol8proddatabaseC86ABE25
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset15
-      - prod-isol8-prod-network-Deploy
-      - prod-isol8-prod-auth-Deploy
-      - prod-ApproveProduction
-      - dev-isol8-dev-auth-Deploy
-      - dev-isol8-dev-dns-Deploy
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-container-Deploy
-      - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
-      - dev-DeployVercelDev
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-prod-database
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset15.outputs.asset-hash }}.json
-          no-fail-on-empty-changeset: "1"
-          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
-          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
-  prod-isol8-prod-compute-Deploy:
-    name: Deploy prodisol8prodcompute34F574D1
-    permissions:
-      contents: read
-      id-token: write
-    needs:
-      - Build-Synth
-      - Assets-FileAsset16
-      - Assets-DockerAsset1
-      - prod-isol8-prod-network-Deploy
-      - prod-isol8-prod-dns-Deploy
-      - prod-isol8-prod-container-Deploy
-      - prod-isol8-prod-database-Deploy
-      - prod-isol8-prod-auth-Deploy
-      - prod-ApproveProduction
-      - dev-isol8-dev-auth-Deploy
-      - dev-isol8-dev-dns-Deploy
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-container-Deploy
-      - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
-      - dev-DeployVercelDev
-    runs-on: ubuntu-latest
-    steps:
-      - name: Authenticate Via OIDC Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
-      - name: Assume CDK Deploy Role
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: us-east-1
-          role-duration-seconds: 1800
-          role-skip-session-tagging: true
-          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
-          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
-          role-external-id: Pipeline
-      - id: Deploy
-        uses: aws-actions/aws-cloudformation-github-deploy@v1
-        with:
-          name: isol8-prod-compute
-          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
             needs.Assets-FileAsset16.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
@@ -1186,19 +1126,21 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset17
+      - Assets-FileAsset6
+      - Assets-FileAsset7
+      - Assets-FileAsset8
       - Assets-FileAsset9
       - Assets-FileAsset10
-      - prod-isol8-prod-compute-Deploy
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
       - prod-ApproveProduction
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     runs-on: ubuntu-latest
     steps:
@@ -1229,6 +1171,154 @@ jobs:
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-isol8-prod-container-Deploy:
+    name: Deploy prodisol8prodcontainerCF1F02EA
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset18
+      - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-auth-Deploy
+      - prod-ApproveProduction
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-prod-container
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-isol8-prod-database-Deploy:
+    name: Deploy prodisol8proddatabaseC86ABE25
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset19
+      - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-auth-Deploy
+      - prod-ApproveProduction
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-prod-database
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
+  prod-isol8-prod-service-Deploy:
+    name: Deploy prodisol8prodservice6CABC6B4
+    permissions:
+      contents: read
+      id-token: write
+    needs:
+      - Build-Synth
+      - Assets-FileAsset20
+      - Assets-DockerAsset1
+      - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-container-Deploy
+      - prod-isol8-prod-database-Deploy
+      - prod-isol8-prod-auth-Deploy
+      - prod-isol8-prod-api-Deploy
+      - prod-ApproveProduction
+      - dev-isol8-dev-auth-Deploy
+      - dev-isol8-dev-dns-Deploy
+      - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-container-Deploy
+      - dev-isol8-dev-database-Deploy
+      - dev-isol8-dev-service-Deploy
+      - dev-DeployVercelDev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - name: Assume CDK Deploy Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          aws-access-key-id: ${{ env.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ env.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ env.AWS_SESSION_TOKEN }}
+          role-to-assume: arn:aws:iam::877352799272:role/cdk-hnb659fds-deploy-role-877352799272-us-east-1
+          role-external-id: Pipeline
+      - id: Deploy
+        uses: aws-actions/aws-cloudformation-github-deploy@v1
+        with:
+          name: isol8-prod-service
+          template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
+            needs.Assets-FileAsset20.outputs.asset-hash }}.json
+          no-fail-on-empty-changeset: "1"
+          capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
+          role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
   prod-DeployVercelProd:
     name: DeployVercelProd
     permissions:
@@ -1238,18 +1328,18 @@ jobs:
       - prod-isol8-prod-auth-Deploy
       - prod-isol8-prod-dns-Deploy
       - prod-isol8-prod-network-Deploy
+      - prod-isol8-prod-api-Deploy
       - prod-isol8-prod-container-Deploy
       - prod-isol8-prod-database-Deploy
-      - prod-isol8-prod-compute-Deploy
-      - prod-isol8-prod-api-Deploy
+      - prod-isol8-prod-service-Deploy
       - Build-Synth
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-network-Deploy
+      - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
       - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-compute-Deploy
-      - dev-isol8-dev-api-Deploy
+      - dev-isol8-dev-service-Deploy
       - dev-DeployVercelDev
     env: {}
     steps:
