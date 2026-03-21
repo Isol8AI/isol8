@@ -178,7 +178,7 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
-    openclawTaskDef.addContainer("openclaw", {
+    const openclawContainer = openclawTaskDef.addContainer("openclaw", {
       image: ecs.ContainerImage.fromRegistry("ghcr.io/openclaw/openclaw:latest"),
       essential: true,
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
@@ -186,6 +186,13 @@ export class ContainerStack extends cdk.Stack {
         logGroup: openclawLogGroup,
         streamPrefix: "openclaw",
       }),
+    });
+
+    // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here
+    openclawContainer.addMountPoints({
+      containerPath: "/home/node/.openclaw",
+      sourceVolume: "openclaw-workspace",
+      readOnly: false,
     });
 
     // Add EFS volume — the backend replaces the access point per user
