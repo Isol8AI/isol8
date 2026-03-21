@@ -232,7 +232,13 @@ export class ApiStack extends cdk.Stack {
     // WebSocket Lambda Functions
     // =========================================================================
 
-    // Shared security group for WebSocket Lambdas — allows outbound to ALB
+    // DynamoDB Gateway Endpoint — free, avoids NAT for DynamoDB traffic
+    new ec2.GatewayVpcEndpoint(this, "DynamoDbEndpoint", {
+      service: ec2.GatewayVpcEndpointAwsService.DYNAMODB,
+      vpc: props.vpc,
+    });
+
+    // Shared security group for WebSocket Lambdas — allows outbound to ALB + DynamoDB
     const wsLambdaSg = new ec2.SecurityGroup(this, "WsLambdaSg", {
       vpc: props.vpc,
       description: "Security group for WebSocket Lambda functions",
@@ -243,6 +249,12 @@ export class ApiStack extends cdk.Stack {
       props.albSecurityGroup,
       ec2.Port.tcp(80),
       "Allow Lambda to reach ALB on port 80",
+    );
+
+    wsLambdaSg.addEgressRule(
+      ec2.Peer.anyIpv4(),
+      ec2.Port.tcp(443),
+      "Allow HTTPS for DynamoDB and AWS APIs",
     );
 
     const lambdaDefaults: Omit<lambda.FunctionProps, "functionName" | "code" | "handler"> = {
