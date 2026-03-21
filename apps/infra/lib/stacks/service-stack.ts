@@ -483,6 +483,8 @@ export class ServiceStack extends cdk.Stack {
     // Container definition
     const container = taskDef.addContainer("backend", {
       image: ecs.ContainerImage.fromDockerImageAsset(backendImage),
+      // Run as root — backend writes to EFS user directories
+      user: "0:0",
       portMappings: [{ containerPort: 8000 }],
       environment: {
         ENVIRONMENT: env,
