@@ -47,7 +47,7 @@ def write_openclaw_config(
     config = {
         "gateway": {
             "mode": "local",
-            "host": "0.0.0.0",
+            "bind": "0.0.0.0",
             "auth": auth,
             "controlUi": {
                 "enabled": False,
