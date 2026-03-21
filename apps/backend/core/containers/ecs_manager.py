@@ -612,11 +612,30 @@ class EcsManager:
     # Full provisioning flow
     # ------------------------------------------------------------------
 
-    async def provision_user_container(self, user_id: str, db: AsyncSession) -> str:
-        """Full provisioning flow: create service, write configs, start.
+    def _service_exists(self, service_name: str) -> dict | None:
+        """Check if an ECS service exists and return its description, or None."""
+        try:
+            resp = self._ecs.describe_services(
+                cluster=self._cluster,
+                services=[service_name],
+            )
+            services = resp.get("services", [])
+            if services and services[0].get("status") != "INACTIVE":
+                return services[0]
+        except Exception:
+            pass
+        return None
 
-        Safe to call on error/failed containers — cleans up old state first.
-        Only updates DB status after each step succeeds.
+    async def provision_user_container(self, user_id: str, db: AsyncSession) -> str:
+        """Provision or recover a user's container.
+
+        Handles all scenarios:
+        1. No service exists → full provisioning (create service, write configs, start)
+        2. Service exists with 0 desired → write configs, scale up to 1
+        3. Service exists and running → force new deployment (restart)
+        4. Container in error state → clean up and re-provision
+
+        Preserves EFS data (agent files) across all scenarios.
 
         Args:
             user_id: Clerk user ID.
@@ -628,31 +647,83 @@ class EcsManager:
         Raises:
             EcsManagerError: If any provisioning step fails.
         """
-        # Step 0: If container exists in error state, clean up old AWS resources
+        service_name = self._service_name(user_id)
+
+        # Check current state
         result = await db.execute(select(Container).where(Container.user_id == user_id))
         existing = result.scalar_one_or_none()
+        svc = self._service_exists(service_name)
+
+        # --- Scenario: Service exists (ACTIVE or DRAINING) ---
+        if svc and svc.get("status") == "ACTIVE":
+            desired = svc.get("desiredCount", 0)
+            running = svc.get("runningCount", 0)
+
+            if desired == 0:
+                # Service exists but stopped — write fresh configs and scale up
+                logger.info("Service %s exists with 0 desired, scaling up", service_name)
+                gateway_token = existing.gateway_token if existing else secrets.token_urlsafe(32)
+
+                # Update gateway token and write configs
+                if existing:
+                    existing.status = "provisioning"
+                    existing.substatus = "restarting"
+                    await db.commit()
+
+                try:
+                    self._write_user_configs(user_id, gateway_token, db, existing)
+                except Exception as e:
+                    logger.warning("Config write failed during restart: %s (continuing anyway)", e)
+
+                try:
+                    await self.start_user_service(user_id, db)
+                except EcsManagerError:
+                    await self._update_container(user_id, status="error", substatus=None)
+                    raise
+
+                return service_name
+
+            elif running > 0:
+                # Service exists and running — force new deployment
+                logger.info("Service %s running (%d tasks), forcing new deployment", service_name, running)
+                if existing:
+                    existing.status = "provisioning"
+                    existing.substatus = "redeploying"
+                    await db.commit()
+
+                try:
+                    self._ecs.update_service(
+                        cluster=self._cluster,
+                        service=service_name,
+                        forceNewDeployment=True,
+                    )
+                except Exception as e:
+                    await self._update_container(user_id, status="error", substatus=None)
+                    raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
+
+                return service_name
+
+            else:
+                # Desired > 0 but not running yet — ECS is working on it, just wait
+                logger.info("Service %s has %d desired, %d running — ECS is starting", service_name, desired, running)
+                if existing and existing.status != "provisioning":
+                    existing.status = "provisioning"
+                    existing.substatus = "starting"
+                    await db.commit()
+                return service_name
+
+        # --- Scenario: No service exists — full provisioning ---
+        logger.info("No active service for user %s, full provisioning", user_id)
+
+        # Clean up stale DB record if in error state
         if existing and existing.status == "error":
             if existing.task_definition_arn:
-                self._deregister_task_definition(existing.task_definition_arn)
+                try:
+                    self._deregister_task_definition(existing.task_definition_arn)
+                except Exception:
+                    pass
                 existing.task_definition_arn = None
-            if existing.access_point_id:
-                self._delete_access_point(existing.access_point_id)
-                existing.access_point_id = None
-            # Delete ECS service if it exists (ignore errors — may not exist)
-            try:
-                service_name = self._service_name(user_id)
-                self._ecs.update_service(
-                    cluster=self._cluster,
-                    service=service_name,
-                    desiredCount=0,
-                )
-                self._ecs.delete_service(
-                    cluster=self._cluster,
-                    service=service_name,
-                    force=True,
-                )
-            except Exception:
-                pass  # Service may not exist yet
+            # Don't delete access point — preserves user's EFS data
             existing.status = "provisioning"
             existing.substatus = None
             await db.commit()
@@ -663,24 +734,9 @@ class EcsManager:
         # Step 2: Create ECS service (desiredCount=0)
         service_name = await self.create_user_service(user_id, gateway_token, db)
 
-        # Step 3: Generate device identity and write configs to EFS
+        # Step 3: Write configs to EFS
         try:
-            identity = generate_device_identity()
-            container_result = await db.execute(select(Container).where(Container.user_id == user_id))
-            container_row = container_result.scalar_one_or_none()
-            if container_row:
-                container_row.device_private_key_pem = identity["private_key_pem"]
-                await db.commit()
-
-            config_json = write_openclaw_config(
-                region=settings.AWS_REGION,
-                gateway_token=gateway_token,
-                proxy_base_url=settings.PROXY_BASE_URL,
-            )
-            workspace = get_workspace()
-            workspace.write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
-            workspace.write_file(user_id, "openclaw.json", config_json)
-            workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+            self._write_user_configs(user_id, gateway_token, db, None)
         except Exception as e:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
@@ -694,3 +750,17 @@ class EcsManager:
 
         logger.info("Provisioned container %s for user %s", service_name, user_id)
         return service_name
+
+    def _write_user_configs(self, user_id: str, gateway_token: str, db, container_row) -> None:
+        """Write OpenClaw config files to the user's EFS workspace."""
+        identity = generate_device_identity()
+
+        config_json = write_openclaw_config(
+            region=settings.AWS_REGION,
+            gateway_token=gateway_token,
+            proxy_base_url=settings.PROXY_BASE_URL,
+        )
+        workspace = get_workspace()
+        workspace.write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
+        workspace.write_file(user_id, "openclaw.json", config_json)
+        workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())

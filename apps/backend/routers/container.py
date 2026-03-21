@@ -67,11 +67,12 @@ async def container_status(
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
-    # Auto-retry: if container is in error state and user has a subscription,
+    # Auto-retry: if container is in a failed/stuck state and user has a subscription,
     # trigger re-provisioning in the background.
-    if container.status == "error" and await _user_has_subscription(auth.user_id, db):
+    retryable_states = ("error", "stopped")
+    if container.status in retryable_states and await _user_has_subscription(auth.user_id, db):
         container.status = "provisioning"
-        container.substatus = None
+        container.substatus = "auto_retry"
         await db.commit()
         asyncio.create_task(_background_provision(auth.user_id))
 
