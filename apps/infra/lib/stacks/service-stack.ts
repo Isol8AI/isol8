@@ -7,13 +7,27 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
-import * as kms from "aws-cdk-lib/aws-kms";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
-import { AuthSecrets } from "./auth-stack";
+
+/**
+ * Secret name strings (NOT ISecret objects) to avoid cross-stack dependency
+ * cycles. ServiceStack imports them locally via fromSecretNameV2, which
+ * prevents CDK from auto-granting KMS access on AuthStack's key.
+ */
+export interface SecretNames {
+  clerkIssuer: string;
+  clerkSecretKey: string;
+  clerkWebhookSecret: string;
+  stripeSecretKey: string;
+  stripeWebhookSecret: string;
+  perplexityApiKey: string;
+  encryptionKey: string;
+  databaseUrl: string;
+}
 
 export interface ServiceStackProps extends cdk.StackProps {
   environment: string;
@@ -25,8 +39,10 @@ export interface ServiceStackProps extends cdk.StackProps {
     dbSecurityGroup: ec2.ISecurityGroup;
     dbSecret: secretsmanager.ISecret;
   };
-  secrets: AuthSecrets;
-  kmsKey: kms.IKey;
+  /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
+  secretNames: SecretNames;
+  /** Pass as string ARN to avoid cross-stack dependency cycle. */
+  kmsKeyArn: string;
   container: {
     cluster: ecs.ICluster;
     cloudMapNamespace: servicediscovery.IPrivateDnsNamespace;
@@ -208,8 +224,18 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Also allow access to the RDS auto-generated secret
-    props.database.dbSecret.grantRead(this.taskRole);
+    // Also allow access to the RDS auto-generated secret.
+    // Use manual policy instead of grantRead() to avoid cross-stack KMS grants.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "RdsSecretAccess",
+        actions: [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [props.database.dbSecret.secretArn],
+      }),
+    );
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -280,12 +306,12 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // KMS
+    // KMS (use string ARN to avoid cross-stack dependency)
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "KmsAccess",
         actions: ["kms:Decrypt", "kms:GenerateDataKey"],
-        resources: [props.kmsKey.keyArn],
+        resources: [props.kmsKeyArn],
       }),
     );
 
@@ -409,6 +435,16 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Allow execution role to decrypt secrets encrypted with KMS
+    // (manual grant instead of CDK auto-grant to avoid cross-stack cycle)
+    taskExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForSecrets",
+        actions: ["kms:Decrypt"],
+        resources: [props.kmsKeyArn],
+      }),
+    );
+
     // -------------------------------------------------------------------------
     // Log Group
     // -------------------------------------------------------------------------
@@ -493,25 +529,32 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
       },
       secrets: {
-        DATABASE_URL: ecs.Secret.fromSecretsManager(props.secrets.databaseUrl),
-        CLERK_ISSUER: ecs.Secret.fromSecretsManager(props.secrets.clerkIssuer),
+        // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
+        // auto-granting KMS decrypt on AuthStack's key, which causes a
+        // circular dependency: auth -> service -> container -> auth.
+        DATABASE_URL: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportDbUrl", props.secretNames.databaseUrl),
+        ),
+        CLERK_ISSUER: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkIssuer", props.secretNames.clerkIssuer),
+        ),
         CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
-          props.secrets.clerkSecretKey,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkSecretKey", props.secretNames.clerkSecretKey),
         ),
         CLERK_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          props.secrets.clerkWebhookSecret,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkWebhookSecret", props.secretNames.clerkWebhookSecret),
         ),
         STRIPE_SECRET_KEY: ecs.Secret.fromSecretsManager(
-          props.secrets.stripeSecretKey,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeSecretKey", props.secretNames.stripeSecretKey),
         ),
         STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          props.secrets.stripeWebhookSecret,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
         ),
         PERPLEXITY_API_KEY: ecs.Secret.fromSecretsManager(
-          props.secrets.perplexityApiKey,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportPerplexityApiKey", props.secretNames.perplexityApiKey),
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
-          props.secrets.encryptionKey,
+          secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
         ),
       },
       healthCheck: {

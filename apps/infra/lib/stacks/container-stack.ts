@@ -10,7 +10,8 @@ import { Construct } from "constructs";
 export interface ContainerStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
-  kmsKey: kms.IKey;
+  /** Pass as string ARN to avoid cross-stack dependency cycle. */
+  kmsKeyArn: string;
 }
 
 const ENV_CONFIG: Record<
@@ -35,6 +36,9 @@ export class ContainerStack extends cdk.Stack {
     super(scope, id, props);
 
     const config = ENV_CONFIG[props.environment] ?? ENV_CONFIG.dev;
+
+    // Import KMS key by ARN to avoid cross-stack dependency cycle
+    const kmsKey = kms.Key.fromKeyArn(this, "ImportedKmsKey", props.kmsKeyArn);
 
     // ECS Fargate cluster with Container Insights
     this.cluster = new ecs.Cluster(this, "Cluster", {
@@ -76,7 +80,7 @@ export class ContainerStack extends cdk.Stack {
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
       securityGroup: this.efsSecurityGroup,
       encrypted: true,
-      kmsKey: props.kmsKey,
+      kmsKey,
       lifecyclePolicy: efs.LifecyclePolicy.AFTER_30_DAYS,
       performanceMode: efs.PerformanceMode.GENERAL_PURPOSE,
       throughputMode: efs.ThroughputMode.BURSTING,

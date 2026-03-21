@@ -2,11 +2,11 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import { ApiStack } from "./stacks/api-stack";
 import { AuthStack } from "./stacks/auth-stack";
-import { ComputeStack } from "./stacks/compute-stack";
 import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
+import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
   environment: string;
@@ -31,6 +31,7 @@ export class Isol8Stage extends cdk.Stage {
     const network = new NetworkStack(this, `isol8-${env}-network`, {
       stackName: `isol8-${env}-network`,
       environment: env,
+      certificate: dns.certificate,
     });
 
     const database = new DatabaseStack(this, `isol8-${env}-database`, {
@@ -44,21 +45,46 @@ export class Isol8Stage extends cdk.Stage {
       stackName: `isol8-${env}-container`,
       environment: env,
       vpc: network.vpc,
-      kmsKey: auth.kmsKey,
+      kmsKeyArn: auth.kmsKey.keyArn,
     });
 
-    const compute = new ComputeStack(this, `isol8-${env}-compute`, {
-      stackName: `isol8-${env}-compute`,
+    // ApiStack deploys BEFORE ServiceStack (no circular dependency)
+    const api = new ApiStack(this, `isol8-${env}-api`, {
+      stackName: `isol8-${env}-api`,
       environment: env,
       vpc: network.vpc,
+      certificate: dns.certificate,
+      hostedZone: dns.hostedZone,
+      alb: network.alb,
+      albHttpListenerArn: network.albHttpListenerArn,
+      albSecurityGroup: network.albSecurityGroup,
+    });
+
+    // ServiceStack replaces ComputeStack
+    new ServiceStack(this, `isol8-${env}-service`, {
+      stackName: `isol8-${env}-service`,
+      environment: env,
+      vpc: network.vpc,
+      targetGroup: network.targetGroup,
+      albSecurityGroup: network.albSecurityGroup,
       database: {
         dbInstance: database.dbInstance,
         dbSecurityGroup: database.dbSecurityGroup,
         dbSecret: database.dbSecret,
       },
-      secrets: auth.secrets,
-      kmsKey: auth.kmsKey,
-      certificate: dns.certificate,
+      // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
+      // These names match the secretName used in AuthStack's createSecret helper.
+      secretNames: {
+        clerkIssuer: `isol8/${env}/clerk_issuer`,
+        clerkSecretKey: `isol8/${env}/clerk_secret_key`,
+        clerkWebhookSecret: `isol8/${env}/clerk_webhook_secret`,
+        stripeSecretKey: `isol8/${env}/stripe_secret_key`,
+        stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
+        perplexityApiKey: `isol8/${env}/perplexity_api_key`,
+        encryptionKey: `isol8/${env}/encryption_key`,
+        databaseUrl: `isol8/${env}/database_url`,
+      },
+      kmsKeyArn: auth.kmsKey.keyArn,
       container: {
         cluster: container.cluster,
         cloudMapNamespace: container.cloudMapNamespace,
@@ -69,19 +95,10 @@ export class Isol8Stage extends cdk.Stage {
         taskExecutionRole: container.taskExecutionRole,
         taskRole: container.taskRole,
       },
-    });
-
-    new ApiStack(this, `isol8-${env}-api`, {
-      stackName: `isol8-${env}-api`,
-      environment: env,
-      vpc: network.vpc,
-      certificate: dns.certificate,
-      hostedZone: dns.hostedZone,
-      ec2Role: compute.ec2Role,
-      albListenerArn: compute.albHttpListenerArn,
-      albSecurityGroupId: compute.albSecurityGroup.securityGroupId,
-      nlbArn: compute.nlb.loadBalancerArn,
-      nlbDnsName: compute.nlbDnsName,
+      managementApiUrl: api.managementApiUrl,
+      connectionsTableName: api.connectionsTableName,
+      wsApiId: api.wsApiId,
+      wsStage: api.wsStage,
     });
 
     // --- Tags ---
