@@ -138,6 +138,18 @@ export class ContainerStack extends cdk.Stack {
       }),
     );
 
+    // EFS client access — required for IAM-authenticated EFS mounts
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "elasticfilesystem:ClientMount",
+          "elasticfilesystem:ClientWrite",
+          "elasticfilesystem:ClientRootAccess",
+        ],
+        resources: ["*"],
+      }),
+    );
+
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         actions: [
