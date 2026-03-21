@@ -133,7 +133,12 @@ export class ContainerStack extends cdk.Stack {
 
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
-        actions: ["bedrock:InvokeModel"],
+        actions: [
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:ListFoundationModels",
+          "bedrock:ListInferenceProfiles",
+        ],
         resources: ["*"],
       }),
     );

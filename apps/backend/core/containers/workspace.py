@@ -11,12 +11,18 @@ No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
 from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# POSIX UID/GID for per-user EFS access points.
+# OpenClaw containers run as node (uid 1000) via the access point.
+_EFS_USER_UID = 1000
+_EFS_USER_GID = 1000
 
 _workspace: Optional["Workspace"] = None
 
@@ -151,10 +157,35 @@ class Workspace:
                 user_id=user_id,
             ) from exc
 
+    def _chown_for_access_point(self, file_path: Path, user_id: str) -> None:
+        """Set ownership to match per-user EFS access point POSIX user.
+
+        Chowns the file and all parent directories up to the user root
+        so the OpenClaw container (uid 1000 via access point) can read/write.
+        Each user's access point is isolated — chowning to 1000:1000 does
+        not grant cross-user access.
+        """
+        user_root = self.user_path(user_id).resolve()
+        try:
+            os.chown(file_path, _EFS_USER_UID, _EFS_USER_GID)
+            parent = file_path.parent
+            while parent >= user_root:
+                os.chown(parent, _EFS_USER_UID, _EFS_USER_GID)
+                if parent == user_root:
+                    break
+                parent = parent.parent
+        except OSError as exc:
+            logger.error("Failed to chown %s for user %s: %s", file_path, user_id, exc)
+            raise WorkspaceError(
+                f"Failed to set ownership on {file_path} for {user_id}: {exc}",
+                user_id=user_id,
+            ) from exc
+
     def write_file(self, user_id: str, path: str, content: str) -> None:
         """Write a text file into a user's workspace.
 
-        Creates parent directories as needed.
+        Creates parent directories as needed. Sets ownership to 1000:1000
+        so per-user EFS access points can read/write.
 
         Args:
             user_id: The user whose workspace to write into.
@@ -169,6 +200,7 @@ class Workspace:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             resolved.write_text(content, encoding="utf-8")
+            self._chown_for_access_point(resolved, user_id)
         except OSError as exc:
             logger.error("Failed to write %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
@@ -194,6 +226,7 @@ class Workspace:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
             resolved.write_bytes(data)
+            self._chown_for_access_point(resolved, user_id)
         except OSError as exc:
             logger.error("Failed to write %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
