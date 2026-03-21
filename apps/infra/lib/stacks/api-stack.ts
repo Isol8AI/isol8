@@ -2,9 +2,12 @@ import * as path from "path";
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
+import { WebSocketApi, WebSocketStage } from "aws-cdk-lib/aws-apigatewayv2";
+import { WebSocketLambdaIntegration } from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authorizers";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
-import * as iam from "aws-cdk-lib/aws-iam";
+import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -13,8 +16,8 @@ import { Construct } from "constructs";
 // =============================================================================
 // ApiStack — HTTP API Gateway + WebSocket API Gateway
 // =============================================================================
-// HTTP API:  Vercel → API Gateway v2 (HTTP) → VPC Link v2 → ALB → EC2
-// WebSocket: Client → API Gateway v2 (WS) → VPC Link v1 → NLB → EC2:8000
+// HTTP API:  Vercel → API Gateway v2 (HTTP) → VPC Link v2 → ALB → Fargate
+// WebSocket: Client → API Gateway v2 (WS) → Lambda → DynamoDB + ALB
 // =============================================================================
 
 export interface ApiStackProps extends cdk.StackProps {
@@ -22,11 +25,9 @@ export interface ApiStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   certificate: acm.ICertificate;
   hostedZone: route53.IHostedZone;
-  ec2Role: iam.IRole;
-  albListenerArn: string;
-  albSecurityGroupId: string;
-  nlbArn: string;
-  nlbDnsName: string;
+  alb: elbv2.IApplicationLoadBalancer;
+  albHttpListenerArn: string;
+  albSecurityGroup: ec2.ISecurityGroup;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -42,6 +43,8 @@ export class ApiStack extends cdk.Stack {
   public readonly webSocketUrl: string;
   public readonly managementApiUrl: string;
   public readonly connectionsTableName: string;
+  public readonly wsApiId: string;
+  public readonly wsStage: string;
 
   constructor(scope: Construct, id: string, props: ApiStackProps) {
     super(scope, id, props);
@@ -80,7 +83,7 @@ export class ApiStack extends cdk.Stack {
     // --- VPC Link v2 (for HTTP API → ALB) ---
     const vpcLinkV2 = new apigatewayv2.CfnVpcLink(this, "HttpVpcLink", {
       name: `isol8-${env}-vpc-link`,
-      securityGroupIds: [props.albSecurityGroupId],
+      securityGroupIds: [props.albSecurityGroup.securityGroupId],
       subnetIds: props.vpc.selectSubnets({
         subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS,
       }).subnetIds,
@@ -93,7 +96,7 @@ export class ApiStack extends cdk.Stack {
       {
         apiId: httpApi.ref,
         integrationType: "HTTP_PROXY",
-        integrationUri: props.albListenerArn,
+        integrationUri: props.albHttpListenerArn,
         integrationMethod: "ANY",
         connectionType: "VPC_LINK",
         connectionId: vpcLinkV2.ref,
@@ -226,239 +229,115 @@ export class ApiStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // WebSocket API Gateway
+    // WebSocket Lambda Functions
+    // =========================================================================
+
+    // Shared security group for WebSocket Lambdas — allows outbound to ALB
+    const wsLambdaSg = new ec2.SecurityGroup(this, "WsLambdaSg", {
+      vpc: props.vpc,
+      description: "Security group for WebSocket Lambda functions",
+      allowAllOutbound: false,
+    });
+
+    wsLambdaSg.addEgressRule(
+      props.albSecurityGroup,
+      ec2.Port.tcp(80),
+      "Allow Lambda to reach ALB on port 80",
+    );
+
+    const lambdaDefaults: Omit<lambda.FunctionProps, "functionName" | "code" | "handler"> = {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      vpc: props.vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [wsLambdaSg],
+      environment: {
+        ALB_DNS_NAME: props.alb.loadBalancerDnsName,
+        CONNECTIONS_TABLE: connectionsTable.tableName,
+      },
+      logRetention: logs.RetentionDays.ONE_MONTH,
+    };
+
+    // --- ws-connect Lambda ---
+    const connectFn = new lambda.Function(this, "WsConnectFn", {
+      ...lambdaDefaults,
+      functionName: `isol8-${env}-ws-connect`,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "..", "..", "lambda", "ws-connect"),
+      ),
+    });
+    connectionsTable.grantReadWriteData(connectFn);
+
+    // --- ws-disconnect Lambda ---
+    const disconnectFn = new lambda.Function(this, "WsDisconnectFn", {
+      ...lambdaDefaults,
+      functionName: `isol8-${env}-ws-disconnect`,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "..", "..", "lambda", "ws-disconnect"),
+      ),
+    });
+    connectionsTable.grantReadWriteData(disconnectFn);
+
+    // --- ws-message Lambda ---
+    const messageFn = new lambda.Function(this, "WsMessageFn", {
+      ...lambdaDefaults,
+      functionName: `isol8-${env}-ws-message`,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "..", "..", "lambda", "ws-message"),
+      ),
+    });
+
+    // =========================================================================
+    // WebSocket API Gateway (L2)
     // =========================================================================
 
     const wsDomain = isProd ? "ws.isol8.co" : `ws-${env}.isol8.co`;
 
-    // --- WebSocket API ---
-    const wsApi = new apigatewayv2.CfnApi(this, "WebSocketApi", {
-      name: `isol8-${env}-websocket`,
-      protocolType: "WEBSOCKET",
+    const wsAuthorizer = new WebSocketLambdaAuthorizer("ClerkAuthorizer", authorizerFn, {
+      identitySource: ["route.request.querystring.token"],
+    });
+
+    const wsApi = new WebSocketApi(this, "WebSocketApi", {
+      apiName: `isol8-${env}-websocket`,
       routeSelectionExpression: "$request.body.action",
-    });
-
-    // --- Permission for API Gateway to invoke the authorizer Lambda ---
-    new lambda.CfnPermission(this, "WsAuthorizerInvokePermission", {
-      action: "lambda:InvokeFunction",
-      functionName: authorizerFn.functionName,
-      principal: "apigateway.amazonaws.com",
-      sourceArn: `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/*`,
-    });
-
-    // --- Authorizer ---
-    const wsAuthorizer = new apigatewayv2.CfnAuthorizer(
-      this,
-      "WsClerkAuthorizer",
-      {
-        apiId: wsApi.ref,
-        authorizerType: "REQUEST",
-        authorizerUri: `arn:aws:apigateway:${this.region}:lambda:path/2015-03-31/functions/${authorizerFn.functionArn}/invocations`,
-        identitySource: ["route.request.querystring.token"],
-        name: "clerk-jwt-authorizer",
+      connectRouteOptions: {
+        integration: new WebSocketLambdaIntegration("ConnectIntegration", connectFn),
+        authorizer: wsAuthorizer,
       },
-    );
-
-    // --- VPC Link v1 (REST API style — required for WebSocket APIs) ---
-    // CDK L2 VpcLink is for REST API (apigateway, not apigatewayv2).
-    // We use CfnResource for the REST API VPC Link which targets NLB.
-    const vpcLinkV1 = new cdk.CfnResource(this, "WsVpcLinkV1", {
-      type: "AWS::ApiGateway::VpcLink",
-      properties: {
-        Name: `isol8-${env}-ws-vpc-link-v1`,
-        TargetArns: [props.nlbArn],
+      disconnectRouteOptions: {
+        integration: new WebSocketLambdaIntegration("DisconnectIntegration", disconnectFn),
+      },
+      defaultRouteOptions: {
+        integration: new WebSocketLambdaIntegration("DefaultIntegration", messageFn),
       },
     });
 
-    // --- $connect integration ---
-    const connectIntegration = new apigatewayv2.CfnIntegration(
-      this,
-      "WsConnectIntegration",
-      {
-        apiId: wsApi.ref,
-        integrationType: "HTTP",
-        integrationUri: `http://${props.nlbDnsName}/api/v1/ws/connect`,
-        integrationMethod: "POST",
-        connectionType: "VPC_LINK",
-        connectionId: vpcLinkV1.ref,
-        requestParameters: {
-          "integration.request.header.x-connection-id": "context.connectionId",
-          "integration.request.header.x-user-id": "context.authorizer.userId",
-          "integration.request.header.x-org-id": "context.authorizer.orgId",
-          "integration.request.header.Content-Type": "'application/json'",
-        },
-        timeoutInMillis: 5000,
-      },
-    );
-
-    // $connect integration response
-    new apigatewayv2.CfnIntegrationResponse(
-      this,
-      "WsConnectIntegrationResponse",
-      {
-        apiId: wsApi.ref,
-        integrationId: connectIntegration.ref,
-        integrationResponseKey: "$default",
-      },
-    );
-
-    // --- $disconnect integration ---
-    const disconnectIntegration = new apigatewayv2.CfnIntegration(
-      this,
-      "WsDisconnectIntegration",
-      {
-        apiId: wsApi.ref,
-        integrationType: "HTTP",
-        integrationUri: `http://${props.nlbDnsName}/api/v1/ws/disconnect`,
-        integrationMethod: "POST",
-        connectionType: "VPC_LINK",
-        connectionId: vpcLinkV1.ref,
-        requestParameters: {
-          "integration.request.header.x-connection-id": "context.connectionId",
-          "integration.request.header.Content-Type": "'application/json'",
-        },
-        timeoutInMillis: 5000,
-      },
-    );
-
-    // $disconnect integration response
-    new apigatewayv2.CfnIntegrationResponse(
-      this,
-      "WsDisconnectIntegrationResponse",
-      {
-        apiId: wsApi.ref,
-        integrationId: disconnectIntegration.ref,
-        integrationResponseKey: "$default",
-      },
-    );
-
-    // --- $default (message) integration ---
-    const messageIntegration = new apigatewayv2.CfnIntegration(
-      this,
-      "WsMessageIntegration",
-      {
-        apiId: wsApi.ref,
-        integrationType: "HTTP",
-        integrationUri: `http://${props.nlbDnsName}/api/v1/ws/message`,
-        integrationMethod: "POST",
-        connectionType: "VPC_LINK",
-        connectionId: vpcLinkV1.ref,
-        requestParameters: {
-          "integration.request.header.x-connection-id": "context.connectionId",
-          "integration.request.header.Content-Type": "'application/json'",
-        },
-        timeoutInMillis: 10000,
-      },
-    );
-
-    // $default integration response
-    new apigatewayv2.CfnIntegrationResponse(
-      this,
-      "WsMessageIntegrationResponse",
-      {
-        apiId: wsApi.ref,
-        integrationId: messageIntegration.ref,
-        integrationResponseKey: "$default",
-      },
-    );
-
-    // =========================================================================
-    // WebSocket Routes
-    // =========================================================================
-
-    // --- $connect route (with authorizer) ---
-    const connectRoute = new apigatewayv2.CfnRoute(
-      this,
-      "WsConnectRoute",
-      {
-        apiId: wsApi.ref,
-        routeKey: "$connect",
-        authorizationType: "CUSTOM",
-        authorizerId: wsAuthorizer.ref,
-        target: `integrations/${connectIntegration.ref}`,
-        routeResponseSelectionExpression: "$default",
-      },
-    );
-
-    new apigatewayv2.CfnRouteResponse(this, "WsConnectRouteResponse", {
-      apiId: wsApi.ref,
-      routeId: connectRoute.ref,
-      routeResponseKey: "$default",
-    });
-
-    // --- $disconnect route ---
-    const disconnectRoute = new apigatewayv2.CfnRoute(
-      this,
-      "WsDisconnectRoute",
-      {
-        apiId: wsApi.ref,
-        routeKey: "$disconnect",
-        target: `integrations/${disconnectIntegration.ref}`,
-        routeResponseSelectionExpression: "$default",
-      },
-    );
-
-    new apigatewayv2.CfnRouteResponse(this, "WsDisconnectRouteResponse", {
-      apiId: wsApi.ref,
-      routeId: disconnectRoute.ref,
-      routeResponseKey: "$default",
-    });
-
-    // --- $default route ---
-    const defaultRoute = new apigatewayv2.CfnRoute(
-      this,
-      "WsDefaultRoute",
-      {
-        apiId: wsApi.ref,
-        routeKey: "$default",
-        target: `integrations/${messageIntegration.ref}`,
-        routeResponseSelectionExpression: "$default",
-      },
-    );
-
-    new apigatewayv2.CfnRouteResponse(this, "WsDefaultRouteResponse", {
-      apiId: wsApi.ref,
-      routeId: defaultRoute.ref,
-      routeResponseKey: "$default",
-    });
-
-    // =========================================================================
-    // WebSocket Stage
-    // =========================================================================
-
+    // --- WebSocket API Log Group ---
     const wsApiLogGroup = new logs.LogGroup(this, "WsApiLogs", {
       logGroupName: `/aws/api-gateway/isol8-${env}-websocket`,
       retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const wsStage = new apigatewayv2.CfnStage(this, "WsStage", {
-      apiId: wsApi.ref,
+    // --- WebSocket Stage ---
+    const wsStageResource = new WebSocketStage(this, "WsStage", {
+      webSocketApi: wsApi,
       stageName: env,
       autoDeploy: true,
-      defaultRouteSettings: {
-        throttlingBurstLimit: throttle.burstLimit,
-        throttlingRateLimit: throttle.rateLimit,
-      },
-      accessLogSettings: {
-        destinationArn: wsApiLogGroup.logGroupArn,
-        format: JSON.stringify({
-          requestId: "$context.requestId",
-          ip: "$context.identity.sourceIp",
-          requestTime: "$context.requestTime",
-          routeKey: "$context.routeKey",
-          status: "$context.status",
-          connectionId: "$context.connectionId",
-          eventType: "$context.eventType",
-          authorizer: "$context.authorizer.error",
-          error: "$context.integrationErrorMessage",
-        }),
-      },
     });
+
+    this.wsApiId = wsApi.apiId;
+    this.wsStage = env;
 
     // =========================================================================
     // WebSocket Custom Domain
     // =========================================================================
+    // L2 does not yet support custom domains for WebSocket APIs,
+    // so we continue using CfnDomainName + CfnApiMapping.
 
     const wsDomainName = new apigatewayv2.CfnDomainName(
       this,
@@ -476,9 +355,9 @@ export class ApiStack extends cdk.Stack {
     );
 
     new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
-      apiId: wsApi.ref,
+      apiId: wsApi.apiId,
       domainName: wsDomainName.ref,
-      stage: wsStage.ref,
+      stage: env,
     });
 
     // --- Route53 A record for WebSocket API ---
@@ -498,50 +377,7 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
     // Management API URL
     // =========================================================================
-    // The management API endpoint is:
-    //   https://{api-id}.execute-api.{region}.amazonaws.com/{stage}
-    this.managementApiUrl = `https://${wsApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
-
-    // =========================================================================
-    // Grant EC2 role ManageConnections + DynamoDB permissions
-    // =========================================================================
-    // Use a standalone IAM policy in this stack to avoid circular dependency
-    // between ApiStack and ComputeStack. The policy is attached to the EC2
-    // role by name, keeping all references within this stack's template.
-    new iam.CfnManagedPolicy(this, "Ec2WebSocketPolicy", {
-      policyDocument: {
-        Version: "2012-10-17",
-        Statement: [
-          {
-            Sid: "WebSocketManageConnections",
-            Effect: "Allow",
-            Action: "execute-api:ManageConnections",
-            Resource: [
-              `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/POST/@connections/*`,
-              `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/DELETE/@connections/*`,
-              `arn:aws:execute-api:${this.region}:${this.account}:${wsApi.ref}/${env}/GET/@connections/*`,
-            ],
-          },
-          {
-            Sid: "DynamoDbConnections",
-            Effect: "Allow",
-            Action: [
-              "dynamodb:GetItem",
-              "dynamodb:PutItem",
-              "dynamodb:UpdateItem",
-              "dynamodb:DeleteItem",
-              "dynamodb:Query",
-              "dynamodb:Scan",
-              "dynamodb:BatchGetItem",
-              "dynamodb:BatchWriteItem",
-            ],
-            Resource: connectionsTable.tableArn,
-          },
-        ],
-      },
-      roles: [props.ec2Role.roleName],
-      managedPolicyName: `isol8-${env}-ec2-websocket-policy`,
-    });
+    this.managementApiUrl = `https://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
 
     // =========================================================================
     // CloudFormation Outputs
@@ -569,6 +405,12 @@ export class ApiStack extends cdk.Stack {
       value: connectionsTable.tableName,
       description: "DynamoDB connections table name",
       exportName: `isol8-${env}-connections-table`,
+    });
+
+    new cdk.CfnOutput(this, "WsApiIdOutput", {
+      value: this.wsApiId,
+      description: "WebSocket API ID (for IAM ManageConnections ARN)",
+      exportName: `isol8-${env}-ws-api-id`,
     });
   }
 }
