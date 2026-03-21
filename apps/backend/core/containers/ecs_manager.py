@@ -662,7 +662,7 @@ class EcsManager:
                     await db.commit()
 
                 try:
-                    self._write_user_configs(user_id, gateway_token, db, existing)
+                    await self._write_user_configs(user_id, gateway_token)
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
@@ -727,7 +727,7 @@ class EcsManager:
 
         # Step 3: Write configs to EFS
         try:
-            self._write_user_configs(user_id, gateway_token, db, None)
+            await self._write_user_configs(user_id, gateway_token)
         except Exception as e:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
@@ -742,8 +742,12 @@ class EcsManager:
         logger.info("Provisioned container %s for user %s", service_name, user_id)
         return service_name
 
-    def _write_user_configs(self, user_id: str, gateway_token: str, db, container_row) -> None:
-        """Write OpenClaw config files to the user's EFS workspace."""
+    async def _write_user_configs(self, user_id: str, gateway_token: str) -> None:
+        """Write OpenClaw config files to the user's EFS workspace.
+
+        Also persists the device identity PEM to the DB so the connection
+        pool can authenticate with the same keypair written to paired.json.
+        """
         identity = generate_device_identity()
 
         config_json = write_openclaw_config(
@@ -755,3 +759,6 @@ class EcsManager:
         workspace.write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+        # Persist device identity so connection pool uses the same keypair
+        await self._update_container(user_id, device_private_key_pem=identity["private_key_pem"])
