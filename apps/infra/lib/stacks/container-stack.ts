@@ -148,5 +148,42 @@ export class ContainerStack extends cdk.Stack {
         resources: ["*"],
       }),
     );
+
+    // Base OpenClaw task definition — the backend clones this per user,
+    // replacing the EFS access point for data isolation.
+    const env = props.environment;
+    const openclawLogGroup = new cdk.aws_logs.LogGroup(this, "OpenClawLogGroup", {
+      logGroupName: `/isol8/${env}/openclaw`,
+      retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
+      family: `isol8-${env}-openclaw`,
+      cpu: 1024,
+      memoryLimitMiB: 2048,
+      taskRole: this.taskRole,
+      executionRole: this.taskExecutionRole,
+    });
+
+    openclawTaskDef.addContainer("openclaw", {
+      image: ecs.ContainerImage.fromRegistry("ghcr.io/openclaw/openclaw:latest"),
+      essential: true,
+      portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup: openclawLogGroup,
+        streamPrefix: "openclaw",
+      }),
+    });
+
+    // Add EFS volume — the backend replaces the access point per user
+    openclawTaskDef.addVolume({
+      name: "openclaw-workspace",
+      efsVolumeConfiguration: {
+        fileSystemId: this.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
   }
 }
