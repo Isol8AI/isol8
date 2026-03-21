@@ -11,8 +11,7 @@ import hashlib
 import logging
 import re
 import secrets
-import urllib.request
-import urllib.error
+import socket
 
 import boto3
 from sqlalchemy import select, update
@@ -521,9 +520,8 @@ class EcsManager:
     def is_healthy(self, ip: str) -> bool:
         """Check if a gateway at the given IP is responding.
 
-        Sends an HTTP OPTIONS request to the gateway's chat completions
-        endpoint. Returns True if the gateway responds with a non-5xx
-        status code.
+        Opens a TCP connection to the gateway port. If the connection
+        succeeds, the gateway is listening and healthy.
 
         Args:
             ip: The task's private IPv4 address.
@@ -532,15 +530,8 @@ class EcsManager:
             True if healthy, False otherwise.
         """
         try:
-            req = urllib.request.Request(
-                f"http://{ip}:{GATEWAY_PORT}/v1/chat/completions",
-                method="OPTIONS",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return resp.status < 500
-        except urllib.error.HTTPError as e:
-            # 4xx responses are still "healthy" (gateway is running)
-            return e.code < 500
+            with socket.create_connection((ip, GATEWAY_PORT), timeout=5):
+                return True
         except Exception:
             return False
 
