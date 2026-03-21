@@ -17,7 +17,6 @@ class Settings(BaseSettings):
     # Clerk Auth
     CLERK_ISSUER: str = os.getenv("CLERK_ISSUER", "https://your-clerk-domain.clerk.accounts.dev")
     CLERK_AUDIENCE: str | None = None
-    CLERK_WEBHOOK_SECRET: str | None = os.getenv("CLERK_WEBHOOK_SECRET")
 
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/securechat")

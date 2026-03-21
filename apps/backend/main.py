@@ -31,7 +31,6 @@ from routers import (
     proxy,
     settings_keys,
     users,
-    webhooks,
     websocket_chat,
 )
 
@@ -69,10 +68,6 @@ openapi_tags = [
     {
         "name": "users",
         "description": "User registration and sync.",
-    },
-    {
-        "name": "webhooks",
-        "description": "Clerk webhook handlers for user sync events.",
     },
     {
         "name": "websocket",
@@ -175,7 +170,6 @@ app.openapi = custom_openapi
 
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
-app.include_router(webhooks.router, prefix="/api/v1", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")

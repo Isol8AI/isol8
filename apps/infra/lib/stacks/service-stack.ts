@@ -21,7 +21,6 @@ import { Construct } from "constructs";
 export interface SecretNames {
   clerkIssuer: string;
   clerkSecretKey: string;
-  clerkWebhookSecret: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   perplexityApiKey: string;
@@ -542,9 +541,6 @@ export class ServiceStack extends cdk.Stack {
         ),
         CLERK_SECRET_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkSecretKey", props.secretNames.clerkSecretKey),
-        ),
-        CLERK_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkWebhookSecret", props.secretNames.clerkWebhookSecret),
         ),
         STRIPE_SECRET_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeSecretKey", props.secretNames.stripeSecretKey),

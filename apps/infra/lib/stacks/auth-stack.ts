@@ -6,7 +6,6 @@ import { Construct } from "constructs";
 export interface AuthSecrets {
   clerkIssuer: secretsmanager.ISecret;
   clerkSecretKey: secretsmanager.ISecret;
-  clerkWebhookSecret: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   perplexityApiKey: secretsmanager.ISecret;
@@ -45,7 +44,6 @@ export class AuthStack extends cdk.Stack {
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
-      clerkWebhookSecret: createSecret("ClerkWebhookSecret", "clerk_webhook_secret"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
