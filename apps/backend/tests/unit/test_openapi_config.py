@@ -15,7 +15,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 EXPECTED_TAGS = [
     "users",
-    "webhooks",
     "websocket",
     "billing",
     "container",

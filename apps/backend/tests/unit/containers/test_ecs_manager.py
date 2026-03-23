@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from core.containers.ecs_manager import EcsManager, EcsManagerError, GATEWAY_PORT
+from core.containers.ecs_manager import EcsManager, EcsManagerError
 from models.container import Container
 
 
@@ -738,62 +738,48 @@ class TestDiscoverIp:
 
 
 class TestIsHealthy:
-    """Test gateway health checks."""
+    """Test gateway TCP health checks."""
 
-    def test_healthy_200(self, manager):
-        """Healthy gateway returning 200 yields True."""
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_response = MagicMock()
-            mock_response.status = 200
-            mock_response.__enter__ = MagicMock(return_value=mock_response)
-            mock_response.__exit__ = MagicMock(return_value=False)
-            mock_urlopen.return_value = mock_response
-
+    def test_healthy_tcp_connect(self, manager):
+        """Successful TCP connection yields True."""
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        with patch("core.containers.ecs_manager.socket.create_connection", return_value=mock_sock):
             assert manager.is_healthy("10.0.1.42") is True
 
-            # Verify correct URL and method
-            call_args = mock_urlopen.call_args
-            request_obj = call_args[0][0]
-            assert request_obj.full_url == f"http://10.0.1.42:{GATEWAY_PORT}/v1/chat/completions"
-            assert request_obj.method == "OPTIONS"
-
     def test_healthy_404(self, manager):
-        """Gateway returning 404 is still healthy (gateway is running)."""
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib_http_error(404)
-
+        """TCP connect succeeds even if HTTP would return 404 — still healthy."""
+        mock_sock = MagicMock()
+        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
+        mock_sock.__exit__ = MagicMock(return_value=False)
+        with patch("core.containers.ecs_manager.socket.create_connection", return_value=mock_sock):
             assert manager.is_healthy("10.0.1.42") is True
 
     def test_unhealthy_500(self, manager):
-        """Gateway returning 500 is unhealthy."""
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib_http_error(500)
-
+        """Connection refused means unhealthy (replaces old HTTP 500 test)."""
+        with patch(
+            "core.containers.ecs_manager.socket.create_connection", side_effect=ConnectionRefusedError("refused")
+        ):
             assert manager.is_healthy("10.0.1.42") is False
 
     def test_unhealthy_connection_refused(self, manager):
         """Connection refused means unhealthy."""
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = ConnectionRefusedError("refused")
-
+        with patch(
+            "core.containers.ecs_manager.socket.create_connection", side_effect=ConnectionRefusedError("refused")
+        ):
             assert manager.is_healthy("10.0.1.42") is False
 
     def test_unhealthy_timeout(self, manager):
         """Timeout means unhealthy."""
         import socket
 
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = socket.timeout("timed out")
-
+        with patch("core.containers.ecs_manager.socket.create_connection", side_effect=socket.timeout("timed out")):
             assert manager.is_healthy("10.0.1.42") is False
 
     def test_unhealthy_url_error(self, manager):
-        """URLError means unhealthy."""
-        import urllib.error
-
-        with patch("core.containers.ecs_manager.urllib.request.urlopen") as mock_urlopen:
-            mock_urlopen.side_effect = urllib.error.URLError("connection failed")
-
+        """OSError means unhealthy (replaces old URLError test)."""
+        with patch("core.containers.ecs_manager.socket.create_connection", side_effect=OSError("connection failed")):
             assert manager.is_healthy("10.0.1.42") is False
 
 

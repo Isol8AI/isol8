@@ -224,7 +224,7 @@ class TestSyncUser:
         assert result == 0
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_returns_zero_when_gateway_unreachable(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Returns 0 gracefully when gateway RPC throws (e.g. connection refused)."""
         mock_pool.send_rpc = AsyncMock(side_effect=ConnectionRefusedError("refused"))
@@ -233,7 +233,7 @@ class TestSyncUser:
         assert result == 0
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_returns_zero_when_no_sessions(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Returns 0 when gateway returns empty sessions list."""
         mock_pool.send_rpc = AsyncMock(return_value={"sessions": []})
@@ -242,7 +242,7 @@ class TestSyncUser:
         assert result == 0
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_returns_zero_when_no_billing_account(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Returns 0 when user has no billing account."""
         mock_svc_instance = AsyncMock()
@@ -253,7 +253,7 @@ class TestSyncUser:
         assert result == 0
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_records_delta_for_new_session(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Records tokens for a session not previously seen (delta = full count)."""
         mock_account = MagicMock()
@@ -278,7 +278,7 @@ class TestSyncUser:
         assert call_kwargs["source"] == "agent"
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_records_only_delta_tokens(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Only records the difference since last recorded tokens."""
         mock_account = MagicMock()
@@ -304,7 +304,7 @@ class TestSyncUser:
         assert call_kwargs["output_tokens"] == 50
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_skips_session_with_zero_delta(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Skips recording when both input and output deltas are zero."""
         mock_account = MagicMock()
@@ -327,7 +327,7 @@ class TestSyncUser:
         mock_svc_instance.record_usage.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_zero_delta_guard_prevents_negative(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Delta is clamped to 0 even if gateway returns fewer tokens than recorded (e.g. session reset)."""
         mock_account = MagicMock()
@@ -350,7 +350,7 @@ class TestSyncUser:
         mock_svc_instance.record_usage.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_skips_sessions_without_key(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """Sessions with empty or missing key are skipped."""
         mock_pool.send_rpc = AsyncMock(
@@ -376,7 +376,7 @@ class TestSyncUser:
         mock_svc_instance.record_usage.assert_not_awaited()
 
     @pytest.mark.asyncio
-    @patch("core.services.usage_service.UsageService")
+    @patch("core.services.usage_poller.UsageService")
     async def test_continues_after_record_failure(self, MockUsageService, mock_db, mock_ecs, mock_pool):
         """If one session fails to record, subsequent sessions still process."""
         mock_pool.send_rpc = AsyncMock(
@@ -424,8 +424,8 @@ class TestPollAllUsers:
         poller = UsagePoller(db_factory)
 
         with (
-            patch("core.containers.get_gateway_pool") as mock_get_pool,
-            patch("core.containers.get_ecs_manager") as mock_get_ecs,
+            patch("core.services.usage_poller.get_gateway_pool") as mock_get_pool,
+            patch("core.services.usage_poller.get_ecs_manager") as mock_get_ecs,
         ):
             await poller._poll_all_users()
             # Pool and ECS are still fetched even with no containers
@@ -449,8 +449,8 @@ class TestPollAllUsers:
         poller = UsagePoller(db_factory)
 
         with (
-            patch("core.containers.get_gateway_pool", return_value=MagicMock()),
-            patch("core.containers.get_ecs_manager", return_value=MagicMock()),
+            patch("core.services.usage_poller.get_gateway_pool", return_value=MagicMock()),
+            patch("core.services.usage_poller.get_ecs_manager", return_value=MagicMock()),
             patch.object(poller, "_sync_user", AsyncMock(return_value=1)) as mock_sync,
         ):
             await poller._poll_all_users()
@@ -484,8 +484,8 @@ class TestPollAllUsers:
             return r
 
         with (
-            patch("core.containers.get_gateway_pool", return_value=MagicMock()),
-            patch("core.containers.get_ecs_manager", return_value=MagicMock()),
+            patch("core.services.usage_poller.get_gateway_pool", return_value=MagicMock()),
+            patch("core.services.usage_poller.get_ecs_manager", return_value=MagicMock()),
             patch.object(poller, "_sync_user", side_effect=fake_sync),
         ):
             # Should not raise
