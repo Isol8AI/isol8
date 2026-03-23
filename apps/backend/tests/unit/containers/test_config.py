@@ -171,6 +171,38 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         assert config["skills"]["install"]["nodeManager"] == "npm"
 
+    def test_ollama_provider(self):
+        """write_openclaw_config with provider='ollama' uses native Ollama config."""
+        config_json = write_openclaw_config(
+            provider="ollama",
+            ollama_base_url="http://ollama:11434",
+            primary_model="ollama/qwen2.5:14b",
+            gateway_token="test-token",
+        )
+        config = json.loads(config_json)
+
+        providers = config["models"]["providers"]
+        assert "ollama" in providers
+        assert "amazon-bedrock" not in providers
+
+        ollama = providers["ollama"]
+        assert ollama["baseUrl"] == "http://ollama:11434"
+        assert ollama["api"] == "ollama"
+        assert ollama["apiKey"] == "ollama-local"
+        assert len(ollama["models"]) > 0
+
+        assert config["agents"]["defaults"]["model"]["primary"] == "ollama/qwen2.5:14b"
+        assert config["models"]["bedrockDiscovery"]["enabled"] is False
+
+    def test_default_provider_is_bedrock(self):
+        """write_openclaw_config without provider arg still uses Bedrock."""
+        config_json = write_openclaw_config(gateway_token="test-token")
+        config = json.loads(config_json)
+
+        providers = config["models"]["providers"]
+        assert "amazon-bedrock" in providers
+        assert "ollama" not in providers
+
 
 class TestWriteMcporterConfig:
     """Test mcporter.json generation."""

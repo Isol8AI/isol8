@@ -121,6 +121,12 @@ async def proxy_request(
         if service == "search" and body:
             try:
                 payload = json.loads(body)
+                logger.info(
+                    "Proxy request body for user %s: model=%s keys=%s",
+                    container.user_id,
+                    payload.get("model"),
+                    list(payload.keys()),
+                )
                 if "model" in payload:
                     payload["model"] = "sonar"
                     body = json.dumps(payload).encode()
@@ -139,7 +145,17 @@ async def proxy_request(
                     },
                 )
             logger.info(
-                "Proxy upstream response: %s %s for user %s", upstream_resp.status_code, upstream_url, container.user_id
+                "Proxy upstream response: %s %s for user %s, upstream_headers=%s, body_len=%d",
+                upstream_resp.status_code,
+                upstream_url,
+                container.user_id,
+                dict(upstream_resp.headers),
+                len(upstream_resp.content),
+            )
+            logger.info(
+                "Proxy response body preview for user %s: %.500s",
+                container.user_id,
+                upstream_resp.text,
             )
         except Exception as e:
             logger.error("Proxy upstream error for user %s: %s — %s", container.user_id, upstream_url, e)
@@ -160,12 +176,25 @@ async def proxy_request(
                 logger.exception("Failed to record proxy usage for user %s", container.user_id)
                 await db.rollback()
 
-    # Build response — only forward safe headers, never auth-related ones
+    # Build response — only forward safe headers.
+    # Strip auth headers (leak prevention) AND transport headers (content-length,
+    # content-encoding, transfer-encoding) because httpx may have decompressed or
+    # de-chunked the body, making the original values incorrect for the bytes we
+    # actually return. FastAPI will set correct values from upstream_resp.content.
     safe_headers = {}
     for key, value in upstream_resp.headers.items():
         lower = key.lower()
-        if lower not in ("authorization", "www-authenticate", "set-cookie", "x-api-key"):
-            safe_headers[key] = value
+        if lower in (
+            "authorization",
+            "www-authenticate",
+            "set-cookie",
+            "x-api-key",
+            "content-length",
+            "content-encoding",
+            "transfer-encoding",
+        ):
+            continue
+        safe_headers[key] = value
 
     return Response(
         content=upstream_resp.content,

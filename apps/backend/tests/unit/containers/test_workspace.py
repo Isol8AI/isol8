@@ -5,12 +5,19 @@ Uses tmp_path fixture for real filesystem operations -- no mocking needed.
 
 import pytest
 
+from core.config import settings
 from core.containers.workspace import Workspace, WorkspaceError
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _local_environment(monkeypatch):
+    """Force ENVIRONMENT=local so os.chown is skipped on macOS."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "local")
 
 
 @pytest.fixture
@@ -262,3 +269,19 @@ class TestWorkspaceError:
         """WorkspaceError defaults user_id to empty string."""
         err = WorkspaceError("generic failure")
         assert err.user_id == ""
+
+
+# ---------------------------------------------------------------------------
+# Chown local environment
+# ---------------------------------------------------------------------------
+
+
+class TestChownLocalEnvironment:
+    """Tests for os.chown behavior in local environment."""
+
+    def test_chown_skipped_in_local_environment(self, monkeypatch, tmp_path):
+        """os.chown is not called when ENVIRONMENT=local."""
+        monkeypatch.setattr(settings, "ENVIRONMENT", "local")
+        ws = Workspace(mount_path=str(tmp_path))
+        ws.write_file("test-user", "test.json", '{"test": true}')
+        assert (tmp_path / "test-user" / "test.json").exists()

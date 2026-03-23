@@ -15,6 +15,8 @@ export interface AuthSecrets {
 
 export interface AuthStackProps extends cdk.StackProps {
   environment: string;
+  /** Optional initial secret values (for local dev — production sets these manually). */
+  secretValues?: Record<string, string>;
 }
 
 export class AuthStack extends cdk.Stack {
@@ -33,13 +35,20 @@ export class AuthStack extends cdk.Stack {
       alias: `isol8-${env}-general`,
     });
 
-    // Helper to create a CDK-managed secret
-    const createSecret = (logicalId: string, secretName: string): secretsmanager.Secret =>
-      new secretsmanager.Secret(this, logicalId, {
+    // Helper to create a CDK-managed secret.
+    // If secretValues is provided (local dev), use that value instead of random generation.
+    const secretVals = props.secretValues ?? {};
+    const createSecret = (logicalId: string, secretName: string): secretsmanager.Secret => {
+      const initialValue = secretVals[secretName];
+      return new secretsmanager.Secret(this, logicalId, {
         secretName: `isol8/${env}/${secretName}`,
         description: `Isol8 ${env} ${secretName}`,
         encryptionKey: this.kmsKey,
+        ...(initialValue
+          ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
+          : {}),
       });
+    };
 
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),

@@ -165,6 +165,9 @@ class Workspace:
         Each user's access point is isolated — chowning to 1000:1000 does
         not grant cross-user access.
         """
+        if settings.ENVIRONMENT == "local":
+            return
+
         user_root = self.user_path(user_id).resolve()
         try:
             os.chown(file_path, _EFS_USER_UID, _EFS_USER_GID)

@@ -117,11 +117,10 @@ class TestStripeWebhook:
         return account
 
     @pytest.mark.asyncio
-    @patch("routers.billing.get_workspace")
     @patch("routers.billing.get_ecs_manager")
     @patch("routers.billing.stripe")
     async def test_subscription_created_webhook(
-        self, mock_stripe, mock_get_ecs, mock_get_workspace, async_client, billing_account, db_session
+        self, mock_stripe, mock_get_ecs, async_client, billing_account, db_session
     ):
         """Should update billing account and provision ECS service on subscription.created."""
         mock_stripe.Webhook.construct_event.return_value = {
@@ -136,14 +135,10 @@ class TestStripeWebhook:
             },
         }
 
-        # Mock ECS manager
+        # Mock ECS manager — provision_user_container handles workspace internally
         mock_ecs = AsyncMock()
-        mock_ecs.create_user_service.return_value = "openclaw-user_web"
+        mock_ecs.provision_user_container = AsyncMock(return_value="openclaw-user_web")
         mock_get_ecs.return_value = mock_ecs
-
-        # Mock workspace
-        mock_ws = MagicMock()
-        mock_get_workspace.return_value = mock_ws
 
         response = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
@@ -155,18 +150,8 @@ class TestStripeWebhook:
         )
         assert response.status_code == 200
 
-        # Verify ECS provisioning was called first (creates access point + dir)
-        mock_ecs.create_user_service.assert_called_once()
-
-        # Verify config written to EFS after service creation
-        assert mock_ws.write_file.call_count == 3
-        # First call: paired.json, second: openclaw.json, third: mcporter.json
-        first_call = mock_ws.write_file.call_args_list[0]
-        assert first_call[0][0] == "user_webhook_test"
-        assert first_call[0][1] == "devices/paired.json"
-        second_call = mock_ws.write_file.call_args_list[1]
-        assert second_call[0][0] == "user_webhook_test"
-        assert second_call[0][1] == "openclaw.json"
+        # Verify provisioning was called (handles ECS + workspace + config)
+        mock_ecs.provision_user_container.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("routers.billing.get_ecs_manager")
