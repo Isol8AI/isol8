@@ -37,7 +37,7 @@ cd apps/backend && uv sync            # Python deps
 
 ### Individual Services
 
-**Database:** Local Docker PostgreSQL (`pgvector/pgvector:pg15`, port 5432, database `securechat`). Production uses Supabase PostgreSQL.
+**Database:** Production uses RDS PostgreSQL (provisioned by CDK). Local dev uses LocalStack RDS (see below).
 
 **All services (via Turborepo):**
 ```bash
@@ -61,6 +61,35 @@ pnpm run dev                   # localhost:3000
 pnpm run build                 # Production build
 pnpm run lint                  # ESLint
 ```
+
+### Local Development with LocalStack
+
+Full-stack local development using LocalStack to emulate AWS services and Ollama for local LLM inference:
+
+```bash
+# First time: set your LocalStack auth token
+export LOCALSTACK_AUTH_TOKEN=<from-localstack-dashboard>
+
+# Start everything (LocalStack + Ollama + Backend + Frontend)
+./scripts/local-dev.sh
+
+# Reset all data and start fresh
+./scripts/local-dev.sh --reset
+
+# Stop everything
+./scripts/local-dev.sh --stop
+
+# Start infrastructure only (no app services)
+./scripts/local-dev.sh --seed-only
+```
+
+**Prerequisites:** Docker Desktop, `LOCALSTACK_AUTH_TOKEN` env var, `pnpm`, `uv`
+
+**Architecture:** Backend runs in Docker (not on host) for container IP reachability with LocalStack-launched OpenClaw containers. Source code is bind-mounted for hot-reload. Frontend runs on host. Ollama provides local LLM inference via native OpenClaw provider.
+
+**Services emulated:** ECS, EFS, Cloud Map, DynamoDB, S3, Secrets Manager, KMS, API Gateway V2 (WebSocket), RDS PostgreSQL, Lambda
+
+**Not emulated:** Clerk (real dev keys), Stripe (test mode keys), Bedrock (replaced by Ollama)
 
 ### Running Tests
 
