@@ -61,6 +61,8 @@ command -v uv > /dev/null 2>&1 || { err "uv not found."; exit 1; }
 log "  ✓ uv available"
 command -v cdklocal > /dev/null 2>&1 || { err "cdklocal not found. Install with: npm install -g aws-cdk-local aws-cdk"; exit 1; }
 log "  ✓ cdklocal available"
+command -v aws > /dev/null 2>&1 || { err "aws CLI not found. Install with: brew install awscli"; exit 1; }
+log "  ✓ aws CLI available"
 
 # --------------------------------------------------------------------------
 # Handle --reset
@@ -174,30 +176,27 @@ print(f'  Wrote {len(env_lines)} vars to localstack/generated.env')
 # Here we automate it — same pattern, just scripted.
 log "Populating secrets..."
 
-# DATABASE_URL — read RDS credentials and construct the connection string
-DB_URL=$(docker exec isol8-localstack python3 -c "
-import json, subprocess
-raw = subprocess.check_output(['awslocal','secretsmanager','get-secret-value','--secret-id','isol8/local/rds-credentials','--query','SecretString','--output','text']).decode().strip()
-c = json.loads(raw)
-print(f\"postgresql+asyncpg://{c['username']}:{c['password']}@localhost.localstack.cloud:{c['port']}/{c['dbname']}\")
-")
-docker exec isol8-localstack awslocal secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL" > /dev/null
+# Use aws CLI directly from host (no docker exec quoting issues)
+LS="--endpoint-url=http://localhost:4566"
+
+# DATABASE_URL — constructed from the RDS auto-generated credentials
+RDS_CREDS=$(aws $LS secretsmanager get-secret-value --secret-id "isol8/local/rds-credentials" --query "SecretString" --output text)
+DB_URL=$(python3 -c "import json; c=json.loads('$RDS_CREDS'); print(f\"postgresql+asyncpg://{c['username']}:{c['password']}@localhost.localstack.cloud:{c['port']}/{c['dbname']}\")")
+aws $LS secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL" > /dev/null
 log "  ✓ DATABASE_URL = $DB_URL"
 
-# CLERK_ISSUER, CLERK_SECRET_KEY, ENCRYPTION_KEY
-# Pass values via docker exec -e to avoid shell expansion issues
-docker exec \
-    -e "VAL_CLERK_ISSUER=${CLERK_ISSUER}" \
-    -e "VAL_CLERK_SECRET=${CLERK_SECRET_KEY}" \
-    isol8-localstack bash -c '
-awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "$VAL_CLERK_ISSUER" > /dev/null
-echo "  ✓ CLERK_ISSUER"
-awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_secret_key" --secret-string "$VAL_CLERK_SECRET" > /dev/null
-echo "  ✓ CLERK_SECRET_KEY"
-FERNET=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
-awslocal secretsmanager put-secret-value --secret-id "isol8/local/encryption_key" --secret-string "$FERNET" > /dev/null
-echo "  ✓ ENCRYPTION_KEY"
-' 2>&1
+# CLERK_ISSUER
+aws $LS secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "${CLERK_ISSUER}" > /dev/null
+log "  ✓ CLERK_ISSUER"
+
+# CLERK_SECRET_KEY
+aws $LS secretsmanager put-secret-value --secret-id "isol8/local/clerk_secret_key" --secret-string "${CLERK_SECRET_KEY}" > /dev/null
+log "  ✓ CLERK_SECRET_KEY"
+
+# ENCRYPTION_KEY (Fernet-compatible base64 key)
+FERNET_KEY=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+aws $LS secretsmanager put-secret-value --secret-id "isol8/local/encryption_key" --secret-string "$FERNET_KEY" > /dev/null
+log "  ✓ ENCRYPTION_KEY"
 
 log "  ✓ All secrets populated"
 
@@ -205,12 +204,9 @@ log "  ✓ All secrets populated"
 # 3c. Restart the ECS backend service (picks up updated secrets)
 # --------------------------------------------------------------------------
 log "Restarting ECS backend service..."
-docker exec isol8-localstack bash -c '
-CLUSTER=$(awslocal ecs list-clusters --query "clusterArns[0]" --output text)
-SERVICE=$(awslocal ecs list-services --cluster "$CLUSTER" --query "serviceArns[0]" --output text)
-awslocal ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment > /dev/null
-echo "  Service redeployed"
-' 2>&1
+CLUSTER=$(aws $LS ecs list-clusters --query "clusterArns[0]" --output text)
+SERVICE=$(aws $LS ecs list-services --cluster "$CLUSTER" --query "serviceArns[0]" --output text)
+aws $LS ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment > /dev/null
 log "  ✓ ECS backend restarting with correct secrets"
 
 # --------------------------------------------------------------------------
