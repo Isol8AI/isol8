@@ -491,7 +491,11 @@ export class ServiceStack extends cdk.Stack {
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,
         CORS_ORIGINS:
-          env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+          env === "local"
+            ? "http://localhost:3000"
+            : env === "prod"
+              ? "https://isol8.co"
+              : "https://dev.isol8.co",
         STRIPE_STARTER_FIXED_PRICE_ID:
           env === "prod"
             ? "price_TODO_PROD"
@@ -509,12 +513,21 @@ export class ServiceStack extends cdk.Stack {
             ? "mtr_TODO_PROD"
             : "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC",
         FRONTEND_URL:
-          env === "prod" ? "https://isol8.co" : "https://dev.isol8.co",
+          env === "local"
+            ? "http://localhost:3000"
+            : env === "prod"
+              ? "https://isol8.co"
+              : "https://dev.isol8.co",
         PROXY_BASE_URL:
-          env === "prod"
-            ? "https://api.isol8.co/api/v1/proxy"
-            : `https://api-${env}-isol8.co/api/v1/proxy`,
-        DEBUG: "false",
+          env === "local"
+            ? "http://localhost:8000/api/v1/proxy"
+            : env === "prod"
+              ? "https://api.isol8.co/api/v1/proxy"
+              : `https://api-${env}.isol8.co/api/v1/proxy`,
+        DEBUG: env === "local" ? "true" : "false",
+        // LocalStack needs this to redirect boto3 calls inside the ECS container
+        ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
+        BEDROCK_ENABLED: env === "local" ? "false" : "true",
         EFS_MOUNT_PATH: "/mnt/efs/users",
         EFS_FILE_SYSTEM_ID: props.container.efsFileSystem.fileSystemId,
         CONTAINER_EXECUTION_ROLE_ARN:
@@ -533,6 +546,7 @@ export class ServiceStack extends cdk.Stack {
         // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
         // auto-granting KMS decrypt on AuthStack's key, which causes a
         // circular dependency: auth -> service -> container -> auth.
+        //
         DATABASE_URL: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportDbUrl", props.secretNames.databaseUrl),
         ),

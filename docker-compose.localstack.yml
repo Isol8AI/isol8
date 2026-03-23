@@ -13,7 +13,6 @@ services:
       - PERSISTENCE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./localstack/init:/etc/localstack/init/ready.d
       - localstack_data:/var/lib/localstack
     networks:
       - isol8-local
@@ -42,9 +41,9 @@ services:
       - "8000:8000"
     env_file:
       - ./apps/backend/.env.localstack
+      - ./localstack/generated.env
     environment:
       - AWS_ENDPOINT_URL=http://localstack:4566
-      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@localstack:4510/securechat
       - WS_MANAGEMENT_API_URL=http://localstack:4566/@connections
       - PROXY_BASE_URL=http://backend:8000/api/v1/proxy
     volumes:

@@ -20,9 +20,22 @@ export class LocalStage extends cdk.Stage {
 
     const env = "local";
 
+    // Populate secrets with real values from environment variables.
+    // In dev/prod these are set manually in the AWS console after deploy.
+    // For local dev we pass them at deploy time so the ECS backend starts correctly.
     const auth = new AuthStack(this, `isol8-${env}-auth`, {
       stackName: `isol8-${env}-auth`,
       environment: env,
+      secretValues: {
+        clerk_issuer: process.env.CLERK_ISSUER ?? "https://up-moth-55.clerk.accounts.dev",
+        clerk_secret_key: process.env.CLERK_SECRET_KEY ?? "",
+        stripe_secret_key: process.env.STRIPE_SECRET_KEY ?? "",
+        stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
+        perplexity_api_key: process.env.PERPLEXITY_API_KEY ?? "",
+        encryption_key: process.env.ENCRYPTION_KEY ?? "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXQ=",
+        // DATABASE_URL is set after the database stack deploys (see post-deploy step)
+        database_url: "placeholder-set-after-deploy",
+      },
     });
 
     // Skip DnsStack — no Route53/ACM needed locally

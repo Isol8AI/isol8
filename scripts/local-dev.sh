@@ -129,34 +129,79 @@ log "  ✓ CDK infrastructure deployed"
 log "Extracting resource IDs from CDK outputs..."
 mkdir -p localstack
 
-if [ -f /tmp/isol8-cdk-outputs.json ]; then
-    python3 -c "
-import json
-with open('/tmp/isol8-cdk-outputs.json') as f:
-    outputs = json.load(f)
-env_lines = ['# Auto-generated from CDK stack outputs — do not edit manually']
-for stack_name, stack_outputs in outputs.items():
-    for key, value in stack_outputs.items():
-        env_key = key.replace('-', '_').upper()
-        env_lines.append(f'{env_key}={value}')
+python3 -c "
+import json, subprocess, os
+
+env_lines = ['# Auto-generated from CDK stack outputs + RDS credentials — do not edit']
+
+# 1. CDK stack outputs
+if os.path.exists('/tmp/isol8-cdk-outputs.json'):
+    with open('/tmp/isol8-cdk-outputs.json') as f:
+        outputs = json.load(f)
+    for stack_name, stack_outputs in outputs.items():
+        for key, value in stack_outputs.items():
+            env_key = key.replace('-', '_').upper()
+            env_lines.append(f'{env_key}={value}')
+
+# 2. RDS credentials (dynamic port from LocalStack)
+try:
+    rds_secret = subprocess.run(
+        ['docker', 'exec', 'isol8-localstack', 'awslocal', 'secretsmanager',
+         'get-secret-value', '--secret-id', 'isol8/local/rds-credentials',
+         '--query', 'SecretString', '--output', 'text'],
+        capture_output=True, text=True, check=True
+    ).stdout.strip()
+    creds = json.loads(rds_secret)
+    db_url = f\"postgresql+asyncpg://{creds['username']}:{creds['password']}@localstack:{creds['port']}/{creds['dbname']}\"
+    env_lines.append(f'DATABASE_URL={db_url}')
+    # Also write a host-accessible version (for running init_db from host)
+    db_url_host = f\"postgresql+asyncpg://{creds['username']}:{creds['password']}@localhost:{creds['port']}/{creds['dbname']}\"
+    env_lines.append(f'DATABASE_URL_HOST={db_url_host}')
+    print(f'  RDS: port={creds[\"port\"]}, db={creds[\"dbname\"]}, user={creds[\"username\"]}')
+except Exception as e:
+    print(f'  ⚠ Could not read RDS credentials: {e}')
+
 with open('localstack/generated.env', 'w') as f:
     f.write('\n'.join(env_lines) + '\n')
-print(f'  Wrote {len(env_lines) - 1} outputs to localstack/generated.env')
+print(f'  Wrote {len(env_lines)} vars to localstack/generated.env')
 "
-else
-    log "  ⚠ CDK outputs file not found"
-fi
+
+# --------------------------------------------------------------------------
+# 3b. Populate DATABASE_URL secret from RDS credentials
+# --------------------------------------------------------------------------
+# Same as dev/prod where you manually set this secret after deploy.
+# We automate it by reading the RDS-generated credentials and constructing the URL.
+log "Populating DATABASE_URL secret..."
+docker exec isol8-localstack bash -c '
+RDS_CREDS=$(awslocal secretsmanager get-secret-value --secret-id "isol8/local/rds-credentials" --query "SecretString" --output text)
+DB_URL=$(python3 -c "import json; c=json.loads('"'"'${RDS_CREDS}'"'"'); print(f\"postgresql+asyncpg://{c[\"username\"]}:{c[\"password\"]}@localhost.localstack.cloud:{c[\"port\"]}/{c[\"dbname\"]}\")")
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL"
+echo "  DATABASE_URL=$DB_URL"
+' 2>&1
+log "  ✓ DATABASE_URL secret populated"
+
+# --------------------------------------------------------------------------
+# 3c. Restart the ECS backend service (picks up updated secrets)
+# --------------------------------------------------------------------------
+log "Restarting ECS backend service..."
+docker exec isol8-localstack bash -c '
+CLUSTER=$(awslocal ecs list-clusters --query "clusterArns[0]" --output text)
+SERVICE=$(awslocal ecs list-services --cluster "$CLUSTER" --query "serviceArns[0]" --output text)
+awslocal ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment > /dev/null
+echo "  Service redeployed"
+' 2>&1
+log "  ✓ ECS backend restarting with correct secrets"
 
 # --------------------------------------------------------------------------
 # 4. Pull Ollama model (first time only)
 # --------------------------------------------------------------------------
 log "Checking Ollama model..."
-if ! docker exec isol8-ollama ollama list 2>/dev/null | grep -q "qwen2.5:14b"; then
-    log "  Pulling qwen2.5:14b (this may take a few minutes on first run)..."
-    docker exec isol8-ollama ollama pull qwen2.5:14b
+if ! docker exec isol8-ollama ollama list 2>/dev/null | grep -q "qwen2.5:3b"; then
+    log "  Pulling qwen2.5:3b (this may take a few minutes on first run)..."
+    docker exec isol8-ollama ollama pull qwen2.5:3b
     log "  ✓ Model pulled"
 else
-    log "  ✓ qwen2.5:14b already available"
+    log "  ✓ qwen2.5:3b already available"
 fi
 
 if $FLAG_SEED_ONLY; then
