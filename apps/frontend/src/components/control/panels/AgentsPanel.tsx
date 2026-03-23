@@ -693,7 +693,6 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
     | undefined;
 
   // Resolve effective profile: agent override > global > "full"
-  const serverProfile = agentToolsConfig?.profile ?? globalToolsConfig?.profile ?? "full";
   const serverAlsoAllow = agentToolsConfig?.alsoAllow ?? [];
   const serverDeny = agentToolsConfig?.deny ?? [];
 

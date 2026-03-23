@@ -96,7 +96,7 @@ export function ProvisioningStepper({
       }
     }, 5000);
     return () => clearInterval(interval);
-  }, [phase]);
+  }, [phase, startTime]);
 
   // Ready — render children
   if (phase === "ready") {

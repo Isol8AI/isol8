@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
-import { Loader2, RefreshCw, Trash2, MessageSquare } from "lucide-react";
+import { Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
