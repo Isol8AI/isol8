@@ -14,7 +14,8 @@ import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-type Phase = "payment" | "container" | "gateway" | "ready";
+import { ChannelSetupStep } from "@/components/chat/ChannelSetupStep";
+type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
 const STEPS: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
@@ -34,6 +35,7 @@ export function ProvisioningStepper({
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
 
   // Poll container status every 3s once subscribed
   const { container, refresh: refreshContainer } = useContainerStatus({
@@ -50,19 +52,44 @@ export function ProvisioningStepper({
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
 
+  // Check channels status once when gateway is healthy — used to detect first-time users
+  const { data: channelsData, error: channelsError } = useGatewayRpc<{
+    channelAccounts: Record<string, { connected?: boolean; configured?: boolean; running?: boolean; linked?: boolean }[]>;
+  }>(
+    gatewayHealth && !onboardingComplete ? "channels.status" : null,
+    undefined,
+    { refreshInterval: 0 },
+  );
+
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
     if (!isSubscribed) return "payment";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
-    if (containerReady && gatewayHealth) return "ready";
-    if (containerReady) return "gateway";
-    return "container";
-  }, [isSubscribed, container, containerReady, gatewayHealth]);
+    if (!containerReady || !gatewayHealth) return "gateway";
+
+    // Onboarding already dismissed by user
+    if (onboardingComplete) return "ready";
+
+    // channels.status errored — don't block the user, go straight to ready
+    if (channelsError) return "ready";
+
+    // Still waiting for channels.status to load
+    if (!channelsData) return "gateway";
+
+    // Check if any channel is already connected/configured
+    const anyConnected = Object.values(channelsData.channelAccounts ?? {}).some(
+      (accounts) => accounts.some((a) => a.connected || a.configured || a.running || a.linked),
+    );
+    if (anyConnected) return "ready";
+
+    // No channels connected — show onboarding
+    return "channels";
+  }, [isSubscribed, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
-    if (phase === "ready" || phase === "payment") return;
+    if (phase === "ready" || phase === "payment" || phase === "channels") return;
     const interval = setInterval(() => {
       if (Date.now() - startTime > TIMEOUT_MS) {
         setTimedOut(true);
@@ -74,6 +101,17 @@ export function ProvisioningStepper({
   // Ready — render children
   if (phase === "ready") {
     return <>{children}</>;
+  }
+
+  // Channel onboarding — shown after gateway is connected for users with no channels
+  if (phase === "channels") {
+    return (
+      <div className="flex-1 flex items-center justify-center p-6">
+        <div className="w-full max-w-sm">
+          <ChannelSetupStep onComplete={() => setOnboardingComplete(true)} />
+        </div>
+      </div>
+    );
   }
 
   // Loading billing
