@@ -1,0 +1,67 @@
+services:
+  localstack:
+    container_name: isol8-localstack
+    image: localstack/localstack-pro
+    ports:
+      - "4566:4566"
+      - "4510-4559:4510-4559"
+    environment:
+      - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - ECS_DOCKER_FLAGS=-v isol8_efs:/mnt/efs --network isol8-localstack_isol8-local
+      - SERVICES=ecs,efs,servicediscovery,dynamodb,s3,secretsmanager,kms,apigatewayv2,lambda,rds,ecr,sts,cloudwatch,logs
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./localstack/init:/etc/localstack/init/ready.d
+      - localstack_data:/var/lib/localstack
+    networks:
+      - isol8-local
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    container_name: isol8-ollama
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    networks:
+      - isol8-local
+
+  backend:
+    container_name: isol8-backend
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./apps/backend/.env.localstack
+    environment:
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@localstack:4510/securechat
+      - WS_MANAGEMENT_API_URL=http://localstack:4566/@connections
+      - PROXY_BASE_URL=http://backend:8000/api/v1/proxy
+    volumes:
+      - ./apps/backend:/app
+      - isol8_efs:/mnt/efs
+    depends_on:
+      localstack:
+        condition: service_healthy
+    networks:
+      - isol8-local
+    command: uv run uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+networks:
+  isol8-local:
+    driver: bridge
+
+volumes:
+  localstack_data:
+  isol8_efs:
+  ollama_models:
