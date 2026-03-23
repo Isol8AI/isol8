@@ -51,3 +51,4 @@ Thumbs.db
 localstack/generated.env
 localstack_data/
 .localstack/
+.worktrees/
