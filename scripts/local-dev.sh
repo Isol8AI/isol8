@@ -1,8 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 
+# ============================================================================
+# Isol8 Local Development Environment
+# Uses LocalStack + cdklocal to deploy real CDK infrastructure locally.
+# Usage: ./scripts/local-dev.sh [--reset] [--seed-only] [--stop]
+# ============================================================================
+
 COMPOSE_FILE="docker-compose.localstack.yml"
-GENERATED_ENV="localstack/init/ready.d/generated.env"
+GENERATED_ENV="localstack/generated.env"
+INFRA_DIR="apps/infra"
 LOG_PREFIX="[isol8]"
 
 log() { echo "$LOG_PREFIX $1"; }
@@ -29,24 +36,33 @@ if $FLAG_STOP; then
     exit 0
 fi
 
+# --------------------------------------------------------------------------
 # Check prerequisites
+# --------------------------------------------------------------------------
 log "Checking prerequisites..."
 docker info > /dev/null 2>&1 || { err "Docker is not running."; exit 1; }
 log "  ✓ Docker running"
-[ -n "${LOCALSTACK_AUTH_TOKEN:-}" ] || { err "LOCALSTACK_AUTH_TOKEN is not set."; exit 1; }
+[ -n "${LOCALSTACK_AUTH_TOKEN:-}" ] || { err "LOCALSTACK_AUTH_TOKEN is not set. Get it from https://app.localstack.cloud"; exit 1; }
 log "  ✓ LOCALSTACK_AUTH_TOKEN set"
 command -v pnpm > /dev/null 2>&1 || { err "pnpm not found."; exit 1; }
 log "  ✓ pnpm available"
 command -v uv > /dev/null 2>&1 || { err "uv not found."; exit 1; }
 log "  ✓ uv available"
+command -v cdklocal > /dev/null 2>&1 || { err "cdklocal not found. Install with: npm install -g aws-cdk-local aws-cdk"; exit 1; }
+log "  ✓ cdklocal available"
 
+# --------------------------------------------------------------------------
 # Handle --reset
+# --------------------------------------------------------------------------
 if $FLAG_RESET; then
     log "Resetting: wiping all LocalStack data..."
     docker compose -f "$COMPOSE_FILE" down -v
+    rm -f "$GENERATED_ENV"
 fi
 
+# --------------------------------------------------------------------------
 # Start LocalStack + Ollama
+# --------------------------------------------------------------------------
 log "Starting LocalStack and Ollama..."
 docker compose -f "$COMPOSE_FILE" up -d localstack ollama
 
@@ -65,23 +81,75 @@ while ! curl -sf http://localhost:4566/_localstack/health > /dev/null 2>&1; do
 done
 log "  ✓ LocalStack healthy (localhost:4566)"
 
-# Wait for seed scripts to complete (they write generated.env)
-log "Waiting for seed scripts to finish..."
-SEED_TIMEOUT=120
-SEED_ELAPSED=0
-while [ ! -f "$GENERATED_ENV" ]; do
-    docker cp isol8-localstack:/etc/localstack/init/ready.d/generated.env "$GENERATED_ENV" 2>/dev/null || true
-    if [ $SEED_ELAPSED -ge $SEED_TIMEOUT ]; then
-        err "Seed scripts did not produce generated.env within ${SEED_TIMEOUT}s"
-        docker compose -f "$COMPOSE_FILE" logs localstack
-        exit 1
-    fi
-    SEED_ELAPSED=$((SEED_ELAPSED + 2))
-    sleep 2
-done
-log "  ✓ Seed complete — generated.env written"
+# --------------------------------------------------------------------------
+# Deploy CDK infrastructure to LocalStack
+# --------------------------------------------------------------------------
+log "Deploying CDK infrastructure to LocalStack..."
+export AWS_ACCESS_KEY_ID=test
+export AWS_SECRET_ACCESS_KEY=test
+export AWS_DEFAULT_REGION=us-east-1
 
+cd "$INFRA_DIR"
+
+# Install CDK deps if needed
+if [ ! -d "node_modules" ]; then
+    log "  Installing CDK dependencies..."
+    npm ci
+fi
+
+# Bootstrap CDK (idempotent)
+log "  Bootstrapping CDK..."
+cdklocal bootstrap --quiet 2>&1 | while read -r line; do echo "  $line"; done || true
+
+# Deploy all stacks
+log "  Deploying all stacks..."
+cdklocal deploy --all \
+    --require-approval never \
+    --app "npx ts-node --prefer-ts-exts lib/local.ts" \
+    --outputs-file /tmp/isol8-cdk-outputs.json \
+    2>&1 | while read -r line; do echo "  $line"; done
+
+cd ../..
+log "  ✓ CDK infrastructure deployed"
+
+# --------------------------------------------------------------------------
+# Extract resource IDs from CDK outputs → generated.env
+# --------------------------------------------------------------------------
+log "Extracting resource IDs from CDK outputs..."
+
+if [ -f /tmp/isol8-cdk-outputs.json ]; then
+    # Parse CDK stack outputs using python (available in any env)
+    python3 -c "
+import json, sys
+
+with open('/tmp/isol8-cdk-outputs.json') as f:
+    outputs = json.load(f)
+
+env_lines = ['# Auto-generated from CDK stack outputs — do not edit manually']
+
+# Flatten all stack outputs into env vars
+for stack_name, stack_outputs in outputs.items():
+    for key, value in stack_outputs.items():
+        # Convert CDK output names to env var format
+        env_key = key.replace('-', '_').upper()
+        env_lines.append(f'{env_key}={value}')
+
+with open('localstack/generated.env', 'w') as f:
+    f.write('\n'.join(env_lines) + '\n')
+
+print(f'Wrote {len(env_lines) - 1} outputs to localstack/generated.env')
+" || log "  ⚠ Could not parse CDK outputs, generated.env may be incomplete"
+else
+    log "  ⚠ CDK outputs file not found, creating minimal generated.env"
+    mkdir -p localstack
+    echo "# Minimal generated.env — CDK outputs not available" > "$GENERATED_ENV"
+fi
+
+log "  ✓ generated.env written"
+
+# --------------------------------------------------------------------------
 # Pull Ollama model (first time only)
+# --------------------------------------------------------------------------
 log "Checking Ollama model..."
 if ! docker exec isol8-ollama ollama list 2>/dev/null | grep -q "qwen2.5:14b"; then
     log "  Pulling qwen2.5:14b (this may take a few minutes on first run)..."
@@ -92,16 +160,20 @@ else
 fi
 
 if $FLAG_SEED_ONLY; then
-    log "Seed complete (--seed-only). LocalStack and Ollama are running."
+    log "Infrastructure deployed (--seed-only). LocalStack and Ollama are running."
     exit 0
 fi
 
+# --------------------------------------------------------------------------
 # Run database migrations (fresh tables every time)
+# --------------------------------------------------------------------------
 log "Running database migrations..."
 docker compose -f "$COMPOSE_FILE" run --rm backend uv run python init_db.py --reset
 log "  ✓ Database tables ready"
 
+# --------------------------------------------------------------------------
 # Start backend (in Docker)
+# --------------------------------------------------------------------------
 log "Starting backend..."
 docker compose -f "$COMPOSE_FILE" up -d backend
 
@@ -119,11 +191,16 @@ while ! curl -sf http://localhost:8000/health > /dev/null 2>&1; do
 done
 log "  ✓ Backend healthy"
 
+# --------------------------------------------------------------------------
 # Start frontend (on host)
+# --------------------------------------------------------------------------
 log "Starting frontend..."
 source "$GENERATED_ENV" 2>/dev/null || true
 cd apps/frontend
-NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 NEXT_PUBLIC_WS_URL="${NEXT_PUBLIC_WS_URL:-}" pnpm dev &
+NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1 \
+NEXT_PUBLIC_WS_URL="${NEXT_PUBLIC_WS_URL:-}" \
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY="${NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY:-}" \
+pnpm dev &
 FRONTEND_PID=$!
 cd ../..
 log "  ✓ Frontend starting at http://localhost:3000"

@@ -23,8 +23,8 @@ import { Construct } from "constructs";
 export interface ApiStackProps extends cdk.StackProps {
   environment: string;
   vpc: ec2.IVpc;
-  certificate: acm.ICertificate;
-  hostedZone: route53.IHostedZone;
+  certificate?: acm.ICertificate;
+  hostedZone?: route53.IHostedZone;
   alb: elbv2.IApplicationLoadBalancer;
   albHttpListenerArn: string;
   albSecurityGroup: ec2.ISecurityGroup;
@@ -144,42 +144,46 @@ export class ApiStack extends cdk.Stack {
       },
     });
 
-    // --- Custom domain for HTTP API ---
-    const httpDomainName = new apigatewayv2.CfnDomainName(
-      this,
-      "HttpDomain",
-      {
-        domainName: httpApiDomain,
-        domainNameConfigurations: [
-          {
-            certificateArn: props.certificate.certificateArn,
-            endpointType: "REGIONAL",
-            securityPolicy: "TLS_1_2",
-          },
-        ],
-      },
-    );
+    // --- Custom domain for HTTP API (only when certificate + hosted zone provided) ---
+    if (props.certificate && props.hostedZone) {
+      const httpDomainName = new apigatewayv2.CfnDomainName(
+        this,
+        "HttpDomain",
+        {
+          domainName: httpApiDomain,
+          domainNameConfigurations: [
+            {
+              certificateArn: props.certificate.certificateArn,
+              endpointType: "REGIONAL",
+              securityPolicy: "TLS_1_2",
+            },
+          ],
+        },
+      );
 
-    const httpMapping = new apigatewayv2.CfnApiMapping(this, "HttpApiMapping", {
-      apiId: httpApi.ref,
-      domainName: httpDomainName.ref,
-      stage: env,
-    });
-    httpMapping.addDependency(httpStage);
+      const httpMapping = new apigatewayv2.CfnApiMapping(this, "HttpApiMapping", {
+        apiId: httpApi.ref,
+        domainName: httpDomainName.ref,
+        stage: env,
+      });
+      httpMapping.addDependency(httpStage);
 
-    // --- Route53 A record for HTTP API ---
-    new route53.ARecord(this, "HttpApiDnsRecord", {
-      zone: props.hostedZone,
-      recordName: httpApiDomain,
-      target: route53.RecordTarget.fromAlias({
-        bind: () => ({
-          dnsName: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalDomainName").toString(),
-          hostedZoneId: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalHostedZoneId").toString(),
+      // --- Route53 A record for HTTP API ---
+      new route53.ARecord(this, "HttpApiDnsRecord", {
+        zone: props.hostedZone,
+        recordName: httpApiDomain,
+        target: route53.RecordTarget.fromAlias({
+          bind: () => ({
+            dnsName: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalDomainName").toString(),
+            hostedZoneId: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalHostedZoneId").toString(),
+          }),
         }),
-      }),
-    });
+      });
 
-    this.httpApiUrl = `https://${httpApiDomain}`;
+      this.httpApiUrl = `https://${httpApiDomain}`;
+    } else {
+      this.httpApiUrl = `https://${httpApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
+    }
 
     // =========================================================================
     // DynamoDB Connections Table
@@ -351,40 +355,44 @@ export class ApiStack extends cdk.Stack {
     // L2 does not yet support custom domains for WebSocket APIs,
     // so we continue using CfnDomainName + CfnApiMapping.
 
-    const wsDomainName = new apigatewayv2.CfnDomainName(
-      this,
-      "WsDomain",
-      {
-        domainName: wsDomain,
-        domainNameConfigurations: [
-          {
-            certificateArn: props.certificate.certificateArn,
-            endpointType: "REGIONAL",
-            securityPolicy: "TLS_1_2",
-          },
-        ],
-      },
-    );
+    if (props.certificate && props.hostedZone) {
+      const wsDomainName = new apigatewayv2.CfnDomainName(
+        this,
+        "WsDomain",
+        {
+          domainName: wsDomain,
+          domainNameConfigurations: [
+            {
+              certificateArn: props.certificate.certificateArn,
+              endpointType: "REGIONAL",
+              securityPolicy: "TLS_1_2",
+            },
+          ],
+        },
+      );
 
-    new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
-      apiId: wsApi.apiId,
-      domainName: wsDomainName.ref,
-      stage: env,
-    });
+      new apigatewayv2.CfnApiMapping(this, "WsApiMapping", {
+        apiId: wsApi.apiId,
+        domainName: wsDomainName.ref,
+        stage: env,
+      });
 
-    // --- Route53 A record for WebSocket API ---
-    new route53.ARecord(this, "WsApiDnsRecord", {
-      zone: props.hostedZone,
-      recordName: wsDomain,
-      target: route53.RecordTarget.fromAlias({
-        bind: () => ({
-          dnsName: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalDomainName").toString(),
-          hostedZoneId: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalHostedZoneId").toString(),
+      // --- Route53 A record for WebSocket API ---
+      new route53.ARecord(this, "WsApiDnsRecord", {
+        zone: props.hostedZone,
+        recordName: wsDomain,
+        target: route53.RecordTarget.fromAlias({
+          bind: () => ({
+            dnsName: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalDomainName").toString(),
+            hostedZoneId: cdk.Fn.getAtt(wsDomainName.logicalId, "RegionalHostedZoneId").toString(),
+          }),
         }),
-      }),
-    });
+      });
 
-    this.webSocketUrl = `wss://${wsDomain}`;
+      this.webSocketUrl = `wss://${wsDomain}`;
+    } else {
+      this.webSocketUrl = `wss://${wsApi.apiId}.execute-api.${this.region}.amazonaws.com/${env}`;
+    }
 
     // =========================================================================
     // Management API URL
