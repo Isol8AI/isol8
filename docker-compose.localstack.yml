@@ -9,8 +9,8 @@ services:
       - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
       - DEBUG=1
       - DOCKER_HOST=unix:///var/run/docker.sock
-      - ECS_DOCKER_FLAGS=-v isol8_efs:/mnt/efs --network isol8-localstack_isol8-local
-      - SERVICES=ecs,efs,servicediscovery,dynamodb,s3,secretsmanager,kms,apigatewayv2,lambda,rds,ecr,sts,cloudwatch,logs
+      - ECS_DOCKER_FLAGS=-v isol8_efs:/mnt/efs --network isol8nosync_isol8-local
+      - PERSISTENCE=1
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./localstack/init:/etc/localstack/init/ready.d
