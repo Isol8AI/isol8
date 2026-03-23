@@ -167,18 +167,35 @@ print(f'  Wrote {len(env_lines)} vars to localstack/generated.env')
 "
 
 # --------------------------------------------------------------------------
-# 3b. Populate DATABASE_URL secret from RDS credentials
+# 3b. Populate Secrets Manager with real values
 # --------------------------------------------------------------------------
-# Same as dev/prod where you manually set this secret after deploy.
-# We automate it by reading the RDS-generated credentials and constructing the URL.
-log "Populating DATABASE_URL secret..."
+# CDK creates secrets with random placeholder values (same as dev/prod).
+# In dev/prod you set these manually via AWS console after first deploy.
+# Here we automate it — same pattern, just scripted.
+log "Populating secrets..."
 docker exec isol8-localstack bash -c '
+# DATABASE_URL — constructed from the RDS auto-generated credentials
 RDS_CREDS=$(awslocal secretsmanager get-secret-value --secret-id "isol8/local/rds-credentials" --query "SecretString" --output text)
-DB_URL=$(python3 -c "import json; c=json.loads('"'"'${RDS_CREDS}'"'"'); print(f\"postgresql+asyncpg://{c[\"username\"]}:{c[\"password\"]}@localhost.localstack.cloud:{c[\"port\"]}/{c[\"dbname\"]}\")")
-awslocal secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL"
-echo "  DATABASE_URL=$DB_URL"
+DB_URL=$(python3 -c "import json; c=json.loads('"'"''"$RDS_CREDS"''"'"'); print(f\"postgresql+asyncpg://{c[\"username\"]}:{c[\"password\"]}@localhost.localstack.cloud:{c[\"port\"]}/{c[\"dbname\"]}\")")
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL" > /dev/null
+echo "  ✓ DATABASE_URL = $DB_URL"
+
+# CLERK_ISSUER
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "'"${CLERK_ISSUER}"'" > /dev/null
+echo "  ✓ CLERK_ISSUER = '"${CLERK_ISSUER}"'"
+
+# CLERK_SECRET_KEY
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_secret_key" --secret-string "'"${CLERK_SECRET_KEY}"'" > /dev/null
+echo "  ✓ CLERK_SECRET_KEY = (set)"
+
+# ENCRYPTION_KEY (generate a Fernet key)
+FERNET=$(python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/encryption_key" --secret-string "$FERNET" > /dev/null
+echo "  ✓ ENCRYPTION_KEY = (generated)"
+
+# Stripe and Perplexity — optional, leave as placeholder if not set
 ' 2>&1
-log "  ✓ DATABASE_URL secret populated"
+log "  ✓ All secrets populated"
 
 # --------------------------------------------------------------------------
 # 3c. Restart the ECS backend service (picks up updated secrets)
