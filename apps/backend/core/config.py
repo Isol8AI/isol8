@@ -125,5 +125,7 @@ FALLBACK_MODELS = [
 
 def get_available_models() -> list[dict[str, str]]:
     """Get available models via Bedrock discovery, falling back to hardcoded list."""
+    if not settings.BEDROCK_ENABLED:
+        return FALLBACK_MODELS
     models = discover_models(region=settings.AWS_REGION)
     return models if models else FALLBACK_MODELS

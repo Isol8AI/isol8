@@ -1,6 +1,8 @@
 """Unit tests for configuration module."""
 
-from core.config import FALLBACK_MODELS, settings
+from unittest.mock import patch
+
+from core.config import FALLBACK_MODELS, get_available_models, settings
 
 
 class TestSettings:
@@ -69,3 +71,23 @@ class TestBillingConfig:
         assert "starter" in PLAN_BUDGETS
         assert "pro" in PLAN_BUDGETS
         assert PLAN_BUDGETS["free"] == 2_000_000
+
+
+class TestGetAvailableModels:
+    """Tests for get_available_models Bedrock guard."""
+
+    def test_skips_bedrock_when_disabled(self, monkeypatch):
+        """Returns FALLBACK_MODELS without calling Bedrock when BEDROCK_ENABLED=false."""
+        monkeypatch.setattr(settings, "BEDROCK_ENABLED", False)
+        with patch("core.config.discover_models") as mock_discover:
+            models = get_available_models()
+            mock_discover.assert_not_called()
+            assert models == FALLBACK_MODELS
+
+    def test_calls_bedrock_when_enabled(self, monkeypatch):
+        """Calls discover_models when BEDROCK_ENABLED=true."""
+        monkeypatch.setattr(settings, "BEDROCK_ENABLED", True)
+        with patch("core.config.discover_models", return_value=[{"id": "test", "name": "Test"}]) as mock_discover:
+            models = get_available_models()
+            mock_discover.assert_called_once()
+            assert models == [{"id": "test", "name": "Test"}]
