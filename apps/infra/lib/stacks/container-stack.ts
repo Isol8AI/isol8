@@ -183,9 +183,34 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
+    // Startup command installs runtime dependencies before launching the
+    // OpenClaw gateway.  Mirrors the Terraform task definition in
+    // apps/terraform/modules/ecs/main.tf so both infra paths stay in sync.
+    const startupCommand = [
+      // System packages
+      "apt-get update -qq && apt-get install -y -qq socat python3-pip sqlite3 build-essential python3 > /dev/null 2>&1",
+      "pip install --break-system-packages websockets > /dev/null 2>&1",
+      // npm global prefix + PATH for the node user
+      "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH",
+      // npm packages: MCP bridge, skill hub, OpenAI compat, QMD memory backend
+      "npm i -g --ignore-scripts mcporter clawhub openai 2>/dev/null",
+      "npm i -g @tobilu/qmd 2>/dev/null",
+      // GitHub CLI
+      'GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null',
+      // uv (Python package manager)
+      "wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH",
+      // Bundled skills
+      "clawhub install markdown-converter --no-input 2>/dev/null",
+      // Launch gateway
+      "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
+    ].join("; ");
+
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
       image: ecs.ContainerImage.fromRegistry("ghcr.io/openclaw/openclaw:latest"),
       essential: true,
+      command: ["sh", "-c", startupCommand],
+      user: "0:0",
+      workingDirectory: "/home/node",
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
         logGroup: openclawLogGroup,
