@@ -176,12 +176,25 @@ async def proxy_request(
                 logger.exception("Failed to record proxy usage for user %s", container.user_id)
                 await db.rollback()
 
-    # Build response — only forward safe headers, never auth-related ones
+    # Build response — only forward safe headers.
+    # Strip auth headers (leak prevention) AND transport headers (content-length,
+    # content-encoding, transfer-encoding) because httpx may have decompressed or
+    # de-chunked the body, making the original values incorrect for the bytes we
+    # actually return. FastAPI will set correct values from upstream_resp.content.
     safe_headers = {}
     for key, value in upstream_resp.headers.items():
         lower = key.lower()
-        if lower not in ("authorization", "www-authenticate", "set-cookie", "x-api-key"):
-            safe_headers[key] = value
+        if lower in (
+            "authorization",
+            "www-authenticate",
+            "set-cookie",
+            "x-api-key",
+            "content-length",
+            "content-encoding",
+            "transfer-encoding",
+        ):
+            continue
+        safe_headers[key] = value
 
     return Response(
         content=upstream_resp.content,
