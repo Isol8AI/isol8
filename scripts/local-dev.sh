@@ -184,18 +184,20 @@ print(f\"postgresql+asyncpg://{c['username']}:{c['password']}@localhost.localsta
 docker exec isol8-localstack awslocal secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL" > /dev/null
 log "  ✓ DATABASE_URL = $DB_URL"
 
-# CLERK_ISSUER
-docker exec isol8-localstack awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "${CLERK_ISSUER}" > /dev/null
-log "  ✓ CLERK_ISSUER"
-
-# CLERK_SECRET_KEY
-docker exec isol8-localstack awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_secret_key" --secret-string "${CLERK_SECRET_KEY}" > /dev/null
-log "  ✓ CLERK_SECRET_KEY"
-
-# ENCRYPTION_KEY (generate Fernet key)
-FERNET_KEY=$(docker exec isol8-localstack python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
-docker exec isol8-localstack awslocal secretsmanager put-secret-value --secret-id "isol8/local/encryption_key" --secret-string "$FERNET_KEY" > /dev/null
-log "  ✓ ENCRYPTION_KEY"
+# CLERK_ISSUER, CLERK_SECRET_KEY, ENCRYPTION_KEY
+# Pass values via docker exec -e to avoid shell expansion issues
+docker exec \
+    -e "VAL_CLERK_ISSUER=${CLERK_ISSUER}" \
+    -e "VAL_CLERK_SECRET=${CLERK_SECRET_KEY}" \
+    isol8-localstack bash -c '
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "$VAL_CLERK_ISSUER" > /dev/null
+echo "  ✓ CLERK_ISSUER"
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/clerk_secret_key" --secret-string "$VAL_CLERK_SECRET" > /dev/null
+echo "  ✓ CLERK_SECRET_KEY"
+FERNET=$(python3 -c "import base64,os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())")
+awslocal secretsmanager put-secret-value --secret-id "isol8/local/encryption_key" --secret-string "$FERNET" > /dev/null
+echo "  ✓ ENCRYPTION_KEY"
+' 2>&1
 
 log "  ✓ All secrets populated"
 
