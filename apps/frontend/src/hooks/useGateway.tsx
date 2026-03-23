@@ -66,7 +66,7 @@ interface GatewayContextValue {
   isConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
-  sendReq: (method: string, params?: Record<string, unknown>) => Promise<unknown>;
+  sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   sendChat: (agentId: string, message: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
   onChatMessage: (handler: (msg: ChatIncomingMessage) => void) => () => void;
@@ -287,7 +287,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // ---- sendReq ----
 
   const sendReq = useCallback(
-    async (method: string, params?: Record<string, unknown>): Promise<unknown> => {
+    async (method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<unknown> => {
       // Ensure connected — use event listener instead of polling
       if (wsRef.current?.readyState !== WebSocket.OPEN) {
         await connect();
@@ -320,7 +320,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         const timeout = setTimeout(() => {
           pendingRpcsRef.current.delete(id);
           reject(new Error(`RPC timeout: ${method}`));
-        }, RPC_TIMEOUT_MS);
+        }, timeoutMs ?? RPC_TIMEOUT_MS);
 
         pendingRpcsRef.current.set(id, { resolve, reject, timeout });
 
