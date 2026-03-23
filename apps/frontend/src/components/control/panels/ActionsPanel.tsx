@@ -50,7 +50,7 @@ const PAIRING_CHANNELS = [
     idLabel: "Phone Number",
     idPlaceholder: "+1234567890",
     help: "Enter the full phone number with country code.",
-    validate: (_v: string) => null,
+    validate: () => null,
   },
 ];
 
