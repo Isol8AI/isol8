@@ -39,6 +39,7 @@ interface ConfigSnapshot {
 interface WebLoginResult {
   message?: string;
   qrDataUrl?: string;
+  pairingCode?: string;
   connected?: boolean;
 }
 
@@ -70,7 +71,15 @@ const CHANNELS: ChannelDef[] = [
   {
     id: "whatsapp",
     label: "WhatsApp",
-    fields: [], // WhatsApp uses QR pairing, no credential fields
+    fields: [
+      {
+        key: "phoneNumber",
+        label: "Phone Number",
+        placeholder: "+1234567890",
+        sensitive: false,
+        help: "Enter your WhatsApp number with country code. You'll get an 8-digit code to enter in WhatsApp → Linked Devices → Link a Device.",
+      },
+    ],
   },
   {
     id: "discord",
@@ -108,6 +117,8 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
 
   // WhatsApp state
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [useQr, setUseQr] = useState(false);
   const [waMessage, setWaMessage] = useState<string | null>(null);
   const [waBusy, setWaBusy] = useState<string | null>(null);
   const [waLoginFailed, setWaLoginFailed] = useState(false);
@@ -213,6 +224,41 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
     },
     [callRpc, configData, getFieldValue],
   );
+
+  // ---- WhatsApp phone number pairing ----
+  const handleWhatsAppPhoneConnect = async () => {
+    const phoneNumber = getFieldValue("whatsapp", "phoneNumber").trim();
+    if (!phoneNumber) {
+      setErrors((prev) => ({ ...prev, whatsapp: "Phone number is required" }));
+      return;
+    }
+    setWaBusy("phone");
+    setPairingCode(null);
+    setErrors((prev) => {
+      const next = { ...prev };
+      delete next["whatsapp"];
+      return next;
+    });
+    try {
+      const res = await callRpc<WebLoginResult>("web.login.start", {
+        phoneNumber,
+        timeoutMs: 30000,
+      });
+      if (res.pairingCode) {
+        setPairingCode(res.pairingCode);
+        setWaMessage("Enter this code in WhatsApp \u2192 Linked Devices \u2192 Link a Device \u2192 Link with Phone Number.");
+      } else {
+        setErrors((prev) => ({ ...prev, whatsapp: "No pairing code returned. Try QR instead." }));
+      }
+    } catch (err) {
+      setErrors((prev) => ({
+        ...prev,
+        whatsapp: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setWaBusy(null);
+    }
+  };
 
   // ---- WhatsApp QR flow ----
   const handleWhatsAppQr = async () => {
@@ -463,41 +509,51 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
                     </div>
                   ))}
 
-                  {/* WhatsApp QR flow */}
+                  {/* WhatsApp pairing flow */}
                   {isWhatsApp && (
                     <div className="space-y-3">
-                      <p className="text-xs text-muted-foreground">
-                        Scan a QR code with WhatsApp on your phone to pair.
-                      </p>
-
                       {/* Error recovery banner */}
                       {waLoginFailed && (
                         <div className="flex items-start gap-2 rounded-md border border-yellow-500/30 bg-yellow-500/10 p-2.5">
                           <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 mt-0.5 shrink-0" />
                           <div className="text-xs text-yellow-200 space-y-1">
                             <p>Previous login failed. Session has been cleared.</p>
-                            <p className="text-yellow-200/60">Click &ldquo;Show QR Code&rdquo; to get a fresh code and try again.</p>
+                            <p className="text-yellow-200/60">Try again below.</p>
                           </div>
                         </div>
                       )}
 
+                      {/* Pairing code display */}
+                      {pairingCode && (
+                        <div className="rounded-md border border-border bg-muted/20 p-3 text-center space-y-1">
+                          <p className="text-[10px] text-muted-foreground uppercase tracking-wider">Pairing Code</p>
+                          <p className="text-2xl font-mono font-bold tracking-widest">{pairingCode}</p>
+                        </div>
+                      )}
+
+                      {waMessage && (
+                        <p className="text-xs text-muted-foreground bg-muted/20 rounded p-2">
+                          {waMessage}
+                        </p>
+                      )}
+
                       <div className="flex flex-wrap gap-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={handleWhatsAppQr}
-                          disabled={waBusy !== null}
-                        >
-                          {waBusy === "qr" ? (
-                            <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                          ) : waLoginFailed ? (
-                            <RefreshCw className="h-3 w-3 mr-1" />
-                          ) : (
-                            <QrCode className="h-3 w-3 mr-1" />
-                          )}
-                          {waLoginFailed ? "Retry QR Code" : "Show QR Code"}
-                        </Button>
-                        {qrDataUrl && (
+                        {/* Phone number connect button — shown when not in QR mode */}
+                        {!useQr && (
+                          <Button
+                            size="sm"
+                            onClick={handleWhatsAppPhoneConnect}
+                            disabled={waBusy !== null}
+                          >
+                            {waBusy === "phone" ? (
+                              <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                            ) : null}
+                            {pairingCode ? "Refresh Code" : "Connect"}
+                          </Button>
+                        )}
+
+                        {/* Wait for confirmation once code is shown */}
+                        {pairingCode && !useQr && (
                           <Button
                             variant="outline"
                             size="sm"
@@ -509,15 +565,70 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
                             ) : (
                               <Scan className="h-3 w-3 mr-1" />
                             )}
-                            I scanned it
+                            I entered it
                           </Button>
                         )}
-                        {/* Logout / clear session — manual recovery */}
-                        {(qrDataUrl || waLoginFailed || errors["whatsapp"]) && (
+
+                        {/* QR mode buttons */}
+                        {useQr && (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={handleWhatsAppQr}
+                              disabled={waBusy !== null}
+                            >
+                              {waBusy === "qr" ? (
+                                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                              ) : waLoginFailed ? (
+                                <RefreshCw className="h-3 w-3 mr-1" />
+                              ) : (
+                                <QrCode className="h-3 w-3 mr-1" />
+                              )}
+                              {waLoginFailed ? "Retry QR Code" : "Show QR Code"}
+                            </Button>
+                            {qrDataUrl && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleWhatsAppWait}
+                                disabled={waBusy !== null}
+                              >
+                                {waBusy === "wait" ? (
+                                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                                ) : (
+                                  <Scan className="h-3 w-3 mr-1" />
+                                )}
+                                I scanned it
+                              </Button>
+                            )}
+                          </>
+                        )}
+
+                        {/* Toggle between phone and QR */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setUseQr((v: boolean) => !v);
+                            setPairingCode(null);
+                            setQrDataUrl(null);
+                            setWaMessage(null);
+                          }}
+                          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          {useQr ? "Use phone number instead" : "Use QR code instead"}
+                        </button>
+
+                        {/* Clear session */}
+                        {(qrDataUrl || pairingCode || waLoginFailed || errors["whatsapp"]) && (
                           <Button
                             variant="ghost"
                             size="sm"
-                            onClick={handleWhatsAppLogout}
+                            onClick={() => {
+                              handleWhatsAppLogout();
+                              setPairingCode(null);
+                              setWaMessage(null);
+                            }}
                             disabled={waBusy !== null}
                             className="text-muted-foreground hover:text-red-400"
                           >
@@ -530,7 +641,9 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
                           </Button>
                         )}
                       </div>
-                      {qrDataUrl && (
+
+                      {/* QR code image */}
+                      {useQr && qrDataUrl && (
                         <div className="flex justify-center">
                           <img
                             src={qrDataUrl}
@@ -538,11 +651,6 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
                             className="w-48 h-48 rounded border border-border"
                           />
                         </div>
-                      )}
-                      {waMessage && (
-                        <p className="text-xs text-muted-foreground bg-muted/20 rounded p-2">
-                          {waMessage}
-                        </p>
                       )}
                     </div>
                   )}
