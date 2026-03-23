@@ -1,38 +1,92 @@
-import Link from 'next/link';
+"use client";
+
+import Link from "next/link";
+import { useEffect, useRef } from "react";
 
 export function Navbar() {
-  return (
-    <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/50 backdrop-blur-md">
-      <div className="flex items-center gap-2">
-        <Link href="/" className="text-xl font-bold tracking-tight text-white font-host">
-          isol8
-        </Link>
-      </div>
+  const linksRef = useRef<HTMLDivElement>(null);
 
-      <div className="hidden md:flex items-center gap-8 text-sm font-medium text-white/70">
-        <Link href="#features" className="hover:text-white transition-colors">
+  useEffect(() => {
+    const linksEl = linksRef.current;
+    if (!linksEl) return;
+
+    const links = linksEl.querySelectorAll<HTMLAnchorElement>("a[data-section]");
+
+    // Click: set active immediately
+    const clickHandlers: Array<() => void> = [];
+    links.forEach((link) => {
+      const handler = () => {
+        links.forEach((l) => l.classList.remove("active"));
+        link.classList.add("active");
+      };
+      link.addEventListener("click", handler);
+      clickHandlers.push(handler);
+    });
+
+    // Scroll: highlight whichever section is most in view
+    const sections = [
+      { id: "home", el: document.querySelector(".landing-hero") },
+      { id: "features", el: document.getElementById("features") },
+      { id: "pricing", el: document.getElementById("pricing") },
+      { id: "faq", el: document.getElementById("faq") },
+      { id: "goosetown", el: document.getElementById("goosetown") },
+    ].filter((s) => s.el);
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const id = entry.target.id || "home";
+            links.forEach((l) => {
+              l.classList.toggle(
+                "active",
+                l.dataset.section === id
+              );
+            });
+          }
+        });
+      },
+      { threshold: 0.35 }
+    );
+
+    sections.forEach((s) => observer.observe(s.el!));
+
+    return () => {
+      observer.disconnect();
+      links.forEach((link, i) => {
+        link.removeEventListener("click", clickHandlers[i]);
+      });
+    };
+  }, []);
+
+  return (
+    <nav className="landing-nav" aria-label="Main navigation">
+      <Link href="/" className="nav-logo">
+        8
+      </Link>
+      <div className="nav-links" ref={linksRef}>
+        <Link href="/" data-section="home" className="active">
+          Home
+        </Link>
+        <Link href="#features" data-section="features">
           Features
         </Link>
-        <Link href="#pricing" className="hover:text-white transition-colors">
+        <Link href="#pricing" data-section="pricing">
           Pricing
         </Link>
-        <Link href="#faq" className="hover:text-white transition-colors">
+        <Link href="#faq" data-section="faq">
           FAQ
         </Link>
+        <Link href="#goosetown" data-section="goosetown">
+          GooseTown<span className="nav-alpha">alpha</span>
+        </Link>
       </div>
-
-      <div className="flex items-center gap-4">
-        <Link 
-          href="/sign-in" 
-          className="text-sm font-medium text-white/70 hover:text-white transition-colors hidden sm:block"
-        >
+      <div className="nav-right">
+        <Link href="/sign-in" className="nav-login">
           Log in
         </Link>
-        <Link
-          href="/chat"
-          className="px-4 py-2 text-sm font-medium text-black bg-white rounded-full hover:bg-white/90 transition-colors"
-        >
-          Get Started
+        <Link href="/sign-up" className="btn-primary">
+          Sign up
         </Link>
       </div>
     </nav>
