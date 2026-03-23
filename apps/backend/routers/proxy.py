@@ -121,6 +121,12 @@ async def proxy_request(
         if service == "search" and body:
             try:
                 payload = json.loads(body)
+                logger.info(
+                    "Proxy request body for user %s: model=%s keys=%s",
+                    container.user_id,
+                    payload.get("model"),
+                    list(payload.keys()),
+                )
                 if "model" in payload:
                     payload["model"] = "sonar"
                     body = json.dumps(payload).encode()
@@ -139,7 +145,17 @@ async def proxy_request(
                     },
                 )
             logger.info(
-                "Proxy upstream response: %s %s for user %s", upstream_resp.status_code, upstream_url, container.user_id
+                "Proxy upstream response: %s %s for user %s, upstream_headers=%s, body_len=%d",
+                upstream_resp.status_code,
+                upstream_url,
+                container.user_id,
+                dict(upstream_resp.headers),
+                len(upstream_resp.content),
+            )
+            logger.info(
+                "Proxy response body preview for user %s: %.500s",
+                container.user_id,
+                upstream_resp.text,
             )
         except Exception as e:
             logger.error("Proxy upstream error for user %s: %s — %s", container.user_id, upstream_url, e)
