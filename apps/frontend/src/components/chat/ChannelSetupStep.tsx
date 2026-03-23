@@ -240,8 +240,19 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
           raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
           baseHash: snapshot.hash,
         });
-        // Wait for gateway to restart and load the WhatsApp plugin
-        await new Promise((r) => setTimeout(r, 4000));
+        // Poll until the gateway is back up after restarting (max 20s).
+        // A fixed sleep isn't reliable — ECS/EFS restarts can take 5–12s.
+        setWaMessage("Waiting for gateway to restart…");
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await callRpc("config.get", undefined);
+            break; // Gateway responded — plugin is loaded
+          } catch {
+            // Still restarting, keep waiting
+          }
+        }
         setWaMessage(null);
       }
 
