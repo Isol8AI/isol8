@@ -223,7 +223,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         clearPingInterval();
 
         // Reject all pending RPCs
-        for (const [id, pending] of pendingRpcsRef.current) {
+        for (const [, pending] of pendingRpcsRef.current) {
           clearTimeout(pending.timeout);
           pending.reject(new Error("WebSocket closed"));
         }

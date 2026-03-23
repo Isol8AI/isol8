@@ -241,21 +241,17 @@ export function UsagePanel() {
   }, [sessionsData]);
 
   // --- Categorize REST API by_model into LLM vs Tool ---
-  const { llmModels, toolModels, totalToolCost } = useMemo(() => {
+  const { toolModels, totalToolCost } = useMemo(() => {
     const models = usage?.by_model ?? [];
-    const llm: ModelUsage[] = [];
     const tools: ModelUsage[] = [];
     let toolCost = 0;
     for (const entry of models) {
       if (isToolUsage(entry.model)) {
         tools.push(entry);
         toolCost += entry.cost;
-      } else {
-        llm.push(entry);
       }
     }
     return {
-      llmModels: llm.sort((a, b) => b.cost - a.cost),
       toolModels: tools.sort((a, b) => b.cost - a.cost),
       totalToolCost: toolCost,
     };

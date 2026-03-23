@@ -18,6 +18,7 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
+import Image from "next/image";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -783,10 +784,13 @@ function ChannelCard({
       {isWhatsApp && qrDataUrl && (
         <div className="px-4 pb-3">
           <div className="rounded-md border border-border/60 bg-background p-4 flex flex-col items-center gap-3">
-            <img
+            <Image
               src={qrDataUrl}
               alt="WhatsApp QR Code"
-              className="w-48 h-48 rounded"
+              width={192}
+              height={192}
+              unoptimized
+              className="rounded"
             />
             <p className="text-xs text-muted-foreground text-center">
               Scan this QR code with WhatsApp on your phone
@@ -903,13 +907,12 @@ function ChannelCard({
 // ---------------------------------------------------------------------------
 
 function ChannelConfigForm({
-  channelId,
   fields,
   currentConfig,
   busy,
   onSave,
 }: {
-  channelId: string;
+  channelId?: string;
   fields: ChannelField[];
   currentConfig: Record<string, unknown>;
   busy: boolean;

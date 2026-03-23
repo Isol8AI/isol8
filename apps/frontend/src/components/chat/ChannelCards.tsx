@@ -14,6 +14,7 @@ import {
   ArrowLeft,
   MessageCircle,
 } from "lucide-react";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
@@ -582,10 +583,13 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
                 </div>
                 {qrDataUrl && (
                   <div className="flex justify-center">
-                    <img
+                    <Image
                       src={qrDataUrl}
                       alt="WhatsApp QR Code"
-                      className="w-48 h-48 rounded border border-border"
+                      width={192}
+                      height={192}
+                      unoptimized
+                      className="rounded border border-border"
                     />
                   </div>
                 )}

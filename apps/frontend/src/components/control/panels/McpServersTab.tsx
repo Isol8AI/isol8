@@ -35,7 +35,9 @@ const PLACEHOLDER_CONFIG = `{
   }
 }`;
 
-export function McpServersTab({ agentId: _agentId }: { agentId?: string }) {
+// agentId is accepted for API compatibility but not used internally
+export function McpServersTab(props: { agentId?: string }) {
+  void props;
   const api = useApi();
   const [servers, setServers] = useState<Record<string, McpServer>>({});
   const [loading, setLoading] = useState(true);
