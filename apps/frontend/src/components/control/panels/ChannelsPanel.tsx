@@ -332,10 +332,11 @@ export function ChannelsPanel() {
     setActionError(null);
     setLoginMessage(null);
     try {
+      // 60s frontend timeout = 30s OpenClaw QR timeout + 30s buffer
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force,
         timeoutMs: 30000,
-      });
+      }, 60000);
       setQrDataUrl(res.qrDataUrl ?? null);
       setLoginMessage(res.message ?? null);
     } catch (err) {
@@ -369,7 +370,12 @@ export function ChannelsPanel() {
           raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
           baseHash: snapshot.hash,
         });
-        await new Promise((r) => setTimeout(r, 4000));
+        // Poll until gateway is back up (max 20s)
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try { await callRpc("config.get", undefined); break; } catch { /* still restarting */ }
+        }
       }
 
       setQrDataUrl(null);
@@ -385,9 +391,10 @@ export function ChannelsPanel() {
     setActionBusy("wait");
     setActionError(null);
     try {
+      // 130s frontend timeout = 120s OpenClaw wait + 10s buffer
       const res = await callRpc<WebLoginResult>("web.login.wait", {
         timeoutMs: 120000,
-      });
+      }, 130000);
       if (res.connected) {
         setQrDataUrl(null);
         setLoginMessage("Connected!");
