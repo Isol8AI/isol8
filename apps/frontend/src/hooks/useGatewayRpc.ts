@@ -105,8 +105,9 @@ export function useGatewayRpcMutation() {
     async <T = unknown>(
       method: string,
       params?: Record<string, unknown>,
+      timeoutMs?: number,
     ): Promise<T> => {
-      return (await sendReq(method, params)) as T;
+      return (await sendReq(method, params, timeoutMs)) as T;
     },
     [sendReq],
   );

@@ -256,11 +256,13 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
         setWaMessage(null);
       }
 
-      // Use force: true if a previous login failed (stale creds on disk)
+      // Use force: true if a previous login failed (stale creds on disk).
+      // Pass a 60s RPC timeout — the 30s OpenClaw-side timeout plus buffer
+      // for network latency so the frontend timer never races OpenClaw's.
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force: waLoginFailed,
         timeoutMs: 30000,
-      });
+      }, 60000);
       setQrDataUrl(res.qrDataUrl ?? null);
       setWaMessage(res.message ?? null);
     } catch (err) {
@@ -283,9 +285,10 @@ export function ChannelSetupStep({ onComplete }: { onComplete: () => void }) {
       return next;
     });
     try {
+      // 130s RPC timeout = 120s OpenClaw wait + 10s network buffer
       const res = await callRpc<WebLoginResult>("web.login.wait", {
         timeoutMs: 120000,
-      });
+      }, 130000);
       if (res.connected) {
         setQrDataUrl(null);
         setWaMessage(null);
