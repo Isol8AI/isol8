@@ -10,7 +10,6 @@ export interface AuthSecrets {
   stripeWebhookSecret: secretsmanager.ISecret;
   perplexityApiKey: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
-  databaseUrl: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -57,7 +56,6 @@ export class AuthStack extends cdk.Stack {
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
       encryptionKey: createSecret("EncryptionKey", "encryption_key"),
-      databaseUrl: createSecret("DatabaseUrl", "database_url"),
     };
   }
 }
