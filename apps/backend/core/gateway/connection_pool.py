@@ -87,7 +87,8 @@ class GatewayConnection:
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
 
-        # Step 2: send connect request — trusted proxy, no device auth
+        # Step 2: send connect request — trusted proxy handles auth at transport
+        # level (IP check), so we send a standard connect with no device block.
         connect_msg = {
             "type": "req",
             "id": str(uuid.uuid4()),
@@ -96,16 +97,13 @@ class GatewayConnection:
                 "minProtocol": 3,
                 "maxProtocol": 3,
                 "client": {
-                    "id": "isol8-backend",
+                    "id": "gateway-client",
                     "version": "1.0.0",
                     "platform": "linux",
                     "mode": "backend",
                 },
                 "role": "operator",
                 "scopes": ["operator.admin"],
-                "trustedProxy": {
-                    "user": self.user_id,
-                },
             },
         }
         await self._ws.send(json.dumps(connect_msg))
