@@ -8,7 +8,7 @@ import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
-import * as rds from "aws-cdk-lib/aws-rds";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
@@ -25,7 +25,6 @@ export interface SecretNames {
   stripeWebhookSecret: string;
   perplexityApiKey: string;
   encryptionKey: string;
-  databaseUrl: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -34,9 +33,10 @@ export interface ServiceStackProps extends cdk.StackProps {
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
   database: {
-    dbInstance: rds.IDatabaseInstance;
-    dbSecurityGroup: ec2.ISecurityGroup;
-    dbSecret: secretsmanager.ISecret;
+    usersTable: dynamodb.Table;
+    containersTable: dynamodb.Table;
+    billingTable: dynamodb.Table;
+    apiKeysTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -130,16 +130,6 @@ export class ServiceStack extends cdk.Stack {
       description: "Allow all TCP from Fargate service for container management",
     });
 
-    // Allow service to connect to database (port 5432)
-    new ec2.CfnSecurityGroupIngress(this, "DbFromServiceIngress", {
-      groupId: props.database.dbSecurityGroup.securityGroupId,
-      ipProtocol: "tcp",
-      fromPort: 5432,
-      toPort: 5432,
-      sourceSecurityGroupId: serviceSg.securityGroupId,
-      description: "Allow PostgreSQL from Fargate service",
-    });
-
     // -------------------------------------------------------------------------
     // IAM Task Role
     // -------------------------------------------------------------------------
@@ -223,18 +213,11 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Also allow access to the RDS auto-generated secret.
-    // Use manual policy instead of grantRead() to avoid cross-stack KMS grants.
-    this.taskRole.addToPolicy(
-      new iam.PolicyStatement({
-        sid: "RdsSecretAccess",
-        actions: [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
-        resources: [props.database.dbSecret.secretArn],
-      }),
-    );
+    // DynamoDB tables
+    props.database.usersTable.grantReadWriteData(this.taskRole);
+    props.database.containersTable.grantReadWriteData(this.taskRole);
+    props.database.billingTable.grantReadWriteData(this.taskRole);
+    props.database.apiKeysTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -541,15 +524,13 @@ export class ServiceStack extends cdk.Stack {
           props.container.cloudMapNamespace.namespaceId,
         CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
+        DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
       },
       secrets: {
         // Import secrets by name (NOT cross-stack ISecret) to avoid CDK
         // auto-granting KMS decrypt on AuthStack's key, which causes a
         // circular dependency: auth -> service -> container -> auth.
         //
-        DATABASE_URL: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportDbUrl", props.secretNames.databaseUrl),
-        ),
         CLERK_ISSUER: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportClerkIssuer", props.secretNames.clerkIssuer),
         ),

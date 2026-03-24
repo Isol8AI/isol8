@@ -4,14 +4,13 @@ Schemathesis contract tests.
 Auto-validates all API endpoints against the OpenAPI specification.
 Uses ASGI transport so no running server is needed.
 
-With mocked database dependencies, endpoints that require external services
+With mocked dependencies, endpoints that require external services
 (gateway, DynamoDB, Clerk webhook verification) are excluded from automated
 fuzz testing since they cannot be meaningfully tested without infrastructure.
 """
 
 import schemathesis
 from schemathesis.checks import not_a_server_error
-from unittest.mock import AsyncMock, MagicMock
 
 from core.auth import AuthContext
 
@@ -20,51 +19,13 @@ def _make_app():
     """Create a FastAPI app with mocked dependencies for contract testing."""
     from main import app
     from core.auth import get_current_user
-    from core.database import get_db, get_session_factory
 
     mock_auth = AuthContext(user_id="contract_test_user")
 
     async def mock_get_current_user():
         return mock_auth
 
-    async def mock_get_db():
-        mock_session = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = None
-        mock_result.scalars.return_value.all.return_value = []
-        mock_result.scalar_one_or_none.return_value = None
-        mock_result.all.return_value = []
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-        mock_session.rollback = AsyncMock()
-        yield mock_session
-
-    def mock_get_session_factory():
-        mock_session = AsyncMock()
-        mock_result = MagicMock()
-        mock_result.scalars.return_value.first.return_value = None
-        mock_result.scalars.return_value.all.return_value = []
-        mock_result.scalar_one_or_none.return_value = None
-        mock_result.all.return_value = []
-        mock_session.execute = AsyncMock(return_value=mock_result)
-        mock_session.commit = AsyncMock()
-        mock_session.rollback = AsyncMock()
-
-        class _Ctx:
-            def __call__(self):
-                return self
-
-            async def __aenter__(self):
-                return mock_session
-
-            async def __aexit__(self, *_):
-                pass
-
-        return _Ctx()
-
     app.dependency_overrides[get_current_user] = mock_get_current_user
-    app.dependency_overrides[get_db] = mock_get_db
-    app.dependency_overrides[get_session_factory] = mock_get_session_factory
     return app
 
 
@@ -103,6 +64,12 @@ schema = (
     .exclude(
         path_regex="^/api/v1/integrations/",
     )
+    .exclude(
+        path_regex="^/api/v1/users/",
+    )
+    .exclude(
+        path_regex="^/health$",
+    )
 )
 
 
@@ -118,5 +85,7 @@ def test_no_server_errors(case):
     - WebSocket routes (/ws/*) - need API Gateway + DynamoDB
     - Webhook routes (/webhooks/*) - need Clerk signature verification
     - Agent write operations - need gateway for workspace management
+    - Health check (/health) - needs DynamoDB connectivity
+    - Users (/users/*) - needs DynamoDB user repo
     """
     case.call_and_validate(checks=[not_a_server_error])

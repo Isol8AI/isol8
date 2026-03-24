@@ -32,6 +32,15 @@ async def test_every_endpoint_has_operation_id(async_client):
 
 
 @pytest.mark.asyncio
+async def test_webhook_endpoint_has_summary(async_client):
+    """POST /billing/checkout should have a summary (webhooks router removed in DynamoDB migration)."""
+    response = await async_client.get("/api/v1/openapi.json")
+    spec = response.json()
+    path = spec["paths"]["/api/v1/billing/checkout"]["post"]
+    assert "summary" in path
+
+
+@pytest.mark.asyncio
 async def test_health_and_root_endpoints_have_summaries(async_client):
     """Root, health, and protected endpoints should have summaries."""
     response = await async_client.get("/api/v1/openapi.json")

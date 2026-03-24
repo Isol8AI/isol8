@@ -37,7 +37,6 @@ export class Isol8Stage extends cdk.Stage {
     const database = new DatabaseStack(this, `isol8-${env}-database`, {
       stackName: `isol8-${env}-database`,
       environment: env,
-      vpc: network.vpc,
       kmsKey: auth.kmsKey,
     });
 
@@ -68,9 +67,10 @@ export class Isol8Stage extends cdk.Stage {
       targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
       database: {
-        dbInstance: database.dbInstance,
-        dbSecurityGroup: database.dbSecurityGroup,
-        dbSecret: database.dbSecret,
+        usersTable: database.usersTable,
+        containersTable: database.containersTable,
+        billingTable: database.billingTable,
+        apiKeysTable: database.apiKeysTable,
       },
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.
@@ -81,7 +81,6 @@ export class Isol8Stage extends cdk.Stage {
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
         perplexityApiKey: `isol8/${env}/perplexity_api_key`,
         encryptionKey: `isol8/${env}/encryption_key`,
-        databaseUrl: `isol8/${env}/database_url`,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {

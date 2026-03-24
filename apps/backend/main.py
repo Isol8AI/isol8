@@ -13,13 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-from sqlalchemy import text
 
 from core.auth import get_current_user
 from core.config import settings
-from core.database import get_db, get_session_factory
 from core.containers import startup_containers, shutdown_containers
-from core.services.usage_poller import UsagePoller
 from routers import (
     billing,
     channels,
@@ -36,31 +33,18 @@ from routers import (
 
 logger = logging.getLogger(__name__)
 
-_usage_poller: UsagePoller | None = None
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global _usage_poller
-
     # Startup
     logger.info("Starting application...")
     await startup_containers()
-
-    db_factory = get_session_factory()
-
-    # Start usage poller (syncs gateway session usage into billing)
-    _usage_poller = UsagePoller(db_factory=db_factory)
-    await _usage_poller.start()
 
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
-    if _usage_poller:
-        await _usage_poller.stop()
-
     await shutdown_containers()
 
 
@@ -216,22 +200,26 @@ async def root():
     "/health",
     summary="Health check",
     description=(
-        "Validates database connectivity. Returns HTTP 200 when healthy, HTTP 503 when unhealthy. "
+        "Validates DynamoDB connectivity. Returns HTTP 200 when healthy, HTTP 503 when unhealthy. "
         "Used by ALB health checks to determine whether to route traffic to this instance."
     ),
     operation_id="health_check",
     tags=["health"],
     responses={
-        503: {"description": "Database connection failed"},
+        503: {"description": "DynamoDB connection failed"},
     },
 )
-async def health_check(db=Depends(get_db)):
+async def health_check():
+    """Health check for ALB — validates DynamoDB connectivity."""
     try:
-        await db.execute(text("SELECT 1"))
-        return {"status": "healthy", "database": "connected"}
+        from core.dynamodb import get_table, run_in_thread
+
+        table = get_table("users")
+        await run_in_thread(table.load)  # DescribeTable API call
+        return {"status": "healthy", "database": "dynamodb"}
     except Exception as e:
         logger.error(f"Health check failed: {e}")
-        return JSONResponse(status_code=503, content={"status": "unhealthy", "database": "disconnected"})
+        return JSONResponse(status_code=503, content={"status": "unhealthy", "error": str(e)})
 
 
 @app.get(

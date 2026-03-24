@@ -3,12 +3,9 @@
 import logging
 import os
 import stripe
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
-from models.billing import BillingAccount
+from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
 
@@ -44,40 +41,30 @@ class BillingServiceError(Exception):
 class BillingService:
     """Manages Stripe customers, subscriptions, and checkout flows."""
 
-    def __init__(self, db: AsyncSession):
-        self.db = db
+    def __init__(self):
+        pass
 
-    async def create_customer_for_user(self, clerk_user_id: str, email: str) -> BillingAccount:
+    async def create_customer_for_user(self, clerk_user_id: str, email: str) -> dict:
         """Create Stripe customer + billing account for a personal user.
 
         Idempotent: returns existing account if already created.
-        Handles race conditions via unique constraint on clerk_user_id.
         """
-        existing = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == clerk_user_id))
-        account = existing.scalar_one_or_none()
-        if account:
-            return account
+        existing = await billing_repo.get_by_clerk_user_id(clerk_user_id)
+        if existing:
+            return existing
 
         customer = stripe.Customer.create(
             email=email or None,
             metadata={"clerk_user_id": clerk_user_id},
         )
 
-        account = BillingAccount(
+        account = await billing_repo.get_or_create(
             clerk_user_id=clerk_user_id,
             stripe_customer_id=customer.id,
         )
-        self.db.add(account)
-        try:
-            await self.db.commit()
-        except IntegrityError:
-            await self.db.rollback()
-            logger.info("Billing account race condition for user %s, re-fetching", clerk_user_id)
-            result = await self.db.execute(select(BillingAccount).where(BillingAccount.clerk_user_id == clerk_user_id))
-            account = result.scalar_one()
         return account
 
-    async def create_checkout_session(self, billing_account: BillingAccount, tier: str) -> str:
+    async def create_checkout_session(self, billing_account: dict, tier: str) -> str:
         """Create a Stripe Checkout session for subscribing to a plan.
 
         Returns the checkout URL.
@@ -96,7 +83,7 @@ class BillingService:
             raise BillingServiceError(f"No Stripe price IDs configured for tier: {tier}")
 
         session = stripe.checkout.Session.create(
-            customer=billing_account.stripe_customer_id,
+            customer=billing_account["stripe_customer_id"],
             mode="subscription",
             line_items=line_items,
             subscription_data={"metadata": {"plan_tier": tier}},
@@ -105,33 +92,29 @@ class BillingService:
         )
         return session.url
 
-    async def create_portal_session(self, billing_account: BillingAccount) -> str:
+    async def create_portal_session(self, billing_account: dict) -> str:
         """Create a Stripe Customer Portal session.
 
         Returns the portal URL for managing payment methods and invoices.
         """
         session = stripe.billing_portal.Session.create(
-            customer=billing_account.stripe_customer_id,
+            customer=billing_account["stripe_customer_id"],
             return_url=f"{FRONTEND_URL}/settings/billing",
         )
         return session.url
 
-    async def update_subscription(self, billing_account: BillingAccount, subscription_id: str, tier: str) -> None:
+    async def update_subscription(self, billing_account: dict, subscription_id: str, tier: str) -> None:
         """Update billing account after subscription change."""
-        billing_account.stripe_subscription_id = subscription_id
-        billing_account.plan_tier = tier
-        try:
-            await self.db.commit()
-        except Exception:
-            await self.db.rollback()
-            raise
+        await billing_repo.update_subscription(
+            clerk_user_id=billing_account["clerk_user_id"],
+            stripe_subscription_id=subscription_id,
+            plan_tier=tier,
+        )
 
-    async def cancel_subscription(self, billing_account: BillingAccount) -> None:
+    async def cancel_subscription(self, billing_account: dict) -> None:
         """Revert to free tier after subscription cancellation."""
-        billing_account.stripe_subscription_id = None
-        billing_account.plan_tier = "free"
-        try:
-            await self.db.commit()
-        except Exception:
-            await self.db.rollback()
-            raise
+        await billing_repo.update_subscription(
+            clerk_user_id=billing_account["clerk_user_id"],
+            stripe_subscription_id=None,
+            plan_tier="free",
+        )

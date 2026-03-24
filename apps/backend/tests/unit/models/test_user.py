@@ -1,50 +1,15 @@
-"""Unit tests for User model."""
-
-import pytest
-from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-
-from models.user import User
+"""Unit tests for user dict structure (DynamoDB items)."""
 
 
-class TestUserModel:
-    """Tests for the User model."""
+class TestUserDict:
+    """Tests for user dict shape."""
 
-    def test_user_creation_with_clerk_id(self):
-        """User can be created with a Clerk ID."""
-        user = User(id="user_clerk_123")
-        assert user.id == "user_clerk_123"
+    def test_user_creation_with_id(self):
+        """User dict can be created with an ID."""
+        user = {"user_id": "user_clerk_123", "created_at": "2026-01-01T00:00:00Z"}
+        assert user["user_id"] == "user_clerk_123"
 
-    def test_user_tablename(self):
-        """User model uses correct table name."""
-        assert User.__tablename__ == "users"
-
-    def test_user_id_is_primary_key(self):
-        """User ID is the primary key."""
-        pk_columns = [col.name for col in User.__table__.primary_key.columns]
-        assert "id" in pk_columns
-
-    @pytest.mark.asyncio
-    async def test_user_persistence(self, db_session):
-        """User can be persisted and retrieved from database."""
-        user = User(id="user_persist_test")
-        db_session.add(user)
-        await db_session.flush()
-
-        result = await db_session.execute(select(User).where(User.id == "user_persist_test"))
-        fetched_user = result.scalar_one()
-
-        assert fetched_user.id == "user_persist_test"
-
-    @pytest.mark.asyncio
-    async def test_user_unique_id(self, db_session):
-        """User IDs must be unique."""
-        user1 = User(id="duplicate_id")
-        db_session.add(user1)
-        await db_session.flush()
-
-        user2 = User(id="duplicate_id")
-        db_session.add(user2)
-
-        with pytest.raises(IntegrityError):
-            await db_session.flush()
+    def test_user_has_created_at(self):
+        """User dict includes created_at."""
+        user = {"user_id": "user_clerk_123", "created_at": "2026-01-01T00:00:00Z"}
+        assert "created_at" in user

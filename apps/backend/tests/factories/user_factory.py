@@ -1,14 +1,5 @@
-"""Factory for creating User test instances."""
-
-import factory
-
-from models.user import User
+"""Factory for creating user test dicts (DynamoDB items)."""
 
 
-class UserFactory(factory.Factory):
-    """Factory for creating User model instances."""
-
-    class Meta:
-        model = User
-
-    id = factory.Sequence(lambda n: f"user_test_{n}")
+def create_user(user_id: str = "user_test123") -> dict:
+    return {"user_id": user_id, "created_at": "2026-01-01T00:00:00+00:00"}

@@ -12,7 +12,6 @@ from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.database import get_session_factory
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,13 +32,11 @@ async def _send_channel_rpc(user_id: str, method: str, params: dict) -> dict:
     """Send an RPC to the user's container via the gateway pool."""
     pool = get_gateway_pool()
     ecs = get_ecs_manager()
-    session_factory = get_session_factory()
-    async with session_factory() as db:
-        container, ip = await ecs.resolve_running_container(user_id, db)
+    container, ip = await ecs.resolve_running_container(user_id)
     if not container or not ip:
         raise HTTPException(status_code=404, detail="No running container")
     req_id = str(uuid.uuid4())
-    return await pool.send_rpc(user_id, req_id, method, params, ip, container.gateway_token)
+    return await pool.send_rpc(user_id, req_id, method, params, ip, container["gateway_token"])
 
 
 @router.get("")

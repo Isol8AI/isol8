@@ -1,7 +1,7 @@
 """Tests for EcsManager (ECS Fargate service lifecycle with per-user EFS isolation).
 
-Uses mocked boto3 clients and async DB sessions -- no real AWS or
-database required.
+Uses mocked boto3 clients and container_repo -- no real AWS or
+DynamoDB required.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -9,8 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError
 
-from core.containers.ecs_manager import EcsManager, EcsManagerError
-from models.container import Container
+from core.containers.ecs_manager import EcsManager, EcsManagerError, GATEWAY_PORT
 
 
 # ---------------------------------------------------------------------------
@@ -102,37 +101,32 @@ def manager(mock_settings, mock_ecs_client, mock_efs_client):
     return mgr
 
 
-@pytest.fixture
-def mock_db():
-    """Create a mock async database session.
-
-    db.add() is synchronous in SQLAlchemy (not awaited), so we use a
-    plain MagicMock for it to avoid RuntimeWarning about un-awaited
-    coroutines.
-    """
-    db = AsyncMock()
-    db.add = MagicMock()
-    return db
-
-
-def _make_container(
+def _make_container_dict(
     user_id="user_test_123",
     service_name="openclaw-user_test_123-f4ae64abb2db",
     gateway_token="tok-abc",
     status="running",
     access_point_id=None,
     task_definition_arn=None,
+    substatus=None,
+    device_private_key_pem=None,
 ):
-    """Helper to create a Container model instance for mocking."""
-    c = Container(
-        user_id=user_id,
-        service_name=service_name,
-        gateway_token=gateway_token,
-        status=status,
-        access_point_id=access_point_id,
-        task_definition_arn=task_definition_arn,
-    )
-    return c
+    """Helper to create a container dict for mocking DynamoDB repo responses."""
+    d = {
+        "user_id": user_id,
+        "service_name": service_name,
+        "gateway_token": gateway_token,
+        "status": status,
+    }
+    if access_point_id is not None:
+        d["access_point_id"] = access_point_id
+    if task_definition_arn is not None:
+        d["task_definition_arn"] = task_definition_arn
+    if substatus is not None:
+        d["substatus"] = substatus
+    if device_private_key_pem is not None:
+        d["device_private_key_pem"] = device_private_key_pem
+    return d
 
 
 # ---------------------------------------------------------------------------
@@ -289,170 +283,139 @@ class TestRegisterTaskDefinition:
 class TestCreateUserService:
     """Test ECS service creation with per-user EFS isolation."""
 
-    async def test_creates_service_and_db_record(self, manager, mock_ecs_client, mock_efs_client, mock_db):
-        """create_user_service creates DB record early, then access point, task def, service."""
-        # Mock DB: no existing container
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value = mock_result
+    @pytest.mark.asyncio
+    async def test_creates_service_and_repo_record(self, manager, mock_ecs_client, mock_efs_client):
+        """create_user_service upserts repo record early, then creates access point, task def, service."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
-        # Mock _update_container to track substatus updates
-        manager._update_container = AsyncMock()
+            service_name = await manager.create_user_service("user_test_123", "token-abc")
 
-        service_name = await manager.create_user_service("user_test_123", "token-abc", mock_db)
+            assert service_name == "openclaw-user_test_123-f4ae64abb2db"
 
-        assert service_name == "openclaw-user_test_123-f4ae64abb2db"
+            # Verify repo upsert called early
+            mock_repo.upsert.assert_called_once_with(
+                "user_test_123",
+                {
+                    "service_name": "openclaw-user_test_123-f4ae64abb2db",
+                    "gateway_token": "token-abc",
+                    "status": "provisioning",
+                    "substatus": None,
+                },
+            )
 
-        # Verify EFS access point was created
-        mock_efs_client.create_access_point.assert_called_once()
+            # Verify EFS access point was created
+            mock_efs_client.create_access_point.assert_called_once()
 
-        # Verify task definition was cloned
-        mock_ecs_client.describe_task_definition.assert_called_once()
-        mock_ecs_client.register_task_definition.assert_called_once()
+            # Verify task definition was cloned
+            mock_ecs_client.describe_task_definition.assert_called_once()
+            mock_ecs_client.register_task_definition.assert_called_once()
 
-        # Verify ECS create_service called with per-user task definition
-        mock_ecs_client.create_service.assert_called_once()
-        call_kwargs = mock_ecs_client.create_service.call_args.kwargs
-        assert call_kwargs["cluster"] == manager._cluster
-        assert call_kwargs["serviceName"] == "openclaw-user_test_123-f4ae64abb2db"
-        assert "task-definition" in call_kwargs["taskDefinition"]
-        assert call_kwargs["desiredCount"] == 0
-        assert call_kwargs["launchType"] == "FARGATE"
-        assert call_kwargs["networkConfiguration"]["awsvpcConfiguration"]["subnets"] == ["subnet-aaa", "subnet-bbb"]
-        assert call_kwargs["networkConfiguration"]["awsvpcConfiguration"]["assignPublicIp"] == "DISABLED"
-        assert call_kwargs["enableExecuteCommand"] is True
+            # Verify ECS create_service called
+            mock_ecs_client.create_service.assert_called_once()
+            call_kwargs = mock_ecs_client.create_service.call_args.kwargs
+            assert call_kwargs["cluster"] == manager._cluster
+            assert call_kwargs["serviceName"] == "openclaw-user_test_123-f4ae64abb2db"
+            assert call_kwargs["desiredCount"] == 0
+            assert call_kwargs["launchType"] == "FARGATE"
+            assert call_kwargs["enableExecuteCommand"] is True
 
-        # Verify DB record was added early (before AWS steps)
-        mock_db.add.assert_called_once()
-        added_container = mock_db.add.call_args[0][0]
-        assert added_container.user_id == "user_test_123"
-        assert added_container.service_name == "openclaw-user_test_123-f4ae64abb2db"
-        assert added_container.gateway_token == "token-abc"
-        assert added_container.status == "provisioning"
-        # Initial upsert commits via mock_db
-        mock_db.commit.assert_awaited_once()
-        # Substatus updates go through _update_container (3 calls: efs, task_def, service)
-        assert manager._update_container.await_count == 3
+            # Verify update_fields called for substatus progression (3 calls)
+            assert mock_repo.update_fields.call_count == 3
 
-    async def test_upserts_existing_db_record(self, manager, mock_ecs_client, mock_efs_client, mock_db):
-        """create_user_service updates existing DB record instead of inserting."""
-        existing = _make_container(status="stopped")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
-
-        manager._update_container = AsyncMock()
-
-        service_name = await manager.create_user_service("user_test_123", "new-token", mock_db)
-
-        assert service_name == "openclaw-user_test_123-f4ae64abb2db"
-        # Should NOT call db.add — updates in place
-        mock_db.add.assert_not_called()
-        assert existing.gateway_token == "new-token"
-        assert existing.status == "provisioning"
-        # Initial upsert commits via mock_db
-        mock_db.commit.assert_awaited_once()
-        # Substatus updates go through _update_container (3 calls)
-        assert manager._update_container.await_count == 3
-
-    async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
         """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
-        existing = _make_container(status="stopped")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
-        manager._update_container = AsyncMock()
+            mock_ecs_client.create_service.side_effect = ClientError(
+                {"Error": {"Code": "ClusterNotFoundException", "Message": "not found"}},
+                "CreateService",
+            )
 
-        mock_ecs_client.create_service.side_effect = ClientError(
-            {"Error": {"Code": "ClusterNotFoundException", "Message": "not found"}},
-            "CreateService",
-        )
+            with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
+                await manager.create_user_service("user_test_123", "token")
 
-        with pytest.raises(EcsManagerError, match="Failed to create ECS service"):
-            await manager.create_user_service("user_test_123", "token", mock_db)
+            # Error status set via update_fields
+            error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
+            assert len(error_calls) >= 1
 
-        # Error status set via _update_container
-        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
+            # Rollback: task def deregistered and access point deleted
+            mock_ecs_client.deregister_task_definition.assert_called_once()
+            mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
 
-        # Rollback: task def deregistered and access point deleted
-        mock_ecs_client.deregister_task_definition.assert_called_once()
-        mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
-
-    async def test_access_point_failure_raises(self, manager, mock_efs_client, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_access_point_failure_raises(self, manager, mock_efs_client, mock_ecs_client):
         """EFS access point creation failure raises EcsManagerError and sets error status."""
-        existing = _make_container(status="stopped")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
-        manager._update_container = AsyncMock()
+            mock_efs_client.create_access_point.side_effect = ClientError(
+                {"Error": {"Code": "FileSystemNotFound", "Message": "not found"}},
+                "CreateAccessPoint",
+            )
 
-        mock_efs_client.create_access_point.side_effect = ClientError(
-            {"Error": {"Code": "FileSystemNotFound", "Message": "not found"}},
-            "CreateAccessPoint",
-        )
+            with pytest.raises(EcsManagerError, match="Failed to create EFS access point"):
+                await manager.create_user_service("user_test_123", "token")
 
-        with pytest.raises(EcsManagerError, match="Failed to create EFS access point"):
-            await manager.create_user_service("user_test_123", "token", mock_db)
+            # Error status set
+            error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
+            assert len(error_calls) >= 1
 
-        # Error status set via _update_container
-        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
+            # No AWS rollback needed -- nothing was created yet
+            mock_ecs_client.create_service.assert_not_called()
+            mock_ecs_client.deregister_task_definition.assert_not_called()
 
-        # No AWS rollback needed — nothing was created yet
-        mock_ecs_client.create_service.assert_not_called()
-        mock_ecs_client.deregister_task_definition.assert_not_called()
-
-    async def test_task_def_failure_rolls_back_access_point(self, manager, mock_ecs_client, mock_efs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_task_def_failure_rolls_back_access_point(self, manager, mock_ecs_client, mock_efs_client):
         """Task definition failure rolls back the access point and sets error status."""
-        existing = _make_container(status="stopped")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
 
-        manager._update_container = AsyncMock()
+            mock_ecs_client.register_task_definition.side_effect = ClientError(
+                {"Error": {"Code": "ClientException", "Message": "failed"}},
+                "RegisterTaskDefinition",
+            )
 
-        mock_ecs_client.register_task_definition.side_effect = ClientError(
-            {"Error": {"Code": "ClientException", "Message": "failed"}},
-            "RegisterTaskDefinition",
-        )
+            with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
+                await manager.create_user_service("user_test_123", "token")
 
-        with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
-            await manager.create_user_service("user_test_123", "token", mock_db)
+            # Error status set
+            error_calls = [c for c in mock_repo.update_fields.call_args_list if c[0][1].get("status") == "error"]
+            assert len(error_calls) >= 1
 
-        # Error status set via _update_container
-        manager._update_container.assert_any_await("user_test_123", status="error", substatus=None)
+            # Access point should be cleaned up
+            mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
+            # No ECS service should have been created
+            mock_ecs_client.create_service.assert_not_called()
 
-        # Access point should be cleaned up
-        mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
-        # No ECS service should have been created
-        mock_ecs_client.create_service.assert_not_called()
-
-    async def test_substatus_progression(self, manager, mock_ecs_client, mock_efs_client, mock_db):
-        """create_user_service updates substatus at each step via _update_container."""
-        existing = _make_container(status="stopped")
+    @pytest.mark.asyncio
+    async def test_substatus_progression(self, manager, mock_ecs_client, mock_efs_client):
+        """create_user_service updates substatus at each step via container_repo."""
         update_calls = []
 
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
-
-        # Capture _update_container calls
-        async def track_update(user_id, **fields):
+        async def track_update(user_id, fields):
             update_calls.append(fields)
+            return _make_container_dict()
 
-        manager._update_container = AsyncMock(side_effect=track_update)
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(side_effect=track_update)
 
-        await manager.create_user_service("user_test_123", "token-abc", mock_db)
+            await manager.create_user_service("user_test_123", "token-abc")
 
-        # Initial upsert sets substatus=None via mock_db.commit
-        # Then _update_container is called for each substatus progression
-        assert len(update_calls) == 3
-        assert update_calls[0]["substatus"] == "efs_created"
-        assert "access_point_id" in update_calls[0]
-        assert update_calls[1]["substatus"] == "task_registered"
-        assert "task_definition_arn" in update_calls[1]
-        assert update_calls[2]["substatus"] == "service_created"
+            # _update_container is called for each substatus progression
+            assert len(update_calls) == 3
+            assert update_calls[0]["substatus"] == "efs_created"
+            assert "access_point_id" in update_calls[0]
+            assert update_calls[1]["substatus"] == "task_registered"
+            assert "task_definition_arn" in update_calls[1]
+            assert update_calls[2]["substatus"] == "service_created"
 
 
 # ---------------------------------------------------------------------------
@@ -463,36 +426,35 @@ class TestCreateUserService:
 class TestStopUserService:
     """Test scaling service to 0."""
 
-    async def test_stop_scales_to_zero(self, manager, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_stop_scales_to_zero(self, manager, mock_ecs_client):
         """stop_user_service calls update_service with desiredCount=0."""
-        existing = _make_container(status="running")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
 
-        await manager.stop_user_service("user_test_123", mock_db)
+            await manager.stop_user_service("user_test_123")
 
-        mock_ecs_client.update_service.assert_called_once_with(
-            cluster=manager._cluster,
-            service="openclaw-user_test_123-f4ae64abb2db",
-            desiredCount=0,
-        )
-        assert existing.status == "stopped"
-        mock_db.commit.assert_awaited_once()
+            mock_ecs_client.update_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                desiredCount=0,
+            )
+            mock_repo.update_status.assert_called_once_with("user_test_123", "stopped")
 
-    async def test_stop_no_db_record(self, manager, mock_ecs_client, mock_db):
-        """stop_user_service with no DB record still calls ECS but skips DB update."""
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value = mock_result
+    @pytest.mark.asyncio
+    async def test_stop_no_db_record(self, manager, mock_ecs_client):
+        """stop_user_service with no repo record still calls ECS but skips status update."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=None)
 
-        await manager.stop_user_service("user_test_123", mock_db)
+            await manager.stop_user_service("user_test_123")
 
-        mock_ecs_client.update_service.assert_called_once()
-        # commit is NOT called when there's no container to update
-        mock_db.commit.assert_not_awaited()
+            mock_ecs_client.update_service.assert_called_once()
+            mock_repo.update_status.assert_not_called()
 
-    async def test_stop_ecs_failure_raises(self, manager, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_stop_ecs_failure_raises(self, manager, mock_ecs_client):
         """ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
             {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
@@ -500,7 +462,7 @@ class TestStopUserService:
         )
 
         with pytest.raises(EcsManagerError, match="Failed to stop ECS service"):
-            await manager.stop_user_service("user_test_123", mock_db)
+            await manager.stop_user_service("user_test_123")
 
 
 # ---------------------------------------------------------------------------
@@ -511,36 +473,36 @@ class TestStopUserService:
 class TestStartUserService:
     """Test scaling service to 1."""
 
-    async def test_start_scales_to_one(self, manager, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_start_scales_to_one(self, manager, mock_ecs_client):
         """start_user_service calls update_service with desiredCount=1 and force."""
-        existing = _make_container(status="stopped")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
-        await manager.start_user_service("user_test_123", mock_db)
+            await manager.start_user_service("user_test_123")
 
-        mock_ecs_client.update_service.assert_called_once_with(
-            cluster=manager._cluster,
-            service="openclaw-user_test_123-f4ae64abb2db",
-            desiredCount=1,
-            forceNewDeployment=True,
-        )
-        assert existing.status == "provisioning"
-        mock_db.commit.assert_awaited_once()
+            mock_ecs_client.update_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                desiredCount=1,
+                forceNewDeployment=True,
+            )
+            mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
-    async def test_start_no_db_record(self, manager, mock_ecs_client, mock_db):
-        """start_user_service with no DB record still calls ECS."""
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value = mock_result
+    @pytest.mark.asyncio
+    async def test_start_no_db_record(self, manager, mock_ecs_client):
+        """start_user_service with no repo record still calls ECS."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=None)
 
-        await manager.start_user_service("user_test_123", mock_db)
+            await manager.start_user_service("user_test_123")
 
-        mock_ecs_client.update_service.assert_called_once()
-        mock_db.commit.assert_not_awaited()
+            mock_ecs_client.update_service.assert_called_once()
+            mock_repo.update_status.assert_not_called()
 
-    async def test_start_ecs_failure_raises(self, manager, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_start_ecs_failure_raises(self, manager, mock_ecs_client):
         """ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
             {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
@@ -548,7 +510,7 @@ class TestStartUserService:
         )
 
         with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
-            await manager.start_user_service("user_test_123", mock_db)
+            await manager.start_user_service("user_test_123")
 
 
 # ---------------------------------------------------------------------------
@@ -559,78 +521,77 @@ class TestStartUserService:
 class TestDeleteUserService:
     """Test service deletion with per-user resource cleanup."""
 
-    async def test_delete_scales_then_deletes_with_cleanup(self, manager, mock_ecs_client, mock_efs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_delete_scales_then_deletes_with_cleanup(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service scales to 0, deletes service, and cleans up per-user resources."""
-        existing = _make_container(
+        container_dict = _make_container_dict(
             status="running",
             access_point_id="fsap-user123",
             task_definition_arn="arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:42",
         )
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.delete = AsyncMock()
 
-        await manager.delete_user_service("user_test_123", mock_db)
+            await manager.delete_user_service("user_test_123")
 
-        # Verify update_service (scale to 0) called first
-        mock_ecs_client.update_service.assert_called_once_with(
-            cluster=manager._cluster,
-            service="openclaw-user_test_123-f4ae64abb2db",
-            desiredCount=0,
-        )
-        # Verify delete_service called
-        mock_ecs_client.delete_service.assert_called_once_with(
-            cluster=manager._cluster,
-            service="openclaw-user_test_123-f4ae64abb2db",
-            force=True,
-        )
-        # Verify per-user task definition deregistered
-        mock_ecs_client.deregister_task_definition.assert_called_once_with(
-            taskDefinition="arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:42"
-        )
-        # Verify per-user access point deleted
-        mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
-        # Verify DB record deleted
-        mock_db.delete.assert_awaited_once_with(existing)
-        mock_db.commit.assert_awaited_once()
+            # Verify update_service (scale to 0) called first
+            mock_ecs_client.update_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                desiredCount=0,
+            )
+            # Verify delete_service called
+            mock_ecs_client.delete_service.assert_called_once_with(
+                cluster=manager._cluster,
+                service="openclaw-user_test_123-f4ae64abb2db",
+                force=True,
+            )
+            # Verify per-user task definition deregistered
+            mock_ecs_client.deregister_task_definition.assert_called_once_with(
+                taskDefinition="arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:42"
+            )
+            # Verify per-user access point deleted
+            mock_efs_client.delete_access_point.assert_called_once_with(AccessPointId="fsap-user123")
+            # Verify repo record deleted
+            mock_repo.delete.assert_called_once_with("user_test_123")
 
-    async def test_delete_no_db_record(self, manager, mock_ecs_client, mock_efs_client, mock_db):
-        """delete_user_service with no DB record still deletes ECS service."""
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value = mock_result
+    @pytest.mark.asyncio
+    async def test_delete_no_db_record(self, manager, mock_ecs_client, mock_efs_client):
+        """delete_user_service with no repo record still deletes ECS service."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.delete = AsyncMock()
 
-        await manager.delete_user_service("user_test_123", mock_db)
+            await manager.delete_user_service("user_test_123")
 
-        mock_ecs_client.update_service.assert_called_once()
-        mock_ecs_client.delete_service.assert_called_once()
-        # No per-user resources to clean up
-        mock_ecs_client.deregister_task_definition.assert_not_called()
-        mock_efs_client.delete_access_point.assert_not_called()
-        mock_db.delete.assert_not_awaited()
+            mock_ecs_client.update_service.assert_called_once()
+            mock_ecs_client.delete_service.assert_called_once()
+            # No per-user resources to clean up
+            mock_ecs_client.deregister_task_definition.assert_not_called()
+            mock_efs_client.delete_access_point.assert_not_called()
+            mock_repo.delete.assert_not_called()
 
-    async def test_delete_without_per_user_resources(self, manager, mock_ecs_client, mock_efs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_delete_without_per_user_resources(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service skips cleanup when container has no per-user resources."""
-        existing = _make_container(
-            status="running",
-            access_point_id=None,
-            task_definition_arn=None,
-        )
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+        container_dict = _make_container_dict(status="running")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.delete = AsyncMock()
 
-        await manager.delete_user_service("user_test_123", mock_db)
+            await manager.delete_user_service("user_test_123")
 
-        # ECS service still deleted
-        mock_ecs_client.delete_service.assert_called_once()
-        # No per-user cleanup
-        mock_ecs_client.deregister_task_definition.assert_not_called()
-        mock_efs_client.delete_access_point.assert_not_called()
-        # DB record still deleted
-        mock_db.delete.assert_awaited_once_with(existing)
+            # ECS service still deleted
+            mock_ecs_client.delete_service.assert_called_once()
+            # No per-user cleanup
+            mock_ecs_client.deregister_task_definition.assert_not_called()
+            mock_efs_client.delete_access_point.assert_not_called()
+            # Repo record still deleted
+            mock_repo.delete.assert_called_once_with("user_test_123")
 
-    async def test_delete_ecs_failure_raises(self, manager, mock_ecs_client, mock_db):
+    @pytest.mark.asyncio
+    async def test_delete_ecs_failure_raises(self, manager, mock_ecs_client):
         """ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
             {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
@@ -638,7 +599,7 @@ class TestDeleteUserService:
         )
 
         with pytest.raises(EcsManagerError, match="Failed to delete ECS service"):
-            await manager.delete_user_service("user_test_123", mock_db)
+            await manager.delete_user_service("user_test_123")
 
 
 # ---------------------------------------------------------------------------
@@ -738,49 +699,93 @@ class TestDiscoverIp:
 
 
 class TestIsHealthy:
-    """Test gateway TCP health checks."""
+    """Test gateway health checks via TCP socket."""
 
-    def test_healthy_tcp_connect(self, manager):
-        """Successful TCP connection yields True."""
-        mock_sock = MagicMock()
-        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
-        mock_sock.__exit__ = MagicMock(return_value=False)
-        with patch("core.containers.ecs_manager.socket.create_connection", return_value=mock_sock):
+    def test_healthy_connection_succeeds(self, manager):
+        """Successful TCP connection means healthy."""
+        with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
+            mock_socket = MagicMock()
+            mock_conn.return_value.__enter__ = MagicMock(return_value=mock_socket)
+            mock_conn.return_value.__exit__ = MagicMock(return_value=False)
+
             assert manager.is_healthy("10.0.1.42") is True
-
-    def test_healthy_404(self, manager):
-        """TCP connect succeeds even if HTTP would return 404 — still healthy."""
-        mock_sock = MagicMock()
-        mock_sock.__enter__ = MagicMock(return_value=mock_sock)
-        mock_sock.__exit__ = MagicMock(return_value=False)
-        with patch("core.containers.ecs_manager.socket.create_connection", return_value=mock_sock):
-            assert manager.is_healthy("10.0.1.42") is True
-
-    def test_unhealthy_500(self, manager):
-        """Connection refused means unhealthy (replaces old HTTP 500 test)."""
-        with patch(
-            "core.containers.ecs_manager.socket.create_connection", side_effect=ConnectionRefusedError("refused")
-        ):
-            assert manager.is_healthy("10.0.1.42") is False
+            mock_conn.assert_called_once_with(("10.0.1.42", GATEWAY_PORT), timeout=5)
 
     def test_unhealthy_connection_refused(self, manager):
         """Connection refused means unhealthy."""
-        with patch(
-            "core.containers.ecs_manager.socket.create_connection", side_effect=ConnectionRefusedError("refused")
-        ):
+        with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
+            mock_conn.side_effect = ConnectionRefusedError("refused")
+
             assert manager.is_healthy("10.0.1.42") is False
 
     def test_unhealthy_timeout(self, manager):
         """Timeout means unhealthy."""
         import socket
 
-        with patch("core.containers.ecs_manager.socket.create_connection", side_effect=socket.timeout("timed out")):
+        with patch("core.containers.ecs_manager.socket.create_connection") as mock_conn:
+            mock_conn.side_effect = socket.timeout("timed out")
+
             assert manager.is_healthy("10.0.1.42") is False
 
-    def test_unhealthy_url_error(self, manager):
-        """OSError means unhealthy (replaces old URLError test)."""
-        with patch("core.containers.ecs_manager.socket.create_connection", side_effect=OSError("connection failed")):
-            assert manager.is_healthy("10.0.1.42") is False
+
+# ---------------------------------------------------------------------------
+# resolve_running_container
+# ---------------------------------------------------------------------------
+
+
+class TestResolveRunningContainer:
+    """Test container resolution with auto-transition."""
+
+    @pytest.mark.asyncio
+    async def test_returns_container_and_ip(self, manager):
+        """Returns container dict and IP for a running container."""
+        container_dict = _make_container_dict(status="running", service_name="openclaw-user_test_123-f4ae64abb2db")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            manager.discover_ip = MagicMock(return_value="10.0.1.42")
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            assert container == container_dict
+            assert ip == "10.0.1.42"
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_missing_container(self, manager):
+        """Returns (None, None) when no container exists."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            assert container is None
+            assert ip is None
+
+    @pytest.mark.asyncio
+    async def test_returns_none_for_stopped_container(self, manager):
+        """Returns (None, None) when container status is not provisioning/running."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            assert container is None
+            assert ip is None
+
+    @pytest.mark.asyncio
+    async def test_auto_transitions_provisioning_to_running(self, manager):
+        """Provisioning container transitions to running when healthy."""
+        container_dict = _make_container_dict(status="provisioning", service_name="openclaw-user_test_123-f4ae64abb2db")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.update_fields = AsyncMock(return_value=container_dict)
+            manager.discover_ip = MagicMock(return_value="10.0.1.42")
+            manager.is_healthy = MagicMock(return_value=True)
+
+            container, ip = await manager.resolve_running_container("user_test_123")
+
+            assert container["status"] == "running"
+            assert ip == "10.0.1.42"
+            mock_repo.update_fields.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -789,27 +794,27 @@ class TestIsHealthy:
 
 
 class TestGetServiceStatus:
-    """Test DB status lookup."""
+    """Test repo status lookup."""
 
-    async def test_returns_container(self, manager, mock_db):
-        """get_service_status returns the Container record."""
-        existing = _make_container(status="running")
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = existing
-        mock_db.execute.return_value = mock_result
+    @pytest.mark.asyncio
+    async def test_returns_container(self, manager):
+        """get_service_status returns the container dict."""
+        container_dict = _make_container_dict(status="running")
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
 
-        result = await manager.get_service_status("user_test_123", mock_db)
-        assert result is existing
-        assert result.status == "running"
+            result = await manager.get_service_status("user_test_123")
+            assert result == container_dict
+            assert result["status"] == "running"
 
-    async def test_returns_none_when_not_found(self, manager, mock_db):
+    @pytest.mark.asyncio
+    async def test_returns_none_when_not_found(self, manager):
         """get_service_status returns None when no record exists."""
-        mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = None
-        mock_db.execute.return_value = mock_result
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_user_id = AsyncMock(return_value=None)
 
-        result = await manager.get_service_status("user_nonexistent", mock_db)
-        assert result is None
+            result = await manager.get_service_status("user_nonexistent")
+            assert result is None
 
 
 # ---------------------------------------------------------------------------
@@ -830,22 +835,3 @@ class TestEcsManagerError:
         """EcsManagerError defaults user_id to empty string."""
         err = EcsManagerError("generic failure")
         assert err.user_id == ""
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def urllib_http_error(code: int):
-    """Create a urllib.error.HTTPError with the given status code."""
-    import urllib.error
-    import io
-
-    return urllib.error.HTTPError(
-        url="http://test",
-        code=code,
-        msg=f"HTTP {code}",
-        hdrs={},
-        fp=io.BytesIO(b""),
-    )

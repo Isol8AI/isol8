@@ -33,8 +33,6 @@ export class LocalStage extends cdk.Stage {
         stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
         perplexity_api_key: process.env.PERPLEXITY_API_KEY ?? "",
         encryption_key: process.env.ENCRYPTION_KEY ?? "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXQ=",
-        // DATABASE_URL is set after the database stack deploys (see post-deploy step)
-        database_url: "placeholder-set-after-deploy",
       },
     });
 
@@ -48,7 +46,6 @@ export class LocalStage extends cdk.Stage {
     const database = new DatabaseStack(this, `isol8-${env}-database`, {
       stackName: `isol8-${env}-database`,
       environment: env,
-      vpc: network.vpc,
       kmsKey: auth.kmsKey,
     });
 
@@ -76,9 +73,10 @@ export class LocalStage extends cdk.Stage {
       targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
       database: {
-        dbInstance: database.dbInstance,
-        dbSecurityGroup: database.dbSecurityGroup,
-        dbSecret: database.dbSecret,
+        usersTable: database.usersTable,
+        containersTable: database.containersTable,
+        billingTable: database.billingTable,
+        apiKeysTable: database.apiKeysTable,
       },
       secretNames: {
         clerkIssuer: `isol8/${env}/clerk_issuer`,
@@ -87,7 +85,6 @@ export class LocalStage extends cdk.Stage {
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
         perplexityApiKey: `isol8/${env}/perplexity_api_key`,
         encryptionKey: `isol8/${env}/encryption_key`,
-        databaseUrl: `isol8/${env}/database_url`,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {

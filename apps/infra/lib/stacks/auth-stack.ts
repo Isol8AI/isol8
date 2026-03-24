@@ -10,7 +10,6 @@ export interface AuthSecrets {
   stripeWebhookSecret: secretsmanager.ISecret;
   perplexityApiKey: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
-  databaseUrl: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -28,10 +27,10 @@ export class AuthStack extends cdk.Stack {
 
     const env = props.environment;
 
-    // KMS key for general encryption (EBS, EFS, RDS)
+    // KMS key for general encryption (EBS, EFS, DynamoDB)
     this.kmsKey = new kms.Key(this, "GeneralEncryptionKey", {
       enableKeyRotation: true,
-      description: `Isol8 ${env} general encryption key (EBS, EFS, RDS)`,
+      description: `Isol8 ${env} general encryption key (EBS, EFS, DynamoDB)`,
       alias: `isol8-${env}-general`,
     });
 
@@ -57,7 +56,6 @@ export class AuthStack extends cdk.Stack {
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
       encryptionKey: createSecret("EncryptionKey", "encryption_key"),
-      databaseUrl: createSecret("DatabaseUrl", "database_url"),
     };
   }
 }

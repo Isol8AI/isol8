@@ -17,10 +17,8 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.containers import get_ecs_manager, get_gateway_pool
-from core.database import get_session_factory as db_get_session_factory
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
 
@@ -53,11 +51,6 @@ async def get_management_api_client() -> ManagementApiClient:
             if _management_api_client is None:
                 _management_api_client = ManagementApiClient()
     return _management_api_client
-
-
-def get_session_factory() -> async_sessionmaker[AsyncSession]:
-    """Get database session factory."""
-    return db_get_session_factory()
 
 
 async def _send_connect_challenge(connection_id: str) -> None:
@@ -288,9 +281,7 @@ async def _process_rpc_background(
 
     try:
         ecs_manager = get_ecs_manager()
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            container, ip = await ecs_manager.resolve_running_container(user_id, db)
+        container, ip = await ecs_manager.resolve_running_container(user_id)
 
         if not container:
             management_api.send_message(
@@ -323,7 +314,7 @@ async def _process_rpc_background(
             method=method,
             params=params,
             ip=ip,
-            token=container.gateway_token,
+            token=container["gateway_token"],
         )
         management_api.send_message(
             connection_id,
@@ -402,9 +393,7 @@ async def _process_agent_chat_background(
     try:
         # Look up user's container and discover task IP
         ecs_manager = get_ecs_manager()
-        session_factory = get_session_factory()
-        async with session_factory() as db:
-            container, ip = await ecs_manager.resolve_running_container(user_id, db)
+        container, ip = await ecs_manager.resolve_running_container(user_id)
 
         if not container:
             management_api.send_message(
@@ -443,7 +432,7 @@ async def _process_agent_chat_background(
                 "idempotencyKey": str(uuid4()),
             },
             ip=ip,
-            token=container.gateway_token,
+            token=container["gateway_token"],
         )
         logger.debug("chat.send acked for agent %s: %s", agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task

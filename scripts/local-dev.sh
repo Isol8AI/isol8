@@ -132,9 +132,9 @@ log "Extracting resource IDs from CDK outputs..."
 mkdir -p localstack
 
 python3 -c "
-import json, subprocess, os
+import json, os
 
-env_lines = ['# Auto-generated from CDK stack outputs + RDS credentials — do not edit']
+env_lines = ['# Auto-generated from CDK stack outputs — do not edit']
 
 # 1. CDK stack outputs
 if os.path.exists('/tmp/isol8-cdk-outputs.json'):
@@ -145,23 +145,9 @@ if os.path.exists('/tmp/isol8-cdk-outputs.json'):
             env_key = key.replace('-', '_').upper()
             env_lines.append(f'{env_key}={value}')
 
-# 2. RDS credentials (dynamic port from LocalStack)
-try:
-    rds_secret = subprocess.run(
-        ['docker', 'exec', 'isol8-localstack', 'awslocal', 'secretsmanager',
-         'get-secret-value', '--secret-id', 'isol8/local/rds-credentials',
-         '--query', 'SecretString', '--output', 'text'],
-        capture_output=True, text=True, check=True
-    ).stdout.strip()
-    creds = json.loads(rds_secret)
-    db_url = f\"postgresql+asyncpg://{creds['username']}:{creds['password']}@localstack:{creds['port']}/{creds['dbname']}\"
-    env_lines.append(f'DATABASE_URL={db_url}')
-    # Also write a host-accessible version (for running init_db from host)
-    db_url_host = f\"postgresql+asyncpg://{creds['username']}:{creds['password']}@localhost:{creds['port']}/{creds['dbname']}\"
-    env_lines.append(f'DATABASE_URL_HOST={db_url_host}')
-    print(f'  RDS: port={creds[\"port\"]}, db={creds[\"dbname\"]}, user={creds[\"username\"]}')
-except Exception as e:
-    print(f'  ⚠ Could not read RDS credentials: {e}')
+# 2. DynamoDB config for local dev (tables created by cdklocal)
+env_lines.append('DYNAMODB_ENDPOINT_URL=http://localhost:4566')
+env_lines.append('DYNAMODB_TABLE_PREFIX=isol8-local-')
 
 with open('localstack/generated.env', 'w') as f:
     f.write('\n'.join(env_lines) + '\n')
@@ -178,12 +164,6 @@ log "Populating secrets..."
 
 # Use aws CLI directly from host (no docker exec quoting issues)
 LS="--endpoint-url=http://localhost:4566"
-
-# DATABASE_URL — constructed from the RDS auto-generated credentials
-RDS_CREDS=$(aws $LS secretsmanager get-secret-value --secret-id "isol8/local/rds-credentials" --query "SecretString" --output text)
-DB_URL=$(python3 -c "import json; c=json.loads('$RDS_CREDS'); print(f\"postgresql+asyncpg://{c['username']}:{c['password']}@localhost.localstack.cloud:{c['port']}/{c['dbname']}\")")
-aws $LS secretsmanager put-secret-value --secret-id "isol8/local/database_url" --secret-string "$DB_URL" > /dev/null
-log "  ✓ DATABASE_URL = $DB_URL"
 
 # CLERK_ISSUER
 aws $LS secretsmanager put-secret-value --secret-id "isol8/local/clerk_issuer" --secret-string "${CLERK_ISSUER}" > /dev/null
@@ -230,14 +210,7 @@ if $FLAG_SEED_ONLY; then
 fi
 
 # --------------------------------------------------------------------------
-# 5. Run database migrations (fresh tables every time)
-# --------------------------------------------------------------------------
-log "Running database migrations..."
-docker compose -f "$COMPOSE_FILE" run --rm backend uv run python init_db.py --reset 2>&1 | tail -5
-log "  ✓ Database tables ready"
-
-# --------------------------------------------------------------------------
-# 6. Start backend (in Docker on isol8-local network)
+# 5. Start backend (in Docker on isol8-local network)
 # --------------------------------------------------------------------------
 log "Starting backend..."
 docker compose -f "$COMPOSE_FILE" up -d backend
@@ -256,7 +229,7 @@ done
 log "  ✓ Backend healthy (http://localhost:8000)"
 
 # --------------------------------------------------------------------------
-# 7. Start frontend (on host)
+# 6. Start frontend (on host)
 # --------------------------------------------------------------------------
 log "Starting frontend..."
 source "$GENERATED_ENV" 2>/dev/null || true
