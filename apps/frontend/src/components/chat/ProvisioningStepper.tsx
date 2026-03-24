@@ -108,7 +108,10 @@ export function ProvisioningStepper({
     return (
       <div className="flex-1 flex items-center justify-center p-6">
         <div className="w-full max-w-sm">
-          <ChannelSetupStep onComplete={() => setOnboardingComplete(true)} />
+          <ChannelSetupStep onComplete={() => {
+            localStorage.setItem("isol8:channel-cards-dismissed", "true");
+            setOnboardingComplete(true);
+          }} />
         </div>
       </div>
     );
