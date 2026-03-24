@@ -67,7 +67,15 @@ class GatewayConnection:
     async def connect(self) -> None:
         """Open WebSocket, complete OpenClaw handshake, verify health, start reader."""
         uri = f"ws://{self.ip}:{GATEWAY_PORT}"
-        self._ws = await ws_connect(uri, open_timeout=_HANDSHAKE_TIMEOUT, close_timeout=5)
+        # Pass user identity header on the WebSocket upgrade request.
+        # OpenClaw trusted-proxy auth reads x-forwarded-user from the HTTP
+        # upgrade headers to identify the user without device pairing.
+        self._ws = await ws_connect(
+            uri,
+            open_timeout=_HANDSHAKE_TIMEOUT,
+            close_timeout=5,
+            additional_headers={"x-forwarded-user": self.user_id},
+        )
         await self._handshake()
         await self._verify_health()
         self._reader_task = asyncio.create_task(self._reader_loop())
