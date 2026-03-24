@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://postgres:postgres@localhost:5432/securechat")
 
+    # DynamoDB
+    DYNAMODB_TABLE_PREFIX: str = os.getenv("DYNAMODB_TABLE_PREFIX", "isol8-dev-")
+    DYNAMODB_ENDPOINT_URL: str | None = os.getenv("DYNAMODB_ENDPOINT_URL", None)
+
     # Clerk Secret Key (for fetching user/org metadata)
     CLERK_SECRET_KEY: str | None = os.getenv("CLERK_SECRET_KEY")
 
