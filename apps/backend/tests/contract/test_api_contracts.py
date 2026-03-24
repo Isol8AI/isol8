@@ -64,6 +64,12 @@ schema = (
     .exclude(
         path_regex="^/api/v1/integrations/",
     )
+    .exclude(
+        path_regex="^/api/v1/users/",
+    )
+    .exclude(
+        path_regex="^/health$",
+    )
 )
 
 
@@ -79,5 +85,7 @@ def test_no_server_errors(case):
     - WebSocket routes (/ws/*) - need API Gateway + DynamoDB
     - Webhook routes (/webhooks/*) - need Clerk signature verification
     - Agent write operations - need gateway for workspace management
+    - Health check (/health) - needs DynamoDB connectivity
+    - Users (/users/*) - needs DynamoDB user repo
     """
     case.call_and_validate(checks=[not_a_server_error])

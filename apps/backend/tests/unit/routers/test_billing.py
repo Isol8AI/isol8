@@ -66,7 +66,6 @@ class TestGetUsage:
                 "stripe_subscription_id": None,
             }
         )
-        mock_repo.get_usage_summary = AsyncMock(return_value={"total_cost": 0, "total_requests": 0, "daily": []})
 
         response = await async_client.get("/api/v1/billing/usage")
         assert response.status_code == 200
@@ -108,12 +107,9 @@ class TestStripeWebhook:
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
-    @patch("routers.billing.get_workspace")
     @patch("routers.billing.get_ecs_manager")
     @patch("routers.billing.stripe")
-    async def test_subscription_created_webhook(
-        self, mock_stripe, mock_get_ecs, mock_get_workspace, mock_repo, async_client
-    ):
+    async def test_subscription_created_webhook(self, mock_stripe, mock_get_ecs, mock_repo, async_client):
         """Should update billing account and provision ECS service on subscription.created."""
         mock_stripe.Webhook.construct_event.return_value = {
             "type": "customer.subscription.created",
@@ -136,27 +132,28 @@ class TestStripeWebhook:
         )
         mock_repo.update_subscription = AsyncMock(return_value={})
 
-        # Mock ECS manager
-        mock_ecs = AsyncMock()
-        mock_ecs.create_user_service.return_value = "openclaw-user_web"
-        mock_get_ecs.return_value = mock_ecs
+        # Mock BillingService.update_subscription
+        with patch("routers.billing.BillingService") as mock_billing_cls:
+            mock_billing_svc = AsyncMock()
+            mock_billing_cls.return_value = mock_billing_svc
 
-        # Mock workspace
-        mock_ws = MagicMock()
-        mock_get_workspace.return_value = mock_ws
+            # Mock ECS manager
+            mock_ecs = AsyncMock()
+            mock_ecs.provision_user_container = AsyncMock(return_value="openclaw-user_web")
+            mock_get_ecs.return_value = mock_ecs
 
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={
-                "stripe-signature": "test_sig",
-                "content-type": "application/json",
-            },
-        )
+            response = await async_client.post(
+                "/api/v1/billing/webhooks/stripe",
+                content=b'{"test": true}',
+                headers={
+                    "stripe-signature": "test_sig",
+                    "content-type": "application/json",
+                },
+            )
         assert response.status_code == 200
 
-        # Verify ECS provisioning was called first (creates access point + dir)
-        mock_ecs.create_user_service.assert_called_once()
+        # Verify ECS provisioning was called
+        mock_ecs.provision_user_container.assert_called_once()
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
@@ -181,19 +178,22 @@ class TestStripeWebhook:
                 "plan_tier": "starter",
             }
         )
-        mock_repo.update_subscription = AsyncMock(return_value={})
 
-        mock_ecs = AsyncMock()
-        mock_get_ecs.return_value = mock_ecs
+        with patch("routers.billing.BillingService") as mock_billing_cls:
+            mock_billing_svc = AsyncMock()
+            mock_billing_cls.return_value = mock_billing_svc
 
-        response = await async_client.post(
-            "/api/v1/billing/webhooks/stripe",
-            content=b'{"test": true}',
-            headers={
-                "stripe-signature": "test_sig",
-                "content-type": "application/json",
-            },
-        )
+            mock_ecs = AsyncMock()
+            mock_get_ecs.return_value = mock_ecs
+
+            response = await async_client.post(
+                "/api/v1/billing/webhooks/stripe",
+                content=b'{"test": true}',
+                headers={
+                    "stripe-signature": "test_sig",
+                    "content-type": "application/json",
+                },
+            )
         assert response.status_code == 200
 
         # Verify ECS stop was called

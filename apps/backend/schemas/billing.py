@@ -59,7 +59,7 @@ class PortalResponse(BaseModel):
 
 
 class UsageResponse(BaseModel):
-    period: UsagePeriod
+    period: UsagePeriod | None = None
     total_cost: float
     total_requests: int
     by_model: list[ModelUsage]

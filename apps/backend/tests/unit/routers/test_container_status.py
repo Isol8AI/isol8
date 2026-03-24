@@ -1,6 +1,6 @@
 """Tests for container endpoints: GET /status and POST /gateway/restart."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -9,21 +9,26 @@ class TestContainerStatus:
     """Test GET /api/v1/container/status."""
 
     @pytest.mark.asyncio
-    @patch("routers.container.container_repo")
-    async def test_returns_container_status(self, mock_repo, async_client):
+    @patch("routers.container.get_ecs_manager")
+    async def test_returns_container_status(self, mock_get_ecs, async_client):
         """Should return container metadata for authenticated user."""
-        mock_repo.get_by_user_id = AsyncMock(
-            return_value={
-                "user_id": "user_test_123",
-                "service_name": "openclaw-abc123",
-                "gateway_token": "secret-token-value",
-                "status": "running",
-                "substatus": None,
-                "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                "access_point_id": "fsap-test123",
-                "created_at": "2026-01-15T12:00:00+00:00",
-                "updated_at": "2026-01-15T14:00:00+00:00",
-            }
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "user_id": "user_test_123",
+                    "service_name": "openclaw-abc123",
+                    "gateway_token": "secret-token-value",
+                    "status": "running",
+                    "substatus": None,
+                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                    "access_point_id": "fsap-test123",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T14:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
         )
 
         response = await async_client.get("/api/v1/container/status")
@@ -37,21 +42,26 @@ class TestContainerStatus:
         assert "updated_at" in data
 
     @pytest.mark.asyncio
-    @patch("routers.container.container_repo")
-    async def test_excludes_sensitive_fields(self, mock_repo, async_client):
+    @patch("routers.container.get_ecs_manager")
+    async def test_excludes_sensitive_fields(self, mock_get_ecs, async_client):
         """Should never expose gateway_token, task_arn, or access_point_id."""
-        mock_repo.get_by_user_id = AsyncMock(
-            return_value={
-                "user_id": "user_test_123",
-                "service_name": "openclaw-abc123",
-                "gateway_token": "secret-token-value",
-                "status": "running",
-                "substatus": None,
-                "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
-                "access_point_id": "fsap-test123",
-                "created_at": "2026-01-15T12:00:00+00:00",
-                "updated_at": "2026-01-15T14:00:00+00:00",
-            }
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "user_id": "user_test_123",
+                    "service_name": "openclaw-abc123",
+                    "gateway_token": "secret-token-value",
+                    "status": "running",
+                    "substatus": None,
+                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                    "access_point_id": "fsap-test123",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T14:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
         )
 
         response = await async_client.get("/api/v1/container/status")
@@ -63,10 +73,13 @@ class TestContainerStatus:
         assert "task_definition_arn" not in data
 
     @pytest.mark.asyncio
-    @patch("routers.container.container_repo")
-    async def test_returns_404_without_container(self, mock_repo, async_client):
+    @patch("routers.container.get_ecs_manager")
+    async def test_returns_404_without_container(self, mock_get_ecs, async_client):
         """Should return 404 when user has no container."""
-        mock_repo.get_by_user_id = AsyncMock(return_value=None)
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        mock_ecs.get_service_status = AsyncMock(return_value=None)
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 404
 
@@ -90,8 +103,12 @@ class TestGatewayRestart:
     @pytest.fixture
     def running_container(self, mock_ecs_manager):
         """Set up ECS manager to return a running container with IP."""
-        container = MagicMock()
-        container.gateway_token = "test-gw-token"
+        container = {
+            "gateway_token": "test-gw-token",
+            "user_id": "user_test_123",
+            "service_name": "openclaw-test",
+            "status": "running",
+        }
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
         return container
 

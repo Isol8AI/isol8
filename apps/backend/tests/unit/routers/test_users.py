@@ -8,11 +8,14 @@ class TestSyncUser:
     """Tests for POST /api/v1/users/sync endpoint."""
 
     @pytest.mark.asyncio
+    @patch("routers.users.BillingService")
     @patch("routers.users.user_repo")
-    async def test_sync_creates_new_user(self, mock_repo, async_client):
+    async def test_sync_creates_new_user(self, mock_repo, mock_billing_cls, async_client):
         """Sync creates new user when not exists."""
         mock_repo.get = AsyncMock(return_value=None)
-        mock_repo.create = AsyncMock(return_value={"user_id": "user_test_123", "created_at": "2026-01-01T00:00:00Z"})
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_billing_svc = AsyncMock()
+        mock_billing_cls.return_value = mock_billing_svc
 
         response = await async_client.post("/api/v1/users/sync")
 

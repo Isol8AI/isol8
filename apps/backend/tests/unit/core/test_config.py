@@ -19,9 +19,9 @@ class TestSettings:
     def test_required_settings_exist(self):
         """Required settings are configured."""
         assert settings.CLERK_ISSUER is not None
-        assert settings.DATABASE_URL is not None
         assert hasattr(settings, "AWS_REGION")
         assert hasattr(settings, "CLERK_AUDIENCE")
+        assert hasattr(settings, "DYNAMODB_TABLE_PREFIX")
 
     def test_aws_region_default(self):
         """AWS_REGION has a default value."""

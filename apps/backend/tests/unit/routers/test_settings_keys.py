@@ -18,10 +18,12 @@ def _set_encryption_key():
 
 class TestSettingsKeys:
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_list_keys_empty(self, mock_svc, async_client):
+    @patch("routers.settings_keys.KeyService")
+    async def test_list_keys_empty(self, mock_svc_cls, async_client):
         """GET /settings/keys returns empty list initially."""
+        mock_svc = AsyncMock()
         mock_svc.list_keys = AsyncMock(return_value=[])
+        mock_svc_cls.return_value = mock_svc
         resp = await async_client.get("/api/v1/settings/keys")
         assert resp.status_code == 200
         data = resp.json()
@@ -29,10 +31,12 @@ class TestSettingsKeys:
         assert "supported_tools" in data
 
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_set_key(self, mock_svc, async_client):
+    @patch("routers.settings_keys.KeyService")
+    async def test_set_key(self, mock_svc_cls, async_client):
         """PUT /settings/keys/{tool_id} stores a key."""
+        mock_svc = AsyncMock()
         mock_svc.set_key = AsyncMock(return_value={"user_id": "user_test_123", "tool_id": "elevenlabs"})
+        mock_svc_cls.return_value = mock_svc
         resp = await async_client.put(
             "/api/v1/settings/keys/elevenlabs",
             json={"api_key": "sk-test-key-123"},
@@ -41,10 +45,8 @@ class TestSettingsKeys:
         assert resp.json()["tool_id"] == "elevenlabs"
 
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_set_key_unsupported_tool(self, mock_svc, async_client):
+    async def test_set_key_unsupported_tool(self, async_client):
         """PUT /settings/keys/{tool_id} rejects unsupported tools."""
-        mock_svc.set_key = AsyncMock(side_effect=ValueError("Unsupported tool"))
         resp = await async_client.put(
             "/api/v1/settings/keys/unknown_tool",
             json={"api_key": "sk-test"},
@@ -52,28 +54,34 @@ class TestSettingsKeys:
         assert resp.status_code == 400
 
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_delete_key(self, mock_svc, async_client):
+    @patch("routers.settings_keys.KeyService")
+    async def test_delete_key(self, mock_svc_cls, async_client):
         """DELETE /settings/keys/{tool_id} removes the key."""
+        mock_svc = AsyncMock()
         mock_svc.delete_key = AsyncMock(return_value=True)
+        mock_svc_cls.return_value = mock_svc
         resp = await async_client.delete("/api/v1/settings/keys/elevenlabs")
         assert resp.status_code == 200
 
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_delete_key_not_found(self, mock_svc, async_client):
+    @patch("routers.settings_keys.KeyService")
+    async def test_delete_key_not_found(self, mock_svc_cls, async_client):
         """DELETE /settings/keys/{tool_id} returns 404 when no key exists."""
+        mock_svc = AsyncMock()
         mock_svc.delete_key = AsyncMock(return_value=False)
+        mock_svc_cls.return_value = mock_svc
         resp = await async_client.delete("/api/v1/settings/keys/elevenlabs")
         assert resp.status_code == 404
 
     @pytest.mark.asyncio
-    @patch("routers.settings_keys.key_service")
-    async def test_list_keys_shows_configured(self, mock_svc, async_client):
+    @patch("routers.settings_keys.KeyService")
+    async def test_list_keys_shows_configured(self, mock_svc_cls, async_client):
         """GET /settings/keys shows configured tools without values."""
+        mock_svc = AsyncMock()
         mock_svc.list_keys = AsyncMock(
             return_value=[{"tool_id": "elevenlabs", "display_name": "ElevenLabs", "created_at": "2026-01-01T00:00:00Z"}]
         )
+        mock_svc_cls.return_value = mock_svc
         resp = await async_client.get("/api/v1/settings/keys")
         assert resp.status_code == 200
         data = resp.json()

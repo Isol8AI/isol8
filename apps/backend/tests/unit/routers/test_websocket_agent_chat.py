@@ -215,8 +215,12 @@ class TestProcessAgentChatBackground:
     @pytest.fixture
     def container_with_ip(self, mock_ecs_manager):
         """Set up ECS manager to return a running container with IP."""
-        container = MagicMock()
-        container.gateway_token = "test-gw-token"
+        container = {
+            "gateway_token": "test-gw-token",
+            "user_id": "user-1",
+            "service_name": "openclaw-test",
+            "status": "running",
+        }
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, "10.0.1.5"))
         return container
 

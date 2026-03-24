@@ -33,10 +33,10 @@ async def test_every_endpoint_has_operation_id(async_client):
 
 @pytest.mark.asyncio
 async def test_webhook_endpoint_has_summary(async_client):
-    """POST /webhooks/clerk should have a summary."""
+    """POST /billing/checkout should have a summary (webhooks router removed in DynamoDB migration)."""
     response = await async_client.get("/api/v1/openapi.json")
     spec = response.json()
-    path = spec["paths"]["/api/v1/webhooks/clerk"]["post"]
+    path = spec["paths"]["/api/v1/billing/checkout"]["post"]
     assert "summary" in path
 
 
