@@ -7,9 +7,6 @@ Each container gets a gateway auth token so it can bind to LAN
 """
 
 import json
-import time
-
-from core.containers.device_identity import base64url_encode
 
 
 def write_openclaw_config(
@@ -25,7 +22,7 @@ def write_openclaw_config(
     Args:
         region: AWS region for Bedrock.
         primary_model: Default model for agents.
-        gateway_token: Auth token for the gateway HTTP API.
+        gateway_token: Token used as API key for the search proxy.
         proxy_base_url: Base URL for the tool proxy (Perplexity search, etc.).
         provider: LLM provider to use ("bedrock" or "ollama").
         ollama_base_url: Base URL for Ollama server (e.g. "http://ollama:11434").
@@ -33,20 +30,29 @@ def write_openclaw_config(
     Returns:
         JSON string of the openclaw.json config.
     """
-    auth = {"mode": "token", "token": gateway_token} if gateway_token else {"mode": "none"}
+    # Trusted proxy auth — backend is the only path to the container (private subnet).
+    # OpenClaw trusts connections from the VPC CIDR and reads user identity from header.
+    auth = {
+        "mode": "trusted-proxy",
+        "trustedProxy": {
+            "userHeader": "x-forwarded-user",
+        },
+    }
 
-    # Build search config — Perplexity via our proxy
+    # Build search plugin config — Perplexity via our proxy (v2026.3.22+ format)
+    search_plugin = {}
     if gateway_token:
-        search_config = {
-            "enabled": True,
-            "provider": "perplexity",
+        search_plugin = {
             "perplexity": {
-                "apiKey": gateway_token,
-                "baseUrl": f"{proxy_base_url}/search",
+                "enabled": True,
+                "config": {
+                    "webSearch": {
+                        "apiKey": gateway_token,
+                        "baseUrl": f"{proxy_base_url}/search",
+                    },
+                },
             },
         }
-    else:
-        search_config = {"enabled": False}
 
     # Build provider-specific models config
     if provider == "ollama":
@@ -235,6 +241,7 @@ def write_openclaw_config(
             "mode": "local",
             "bind": "lan",
             "auth": auth,
+            "trustedProxies": ["10.0.0.0/8"],
             "controlUi": {
                 "enabled": False,
             },
@@ -288,7 +295,9 @@ def write_openclaw_config(
             "profile": "full",
             "deny": ["canvas", "nodes"],
             "web": {
-                "search": search_config,
+                "search": {"enabled": bool(gateway_token), "provider": "perplexity"}
+                if gateway_token
+                else {"enabled": False},
                 "fetch": {"enabled": True},
             },
             "media": {
@@ -312,7 +321,7 @@ def write_openclaw_config(
         },
         "plugins": {
             "slots": {},
-            "entries": {},
+            "entries": search_plugin,
         },
         "channels": {
             "telegram": {
@@ -349,34 +358,6 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     """
     config = {"servers": servers or {}}
     return json.dumps(config, indent=2)
-
-
-def write_paired_devices_config(device_identity: dict) -> str:
-    """Generate a paired.json config for pre-pairing a device with OpenClaw.
-
-    Args:
-        device_identity: Dict from generate_device_identity() with keys:
-            device_id, public_key_raw, private_key, private_key_pem.
-
-    Returns:
-        JSON string of the paired devices config.
-    """
-    now_ms = int(time.time() * 1000)
-    device_id = device_identity["device_id"]
-    paired_device = {
-        "deviceId": device_id,
-        "publicKey": base64url_encode(device_identity["public_key_raw"]),
-        "platform": "linux",
-        "clientId": "gateway-client",
-        "clientMode": "backend",
-        "role": "operator",
-        "roles": ["operator"],
-        "scopes": ["operator.admin"],
-        "approvedScopes": ["operator.admin"],
-        "createdAtMs": now_ms,
-        "approvedAtMs": now_ms,
-    }
-    return json.dumps({device_id: paired_device}, indent=2)
 
 
 def patch_openclaw_config(

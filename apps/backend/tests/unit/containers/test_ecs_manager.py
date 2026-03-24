@@ -109,7 +109,6 @@ def _make_container_dict(
     access_point_id=None,
     task_definition_arn=None,
     substatus=None,
-    device_private_key_pem=None,
 ):
     """Helper to create a container dict for mocking DynamoDB repo responses."""
     d = {
@@ -124,8 +123,6 @@ def _make_container_dict(
         d["task_definition_arn"] = task_definition_arn
     if substatus is not None:
         d["substatus"] = substatus
-    if device_private_key_pem is not None:
-        d["device_private_key_pem"] = device_private_key_pem
     return d
 
 

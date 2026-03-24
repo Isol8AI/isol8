@@ -12,8 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user
 from core.config import settings
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_mcporter_config, write_openclaw_config, write_paired_devices_config
-from core.containers.device_identity import generate_device_identity, load_device_identity
+from core.containers.config import write_mcporter_config, write_openclaw_config
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import container_repo
 
@@ -65,17 +64,11 @@ async def provision_container(
         service_name = await get_ecs_manager().create_user_service(user_id, gateway_token)
 
         # Step 2: Write all configs to EFS before the container boots.
-        identity = generate_device_identity()
-        container_row = await container_repo.get_by_user_id(user_id)
-        if container_row:
-            await container_repo.update_fields(user_id, {"device_private_key_pem": identity["private_key_pem"]})
-
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
         )
-        get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
         get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
 
@@ -117,19 +110,11 @@ async def redeploy_container(
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
-        # Load or generate device identity for paired.json
-        if container.get("device_private_key_pem"):
-            identity = load_device_identity(container["device_private_key_pem"])
-        else:
-            identity = generate_device_identity()
-            await container_repo.update_fields(user_id, {"device_private_key_pem": identity["private_key_pem"]})
-
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=container["gateway_token"],
             proxy_base_url=settings.PROXY_BASE_URL,
         )
-        get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
 
         await get_ecs_manager().start_user_service(user_id)

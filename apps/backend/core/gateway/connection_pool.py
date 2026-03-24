@@ -11,66 +11,18 @@ req/res/event protocol. Background reader task handles incoming messages:
 import asyncio
 import json
 import logging
-import time
 import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from websockets import connect as ws_connect
 
-from core.containers.device_identity import (
-    base64url_encode,
-    generate_device_identity,
-    load_device_identity,
-)
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
-
-
-def _build_device_auth_payload_v3(
-    device_id: str,
-    client_id: str,
-    client_mode: str,
-    role: str,
-    scopes: list[str],
-    signed_at_ms: int,
-    token: str | None,
-    nonce: str,
-    platform: str | None = None,
-    device_family: str | None = None,
-) -> str:
-    """Build v3 device auth payload string (matches OpenClaw buildDeviceAuthPayloadV3)."""
-    scopes_str = ",".join(scopes)
-    token_str = token or ""
-    platform_str = (platform or "").strip().lower()
-    device_family_str = (device_family or "").strip().lower()
-    return "|".join(
-        [
-            "v3",
-            device_id,
-            client_id,
-            client_mode,
-            role,
-            scopes_str,
-            str(signed_at_ms),
-            token_str,
-            nonce,
-            platform_str,
-            device_family_str,
-        ]
-    )
-
-
-def _sign_device_payload(private_key: Ed25519PrivateKey, payload: str) -> str:
-    """Sign payload with Ed25519 and return base64url-encoded signature."""
-    sig = private_key.sign(payload.encode("utf-8"))
-    return base64url_encode(sig)
 
 
 class GatewayConnection:
@@ -85,14 +37,12 @@ class GatewayConnection:
         user_id: str,
         ip: str,
         token: str,
-        device_identity: dict,
         management_api: Any,
         on_usage: Optional["GatewayConnection.UsageCallback"] = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
-        self._device_identity = device_identity
         self._management_api = management_api
         self._on_usage = on_usage
         self._ws: Any = None
@@ -124,41 +74,20 @@ class GatewayConnection:
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
-        """Complete OpenClaw connect handshake with Ed25519 device identity."""
+        """Complete OpenClaw connect handshake via trusted proxy auth.
+
+        The gateway is configured with gateway.auth.mode = "trusted-proxy".
+        It trusts connections from the VPC CIDR (10.0.0.0/8) and reads user
+        identity from the x-forwarded-user header passed in the connect params.
+        No device pairing or Ed25519 signing needed.
+        """
         # Step 1: receive connect.challenge
         raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
         challenge = json.loads(raw)
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
 
-        # Extract nonce from challenge
-        challenge_payload = challenge.get("payload", {})
-        nonce = challenge_payload.get("nonce", "")
-        if not nonce:
-            raise RuntimeError("connect.challenge missing nonce")
-
-        # Step 2: build device auth
-        identity = self._device_identity
-        client_id = "gateway-client"
-        client_mode = "backend"
-        client_platform = "linux"
-        role = "operator"
-        scopes = ["operator.admin"]
-        signed_at_ms = int(time.time() * 1000)
-
-        payload_str = _build_device_auth_payload_v3(
-            device_id=identity["device_id"],
-            client_id=client_id,
-            client_mode=client_mode,
-            role=role,
-            scopes=scopes,
-            signed_at_ms=signed_at_ms,
-            token=self.token,
-            nonce=nonce,
-            platform=client_platform,
-        )
-        signature = _sign_device_payload(identity["private_key"], payload_str)
-
+        # Step 2: send connect request — trusted proxy, no device auth
         connect_msg = {
             "type": "req",
             "id": str(uuid.uuid4()),
@@ -167,20 +96,15 @@ class GatewayConnection:
                 "minProtocol": 3,
                 "maxProtocol": 3,
                 "client": {
-                    "id": client_id,
+                    "id": "isol8-backend",
                     "version": "1.0.0",
-                    "platform": client_platform,
-                    "mode": client_mode,
+                    "platform": "linux",
+                    "mode": "backend",
                 },
-                "role": role,
-                "scopes": scopes,
-                "auth": {"token": self.token},
-                "device": {
-                    "id": identity["device_id"],
-                    "publicKey": base64url_encode(identity["public_key_raw"]),
-                    "signature": signature,
-                    "signedAt": signed_at_ms,
-                    "nonce": nonce,
+                "role": "operator",
+                "scopes": ["operator.admin"],
+                "trustedProxy": {
+                    "user": self.user_id,
                 },
             },
         }
@@ -497,41 +421,16 @@ class GatewayConnectionPool:
         self._management_api = management_api
         self._on_usage = on_usage
         self._connections: Dict[str, GatewayConnection] = {}
-        self._device_identities: Dict[str, dict] = {}  # user_id -> device identity
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
 
-    async def _get_or_create_device_identity(self, user_id: str) -> dict:
-        """Get cached device identity or load/generate from DB."""
-        if user_id in self._device_identities:
-            return self._device_identities[user_id]
-
-        container = await container_repo.get_by_user_id(user_id)
-        pem = container.get("device_private_key_pem") if container else None
-
-        if pem:
-            identity = load_device_identity(pem)
-        else:
-            identity = generate_device_identity()
-            await container_repo.update_fields(
-                user_id,
-                {
-                    "device_private_key_pem": identity["private_key_pem"],
-                },
-            )
-
-        self._device_identities[user_id] = identity
-        return identity
-
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
-        device_identity = await self._get_or_create_device_identity(user_id)
         conn = GatewayConnection(
             user_id=user_id,
             ip=ip,
             token=token,
-            device_identity=device_identity,
             management_api=self._management_api,
             on_usage=self._on_usage,
         )

@@ -19,9 +19,7 @@ from core.config import settings
 from core.containers.config import (
     write_mcporter_config,
     write_openclaw_config,
-    write_paired_devices_config,
 )
-from core.containers.device_identity import generate_device_identity
 from core.containers.workspace import get_workspace
 from core.repositories import container_repo
 
@@ -258,7 +256,7 @@ class EcsManager:
 
             # Step 3: Create ECS service with desiredCount=0 so the container
             # does NOT start yet -- the caller writes config files (openclaw.json,
-            # paired.json) to EFS before calling start_user_service().
+            # openclaw.json, mcporter.json) to EFS before calling start_user_service().
             create_kwargs = dict(
                 cluster=self._cluster,
                 serviceName=service_name,
@@ -721,22 +719,12 @@ class EcsManager:
         return service_name
 
     async def _write_user_configs(self, user_id: str, gateway_token: str) -> None:
-        """Write OpenClaw config files to the user's EFS workspace.
-
-        Also persists the device identity PEM to the DB so the connection
-        pool can authenticate with the same keypair written to paired.json.
-        """
-        identity = generate_device_identity()
-
+        """Write OpenClaw config files to the user's EFS workspace."""
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
         )
         workspace = get_workspace()
-        workspace.write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
-
-        # Persist device identity so connection pool uses the same keypair
-        await self._update_container(user_id, device_private_key_pem=identity["private_key_pem"])

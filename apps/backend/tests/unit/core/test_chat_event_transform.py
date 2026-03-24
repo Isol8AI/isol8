@@ -15,13 +15,11 @@ class TestIsConnected:
     """Tests for is_connected property (websockets v16 compat)."""
 
     def _make_conn(self):
-        from core.containers.device_identity import generate_device_identity
 
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
             token="t",
-            device_identity=generate_device_identity(),
             management_api=MagicMock(),
         )
 
@@ -175,13 +173,11 @@ class TestHandleMessage:
 
     @pytest.fixture
     def connection(self, mock_management_api):
-        from core.containers.device_identity import generate_device_identity
 
         conn = GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
-            device_identity=generate_device_identity(),
             management_api=mock_management_api,
         )
         conn._frontend_connections.add("conn-1")

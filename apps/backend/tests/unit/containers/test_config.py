@@ -38,18 +38,22 @@ class TestWriteOpenclawConfig:
         search = config["tools"]["web"]["search"]
         assert search["enabled"] is False
 
-    def test_config_uses_perplexity_proxy_for_search(self):
-        """Search uses Perplexity provider with proxy baseUrl."""
+    def test_config_uses_perplexity_plugin_for_search(self):
+        """Search uses Perplexity plugin with proxy baseUrl (v2026.3.22+ format)."""
         config = json.loads(
             write_openclaw_config(
                 gateway_token="tok_abc123",
             )
         )
+        # tools.web.search just enables + sets provider
         search = config["tools"]["web"]["search"]
         assert search["enabled"] is True
         assert search["provider"] == "perplexity"
-        assert search["perplexity"]["apiKey"] == "tok_abc123"
-        assert "proxy/search" in search["perplexity"]["baseUrl"]
+        # Actual config lives in plugins.entries.perplexity
+        plugin = config["plugins"]["entries"]["perplexity"]
+        assert plugin["enabled"] is True
+        assert plugin["config"]["webSearch"]["apiKey"] == "tok_abc123"
+        assert "proxy/search" in plugin["config"]["webSearch"]["baseUrl"]
 
     def test_config_full_profile_denies_canvas_nodes(self):
         """Tools profile is full and canvas/nodes are denied."""
@@ -69,16 +73,12 @@ class TestWriteOpenclawConfig:
         assert config["tools"]["media"]["image"]["enabled"] is True
 
     def test_gateway_mode_local(self):
-        """Gateway mode is local with no auth when no token provided."""
+        """Gateway mode is local with trusted-proxy auth."""
         config = json.loads(write_openclaw_config())
         assert config["gateway"]["mode"] == "local"
-        assert config["gateway"]["auth"]["mode"] == "none"
-
-    def test_gateway_auth_token(self):
-        """Gateway auth uses token mode when token is provided."""
-        config = json.loads(write_openclaw_config(gateway_token="my-secret"))
-        assert config["gateway"]["auth"]["mode"] == "token"
-        assert config["gateway"]["auth"]["token"] == "my-secret"
+        assert config["gateway"]["auth"]["mode"] == "trusted-proxy"
+        assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
+        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8"]
 
     def test_control_ui_disabled(self):
         """Control UI is disabled in production containers."""
@@ -304,59 +304,3 @@ class TestDeepMerge:
     def test_non_dict_override(self):
         """Non-dict values replace entire base."""
         assert _deep_merge({"a": {"b": 1}}, {"a": "string"}) == {"a": "string"}
-
-
-class TestWritePairedDevicesConfig:
-    """Test paired.json generation for pre-pairing device auth."""
-
-    def test_returns_valid_json(self):
-        from core.containers.device_identity import generate_device_identity
-        from core.containers.config import write_paired_devices_config
-
-        identity = generate_device_identity()
-        result = write_paired_devices_config(identity)
-        config = json.loads(result)
-        assert isinstance(config, dict)
-
-    def test_keyed_by_device_id(self):
-        from core.containers.device_identity import generate_device_identity
-        from core.containers.config import write_paired_devices_config
-
-        identity = generate_device_identity()
-        config = json.loads(write_paired_devices_config(identity))
-        assert identity["device_id"] in config
-
-    def test_device_entry_has_required_fields(self):
-        from core.containers.device_identity import generate_device_identity
-        from core.containers.config import write_paired_devices_config
-
-        identity = generate_device_identity()
-        config = json.loads(write_paired_devices_config(identity))
-        entry = config[identity["device_id"]]
-        assert entry["deviceId"] == identity["device_id"]
-        assert entry["role"] == "operator"
-        assert entry["roles"] == ["operator"]
-        assert entry["scopes"] == ["operator.admin"]
-        assert entry["approvedScopes"] == ["operator.admin"]
-        assert entry["platform"] == "linux"
-        assert entry["clientId"] == "gateway-client"
-        assert entry["clientMode"] == "backend"
-        assert isinstance(entry["createdAtMs"], int)
-        assert isinstance(entry["approvedAtMs"], int)
-
-    def test_public_key_matches_identity(self):
-        import base64
-        import hashlib
-        from core.containers.device_identity import generate_device_identity
-        from core.containers.config import write_paired_devices_config
-
-        identity = generate_device_identity()
-        config = json.loads(write_paired_devices_config(identity))
-        entry = config[identity["device_id"]]
-        # Decode the base64url publicKey and verify it matches
-        pub_key_b64 = entry["publicKey"]
-        padded = pub_key_b64 + "=" * (-len(pub_key_b64) % 4)
-        decoded = base64.urlsafe_b64decode(padded)
-        assert decoded == identity["public_key_raw"]
-        # Verify device_id is SHA-256 of decoded public key
-        assert hashlib.sha256(decoded).hexdigest() == identity["device_id"]
