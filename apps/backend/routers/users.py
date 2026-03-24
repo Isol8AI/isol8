@@ -3,14 +3,10 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.future import select
 
-from core.database import get_db
 from core.auth import get_current_user, AuthContext
+from core.repositories import user_repo
 from core.services.billing_service import BillingService
-from models.user import User
 from schemas.user_schemas import SyncUserResponse
 
 logger = logging.getLogger(__name__)
@@ -28,32 +24,24 @@ router = APIRouter()
         500: {"description": "Database error"},
     },
 )
-async def sync_user(auth: AuthContext = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+async def sync_user(auth: AuthContext = Depends(get_current_user)):
     user_id = auth.user_id
 
-    result = await db.execute(select(User).filter(User.id == user_id))
-    user = result.scalars().first()
+    existing = await user_repo.get(user_id)
 
-    if not user:
-        new_user = User(id=user_id)
-        db.add(new_user)
+    if not existing:
         try:
-            await db.commit()
+            await user_repo.put(user_id)
             status = "created"
-        except IntegrityError:
-            await db.rollback()
-            logger.debug("User sync race condition handled: %s", user_id)
-            status = "exists"
         except Exception as e:
             logger.error("Database error on user sync for %s: %s", user_id, e)
-            await db.rollback()
             raise HTTPException(status_code=500, detail="Database operation failed")
     else:
         status = "exists"
 
     # Ensure billing account exists (idempotent — covers users created before billing)
     try:
-        billing = BillingService(db)
+        billing = BillingService()
         await billing.create_customer_for_user(
             clerk_user_id=user_id,
             email="",

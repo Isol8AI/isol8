@@ -8,8 +8,6 @@ import logging
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings
@@ -17,8 +15,7 @@ from core.containers import get_ecs_manager, get_workspace
 from core.containers.config import write_mcporter_config, write_openclaw_config, write_paired_devices_config
 from core.containers.device_identity import generate_device_identity, load_device_identity
 from core.containers.ecs_manager import EcsManagerError
-from core.database import get_db
-from models.container import Container
+from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
@@ -48,17 +45,15 @@ async def require_non_production() -> None:
 )
 async def provision_container(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     user_id = auth.user_id
 
     # Check for existing service
-    result = await db.execute(select(Container).where(Container.user_id == user_id))
-    existing = result.scalar_one_or_none()
-    if existing and existing.status in ("running", "provisioning"):
+    existing = await container_repo.get_by_user_id(user_id)
+    if existing and existing.get("status") in ("running", "provisioning"):
         return {
             "status": "already_running",
-            "service_name": existing.service_name,
+            "service_name": existing.get("service_name"),
             "user_id": user_id,
         }
 
@@ -67,15 +62,13 @@ async def provision_container(
 
         # Step 1: Create ECS service (desiredCount=0) — creates access
         # point and EFS dir, but does NOT start the container yet.
-        service_name = await get_ecs_manager().create_user_service(user_id, gateway_token, db)
+        service_name = await get_ecs_manager().create_user_service(user_id, gateway_token)
 
         # Step 2: Write all configs to EFS before the container boots.
         identity = generate_device_identity()
-        container_result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container_row = container_result.scalar_one_or_none()
+        container_row = await container_repo.get_by_user_id(user_id)
         if container_row:
-            container_row.device_private_key_pem = identity["private_key_pem"]
-            await db.commit()
+            await container_repo.update_fields(user_id, {"device_private_key_pem": identity["private_key_pem"]})
 
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
@@ -87,7 +80,7 @@ async def provision_container(
         get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
 
         # Step 3: Now start the container — configs are on EFS.
-        await get_ecs_manager().start_user_service(user_id, db)
+        await get_ecs_manager().start_user_service(user_id)
 
         return {
             "status": "provisioned",
@@ -116,37 +109,34 @@ async def provision_container(
 )
 async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     user_id = auth.user_id
 
-    result = await db.execute(select(Container).where(Container.user_id == user_id))
-    container = result.scalar_one_or_none()
+    container = await container_repo.get_by_user_id(user_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
         # Load or generate device identity for paired.json
-        if container.device_private_key_pem:
-            identity = load_device_identity(container.device_private_key_pem)
+        if container.get("device_private_key_pem"):
+            identity = load_device_identity(container["device_private_key_pem"])
         else:
             identity = generate_device_identity()
-            container.device_private_key_pem = identity["private_key_pem"]
-            await db.commit()
+            await container_repo.update_fields(user_id, {"device_private_key_pem": identity["private_key_pem"]})
 
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
-            gateway_token=container.gateway_token,
+            gateway_token=container["gateway_token"],
             proxy_base_url=settings.PROXY_BASE_URL,
         )
         get_workspace().write_file(user_id, "devices/paired.json", write_paired_devices_config(identity))
         get_workspace().write_file(user_id, "openclaw.json", config_json)
 
-        await get_ecs_manager().start_user_service(user_id, db)
+        await get_ecs_manager().start_user_service(user_id)
 
         return {
             "status": "redeploying",
-            "service_name": container.service_name,
+            "service_name": container["service_name"],
             "user_id": user_id,
         }
     except EcsManagerError as e:
@@ -167,12 +157,11 @@ async def redeploy_container(
 )
 async def remove_container(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     user_id = auth.user_id
 
     try:
-        await get_ecs_manager().delete_user_service(user_id, db)
+        await get_ecs_manager().delete_user_service(user_id)
         return {"status": "removed"}
     except EcsManagerError as e:
         logger.error("Dev remove failed for user %s: %s", user_id, e)

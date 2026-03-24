@@ -3,11 +3,8 @@
 import logging
 from typing import Optional
 
-from sqlalchemy import delete, select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from core.encryption import decrypt, encrypt
-from models.user_api_key import UserApiKey
+from core.repositories import api_key_repo
 
 logger = logging.getLogger(__name__)
 
@@ -34,64 +31,35 @@ SUPPORTED_TOOLS = {
 class KeyService:
     """Manages user-provided API keys."""
 
-    def __init__(self, db: AsyncSession):
-        self.db = db
+    def __init__(self):
+        pass
 
-    async def set_key(self, user_id: str, tool_id: str, api_key: str) -> UserApiKey:
+    async def set_key(self, user_id: str, tool_id: str, api_key: str) -> dict:
         if tool_id not in SUPPORTED_TOOLS:
             raise ValueError(f"Unsupported tool: {tool_id}")
 
-        result = await self.db.execute(
-            select(UserApiKey).where(
-                UserApiKey.user_id == user_id,
-                UserApiKey.tool_id == tool_id,
-            )
-        )
-        existing = result.scalar_one_or_none()
-        if existing:
-            existing.encrypted_key = encrypt(api_key)
-            await self.db.flush()
-            return existing
-
-        key = UserApiKey(
+        encrypted = encrypt(api_key)
+        item = await api_key_repo.set_key(
             user_id=user_id,
             tool_id=tool_id,
-            encrypted_key=encrypt(api_key),
+            encrypted_key=encrypted,
         )
-        self.db.add(key)
-        await self.db.flush()
-        return key
+        return item
 
     async def delete_key(self, user_id: str, tool_id: str) -> bool:
-        result = await self.db.execute(
-            delete(UserApiKey).where(
-                UserApiKey.user_id == user_id,
-                UserApiKey.tool_id == tool_id,
-            )
-        )
-        return result.rowcount > 0
+        return await api_key_repo.delete_key(user_id, tool_id)
 
     async def list_keys(self, user_id: str) -> list[dict]:
-        result = await self.db.execute(
-            select(UserApiKey.tool_id, UserApiKey.created_at).where(
-                UserApiKey.user_id == user_id,
-            )
-        )
+        items = await api_key_repo.list_keys(user_id)
         return [
             {
-                "tool_id": row.tool_id,
-                "display_name": SUPPORTED_TOOLS.get(row.tool_id, {}).get("display_name", row.tool_id),
-                "created_at": row.created_at.isoformat() if row.created_at else None,
+                "tool_id": item["tool_id"],
+                "display_name": SUPPORTED_TOOLS.get(item["tool_id"], {}).get("display_name", item["tool_id"]),
+                "created_at": item.get("created_at"),
             }
-            for row in result.all()
+            for item in items
         ]
 
     async def get_key(self, user_id: str, tool_id: str) -> Optional[str]:
-        result = await self.db.execute(
-            select(UserApiKey).where(
-                UserApiKey.user_id == user_id,
-                UserApiKey.tool_id == tool_id,
-            )
-        )
-        key = result.scalar_one_or_none()
-        return decrypt(key.encrypted_key) if key else None
+        item = await api_key_repo.get_key(user_id, tool_id)
+        return decrypt(item["encrypted_key"]) if item else None

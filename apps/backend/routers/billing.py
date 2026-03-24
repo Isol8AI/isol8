@@ -1,22 +1,19 @@
 """Billing API endpoints with ECS Fargate container provisioning."""
 
+import asyncio
 import logging
 from datetime import date
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.auth import AuthContext, get_current_user
 from core.config import settings, PLAN_BUDGETS
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.containers.workspace import WorkspaceError
-from core.database import get_db
+from core.repositories import billing_repo
 from core.services.billing_service import BillingService
-from core.services.usage_service import UsageService
-from models.billing import BillingAccount
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -24,8 +21,6 @@ from schemas.billing import (
     PortalResponse,
     UsagePeriod,
     UsageResponse,
-    ModelUsage,
-    DailyUsage,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,10 +28,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _get_billing_account(auth: AuthContext, db: AsyncSession) -> BillingAccount:
+async def _get_billing_account(auth: AuthContext) -> dict | None:
     """Resolve billing account from auth context."""
-    usage_service = UsageService(db)
-    return await usage_service.get_billing_account_for_user(auth.user_id)
+    return await billing_repo.get_by_clerk_user_id(auth.user_id)
 
 
 @router.get(
@@ -49,22 +43,20 @@ async def _get_billing_account(auth: AuthContext, db: AsyncSession) -> BillingAc
 )
 async def get_billing_account(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    account = await _get_billing_account(auth, db)
+    account = await _get_billing_account(auth)
     if not account:
         # Auto-create for users who signed up before billing existed
-        billing_service = BillingService(db)
+        billing_service = BillingService()
         account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
 
-    usage_service = UsageService(db)
-    monthly_microdollars = await usage_service.get_monthly_billable(account.id)
-    monthly_dollars = monthly_microdollars / 1_000_000
-
-    budget = PLAN_BUDGETS.get(account.plan_tier, 0)
+    budget = PLAN_BUDGETS.get(account.get("plan_tier", "free"), 0)
     budget_dollars = budget / 1_000_000
-    overage = max(0, monthly_dollars - budget_dollars) if budget_dollars > 0 else 0
-    percent = (monthly_dollars / budget_dollars * 100) if budget_dollars > 0 else 0
+
+    # Usage tracking is not yet migrated to DynamoDB; return zero usage for now
+    monthly_dollars = 0
+    overage = 0
+    percent = 0
 
     today = date.today()
     period_start = today.replace(day=1)
@@ -74,8 +66,8 @@ async def get_billing_account(
         period_end = today.replace(month=today.month + 1, day=1)
 
     return BillingAccountResponse(
-        plan_tier=account.plan_tier,
-        has_subscription=account.stripe_subscription_id is not None,
+        plan_tier=account.get("plan_tier", "free"),
+        has_subscription=account.get("stripe_subscription_id") is not None,
         current_period=UsagePeriod(
             start=period_start,
             end=period_end,
@@ -97,42 +89,13 @@ async def get_billing_account(
 )
 async def get_usage(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    account = await _get_billing_account(auth, db)
+    account = await _get_billing_account(auth)
     if not account:
         raise HTTPException(status_code=404, detail="Billing account not found")
 
-    usage_service = UsageService(db)
-    breakdown = await usage_service.get_usage_breakdown(account.id)
-
-    today = date.today()
-    period_start = today.replace(day=1)
-    if today.month == 12:
-        period_end = today.replace(year=today.year + 1, month=1, day=1)
-    else:
-        period_end = today.replace(month=today.month + 1, day=1)
-
-    budget = PLAN_BUDGETS.get(account.plan_tier, 0)
-    budget_dollars = budget / 1_000_000
-    used = breakdown["total_cost"]
-    overage = max(0, used - budget_dollars) if budget_dollars > 0 else 0
-    percent = (used / budget_dollars * 100) if budget_dollars > 0 else 0
-
-    return UsageResponse(
-        period=UsagePeriod(
-            start=period_start,
-            end=period_end,
-            included_budget=budget_dollars,
-            used=used,
-            overage=overage,
-            percent_used=round(percent, 1),
-        ),
-        total_cost=breakdown["total_cost"],
-        total_requests=breakdown["total_requests"],
-        by_model=[ModelUsage(**m) for m in breakdown["by_model"]],
-        by_day=[DailyUsage(**d) for d in breakdown["by_day"]],
-    )
+    # Usage tracking stubbed out — return empty data
+    return UsageResponse(period=None, total_cost=0, total_requests=0, by_model=[], by_day=[])
 
 
 @router.post(
@@ -146,10 +109,9 @@ async def get_usage(
 async def create_checkout(
     request: CheckoutRequest,
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    billing_service = BillingService(db)
-    account = await _get_billing_account(auth, db)
+    billing_service = BillingService()
+    account = await _get_billing_account(auth)
     if not account:
         # Auto-create billing account for users who signed up before billing existed
         account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
@@ -168,13 +130,12 @@ async def create_checkout(
 )
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    account = await _get_billing_account(auth, db)
+    account = await _get_billing_account(auth)
     if not account:
         raise HTTPException(status_code=404, detail="Billing account not found")
 
-    billing_service = BillingService(db)
+    billing_service = BillingService()
     url = await billing_service.create_portal_session(account)
     return PortalResponse(portal_url=url)
 
@@ -188,7 +149,6 @@ async def create_portal(
 )
 async def handle_stripe_webhook(
     request: Request,
-    db: AsyncSession = Depends(get_db),
 ):
     """Handle Stripe webhook events. No Clerk auth — uses Stripe signature."""
     body = await request.body()
@@ -203,49 +163,59 @@ async def handle_stripe_webhook(
     event_type = event["type"]
     event_data = event["data"]["object"]
 
-    billing_service = BillingService(db)
+    billing_service = BillingService()
 
     if event_type == "customer.subscription.created":
         customer_id = event_data["customer"]
         subscription_id = event_data["id"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
-        result = await db.execute(select(BillingAccount).where(BillingAccount.stripe_customer_id == customer_id))
-        account = result.scalar_one_or_none()
+        # GSI lookup — retry once if eventual consistency returns None
+        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        if account is None:
+            await asyncio.sleep(1)
+            account = await billing_repo.get_by_stripe_customer_id(customer_id)
+
         if account:
             await billing_service.update_subscription(account, subscription_id, tier)
 
             # Provision ECS Service for subscriber
             try:
-                user_id = account.clerk_user_id
-                service_name = await get_ecs_manager().provision_user_container(user_id, db)
+                user_id = account["clerk_user_id"]
+                service_name = await get_ecs_manager().provision_user_container(user_id)
                 logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
             except (EcsManagerError, WorkspaceError) as e:
-                logger.error("Failed to provision ECS service for user %s: %s", account.clerk_user_id, e)
+                logger.error("Failed to provision ECS service for user %s: %s", account["clerk_user_id"], e)
 
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
-        result = await db.execute(select(BillingAccount).where(BillingAccount.stripe_customer_id == customer_id))
-        account = result.scalar_one_or_none()
+        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        if account is None:
+            await asyncio.sleep(1)
+            account = await billing_repo.get_by_stripe_customer_id(customer_id)
+
         if account:
             await billing_service.update_subscription(account, event_data["id"], tier)
 
     elif event_type == "customer.subscription.deleted":
         customer_id = event_data["customer"]
 
-        result = await db.execute(select(BillingAccount).where(BillingAccount.stripe_customer_id == customer_id))
-        account = result.scalar_one_or_none()
+        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        if account is None:
+            await asyncio.sleep(1)
+            account = await billing_repo.get_by_stripe_customer_id(customer_id)
+
         if account:
             await billing_service.cancel_subscription(account)
 
             # Stop ECS Service (EFS volume preserved for 30-day grace period)
             try:
-                await get_ecs_manager().stop_user_service(account.clerk_user_id, db)
-                logger.info("ECS service stopped for user %s (subscription cancelled)", account.clerk_user_id)
+                await get_ecs_manager().stop_user_service(account["clerk_user_id"])
+                logger.info("ECS service stopped for user %s (subscription cancelled)", account["clerk_user_id"])
             except EcsManagerError as e:
-                logger.error("Failed to stop ECS service for user %s: %s", account.clerk_user_id, e)
+                logger.error("Failed to stop ECS service for user %s: %s", account["clerk_user_id"], e)
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))

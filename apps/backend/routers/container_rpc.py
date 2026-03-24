@@ -19,13 +19,11 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
-from sqlalchemy.ext.asyncio import AsyncSession
 from websockets import connect as ws_connect
 
 from core.auth import AuthContext, get_current_user
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -136,10 +134,9 @@ async def _call_gateway_rpc(
 )
 async def gateway_restart(
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     ecs_manager = get_ecs_manager()
-    container, ip = await ecs_manager.resolve_running_container(auth.user_id, db)
+    container, ip = await ecs_manager.resolve_running_container(auth.user_id)
     if not container:
         raise HTTPException(status_code=404, detail="No running container")
     if not ip:
@@ -148,7 +145,7 @@ async def gateway_restart(
     try:
         await _call_gateway_rpc(
             ip=ip,
-            token=container.gateway_token,
+            token=container["gateway_token"],
             method="config.apply",
             params={},
         )
@@ -181,13 +178,12 @@ async def gateway_restart(
 async def container_rpc(
     body: RpcRequest,
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     user_id = auth.user_id
 
     # Look up container and discover task IP
     ecs_manager = get_ecs_manager()
-    container, ip = await ecs_manager.resolve_running_container(user_id, db)
+    container, ip = await ecs_manager.resolve_running_container(user_id)
     if not container:
         raise HTTPException(
             status_code=404,
@@ -199,7 +195,7 @@ async def container_rpc(
     try:
         result = await _call_gateway_rpc(
             ip=ip,
-            token=container.gateway_token,
+            token=container["gateway_token"],
             method=body.method,
             params=body.params,
         )
@@ -255,7 +251,6 @@ def _sanitize_filename(name: str) -> str:
 async def upload_files(
     files: List[UploadFile] = File(..., description="Files to upload"),
     auth: AuthContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
     if len(files) > MAX_FILES_PER_REQUEST:
         raise HTTPException(
@@ -265,7 +260,7 @@ async def upload_files(
 
     # Verify user has a container
     ecs_manager = get_ecs_manager()
-    container = await ecs_manager.get_service_status(auth.user_id, db)
+    container = await ecs_manager.get_service_status(auth.user_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 

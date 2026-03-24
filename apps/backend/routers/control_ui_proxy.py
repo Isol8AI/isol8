@@ -36,7 +36,6 @@ from websockets import connect as ws_connect
 from core.auth import _decode_token
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.database import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -88,13 +87,11 @@ def _get_session(session_id: str) -> _Session | None:
 
 async def _resolve_user_container(user_id: str):
     """Look up the user's running container. Returns (container, ip) or raises."""
-    async for db in get_db():
-        ecs = get_ecs_manager()
-        container, ip = await ecs.resolve_running_container(user_id, db)
-        if not container or not ip:
-            raise HTTPException(status_code=404, detail="No running container")
-        return container, ip
-    raise HTTPException(status_code=500, detail="Database unavailable")
+    ecs = get_ecs_manager()
+    container, ip = await ecs.resolve_running_container(user_id)
+    if not container or not ip:
+        raise HTTPException(status_code=404, detail="No running container")
+    return container, ip
 
 
 async def _validate_clerk_token(token: str) -> str:
@@ -137,7 +134,7 @@ async def proxy_root(
     _sessions[session_id] = _Session(
         user_id=user_id,
         ip=ip,
-        gateway_token=container.gateway_token,
+        gateway_token=container["gateway_token"],
     )
 
     # Fetch root page from gateway
@@ -273,7 +270,7 @@ async def proxy_websocket(ws: WebSocket):
 
             # Forward browser's connect message but replace auth token
             upstream_connect = dict(browser_connect)
-            upstream_connect.setdefault("params", {})["auth"] = {"token": container.gateway_token}
+            upstream_connect.setdefault("params", {})["auth"] = {"token": container["gateway_token"]}
             await upstream.send(json.dumps(upstream_connect))
 
             # Receive hello-ok from gateway and forward to browser
