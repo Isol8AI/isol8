@@ -16,7 +16,6 @@ import uuid
 from typing import Any, Callable, Coroutine, Dict, Optional, Set
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from sqlalchemy import select, update
 from websockets import connect as ws_connect
 
 from core.containers.device_identity import (
@@ -25,8 +24,7 @@ from core.containers.device_identity import (
     load_device_identity,
 )
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.database import get_session_factory
-from models.container import Container
+from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
@@ -387,7 +385,7 @@ class GatewayConnection:
                 )
 
             if event_name == "agent":
-                # Unthrottled agent events — smooth token-by-token streaming
+                # Unthrottled agent events -- smooth token-by-token streaming
                 stream = payload.get("stream", "")
                 if stream not in ("assistant", ""):
                     # Log non-assistant events (tool, lifecycle, error) for debugging
@@ -405,7 +403,7 @@ class GatewayConnection:
                     self._forward_to_frontends(transformed)
 
             elif event_name == "chat":
-                # Chat events — only terminal states.
+                # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
                 if state == "final":
@@ -509,22 +507,19 @@ class GatewayConnectionPool:
         if user_id in self._device_identities:
             return self._device_identities[user_id]
 
-        session_factory = get_session_factory()
-        async with session_factory() as session:
-            result = await session.execute(select(Container.device_private_key_pem).where(Container.user_id == user_id))
-            row = result.first()
-            pem = row[0] if row else None
+        container = await container_repo.get_by_user_id(user_id)
+        pem = container.get("device_private_key_pem") if container else None
 
-            if pem:
-                identity = load_device_identity(pem)
-            else:
-                identity = generate_device_identity()
-                await session.execute(
-                    update(Container)
-                    .where(Container.user_id == user_id)
-                    .values(device_private_key_pem=identity["private_key_pem"])
-                )
-                await session.commit()
+        if pem:
+            identity = load_device_identity(pem)
+        else:
+            identity = generate_device_identity()
+            await container_repo.update_fields(
+                user_id,
+                {
+                    "device_private_key_pem": identity["private_key_pem"],
+                },
+            )
 
         self._device_identities[user_id] = identity
         return identity

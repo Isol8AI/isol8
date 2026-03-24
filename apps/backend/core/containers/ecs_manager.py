@@ -14,8 +14,6 @@ import secrets
 import socket
 
 import boto3
-from sqlalchemy import select, update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from core.config import settings
 from core.containers.config import (
@@ -25,8 +23,7 @@ from core.containers.config import (
 )
 from core.containers.device_identity import generate_device_identity
 from core.containers.workspace import get_workspace
-from core.database import async_session_factory
-from models.container import Container
+from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +41,7 @@ class EcsManagerError(Exception):
 class EcsManager:
     """Manages per-user ECS Fargate services for OpenClaw gateways."""
 
-    def __init__(self, session_factory: async_sessionmaker | None = None):
+    def __init__(self):
         self._ecs = boto3.client("ecs", region_name=settings.AWS_REGION)
         self._efs = boto3.client("efs", region_name=settings.AWS_REGION)
         self._cluster = settings.ECS_CLUSTER_ARN
@@ -53,7 +50,6 @@ class EcsManager:
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
         self._efs_file_system_id = settings.EFS_FILE_SYSTEM_ID
-        self._session_factory = session_factory
 
     def _service_name(self, user_id: str) -> str:
         """Generate deterministic, collision-resistant service name from user_id.
@@ -200,45 +196,27 @@ class EcsManager:
     # Safe DB helpers
     # ------------------------------------------------------------------
 
-    def _get_session_factory(self) -> async_sessionmaker:
-        """Return the session factory, using the module-level default if not set at init."""
-        if self._session_factory is None:
-            self._session_factory = async_session_factory
-        return self._session_factory
-
     async def _update_container(self, user_id: str, **fields) -> None:
-        """Update container fields using a fresh session.
-
-        Uses the session factory to create an isolated session for each
-        update, avoiding 7s2a errors when pgbouncer drops connections
-        between long-running boto3 calls.
-        """
-        factory = self._get_session_factory()
-        async with factory() as db:
-            await db.execute(update(Container).where(Container.user_id == user_id).values(**fields))
-            await db.commit()
+        """Update container fields via the DynamoDB container repo."""
+        await container_repo.update_fields(user_id, fields)
 
     # ------------------------------------------------------------------
     # Service lifecycle
     # ------------------------------------------------------------------
 
-    async def create_user_service(self, user_id: str, gateway_token: str, db: AsyncSession) -> str:
+    async def create_user_service(self, user_id: str, gateway_token: str) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
         1. Upserts the Container DB record (status=provisioning) so frontend can poll
-        2. Creates a per-user EFS access point → substatus=efs_created
-        3. Registers a per-user task definition revision → substatus=task_registered
-        4. Creates the ECS service → substatus=service_created
+        2. Creates a per-user EFS access point -> substatus=efs_created
+        3. Registers a per-user task definition revision -> substatus=task_registered
+        4. Creates the ECS service -> substatus=service_created
 
         On failure, sets status=error, substatus=None, and rolls back AWS resources.
-
-        Substatus updates use fresh sessions (via _update_container) to avoid
-        7s2a errors when pgbouncer drops connections during slow AWS API calls.
 
         Args:
             user_id: Clerk user ID.
             gateway_token: Auth token for the OpenClaw gateway HTTP API.
-            db: Async database session.
 
         Returns:
             The ECS service name.
@@ -251,23 +229,15 @@ class EcsManager:
         task_def_arn = None
 
         # Step 0: Upsert container record EARLY so frontend can start polling
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container = result.scalar_one_or_none()
-        if container:
-            container.service_name = service_name
-            container.gateway_token = gateway_token
-            container.status = "provisioning"
-            container.substatus = None
-        else:
-            container = Container(
-                user_id=user_id,
-                service_name=service_name,
-                gateway_token=gateway_token,
-                status="provisioning",
-                substatus=None,
-            )
-            db.add(container)
-        await db.commit()
+        await container_repo.upsert(
+            user_id,
+            {
+                "service_name": service_name,
+                "gateway_token": gateway_token,
+                "status": "provisioning",
+                "substatus": None,
+            },
+        )
 
         try:
             # Step 1: Create per-user EFS access point
@@ -287,7 +257,7 @@ class EcsManager:
             )
 
             # Step 3: Create ECS service with desiredCount=0 so the container
-            # does NOT start yet — the caller writes config files (openclaw.json,
+            # does NOT start yet -- the caller writes config files (openclaw.json,
             # paired.json) to EFS before calling start_user_service().
             create_kwargs = dict(
                 cluster=self._cluster,
@@ -310,7 +280,7 @@ class EcsManager:
             self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
         except EcsManagerError:
-            # Mark container as error in DB (fresh session — safe even if connection died)
+            # Mark container as error in DB
             try:
                 await self._update_container(user_id, status="error", substatus=None)
             except Exception:
@@ -322,7 +292,7 @@ class EcsManager:
                 self._delete_access_point(access_point_id)
             raise
         except Exception as e:
-            # Mark container as error in DB (fresh session — safe even if connection died)
+            # Mark container as error in DB
             try:
                 await self._update_container(user_id, status="error", substatus=None)
             except Exception:
@@ -343,12 +313,11 @@ class EcsManager:
         logger.info("Created ECS service %s for user %s", service_name, user_id)
         return service_name
 
-    async def stop_user_service(self, user_id: str, db: AsyncSession) -> None:
+    async def stop_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 0 (stopped).
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Raises:
             EcsManagerError: If the ECS update_service call fails.
@@ -370,20 +339,17 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container = result.scalar_one_or_none()
+        container = await container_repo.get_by_user_id(user_id)
         if container:
-            container.status = "stopped"
-            await db.commit()
+            await container_repo.update_status(user_id, "stopped")
 
         logger.info("Stopped ECS service %s for user %s", service_name, user_id)
 
-    async def start_user_service(self, user_id: str, db: AsyncSession) -> None:
+    async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running) with forced new deployment.
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Raises:
             EcsManagerError: If the ECS update_service call fails.
@@ -406,15 +372,13 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to start ECS service: {e}", user_id)
 
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container = result.scalar_one_or_none()
+        container = await container_repo.get_by_user_id(user_id)
         if container:
-            container.status = "provisioning"
-            await db.commit()
+            await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
 
-    async def delete_user_service(self, user_id: str, db: AsyncSession) -> None:
+    async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
 
         1. Scale to 0 and delete ECS service
@@ -424,7 +388,6 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Raises:
             EcsManagerError: If the ECS API calls fail.
@@ -453,19 +416,17 @@ class EcsManager:
             raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        container = result.scalar_one_or_none()
+        container = await container_repo.get_by_user_id(user_id)
         if container:
             # Deregister per-user task definition
-            if container.task_definition_arn:
-                self._deregister_task_definition(container.task_definition_arn)
+            if container.get("task_definition_arn"):
+                self._deregister_task_definition(container["task_definition_arn"])
 
             # Delete per-user EFS access point
-            if container.access_point_id:
-                self._delete_access_point(container.access_point_id)
+            if container.get("access_point_id"):
+                self._delete_access_point(container["access_point_id"])
 
-            await db.delete(container)
-            await db.commit()
+            await container_repo.delete(user_id)
 
         logger.info("Deleted ECS service %s for user %s", service_name, user_id)
 
@@ -535,7 +496,7 @@ class EcsManager:
         except Exception:
             return False
 
-    async def resolve_running_container(self, user_id: str, db: AsyncSession) -> tuple[Container | None, str | None]:
+    async def resolve_running_container(self, user_id: str) -> tuple[dict | None, str | None]:
         """Look up a user's container and discover its task IP.
 
         Accepts containers in "provisioning" or "running" status.
@@ -544,41 +505,37 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Returns:
-            Tuple of (Container, task_ip) or (None, None) if no active container.
+            Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
-        result = await db.execute(
-            select(Container).where(
-                Container.user_id == user_id,
-                Container.status.in_(["provisioning", "running"]),
-            )
-        )
-        container = result.scalar_one_or_none()
-        if not container:
+        container = await container_repo.get_by_user_id(user_id)
+        if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 
-        ip = self.discover_ip(container.service_name)
+        ip = self.discover_ip(container["service_name"])
         if not ip:
             return container, None
 
-        # Auto-transition provisioning → running once the task is reachable
-        if container.status == "provisioning" and self.is_healthy(ip):
+        # Auto-transition provisioning -> running once the task is reachable
+        if container.get("status") == "provisioning" and self.is_healthy(ip):
             try:
-                container.substatus = "gateway_healthy"
-                container.status = "running"
-                await db.commit()
+                await container_repo.update_fields(
+                    user_id,
+                    {
+                        "substatus": "gateway_healthy",
+                        "status": "running",
+                    },
+                )
                 logger.info(
                     "Container %s for user %s transitioned to running",
-                    container.service_name,
+                    container["service_name"],
                     user_id,
                 )
+                # Update local dict to reflect changes
+                container["status"] = "running"
+                container["substatus"] = "gateway_healthy"
             except Exception:
-                # Connection may have been dropped during is_healthy() HTTP call.
-                # Rollback so the session is usable; status transition will happen
-                # on the next poll.
-                await db.rollback()
                 logger.warning(
                     "Failed to persist running status for user %s, will retry on next poll",
                     user_id,
@@ -586,18 +543,16 @@ class EcsManager:
 
         return container, ip
 
-    async def get_service_status(self, user_id: str, db: AsyncSession) -> Container | None:
+    async def get_service_status(self, user_id: str) -> dict | None:
         """Get the Container record for a user.
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Returns:
-            The Container model instance, or None if not found.
+            The container dict, or None if not found.
         """
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        return result.scalar_one_or_none()
+        return await container_repo.get_by_user_id(user_id)
 
     # ------------------------------------------------------------------
     # Full provisioning flow
@@ -617,20 +572,19 @@ class EcsManager:
             pass
         return None
 
-    async def provision_user_container(self, user_id: str, db: AsyncSession) -> str:
+    async def provision_user_container(self, user_id: str) -> str:
         """Provision or recover a user's container.
 
         Handles all scenarios:
-        1. No service exists → full provisioning (create service, write configs, start)
-        2. Service exists with 0 desired → write configs, scale up to 1
-        3. Service exists and running → force new deployment (restart)
-        4. Container in error state → clean up and re-provision
+        1. No service exists -> full provisioning (create service, write configs, start)
+        2. Service exists with 0 desired -> write configs, scale up to 1
+        3. Service exists and running -> force new deployment (restart)
+        4. Container in error state -> clean up and re-provision
 
         Preserves EFS data (agent files) across all scenarios.
 
         Args:
             user_id: Clerk user ID.
-            db: Async database session.
 
         Returns:
             The ECS service name.
@@ -641,8 +595,7 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         # Check current state
-        result = await db.execute(select(Container).where(Container.user_id == user_id))
-        existing = result.scalar_one_or_none()
+        existing = await container_repo.get_by_user_id(user_id)
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
@@ -651,15 +604,19 @@ class EcsManager:
             running = svc.get("runningCount", 0)
 
             if desired == 0:
-                # Service exists but stopped — write fresh configs and scale up
+                # Service exists but stopped -- write fresh configs and scale up
                 logger.info("Service %s exists with 0 desired, scaling up", service_name)
-                gateway_token = existing.gateway_token if existing else secrets.token_urlsafe(32)
+                gateway_token = existing.get("gateway_token") if existing else secrets.token_urlsafe(32)
 
                 # Update gateway token and write configs
                 if existing:
-                    existing.status = "provisioning"
-                    existing.substatus = "restarting"
-                    await db.commit()
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "provisioning",
+                            "substatus": "restarting",
+                        },
+                    )
 
                 try:
                     await self._write_user_configs(user_id, gateway_token)
@@ -667,7 +624,7 @@ class EcsManager:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
                 try:
-                    await self.start_user_service(user_id, db)
+                    await self.start_user_service(user_id)
                 except EcsManagerError:
                     await self._update_container(user_id, status="error", substatus=None)
                     raise
@@ -675,12 +632,20 @@ class EcsManager:
                 return service_name
 
             elif running > 0:
-                # Service exists and running — force new deployment
-                logger.info("Service %s running (%d tasks), forcing new deployment", service_name, running)
+                # Service exists and running -- force new deployment
+                logger.info(
+                    "Service %s running (%d tasks), forcing new deployment",
+                    service_name,
+                    running,
+                )
                 if existing:
-                    existing.status = "provisioning"
-                    existing.substatus = "redeploying"
-                    await db.commit()
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "provisioning",
+                            "substatus": "redeploying",
+                        },
+                    )
 
                 try:
                     self._ecs.update_service(
@@ -695,35 +660,48 @@ class EcsManager:
                 return service_name
 
             else:
-                # Desired > 0 but not running yet — ECS is working on it, just wait
-                logger.info("Service %s has %d desired, %d running — ECS is starting", service_name, desired, running)
-                if existing and existing.status != "provisioning":
-                    existing.status = "provisioning"
-                    existing.substatus = "starting"
-                    await db.commit()
+                # Desired > 0 but not running yet -- ECS is working on it, just wait
+                logger.info(
+                    "Service %s has %d desired, %d running -- ECS is starting",
+                    service_name,
+                    desired,
+                    running,
+                )
+                if existing and existing.get("status") != "provisioning":
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "provisioning",
+                            "substatus": "starting",
+                        },
+                    )
                 return service_name
 
-        # --- Scenario: No service exists — full provisioning ---
+        # --- Scenario: No service exists -- full provisioning ---
         logger.info("No active service for user %s, full provisioning", user_id)
 
         # Clean up stale DB record if in error state
-        if existing and existing.status == "error":
-            if existing.task_definition_arn:
+        if existing and existing.get("status") == "error":
+            if existing.get("task_definition_arn"):
                 try:
-                    self._deregister_task_definition(existing.task_definition_arn)
+                    self._deregister_task_definition(existing["task_definition_arn"])
                 except Exception:
                     pass
-                existing.task_definition_arn = None
-            # Don't delete access point — preserves user's EFS data
-            existing.status = "provisioning"
-            existing.substatus = None
-            await db.commit()
+            # Don't delete access point -- preserves user's EFS data
+            await container_repo.update_fields(
+                user_id,
+                {
+                    "task_definition_arn": None,
+                    "status": "provisioning",
+                    "substatus": None,
+                },
+            )
 
         # Step 1: Generate gateway token
         gateway_token = secrets.token_urlsafe(32)
 
         # Step 2: Create ECS service (desiredCount=0)
-        service_name = await self.create_user_service(user_id, gateway_token, db)
+        service_name = await self.create_user_service(user_id, gateway_token)
 
         # Step 3: Write configs to EFS
         try:
@@ -734,7 +712,7 @@ class EcsManager:
 
         # Step 4: Start the container
         try:
-            await self.start_user_service(user_id, db)
+            await self.start_user_service(user_id)
         except EcsManagerError:
             await self._update_container(user_id, status="error", substatus=None)
             raise
