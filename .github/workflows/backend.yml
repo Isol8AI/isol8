@@ -21,20 +21,6 @@ jobs:
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: pgvector/pgvector:pg15
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: isol8_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
 
     steps:
       - name: Checkout code
@@ -53,20 +39,14 @@ jobs:
           uv run ruff format --check .
         working-directory: apps/backend
 
-      - name: Initialize database schema
-        env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/isol8_test
-          CLERK_ISSUER: https://test.clerk.accounts.dev
-          HUGGINGFACE_TOKEN: test_token
-          DEBUG: "false"
-        run: uv run python init_db.py --reset
-        working-directory: apps/backend
-
       - name: Run tests
         env:
-          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/isol8_test
           CLERK_ISSUER: https://test.clerk.accounts.dev
           HUGGINGFACE_TOKEN: test_token
+          DYNAMODB_TABLE_PREFIX: isol8-test-
+          AWS_DEFAULT_REGION: us-east-1
+          AWS_ACCESS_KEY_ID: testing
+          AWS_SECRET_ACCESS_KEY: testing
           DEBUG: "false"
         run: uv run pytest tests/ -v --cov=. --cov-report=xml --cov-report=term-missing
         working-directory: apps/backend
