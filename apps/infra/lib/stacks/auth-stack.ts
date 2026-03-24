@@ -27,10 +27,10 @@ export class AuthStack extends cdk.Stack {
 
     const env = props.environment;
 
-    // KMS key for general encryption (EBS, EFS, RDS)
+    // KMS key for general encryption (EBS, EFS, DynamoDB)
     this.kmsKey = new kms.Key(this, "GeneralEncryptionKey", {
       enableKeyRotation: true,
-      description: `Isol8 ${env} general encryption key (EBS, EFS, RDS)`,
+      description: `Isol8 ${env} general encryption key (EBS, EFS, DynamoDB)`,
       alias: `isol8-${env}-general`,
     });
 
