@@ -1,35 +1,31 @@
 """Tests for container endpoints: GET /status and POST /gateway/restart."""
 
-from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-from models.container import Container
 
 
 class TestContainerStatus:
     """Test GET /api/v1/container/status."""
 
-    @pytest.fixture
-    async def container(self, db_session):
-        c = Container(
-            user_id="user_test_123",
-            service_name="openclaw-abc123",
-            gateway_token="secret-token-value",
-            status="running",
-            task_arn="arn:aws:ecs:us-east-1:123456789:task/test-task",
-            access_point_id="fsap-test123",
-            created_at=datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc),
-            updated_at=datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc),
-        )
-        db_session.add(c)
-        await db_session.commit()
-        return c
-
     @pytest.mark.asyncio
-    async def test_returns_container_status(self, async_client, container):
+    @patch("routers.container.container_repo")
+    async def test_returns_container_status(self, mock_repo, async_client):
         """Should return container metadata for authenticated user."""
+        mock_repo.get_by_user_id = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "service_name": "openclaw-abc123",
+                "gateway_token": "secret-token-value",
+                "status": "running",
+                "substatus": None,
+                "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                "access_point_id": "fsap-test123",
+                "created_at": "2026-01-15T12:00:00+00:00",
+                "updated_at": "2026-01-15T14:00:00+00:00",
+            }
+        )
+
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         data = response.json()
@@ -41,8 +37,23 @@ class TestContainerStatus:
         assert "updated_at" in data
 
     @pytest.mark.asyncio
-    async def test_excludes_sensitive_fields(self, async_client, container):
+    @patch("routers.container.container_repo")
+    async def test_excludes_sensitive_fields(self, mock_repo, async_client):
         """Should never expose gateway_token, task_arn, or access_point_id."""
+        mock_repo.get_by_user_id = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "service_name": "openclaw-abc123",
+                "gateway_token": "secret-token-value",
+                "status": "running",
+                "substatus": None,
+                "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                "access_point_id": "fsap-test123",
+                "created_at": "2026-01-15T12:00:00+00:00",
+                "updated_at": "2026-01-15T14:00:00+00:00",
+            }
+        )
+
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 200
         data = response.json()
@@ -52,8 +63,10 @@ class TestContainerStatus:
         assert "task_definition_arn" not in data
 
     @pytest.mark.asyncio
-    async def test_returns_404_without_container(self, async_client):
+    @patch("routers.container.container_repo")
+    async def test_returns_404_without_container(self, mock_repo, async_client):
         """Should return 404 when user has no container."""
+        mock_repo.get_by_user_id = AsyncMock(return_value=None)
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 404
 

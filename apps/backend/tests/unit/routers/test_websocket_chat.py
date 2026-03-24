@@ -45,15 +45,6 @@ def mock_management_api():
         yield mock_client
 
 
-@pytest.fixture
-def mock_session_factory():
-    """Mock database session factory."""
-    with patch("routers.websocket_chat.get_session_factory") as mock_getter:
-        mock_factory = MagicMock()
-        mock_getter.return_value = mock_factory
-        yield mock_factory
-
-
 @pytest.fixture(autouse=True)
 def mock_gateway_pool():
     """Mock gateway connection pool (autouse since it's called in connect/disconnect)."""

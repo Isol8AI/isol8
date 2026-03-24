@@ -22,16 +22,9 @@ class TestChannelRouter:
         mock_ecs = AsyncMock()
         mock_ecs.resolve_running_container = AsyncMock(return_value=(mock_container, "10.0.1.5"))
 
-        mock_session_factory = MagicMock()
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session_factory.return_value = mock_session
-
         with (
             patch("routers.channels.get_gateway_pool", return_value=mock_pool),
             patch("routers.channels.get_ecs_manager", return_value=mock_ecs),
-            patch("routers.channels.get_session_factory", return_value=mock_session_factory),
         ):
             yield mock_pool
 
@@ -62,13 +55,7 @@ class TestChannelRouter:
         mock_pool = AsyncMock()
         mock_pool_fn.return_value = mock_pool
 
-        with patch("routers.channels.get_session_factory") as mock_sf:
-            mock_session = AsyncMock()
-            mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_session.__aexit__ = AsyncMock(return_value=None)
-            mock_sf.return_value = MagicMock(return_value=mock_session)
-
-            resp = await async_client.get("/api/v1/channels")
+        resp = await async_client.get("/api/v1/channels")
         assert resp.status_code == 200
         assert resp.json()["channels"] == []
 

@@ -197,16 +197,6 @@ class TestProcessAgentChatBackground:
             yield manager
 
     @pytest.fixture
-    def mock_session_factory(self):
-        with patch("routers.websocket_chat.get_session_factory") as mock_getter:
-            factory = MagicMock()
-            session = AsyncMock()
-            factory.return_value.__aenter__ = AsyncMock(return_value=session)
-            factory.return_value.__aexit__ = AsyncMock(return_value=False)
-            mock_getter.return_value = factory
-            yield factory
-
-    @pytest.fixture
     def mock_pool(self):
         with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
             pool = AsyncMock()
@@ -231,9 +221,7 @@ class TestProcessAgentChatBackground:
         return container
 
     @pytest.mark.asyncio
-    async def test_sends_chat_rpc(
-        self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api, container_with_ip
-    ):
+    async def test_sends_chat_rpc(self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip):
         """Should send chat.send RPC via the gateway pool."""
         await _process_agent_chat_background(
             connection_id="conn-1",
@@ -253,7 +241,7 @@ class TestProcessAgentChatBackground:
         assert call_kwargs["token"] == "test-gw-token"
 
     @pytest.mark.asyncio
-    async def test_no_container_sends_error(self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api):
+    async def test_no_container_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
         """No container should send error to frontend, not call pool."""
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(None, None))
         await _process_agent_chat_background(
@@ -269,7 +257,7 @@ class TestProcessAgentChatBackground:
         assert "No container" in sent_msg["message"]
 
     @pytest.mark.asyncio
-    async def test_no_ip_sends_error(self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api):
+    async def test_no_ip_sends_error(self, mock_ecs_manager, mock_pool, mock_mgmt_api):
         """Container without IP should send starting-up error."""
         container = MagicMock()
         mock_ecs_manager.resolve_running_container = AsyncMock(return_value=(container, None))
@@ -286,7 +274,7 @@ class TestProcessAgentChatBackground:
 
     @pytest.mark.asyncio
     async def test_rpc_error_sends_error_to_frontend(
-        self, mock_ecs_manager, mock_session_factory, mock_pool, mock_mgmt_api, container_with_ip
+        self, mock_ecs_manager, mock_pool, mock_mgmt_api, container_with_ip
     ):
         """RPC failure should send error message to frontend."""
         mock_pool.send_rpc = AsyncMock(side_effect=RuntimeError("Connection lost"))

@@ -10,7 +10,6 @@ Validates that the generated OpenAPI spec includes:
 
 import pytest
 from httpx import AsyncClient, ASGITransport
-from unittest.mock import AsyncMock, MagicMock
 
 
 EXPECTED_TAGS = [
@@ -31,16 +30,6 @@ async def openapi_spec():
 
     # Reset cached schema so custom_openapi regenerates it
     app.openapi_schema = None
-
-    mock_db = AsyncMock()
-    mock_db.execute = AsyncMock(return_value=MagicMock())
-
-    async def mock_get_db():
-        yield mock_db
-
-    from core.database import get_db
-
-    app.dependency_overrides[get_db] = mock_get_db
 
     try:
         transport = ASGITransport(app=app)

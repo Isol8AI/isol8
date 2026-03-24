@@ -2,15 +2,15 @@
 Tests for health check endpoint.
 
 The health endpoint must return:
-- HTTP 200 with {"status": "healthy"} when all checks pass
-- HTTP 503 with {"status": "unhealthy"} when any check fails
+- HTTP 200 with {"status": "healthy"} when DynamoDB is reachable
+- HTTP 503 with {"status": "unhealthy"} when DynamoDB is not reachable
 
 This is critical for ALB health checks - returning 200 on failure
 would cause ALB to route traffic to unhealthy instances.
 """
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock, patch
 from httpx import AsyncClient, ASGITransport
 
 
@@ -18,24 +18,17 @@ class TestHealthEndpoint:
     """Tests for /health endpoint."""
 
     @pytest.mark.asyncio
-    async def test_health_returns_200_when_database_connected(self):
-        """Health endpoint returns 200 when database is healthy."""
+    async def test_health_returns_200_when_dynamodb_connected(self):
+        """Health endpoint returns 200 when DynamoDB is reachable."""
         from main import app
 
-        # Mock a successful database query
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(return_value=MagicMock())
+        mock_table = MagicMock()
+        mock_table.load = MagicMock()  # table.load() succeeds
 
-        async def mock_get_db():
-            yield mock_db
-
-        app.dependency_overrides = {}
-
-        from core.database import get_db
-
-        app.dependency_overrides[get_db] = mock_get_db
-
-        try:
+        with (
+            patch("core.dynamodb.get_table", return_value=mock_table),
+            patch("core.dynamodb.run_in_thread", return_value=None),
+        ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.get("/health")
@@ -43,29 +36,22 @@ class TestHealthEndpoint:
             assert response.status_code == 200
             data = response.json()
             assert data["status"] == "healthy"
-            assert data["database"] == "connected"
-        finally:
-            app.dependency_overrides = {}
+            assert data["database"] == "dynamodb"
 
     @pytest.mark.asyncio
-    async def test_health_returns_503_when_database_disconnected(self):
-        """Health endpoint returns 503 when database check fails."""
+    async def test_health_returns_503_when_dynamodb_unreachable(self):
+        """Health endpoint returns 503 when DynamoDB check fails."""
         from main import app
 
-        # Mock a failed database query
-        mock_db = AsyncMock()
-        mock_db.execute = AsyncMock(side_effect=Exception("Connection refused"))
+        async def failing_run_in_thread(func, *args, **kwargs):
+            raise Exception("Could not connect to DynamoDB")
 
-        async def mock_get_db():
-            yield mock_db
+        mock_table = MagicMock()
 
-        app.dependency_overrides = {}
-
-        from core.database import get_db
-
-        app.dependency_overrides[get_db] = mock_get_db
-
-        try:
+        with (
+            patch("core.dynamodb.get_table", return_value=mock_table),
+            patch("core.dynamodb.run_in_thread", side_effect=failing_run_in_thread),
+        ):
             transport = ASGITransport(app=app)
             async with AsyncClient(transport=transport, base_url="http://test") as client:
                 response = await client.get("/health")
@@ -74,6 +60,4 @@ class TestHealthEndpoint:
             assert response.status_code == 503
             data = response.json()
             assert data["status"] == "unhealthy"
-            assert data["database"] == "disconnected"
-        finally:
-            app.dependency_overrides = {}
+            assert "error" in data
