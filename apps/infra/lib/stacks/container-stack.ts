@@ -211,6 +211,9 @@ export class ContainerStack extends cdk.Stack {
       command: ["sh", "-c", startupCommand],
       user: "0:0",
       workingDirectory: "/home/node",
+      environment: {
+        HOME: "/home/node",
+      },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
         logGroup: openclawLogGroup,
