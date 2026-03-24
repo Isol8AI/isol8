@@ -1,26 +1,33 @@
-"""Tests for BillingService."""
+"""Tests for BillingService (DynamoDB-backed)."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy import select
 
-from core.services.billing_service import BillingService
-from models.billing import BillingAccount
+from core.services.billing_service import BillingService, BillingServiceError
 
 
 class TestBillingServiceCreateCustomer:
     """Test Stripe customer creation."""
 
     @pytest.fixture
-    def service(self, db_session):
-        return BillingService(db_session)
+    def service(self):
+        return BillingService()
 
     @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
-    async def test_create_customer_for_user(self, mock_stripe, service, db_session):
+    async def test_create_customer_for_user(self, mock_stripe, mock_repo, service):
         """Should create Stripe customer and billing account for user."""
+        mock_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_new_123")
+        mock_repo.get_or_create = AsyncMock(
+            return_value={
+                "clerk_user_id": "user_new_123",
+                "stripe_customer_id": "cus_new_123",
+                "plan_tier": "free",
+            }
+        )
 
         account = await service.create_customer_for_user(
             clerk_user_id="user_new_123",
@@ -28,51 +35,51 @@ class TestBillingServiceCreateCustomer:
         )
 
         mock_stripe.Customer.create.assert_called_once()
-        assert account.clerk_user_id == "user_new_123"
-        assert account.stripe_customer_id == "cus_new_123"
-        assert account.plan_tier == "free"
+        assert account["clerk_user_id"] == "user_new_123"
+        assert account["stripe_customer_id"] == "cus_new_123"
+        assert account["plan_tier"] == "free"
 
     @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
-    async def test_create_customer_idempotent(self, mock_stripe, service, db_session):
+    async def test_create_customer_idempotent(self, mock_stripe, mock_repo, service):
         """Should return existing account if already created."""
-        # Create first
-        mock_stripe.Customer.create.return_value = MagicMock(id="cus_idem")
-        first = await service.create_customer_for_user(
+        existing = {
+            "clerk_user_id": "user_idem",
+            "stripe_customer_id": "cus_idem",
+            "plan_tier": "free",
+            "id": "acc-123",
+        }
+        mock_repo.get_by_clerk_user_id = AsyncMock(return_value=existing)
+
+        result = await service.create_customer_for_user(
             clerk_user_id="user_idem",
             email="idem@example.com",
         )
 
-        # Second call should return same account
-        second = await service.create_customer_for_user(
-            clerk_user_id="user_idem",
-            email="idem@example.com",
-        )
-        assert first.id == second.id
-        # Stripe should only be called once
-        assert mock_stripe.Customer.create.call_count == 1
+        assert result["id"] == "acc-123"
+        mock_stripe.Customer.create.assert_not_called()
+        mock_repo.get_or_create.assert_not_called()
 
 
 class TestBillingServiceCheckout:
     """Test Stripe Checkout session creation."""
 
     @pytest.fixture
-    async def billing_account(self, db_session):
-        account = BillingAccount(
-            clerk_user_id="user_checkout",
-            stripe_customer_id="cus_checkout",
-        )
-        db_session.add(account)
-        await db_session.commit()
-        return account
+    def billing_account(self):
+        return {
+            "clerk_user_id": "user_checkout",
+            "stripe_customer_id": "cus_checkout",
+        }
 
     @pytest.fixture
-    def service(self, db_session):
-        return BillingService(db_session)
+    def service(self):
+        return BillingService()
 
     @pytest.mark.asyncio
     @patch(
-        "core.services.billing_service.PLAN_PRICES", {"starter": {"fixed": "price_starter", "metered": "price_metered"}}
+        "core.services.billing_service.PLAN_PRICES",
+        {"starter": {"fixed": "price_starter", "metered": "price_metered"}},
     )
     @patch("core.services.billing_service.stripe")
     async def test_create_checkout_session(self, mock_stripe, service, billing_account):
@@ -88,7 +95,10 @@ class TestBillingServiceCheckout:
         mock_stripe.checkout.Session.create.assert_called_once()
 
     @pytest.mark.asyncio
-    @patch("core.services.billing_service.PLAN_PRICES", {"pro": {"fixed": "price_pro", "metered": "price_metered"}})
+    @patch(
+        "core.services.billing_service.PLAN_PRICES",
+        {"pro": {"fixed": "price_pro", "metered": "price_metered"}},
+    )
     @patch("core.services.billing_service.stripe")
     async def test_checkout_passes_plan_tier_metadata(self, mock_stripe, service, billing_account):
         """Should pass plan_tier metadata so webhook can read the tier."""
@@ -100,11 +110,12 @@ class TestBillingServiceCheckout:
         assert call_kwargs["subscription_data"]["metadata"]["plan_tier"] == "pro"
 
     @pytest.mark.asyncio
-    @patch("core.services.billing_service.PLAN_PRICES", {"empty_tier": {"fixed": "", "metered": ""}})
+    @patch(
+        "core.services.billing_service.PLAN_PRICES",
+        {"empty_tier": {"fixed": "", "metered": ""}},
+    )
     async def test_checkout_rejects_empty_price_ids(self, service, billing_account):
         """Should raise error when no price IDs are configured for tier."""
-        from core.services.billing_service import BillingServiceError
-
         with pytest.raises(BillingServiceError, match="No Stripe price IDs configured"):
             await service.create_checkout_session(billing_account=billing_account, tier="empty_tier")
 
@@ -113,18 +124,15 @@ class TestBillingServicePortal:
     """Test Stripe Customer Portal session."""
 
     @pytest.fixture
-    async def billing_account(self, db_session):
-        account = BillingAccount(
-            clerk_user_id="user_portal",
-            stripe_customer_id="cus_portal",
-        )
-        db_session.add(account)
-        await db_session.commit()
-        return account
+    def billing_account(self):
+        return {
+            "clerk_user_id": "user_portal",
+            "stripe_customer_id": "cus_portal",
+        }
 
     @pytest.fixture
-    def service(self, db_session):
-        return BillingService(db_session)
+    def service(self):
+        return BillingService()
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.stripe")
@@ -141,43 +149,52 @@ class TestBillingServiceSubscription:
     """Test subscription management."""
 
     @pytest.fixture
-    async def billing_account(self, db_session):
-        account = BillingAccount(
-            clerk_user_id="user_sub",
-            stripe_customer_id="cus_sub",
-        )
-        db_session.add(account)
-        await db_session.commit()
-        return account
+    def billing_account(self):
+        return {
+            "clerk_user_id": "user_sub",
+            "stripe_customer_id": "cus_sub",
+        }
 
     @pytest.fixture
-    def service(self, db_session):
-        return BillingService(db_session)
+    def service(self):
+        return BillingService()
 
     @pytest.mark.asyncio
-    async def test_update_subscription(self, service, billing_account, db_session):
+    @patch("core.services.billing_service.billing_repo")
+    async def test_update_subscription(self, mock_repo, service, billing_account):
         """Should update billing account with subscription details."""
-        account_id = billing_account.id  # Capture before expiry
+        mock_repo.update_subscription = AsyncMock(
+            return_value={
+                "clerk_user_id": "user_sub",
+                "stripe_subscription_id": "sub_123",
+                "plan_tier": "starter",
+            }
+        )
+
         await service.update_subscription(billing_account, "sub_123", "starter")
 
-        db_session.expire_all()
-        result = await db_session.execute(select(BillingAccount).where(BillingAccount.id == account_id))
-        updated = result.scalar_one()
-        assert updated.stripe_subscription_id == "sub_123"
-        assert updated.plan_tier == "starter"
+        mock_repo.update_subscription.assert_called_once_with(
+            clerk_user_id="user_sub",
+            stripe_subscription_id="sub_123",
+            plan_tier="starter",
+        )
 
     @pytest.mark.asyncio
-    async def test_cancel_subscription(self, service, billing_account, db_session):
+    @patch("core.services.billing_service.billing_repo")
+    async def test_cancel_subscription(self, mock_repo, service, billing_account):
         """Should revert to free tier on cancellation."""
-        account_id = billing_account.id  # Capture before expiry
-        billing_account.stripe_subscription_id = "sub_to_cancel"
-        billing_account.plan_tier = "pro"
-        await db_session.commit()
+        mock_repo.update_subscription = AsyncMock(
+            return_value={
+                "clerk_user_id": "user_sub",
+                "stripe_subscription_id": None,
+                "plan_tier": "free",
+            }
+        )
 
         await service.cancel_subscription(billing_account)
 
-        db_session.expire_all()
-        result = await db_session.execute(select(BillingAccount).where(BillingAccount.id == account_id))
-        updated = result.scalar_one()
-        assert updated.stripe_subscription_id is None
-        assert updated.plan_tier == "free"
+        mock_repo.update_subscription.assert_called_once_with(
+            clerk_user_id="user_sub",
+            stripe_subscription_id=None,
+            plan_tier="free",
+        )
