@@ -14,7 +14,8 @@ export default clerkMiddleware(async (auth, req) => {
     // Redirect to onboarding if user hasn't completed it yet
     // Skip if already on onboarding page
     if (req.nextUrl.pathname !== "/onboarding") {
-      const onboarded = authObj.sessionClaims?.unsafeMetadata?.onboarded;
+      const metadata = authObj.sessionClaims?.unsafeMetadata as Record<string, unknown> | undefined;
+      const onboarded = metadata?.onboarded;
       const hasOrg = !!authObj.orgId;
 
       // User needs onboarding if they haven't chosen personal or org
