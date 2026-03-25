@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-async def _user_has_subscription(user_id: str) -> bool:
-    """Check if a user has an active billing subscription."""
-    account = await billing_repo.get_by_clerk_user_id(user_id)
+async def _owner_has_subscription(owner_id: str) -> bool:
+    """Check if an owner has an active billing subscription."""
+    account = await billing_repo.get_by_owner_id(owner_id)
     return account is not None and account.get("stripe_subscription_id") is not None
 
 
@@ -64,7 +64,7 @@ async def container_status(
     # Auto-retry: if container is in a failed/stuck state and user has a subscription,
     # trigger re-provisioning in the background.
     retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states and await _user_has_subscription(auth.user_id):
+    if container.get("status") in retryable_states and await _owner_has_subscription(owner_id):
         await container_repo.update_status(owner_id, "provisioning", "auto_retry")
         asyncio.create_task(_background_provision(owner_id))
         container["status"] = "provisioning"
@@ -97,7 +97,7 @@ async def container_retry(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    if not await _user_has_subscription(auth.user_id):
+    if not await _owner_has_subscription(owner_id):
         raise HTTPException(status_code=402, detail="Active subscription required")
 
     ecs_manager = get_ecs_manager()

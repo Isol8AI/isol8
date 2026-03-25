@@ -7,7 +7,7 @@ from datetime import date
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type
 from core.config import settings, PLAN_BUDGETS
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
@@ -30,7 +30,7 @@ router = APIRouter()
 
 async def _get_billing_account(auth: AuthContext) -> dict | None:
     """Resolve billing account from auth context."""
-    return await billing_repo.get_by_clerk_user_id(auth.user_id)
+    return await billing_repo.get_by_owner_id(resolve_owner_id(auth))
 
 
 @router.get(
@@ -48,7 +48,9 @@ async def get_billing_account(
     if not account:
         # Auto-create for users who signed up before billing existed
         billing_service = BillingService()
-        account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
+        owner_id = resolve_owner_id(auth)
+        owner_type = get_owner_type(auth)
+        account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
 
     budget = PLAN_BUDGETS.get(account.get("plan_tier", "free"), 0)
     budget_dollars = budget / 1_000_000
@@ -114,7 +116,9 @@ async def create_checkout(
     account = await _get_billing_account(auth)
     if not account:
         # Auto-create billing account for users who signed up before billing existed
-        account = await billing_service.create_customer_for_user(clerk_user_id=auth.user_id, email="")
+        owner_id = resolve_owner_id(auth)
+        owner_type = get_owner_type(auth)
+        account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
 
     url = await billing_service.create_checkout_session(account, request.tier.value)
     return CheckoutResponse(checkout_url=url)
@@ -181,11 +185,12 @@ async def handle_stripe_webhook(
 
             # Provision ECS Service for subscriber
             try:
-                user_id = account["clerk_user_id"]
-                service_name = await get_ecs_manager().provision_user_container(user_id)
-                logger.info("ECS service %s provisioned for user %s (tier=%s)", service_name, user_id, tier)
+                owner_id = account["owner_id"]
+                owner_type = account.get("owner_type", "personal")
+                service_name = await get_ecs_manager().provision_user_container(owner_id, owner_type=owner_type)
+                logger.info("ECS service %s provisioned for owner %s (tier=%s)", service_name, owner_id, tier)
             except (EcsManagerError, WorkspaceError) as e:
-                logger.error("Failed to provision ECS service for user %s: %s", account["clerk_user_id"], e)
+                logger.error("Failed to provision ECS service for owner %s: %s", account["owner_id"], e)
 
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
@@ -212,10 +217,10 @@ async def handle_stripe_webhook(
 
             # Stop ECS Service (EFS volume preserved for 30-day grace period)
             try:
-                await get_ecs_manager().stop_user_service(account["clerk_user_id"])
-                logger.info("ECS service stopped for user %s (subscription cancelled)", account["clerk_user_id"])
+                await get_ecs_manager().stop_user_service(account["owner_id"])
+                logger.info("ECS service stopped for owner %s (subscription cancelled)", account["owner_id"])
             except EcsManagerError as e:
-                logger.error("Failed to stop ECS service for user %s: %s", account["clerk_user_id"], e)
+                logger.error("Failed to stop ECS service for owner %s: %s", account["owner_id"], e)
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))

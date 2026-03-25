@@ -12,9 +12,9 @@ def _get_table():
     return get_table("billing-accounts")
 
 
-async def get_by_clerk_user_id(clerk_user_id: str) -> dict | None:
+async def get_by_owner_id(owner_id: str) -> dict | None:
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"clerk_user_id": clerk_user_id})
+    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
     return response.get("Item")
 
 
@@ -30,15 +30,17 @@ async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
 
 
 async def create(
-    clerk_user_id: str,
+    owner_id: str,
     stripe_customer_id: str,
     plan_tier: str = "free",
     markup_multiplier: float = 1.4,
+    owner_type: str = "personal",
 ) -> dict:
     table = _get_table()
     now = utc_now_iso()
     item = {
-        "clerk_user_id": clerk_user_id,
+        "owner_id": owner_id,
+        "owner_type": owner_type,
         "id": str(uuid.uuid4()),
         "stripe_customer_id": stripe_customer_id,
         "plan_tier": plan_tier,
@@ -51,23 +53,24 @@ async def create(
 
 
 async def get_or_create(
-    clerk_user_id: str,
+    owner_id: str,
     stripe_customer_id: str,
     plan_tier: str = "free",
     markup_multiplier: float = 1.4,
+    owner_type: str = "personal",
 ) -> dict:
-    existing = await get_by_clerk_user_id(clerk_user_id)
+    existing = await get_by_owner_id(owner_id)
     if existing:
         return existing
-    return await create(clerk_user_id, stripe_customer_id, plan_tier, markup_multiplier)
+    return await create(owner_id, stripe_customer_id, plan_tier, markup_multiplier, owner_type=owner_type)
 
 
 async def update_subscription(
-    clerk_user_id: str,
+    owner_id: str,
     stripe_subscription_id: str | None,
     plan_tier: str,
 ) -> dict | None:
-    existing = await get_by_clerk_user_id(clerk_user_id)
+    existing = await get_by_owner_id(owner_id)
     if existing is None:
         return None
 
@@ -80,6 +83,6 @@ async def update_subscription(
     return existing
 
 
-async def delete(clerk_user_id: str) -> None:
+async def delete(owner_id: str) -> None:
     table = _get_table()
-    await run_in_thread(table.delete_item, Key={"clerk_user_id": clerk_user_id})
+    await run_in_thread(table.delete_item, Key={"owner_id": owner_id})

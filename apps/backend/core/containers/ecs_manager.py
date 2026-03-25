@@ -339,7 +339,7 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
 
@@ -372,7 +372,7 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to start ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "provisioning")
 
@@ -416,7 +416,7 @@ class EcsManager:
             raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             # Deregister per-user task definition
             if container.get("task_definition_arn"):
@@ -509,7 +509,7 @@ class EcsManager:
         Returns:
             Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 
@@ -552,7 +552,7 @@ class EcsManager:
         Returns:
             The container dict, or None if not found.
         """
-        return await container_repo.get_by_user_id(user_id)
+        return await container_repo.get_by_owner_id(user_id)
 
     # ------------------------------------------------------------------
     # Full provisioning flow
@@ -595,7 +595,7 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         # Check current state
-        existing = await container_repo.get_by_user_id(user_id)
+        existing = await container_repo.get_by_owner_id(user_id)
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
