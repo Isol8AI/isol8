@@ -332,6 +332,35 @@ export function ChannelsPanel() {
     setActionError(null);
     setLoginMessage(null);
     try {
+      // Ensure the WhatsApp plugin is loaded. The plugin only loads when channels.whatsapp
+      // has at least one key beyond "enabled". Old containers may only have { enabled: false },
+      // which means the plugin is absent — patching dmPolicy triggers a gateway restart that
+      // loads it (channels.whatsapp has no registered reload rule when the plugin is missing).
+      const snapshot = configData as ConfigSnapshot | undefined;
+      const waConfig = (snapshot?.config as Record<string, Record<string, unknown>> | undefined)
+        ?.channels?.["whatsapp"] as Record<string, unknown> | undefined;
+      const pluginLikelyLoaded = waConfig != null && Object.keys(waConfig).some((k) => k !== "enabled");
+
+      if (!pluginLikelyLoaded && snapshot?.hash) {
+        setLoginMessage("Preparing WhatsApp…");
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        setLoginMessage("Waiting for gateway…");
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await callRpc("config.get", undefined);
+            break;
+          } catch {
+            // Still restarting
+          }
+        }
+        setLoginMessage(null);
+      }
+
       // 60s frontend timeout = 30s OpenClaw QR timeout + 30s buffer
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force,
