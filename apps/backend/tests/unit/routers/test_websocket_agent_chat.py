@@ -218,7 +218,7 @@ class TestProcessAgentChatBackground:
         """Set up ECS manager to return a running container with IP."""
         container = {
             "gateway_token": "test-gw-token",
-            "user_id": "user-1",
+            "owner_id": "user-1",
             "service_name": "openclaw-test",
             "status": "running",
         }

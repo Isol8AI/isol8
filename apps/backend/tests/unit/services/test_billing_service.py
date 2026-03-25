@@ -17,25 +17,25 @@ class TestBillingServiceCreateCustomer:
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
-    async def test_create_customer_for_user(self, mock_stripe, mock_repo, service):
+    async def test_create_customer_for_owner(self, mock_stripe, mock_repo, service):
         """Should create Stripe customer and billing account for user."""
-        mock_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_new_123")
         mock_repo.get_or_create = AsyncMock(
             return_value={
-                "clerk_user_id": "user_new_123",
+                "owner_id": "user_new_123",
                 "stripe_customer_id": "cus_new_123",
                 "plan_tier": "free",
             }
         )
 
-        account = await service.create_customer_for_user(
-            clerk_user_id="user_new_123",
+        account = await service.create_customer_for_owner(
+            owner_id="user_new_123",
             email="test@example.com",
         )
 
         mock_stripe.Customer.create.assert_called_once()
-        assert account["clerk_user_id"] == "user_new_123"
+        assert account["owner_id"] == "user_new_123"
         assert account["stripe_customer_id"] == "cus_new_123"
         assert account["plan_tier"] == "free"
 
@@ -45,15 +45,15 @@ class TestBillingServiceCreateCustomer:
     async def test_create_customer_idempotent(self, mock_stripe, mock_repo, service):
         """Should return existing account if already created."""
         existing = {
-            "clerk_user_id": "user_idem",
+            "owner_id": "user_idem",
             "stripe_customer_id": "cus_idem",
             "plan_tier": "free",
             "id": "acc-123",
         }
-        mock_repo.get_by_clerk_user_id = AsyncMock(return_value=existing)
+        mock_repo.get_by_owner_id = AsyncMock(return_value=existing)
 
-        result = await service.create_customer_for_user(
-            clerk_user_id="user_idem",
+        result = await service.create_customer_for_owner(
+            owner_id="user_idem",
             email="idem@example.com",
         )
 
@@ -68,7 +68,7 @@ class TestBillingServiceCheckout:
     @pytest.fixture
     def billing_account(self):
         return {
-            "clerk_user_id": "user_checkout",
+            "owner_id": "user_checkout",
             "stripe_customer_id": "cus_checkout",
         }
 
@@ -126,7 +126,7 @@ class TestBillingServicePortal:
     @pytest.fixture
     def billing_account(self):
         return {
-            "clerk_user_id": "user_portal",
+            "owner_id": "user_portal",
             "stripe_customer_id": "cus_portal",
         }
 
@@ -151,7 +151,7 @@ class TestBillingServiceSubscription:
     @pytest.fixture
     def billing_account(self):
         return {
-            "clerk_user_id": "user_sub",
+            "owner_id": "user_sub",
             "stripe_customer_id": "cus_sub",
         }
 
@@ -165,7 +165,7 @@ class TestBillingServiceSubscription:
         """Should update billing account with subscription details."""
         mock_repo.update_subscription = AsyncMock(
             return_value={
-                "clerk_user_id": "user_sub",
+                "owner_id": "user_sub",
                 "stripe_subscription_id": "sub_123",
                 "plan_tier": "starter",
             }
@@ -174,7 +174,7 @@ class TestBillingServiceSubscription:
         await service.update_subscription(billing_account, "sub_123", "starter")
 
         mock_repo.update_subscription.assert_called_once_with(
-            clerk_user_id="user_sub",
+            owner_id="user_sub",
             stripe_subscription_id="sub_123",
             plan_tier="starter",
         )
@@ -185,7 +185,7 @@ class TestBillingServiceSubscription:
         """Should revert to free tier on cancellation."""
         mock_repo.update_subscription = AsyncMock(
             return_value={
-                "clerk_user_id": "user_sub",
+                "owner_id": "user_sub",
                 "stripe_subscription_id": None,
                 "plan_tier": "free",
             }
@@ -194,7 +194,7 @@ class TestBillingServiceSubscription:
         await service.cancel_subscription(billing_account)
 
         mock_repo.update_subscription.assert_called_once_with(
-            clerk_user_id="user_sub",
+            owner_id="user_sub",
             stripe_subscription_id=None,
             plan_tier="free",
         )
