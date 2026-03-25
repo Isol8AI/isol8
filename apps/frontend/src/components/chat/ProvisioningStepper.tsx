@@ -35,6 +35,9 @@ export function ProvisioningStepper({
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
+  // Lazy initializer reads localStorage once on mount. isChannelCardsDismissed()
+  // guards SSR (returns true when window is undefined) so this is SSR-safe.
+  // eslint-config-next blocks setState-in-effect, so useEffect is not an option here.
   const [onboardingComplete, setOnboardingComplete] = useState(() => isChannelCardsDismissed());
 
   // Poll container status every 3s once subscribed
