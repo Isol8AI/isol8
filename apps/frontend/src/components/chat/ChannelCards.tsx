@@ -259,35 +259,9 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
       return next;
     });
     try {
-      // Enable WhatsApp plugin if not already enabled (required for brand-new users)
-      const snapshot = configData as ConfigSnapshot | undefined;
-      const waAlreadyEnabled =
-        (snapshot?.config as Record<string, unknown> | undefined)?.channels !== undefined &&
-        ((snapshot?.config as Record<string, Record<string, unknown>>)
-          ?.channels?.["whatsapp"] as { enabled?: boolean } | undefined)?.enabled === true;
-
-      if (!waAlreadyEnabled && snapshot?.hash) {
-        setWaMessage("Enabling WhatsApp…");
-        await callRpc("config.patch", {
-          raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
-          baseHash: snapshot.hash,
-        });
-        // Poll until the gateway is back up after restarting (max 20s).
-        setWaMessage("Waiting for gateway to restart…");
-        const pollDeadline = Date.now() + 20_000;
-        while (Date.now() < pollDeadline) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try {
-            await callRpc("config.get", undefined);
-            break; // Gateway responded — plugin is loaded
-          } catch {
-            // Still restarting, keep waiting
-          }
-        }
-        setWaMessage(null);
-      }
-
-      // Pass a 60s frontend RPC timeout — the 30s OpenClaw-side timeout plus buffer
+      // web.login.start is always available regardless of channels.whatsapp.enabled —
+      // the WhatsApp plugin registers its gateway methods unconditionally.
+      // Pass a 60s frontend RPC timeout — the 30s OpenClaw-side timeout plus buffer.
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force: waLoginFailed,
         timeoutMs: 30000,
@@ -319,6 +293,19 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
         timeoutMs: 120000,
       }, 130000);
       if (res.connected) {
+        // Persist enabled=true so the channel auto-starts on next gateway restart.
+        // channels.whatsapp is a noop prefix — no gateway restart occurs from this patch.
+        const snapshot = configData as ConfigSnapshot | undefined;
+        if (snapshot?.hash) {
+          try {
+            await callRpc("config.patch", {
+              raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
+              baseHash: snapshot.hash,
+            });
+          } catch {
+            // best-effort: connection is already live even if persistence fails
+          }
+        }
         setQrDataUrl(null);
         setWaMessage(null);
         setWaLoginFailed(false);
@@ -363,7 +350,6 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
   const attemptWhatsApp515Recovery = async (): Promise<boolean> => {
     setWaMessage("Verifying WhatsApp pairing...");
     try {
-      await new Promise((r) => setTimeout(r, 3000));
       const status = await callRpc<{
         channelAccounts: Record<string, { linked?: boolean; configured?: boolean }[]>;
       }>("channels.status", {});
@@ -372,13 +358,17 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
 
       if (!linked) return false;
 
+      // Persist enabled + dmPolicy. channels.whatsapp is a noop prefix — no restart occurs.
       const snapshot = configData as ConfigSnapshot | undefined;
       if (snapshot?.hash) {
-        await callRpc("config.patch", {
-          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
-          baseHash: snapshot.hash,
-        });
-        await new Promise((r) => setTimeout(r, 4000));
+        try {
+          await callRpc("config.patch", {
+            raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
+            baseHash: snapshot.hash,
+          });
+        } catch {
+          // best-effort
+        }
       }
 
       setQrDataUrl(null);
