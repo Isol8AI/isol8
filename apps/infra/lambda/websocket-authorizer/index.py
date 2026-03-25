@@ -107,7 +107,9 @@ def handler(event: dict, context: Any) -> dict:
 
         # Extract user and org info
         user_id = payload.get("sub")
-        org_id = payload.get("org_id")  # Present if user is in org context
+        # Clerk v2 JWTs nest org claims under "o" key: {"id", "rol", "slg", "per"}
+        org_claims = payload.get("o", {})
+        org_id = org_claims.get("id") if isinstance(org_claims, dict) else None
 
         if not user_id:
             logger.warning("Token missing 'sub' claim")
