@@ -241,7 +241,7 @@ def write_openclaw_config(
             "mode": "local",
             "bind": "lan",
             "auth": auth,
-            "trustedProxies": ["10.0.0.0/8"],
+            "trustedProxies": ["10.0.0.0/8", "127.0.0.1", "::1"],
             "controlUi": {
                 "enabled": False,
             },
