@@ -259,8 +259,39 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
       return next;
     });
     try {
-      // web.login.start is always available regardless of channels.whatsapp.enabled —
-      // the WhatsApp plugin registers its gateway methods unconditionally.
+      // The WhatsApp plugin only loads at gateway startup when channels.whatsapp has
+      // at least one config key beyond "enabled" (e.g. dmPolicy). Old containers
+      // provisioned before dmPolicy was added to the default config may only have
+      // { enabled: false }, causing the plugin to be absent from the registry — which
+      // makes web.login.start, web.login.wait, and channels.logout all fail.
+      // Patching dmPolicy for such containers triggers a gateway restart (channels.whatsapp
+      // has no reload rule when the plugin isn't registered) which loads the plugin.
+      const snapshot = configData as ConfigSnapshot | undefined;
+      const waConfig = (snapshot?.config as Record<string, Record<string, unknown>> | undefined)
+        ?.channels?.["whatsapp"] as Record<string, unknown> | undefined;
+      const pluginLikelyLoaded = waConfig != null && Object.keys(waConfig).some((k) => k !== "enabled");
+
+      if (!pluginLikelyLoaded && snapshot?.hash) {
+        setWaMessage("Preparing WhatsApp…");
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        // Poll until the gateway is back up after the restart triggered by the patch.
+        setWaMessage("Waiting for gateway…");
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await callRpc("config.get", undefined);
+            break; // Gateway is up
+          } catch {
+            // Still restarting
+          }
+        }
+        setWaMessage(null);
+      }
+
       // Pass a 60s frontend RPC timeout — the 30s OpenClaw-side timeout plus buffer.
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force: waLoginFailed,
