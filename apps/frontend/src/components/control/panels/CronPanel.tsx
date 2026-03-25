@@ -416,7 +416,7 @@ export function CronPanel() {
         schedule: buildSchedule(form),
         payload: { kind: "agentTurn", message: form.message.trim() },
         enabled: form.enabled,
-        sessionTarget: "main",
+        sessionTarget: "isolated",
         wakeMode: "now",
       });
       setMode("list");
