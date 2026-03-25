@@ -10,6 +10,7 @@ import {
   XCircle,
   AlertTriangle,
 } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
@@ -31,6 +32,8 @@ export function ProvisioningStepper({
 }: {
   children: React.ReactNode;
 }) {
+  const { organization } = useOrganization();
+  const isOrg = !!organization;
   const { isLoading: billingLoading, isSubscribed, createCheckout } = useBilling();
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
@@ -125,7 +128,7 @@ export function ProvisioningStepper({
 
   // Not subscribed — show pricing
   if (!isSubscribed) {
-    return <PricingCards checkoutLoading={checkoutLoading} onCheckout={async (tier) => {
+    return <PricingCards checkoutLoading={checkoutLoading} isOrg={isOrg} orgName={organization?.name} onCheckout={async (tier) => {
       setCheckoutLoading(tier);
       try {
         await createCheckout(tier);
@@ -146,7 +149,9 @@ export function ProvisioningStepper({
             <XCircle className="h-8 w-8 text-red-500 mx-auto" />
             <h2 className="text-lg font-medium">Setup failed</h2>
             <p className="text-sm text-muted-foreground">
-              Something went wrong while setting up your container. This is usually temporary.
+              {isOrg
+                ? `Something went wrong while setting up the container for ${organization.name}. This is usually temporary.`
+                : "Something went wrong while setting up your container. This is usually temporary."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">
@@ -167,7 +172,11 @@ export function ProvisioningStepper({
     <div className="flex-1 flex items-center justify-center">
       <div className="text-center space-y-8 max-w-sm">
         <div className="space-y-2">
-          <h2 className="text-xl font-semibold">Setting up your workspace</h2>
+          <h2 className="text-xl font-semibold">
+            {isOrg
+              ? `Setting up workspace for ${organization.name}...`
+              : "Setting up your personal workspace..."}
+          </h2>
           <p className="text-sm text-muted-foreground">
             This usually takes about 30-60 seconds.
           </p>
@@ -243,9 +252,13 @@ function StepperDisplay({
 
 function PricingCards({
   checkoutLoading,
+  isOrg,
+  orgName,
   onCheckout,
 }: {
   checkoutLoading: string | null;
+  isOrg: boolean;
+  orgName?: string;
   onCheckout: (tier: "starter" | "pro") => Promise<void>;
 }) {
   return (
@@ -256,8 +269,9 @@ function PricingCards({
             Choose your plan
           </h2>
           <p className="text-muted-foreground text-sm max-w-md mx-auto">
-            Subscribe to get your own AI agent container with persistent memory,
-            custom personality, and access to top-tier models.
+            {isOrg
+              ? `Subscribe to get an AI agent container for ${orgName} with persistent memory, custom personality, and access to top-tier models.`
+              : "Subscribe to get your own AI agent container with persistent memory, custom personality, and access to top-tier models."}
           </p>
         </div>
 
@@ -274,7 +288,7 @@ function PricingCards({
               </div>
             </div>
             <ul className="text-sm text-muted-foreground space-y-2 text-left">
-              <li>Personal AI container</li>
+              <li>{isOrg ? "Organization AI container" : "Personal AI container"}</li>
               <li>Persistent memory</li>
               <li>1 free model included</li>
               <li>Pay-per-use premium models</li>
