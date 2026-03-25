@@ -17,6 +17,11 @@ async def get_by_user_id(user_id: str) -> dict | None:
     return response.get("Item")
 
 
+# Alias: owner_id is user_id for personal, org_id for orgs.
+# The DynamoDB PK "user_id" holds the owner_id value.
+get_by_owner_id = get_by_user_id
+
+
 async def get_by_gateway_token(token: str) -> dict | None:
     table = _get_table()
     response = await run_in_thread(

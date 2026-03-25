@@ -187,3 +187,36 @@ async def test_delete(dynamodb_table):
     await container_repo.delete("user_d")
     item = await container_repo.get_by_user_id("user_d")
     assert item is None
+
+
+@pytest.mark.asyncio
+async def test_upsert_org_container(dynamodb_table):
+    """Org containers store owner_type and org_id fields."""
+    from core.repositories import container_repo
+
+    result = await container_repo.upsert(
+        "org_456",
+        {
+            "gateway_token": "tok_org",
+            "status": "provisioning",
+            "owner_type": "org",
+            "org_id": "org_456",
+        },
+    )
+    assert result["user_id"] == "org_456"
+    assert result["owner_type"] == "org"
+    assert result["org_id"] == "org_456"
+
+
+@pytest.mark.asyncio
+async def test_get_by_owner_id_alias(dynamodb_table):
+    """get_by_owner_id is an alias for get_by_user_id."""
+    from core.repositories import container_repo
+
+    await container_repo.upsert(
+        "org_456",
+        {"gateway_token": "tok_org", "status": "running", "owner_type": "org"},
+    )
+    item = await container_repo.get_by_owner_id("org_456")
+    assert item is not None
+    assert item["owner_type"] == "org"
