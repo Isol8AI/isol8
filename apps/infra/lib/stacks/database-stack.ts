@@ -52,6 +52,10 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
     });
+    this.containersTable.addGlobalSecondaryIndex({
+      indexName: "owner-type-index",
+      partitionKey: { name: "owner_type", type: dynamodb.AttributeType.STRING },
+    });
 
     this.billingTable = new dynamodb.Table(this, "BillingTable", {
       tableName: `isol8-${env}-billing-accounts`,
