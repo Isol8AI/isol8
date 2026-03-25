@@ -49,7 +49,7 @@ async def provision_container(
     owner_type = get_owner_type(auth)
 
     # Check for existing service
-    existing = await container_repo.get_by_user_id(owner_id)
+    existing = await container_repo.get_by_owner_id(owner_id)
     if existing and existing.get("status") in ("running", "provisioning"):
         return {
             "status": "already_running",
@@ -109,7 +109,7 @@ async def redeploy_container(
     owner_id = resolve_owner_id(auth)
     owner_type = get_owner_type(auth)
 
-    container = await container_repo.get_by_user_id(owner_id)
+    container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
