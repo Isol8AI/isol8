@@ -51,6 +51,49 @@ def mock_current_user(mock_auth_context):
 
 
 @pytest.fixture
+def mock_org_admin_context() -> AuthContext:
+    """Mock auth context for org admin."""
+    return AuthContext(
+        user_id="user_test_123",
+        org_id="org_test_456",
+        org_role="org:admin",
+        org_slug="test-org",
+        org_permissions=["org:billing:manage"],
+    )
+
+
+@pytest.fixture
+def mock_org_member_context() -> AuthContext:
+    """Mock auth context for org member (non-admin)."""
+    return AuthContext(
+        user_id="user_test_789",
+        org_id="org_test_456",
+        org_role="org:member",
+        org_slug="test-org",
+    )
+
+
+@pytest.fixture
+def mock_org_admin_user(mock_org_admin_context):
+    """Dependency override for get_current_user with org admin context."""
+
+    async def _mock():
+        return mock_org_admin_context
+
+    return _mock
+
+
+@pytest.fixture
+def mock_org_member_user(mock_org_member_context):
+    """Dependency override for get_current_user with org member context."""
+
+    async def _mock():
+        return mock_org_member_context
+
+    return _mock
+
+
+@pytest.fixture
 def mock_jwks() -> dict:
     """Mock JWKS response for JWT verification tests."""
     return {
