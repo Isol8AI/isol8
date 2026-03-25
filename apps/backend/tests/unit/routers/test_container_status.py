@@ -17,7 +17,7 @@ class TestContainerStatus:
         mock_ecs.resolve_running_container = AsyncMock(
             return_value=(
                 {
-                    "user_id": "user_test_123",
+                    "owner_id": "user_test_123",
                     "service_name": "openclaw-abc123",
                     "gateway_token": "secret-token-value",
                     "status": "running",
@@ -50,7 +50,7 @@ class TestContainerStatus:
         mock_ecs.resolve_running_container = AsyncMock(
             return_value=(
                 {
-                    "user_id": "user_test_123",
+                    "owner_id": "user_test_123",
                     "service_name": "openclaw-abc123",
                     "gateway_token": "secret-token-value",
                     "status": "running",
@@ -105,7 +105,7 @@ class TestGatewayRestart:
         """Set up ECS manager to return a running container with IP."""
         container = {
             "gateway_token": "test-gw-token",
-            "user_id": "user_test_123",
+            "owner_id": "user_test_123",
             "service_name": "openclaw-test",
             "status": "running",
         }

@@ -12,9 +12,9 @@ class TestGetBillingAccount:
     @patch("routers.billing.billing_repo")
     async def test_get_billing_account(self, mock_repo, async_client):
         """Should return billing account for authenticated user."""
-        mock_repo.get_by_clerk_user_id = AsyncMock(
+        mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_test_123",
+                "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_billing_test",
                 "plan_tier": "free",
                 "stripe_subscription_id": None,
@@ -33,12 +33,12 @@ class TestGetBillingAccount:
     @patch("core.services.billing_service.billing_repo")
     async def test_get_billing_account_auto_creates(self, mock_svc_repo, mock_stripe, mock_router_repo, async_client):
         """Should auto-create billing account when none exists."""
-        mock_router_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
+        mock_router_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_auto_created")
-        mock_svc_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
+        mock_svc_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_svc_repo.get_or_create = AsyncMock(
             return_value={
-                "clerk_user_id": "user_test_123",
+                "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_auto_created",
                 "plan_tier": "free",
                 "stripe_subscription_id": None,
@@ -58,9 +58,9 @@ class TestGetUsage:
     @patch("routers.billing.billing_repo")
     async def test_get_usage_empty(self, mock_repo, async_client):
         """Should return empty usage for new account."""
-        mock_repo.get_by_clerk_user_id = AsyncMock(
+        mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_test_123",
+                "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_usage_endpoint",
                 "plan_tier": "free",
                 "stripe_subscription_id": None,
@@ -85,9 +85,9 @@ class TestCheckout:
     @patch("core.services.billing_service.stripe")
     async def test_create_checkout(self, mock_stripe, mock_repo, async_client):
         """Should return Stripe checkout URL."""
-        mock_repo.get_by_clerk_user_id = AsyncMock(
+        mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_test_123",
+                "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_checkout_test",
                 "plan_tier": "free",
             }
@@ -125,7 +125,7 @@ class TestStripeWebhook:
 
         mock_repo.get_by_stripe_customer_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_webhook_test",
+                "owner_id": "user_webhook_test",
                 "stripe_customer_id": "cus_webhook_test",
                 "plan_tier": "free",
             }
@@ -173,7 +173,7 @@ class TestStripeWebhook:
 
         mock_repo.get_by_stripe_customer_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_webhook_test",
+                "owner_id": "user_webhook_test",
                 "stripe_customer_id": "cus_webhook_test",
                 "plan_tier": "starter",
             }

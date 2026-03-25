@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconn
 from fastapi.responses import HTMLResponse, Response
 from websockets import connect as ws_connect
 
-from core.auth import _decode_token
+from core.auth import AuthContext, _decode_token, _extract_org_claims, resolve_owner_id
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
 
@@ -85,20 +85,27 @@ def _get_session(session_id: str) -> _Session | None:
 # ---------------------------------------------------------------------------
 
 
-async def _resolve_user_container(user_id: str):
-    """Look up the user's running container. Returns (container, ip) or raises."""
+async def _resolve_user_container(owner_id: str):
+    """Look up the owner's running container. Returns (container, ip) or raises."""
     ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(user_id)
+    container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:
         raise HTTPException(status_code=404, detail="No running container")
     return container, ip
 
 
-async def _validate_clerk_token(token: str) -> str:
-    """Validate a Clerk JWT and return the user_id (sub claim)."""
+async def _validate_clerk_token(token: str) -> AuthContext:
+    """Validate a Clerk JWT and return an AuthContext."""
     try:
         payload = await _decode_token(token)
-        return payload["sub"]
+        org = _extract_org_claims(payload)
+        return AuthContext(
+            user_id=payload["sub"],
+            org_id=org["org_id"],
+            org_role=org["org_role"],
+            org_slug=org["org_slug"],
+            org_permissions=org["org_permissions"],
+        )
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -126,13 +133,14 @@ async def proxy_root(
     if not token:
         raise HTTPException(status_code=401, detail="Missing token parameter")
 
-    user_id = await _validate_clerk_token(token)
-    container, ip = await _resolve_user_container(user_id)
+    auth = await _validate_clerk_token(token)
+    owner_id = resolve_owner_id(auth)
+    container, ip = await _resolve_user_container(owner_id)
 
     # Create session
     session_id = secrets.token_urlsafe(24)
     _sessions[session_id] = _Session(
-        user_id=user_id,
+        user_id=owner_id,
         ip=ip,
         gateway_token=container["gateway_token"],
     )
@@ -233,7 +241,7 @@ async def proxy_websocket(ws: WebSocket):
     connect message, then relays to the real gateway."""
     await ws.accept()
 
-    user_id = None
+    owner_id = None
     try:
         # --- Phase 1: Browser handshake (we pretend to be the gateway) ---
 
@@ -254,8 +262,9 @@ async def proxy_websocket(ws: WebSocket):
             return
 
         # Validate Clerk JWT and resolve container
-        user_id = await _validate_clerk_token(clerk_token)
-        container, ip = await _resolve_user_container(user_id)
+        auth = await _validate_clerk_token(clerk_token)
+        owner_id = resolve_owner_id(auth)
+        container, ip = await _resolve_user_container(owner_id)
 
         # --- Phase 2: Upstream handshake (real gateway) ---
 
@@ -318,7 +327,7 @@ async def proxy_websocket(ws: WebSocket):
                     t.cancel()
 
     except Exception as e:
-        logger.warning("Control UI WebSocket proxy error for user %s: %s", user_id, e)
+        logger.warning("Control UI WebSocket proxy error for owner %s: %s", owner_id, e)
     finally:
         try:
             await ws.close()

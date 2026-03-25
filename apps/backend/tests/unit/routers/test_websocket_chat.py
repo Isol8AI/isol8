@@ -353,6 +353,7 @@ class TestReqMessageRouting:
         mock_bg.assert_called_once_with(
             connection_id="conn-123",
             user_id="test-user",
+            owner_id="test-user",
             req_id="req-uuid-1",
             method="agents.list",
             params={"filter": "active"},

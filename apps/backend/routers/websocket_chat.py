@@ -106,7 +106,9 @@ async def ws_connect(
 
     try:
         pool = get_gateway_pool()
-        pool.add_frontend_connection(x_user_id, x_connection_id)
+        # Route by owner_id: org_id for org members, user_id for personal
+        owner_id = x_org_id or x_user_id
+        pool.add_frontend_connection(owner_id, x_connection_id)
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 
@@ -138,7 +140,8 @@ async def ws_disconnect(
         connection = connection_service.get_connection(x_connection_id)
         if connection:
             pool = get_gateway_pool()
-            pool.remove_frontend_connection(connection["user_id"], x_connection_id)
+            owner_id = connection.get("org_id") or connection["user_id"]
+            pool.remove_frontend_connection(owner_id, x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)
 
@@ -179,6 +182,7 @@ async def ws_message(
         raise HTTPException(status_code=401, detail="Unknown connection")
 
     user_id = connection["user_id"]
+    owner_id = connection.get("org_id") or user_id
     msg_type = body.get("type")
 
     if msg_type == "ping":
@@ -228,6 +232,7 @@ async def ws_message(
             _process_rpc_background,
             connection_id=x_connection_id,
             user_id=user_id,
+            owner_id=owner_id,
             req_id=req_id,
             method=method,
             params=params,
@@ -250,6 +255,7 @@ async def ws_message(
             _process_agent_chat_background,
             connection_id=x_connection_id,
             user_id=user_id,
+            owner_id=owner_id,
             agent_id=agent_id,
             message=message,
         )
@@ -272,6 +278,7 @@ async def ws_message(
 async def _process_rpc_background(
     connection_id: str,
     user_id: str,
+    owner_id: str,
     req_id: str,
     method: str,
     params: dict,
@@ -281,7 +288,7 @@ async def _process_rpc_background(
 
     try:
         ecs_manager = get_ecs_manager()
-        container, ip = await ecs_manager.resolve_running_container(user_id)
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
             management_api.send_message(
@@ -309,7 +316,7 @@ async def _process_rpc_background(
 
         pool = get_gateway_pool()
         result = await pool.send_rpc(
-            user_id=user_id,
+            user_id=owner_id,
             req_id=req_id,
             method=method,
             params=params,
@@ -370,6 +377,7 @@ async def _process_rpc_background(
 async def _process_agent_chat_background(
     connection_id: str,
     user_id: str,
+    owner_id: str,
     agent_id: str,
     message: str,
 ) -> None:
@@ -393,7 +401,7 @@ async def _process_agent_chat_background(
     try:
         # Look up user's container and discover task IP
         ecs_manager = get_ecs_manager()
-        container, ip = await ecs_manager.resolve_running_container(user_id)
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
             management_api.send_message(
@@ -419,11 +427,12 @@ async def _process_agent_chat_background(
         req_id = str(uuid4())
 
         # Session key format: agent:{agentId}:{sessionName}
-        # OpenClaw resolves this to the agent's conversation session
-        session_key = f"agent:{agent_id}:main"
+        # Org members get per-user sessions; personal users keep :main (no history breakage)
+        is_org = owner_id != user_id
+        session_key = f"agent:{agent_id}:{user_id}" if is_org else f"agent:{agent_id}:main"
 
         result = await pool.send_rpc(
-            user_id=user_id,
+            user_id=owner_id,
             req_id=req_id,
             method="chat.send",
             params={

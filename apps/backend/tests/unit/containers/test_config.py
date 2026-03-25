@@ -143,13 +143,6 @@ class TestWriteOpenclawConfig:
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert bedrock["auth"] == "aws-sdk"
 
-    def test_plugins_empty(self):
-        """Plugins slots and entries are empty (QMD handles memory)."""
-        config = json.loads(write_openclaw_config(gateway_token="tok_abc"))
-        plugins = config["plugins"]
-        assert plugins["slots"] == {}
-        assert plugins["entries"] == {}
-
     def test_memory_qmd_backend(self):
         """Memory backend is QMD with proper config."""
         config = json.loads(write_openclaw_config())

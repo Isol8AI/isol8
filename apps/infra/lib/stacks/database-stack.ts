@@ -37,7 +37,7 @@ export class DatabaseStack extends cdk.Stack {
 
     this.containersTable = new dynamodb.Table(this, "ContainersTable", {
       tableName: `isol8-${env}-containers`,
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,
@@ -52,10 +52,14 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
     });
+    this.containersTable.addGlobalSecondaryIndex({
+      indexName: "owner-type-index",
+      partitionKey: { name: "owner_type", type: dynamodb.AttributeType.STRING },
+    });
 
     this.billingTable = new dynamodb.Table(this, "BillingTable", {
       tableName: `isol8-${env}-billing-accounts`,
-      partitionKey: { name: "clerk_user_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,

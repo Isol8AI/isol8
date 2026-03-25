@@ -65,7 +65,7 @@ class EcsManager:
     # Per-user EFS access points
     # ------------------------------------------------------------------
 
-    def _create_access_point(self, user_id: str) -> str:
+    def _create_access_point(self, user_id: str, owner_type: str = "personal") -> str:
         """Create a per-user EFS access point rooted at /users/{user_id}.
 
         The access point enforces POSIX UID/GID 0 (matching the
@@ -95,7 +95,8 @@ class EcsManager:
                 },
                 Tags=[
                     {"Key": "Name", "Value": f"isol8-{user_id}"},
-                    {"Key": "user_id", "Value": user_id},
+                    {"Key": "owner_id", "Value": user_id},
+                    {"Key": "owner_type", "Value": owner_type},
                     {"Key": "ManagedBy", "Value": "isol8-backend"},
                 ],
             )
@@ -202,7 +203,7 @@ class EcsManager:
     # Service lifecycle
     # ------------------------------------------------------------------
 
-    async def create_user_service(self, user_id: str, gateway_token: str) -> str:
+    async def create_user_service(self, user_id: str, gateway_token: str, owner_type: str = "personal") -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
         1. Upserts the Container DB record (status=provisioning) so frontend can poll
@@ -234,12 +235,13 @@ class EcsManager:
                 "gateway_token": gateway_token,
                 "status": "provisioning",
                 "substatus": None,
+                "owner_type": owner_type,
             },
         )
 
         try:
             # Step 1: Create per-user EFS access point
-            access_point_id = self._create_access_point(user_id)
+            access_point_id = self._create_access_point(user_id, owner_type=owner_type)
             await self._update_container(
                 user_id,
                 access_point_id=access_point_id,
@@ -337,7 +339,7 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
 
@@ -370,7 +372,7 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to start ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "provisioning")
 
@@ -414,7 +416,7 @@ class EcsManager:
             raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             # Deregister per-user task definition
             if container.get("task_definition_arn"):
@@ -507,7 +509,7 @@ class EcsManager:
         Returns:
             Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 
@@ -550,7 +552,7 @@ class EcsManager:
         Returns:
             The container dict, or None if not found.
         """
-        return await container_repo.get_by_user_id(user_id)
+        return await container_repo.get_by_owner_id(user_id)
 
     # ------------------------------------------------------------------
     # Full provisioning flow
@@ -570,7 +572,7 @@ class EcsManager:
             pass
         return None
 
-    async def provision_user_container(self, user_id: str) -> str:
+    async def provision_user_container(self, user_id: str, owner_type: str = "personal") -> str:
         """Provision or recover a user's container.
 
         Handles all scenarios:
@@ -593,7 +595,7 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         # Check current state
-        existing = await container_repo.get_by_user_id(user_id)
+        existing = await container_repo.get_by_owner_id(user_id)
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
@@ -699,7 +701,7 @@ class EcsManager:
         gateway_token = secrets.token_urlsafe(32)
 
         # Step 2: Create ECS service (desiredCount=0)
-        service_name = await self.create_user_service(user_id, gateway_token)
+        service_name = await self.create_user_service(user_id, gateway_token, owner_type=owner_type)
 
         # Step 3: Write configs to EFS
         try:

@@ -4,7 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import get_current_user, AuthContext
+from core.auth import get_current_user, AuthContext, resolve_owner_id, get_owner_type
 from core.repositories import user_repo
 from core.services.billing_service import BillingService
 from schemas.user_schemas import SyncUserResponse
@@ -42,9 +42,11 @@ async def sync_user(auth: AuthContext = Depends(get_current_user)):
     # Ensure billing account exists (idempotent — covers users created before billing)
     try:
         billing = BillingService()
-        await billing.create_customer_for_user(
-            clerk_user_id=user_id,
-            email="",
+        owner_id = resolve_owner_id(auth)
+        owner_type = get_owner_type(auth)
+        await billing.create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type=owner_type,
         )
     except Exception as e:
         logger.warning("Failed to ensure billing account for user %s: %s", user_id, e)

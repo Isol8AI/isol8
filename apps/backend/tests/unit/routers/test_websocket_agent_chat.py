@@ -181,6 +181,7 @@ class TestAgentChatBackgroundTask:
         mock_bg.assert_called_once_with(
             connection_id="test-conn-123",
             user_id="test-user-456",
+            owner_id="test-user-456",
             agent_id="luna",
             message="Tell me a story",
         )
@@ -217,7 +218,7 @@ class TestProcessAgentChatBackground:
         """Set up ECS manager to return a running container with IP."""
         container = {
             "gateway_token": "test-gw-token",
-            "user_id": "user-1",
+            "owner_id": "user-1",
             "service_name": "openclaw-test",
             "status": "running",
         }
@@ -230,6 +231,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -251,6 +253,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -268,6 +271,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -285,6 +289,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )

@@ -515,7 +515,6 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
-        self._device_identities.pop(user_id, None)
 
     async def close_all(self) -> None:
         """Shutdown: close all connections."""

@@ -44,23 +44,24 @@ class BillingService:
     def __init__(self):
         pass
 
-    async def create_customer_for_user(self, clerk_user_id: str, email: str) -> dict:
-        """Create Stripe customer + billing account for a personal user.
+    async def create_customer_for_owner(self, owner_id: str, owner_type: str = "personal", email: str = "") -> dict:
+        """Create Stripe customer + billing account for an owner (user or org).
 
         Idempotent: returns existing account if already created.
         """
-        existing = await billing_repo.get_by_clerk_user_id(clerk_user_id)
+        existing = await billing_repo.get_by_owner_id(owner_id)
         if existing:
             return existing
 
         customer = stripe.Customer.create(
             email=email or None,
-            metadata={"clerk_user_id": clerk_user_id},
+            metadata={"owner_id": owner_id, "owner_type": owner_type},
         )
 
         account = await billing_repo.get_or_create(
-            clerk_user_id=clerk_user_id,
+            owner_id=owner_id,
             stripe_customer_id=customer.id,
+            owner_type=owner_type,
         )
         return account
 
@@ -106,7 +107,7 @@ class BillingService:
     async def update_subscription(self, billing_account: dict, subscription_id: str, tier: str) -> None:
         """Update billing account after subscription change."""
         await billing_repo.update_subscription(
-            clerk_user_id=billing_account["clerk_user_id"],
+            owner_id=billing_account["owner_id"],
             stripe_subscription_id=subscription_id,
             plan_tier=tier,
         )
@@ -114,7 +115,7 @@ class BillingService:
     async def cancel_subscription(self, billing_account: dict) -> None:
         """Revert to free tier after subscription cancellation."""
         await billing_repo.update_subscription(
-            clerk_user_id=billing_account["clerk_user_id"],
+            owner_id=billing_account["owner_id"],
             stripe_subscription_id=None,
             plan_tier="free",
         )

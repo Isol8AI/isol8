@@ -49,7 +49,7 @@ async def _authenticate_and_check_budget(
     if not container:
         raise HTTPException(status_code=401, detail="Invalid gateway token")
 
-    account = await billing_repo.get_by_clerk_user_id(container["user_id"])
+    account = await billing_repo.get_by_owner_id(container["owner_id"])
     if not account:
         raise HTTPException(status_code=403, detail="No billing account")
 
@@ -100,7 +100,7 @@ async def proxy_request(
             payload = json.loads(body)
             logger.info(
                 "Proxy request body for user %s: model=%s keys=%s",
-                container["user_id"],
+                container["owner_id"],
                 payload.get("model"),
                 list(payload.keys()),
             )
@@ -125,17 +125,17 @@ async def proxy_request(
             "Proxy upstream response: %s %s for user %s, upstream_headers=%s, body_len=%d",
             upstream_resp.status_code,
             upstream_url,
-            container["user_id"],
+            container["owner_id"],
             dict(upstream_resp.headers),
             len(upstream_resp.content),
         )
         logger.info(
             "Proxy response body preview for user %s: %.500s",
-            container["user_id"],
+            container["owner_id"],
             upstream_resp.text,
         )
     except Exception as e:
-        logger.error("Proxy upstream error for user %s: %s — %s", container["user_id"], upstream_url, e)
+        logger.error("Proxy upstream error for user %s: %s — %s", container["owner_id"], upstream_url, e)
         raise
 
     # Usage recording is stubbed out during DynamoDB migration
