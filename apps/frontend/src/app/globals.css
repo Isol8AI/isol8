@@ -584,3 +584,317 @@ button:focus-visible { border-radius: 999px; }
   .wf-seq .wf-task, .wf-seq .wf-conn-line, .wf-seq .wf-conn-badge { opacity: 1 !important; transform: none !important; }
   .wf-seq .wf-check svg path { stroke-dashoffset: 0 !important; }
 }
+
+/* ═══════════════════════════════════════════════
+   LEGAL / SUPPORT PAGE STYLES
+   ═══════════════════════════════════════════════ */
+
+.legal-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: #faf7f2;
+  color: #1a1a1a;
+  font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  line-height: 1.7;
+}
+
+.legal-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 20px 24px;
+}
+
+.legal-logo-link {
+  display: inline-flex;
+  text-decoration: none;
+}
+
+.legal-btn-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: #06402B;
+  background: transparent;
+  border: 2px solid #06402B;
+  border-radius: 999px;
+  padding: 8px 20px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 200ms ease-out, color 200ms ease-out;
+}
+
+.legal-btn-back:hover {
+  background: #06402B;
+  color: #fff;
+}
+
+.legal-divider {
+  border: none;
+  border-top: 1px solid #e0dbd0;
+  max-width: 960px;
+  margin: 0 auto;
+  width: 100%;
+}
+
+.legal-content {
+  flex: 1;
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 48px 24px 80px;
+  width: 100%;
+}
+
+.legal-content h1 {
+  font-family: var(--font-lora-serif), 'Lora', serif;
+  font-size: 2.25rem;
+  font-weight: 700;
+  color: #06402B;
+  margin-bottom: 8px;
+  line-height: 1.3;
+}
+
+.legal-content h2 {
+  font-family: var(--font-lora-serif), 'Lora', serif;
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: #06402B;
+  margin-top: 40px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #e0dbd0;
+}
+
+.legal-meta {
+  font-size: 14px;
+  color: #555;
+  margin-bottom: 40px;
+}
+
+.legal-content p {
+  margin-bottom: 16px;
+}
+
+.legal-content ul,
+.legal-content ol {
+  margin-bottom: 16px;
+  padding-left: 24px;
+}
+
+.legal-content li {
+  margin-bottom: 8px;
+}
+
+.legal-content li::marker {
+  color: #06402B;
+}
+
+.legal-content strong {
+  font-weight: 600;
+}
+
+.legal-content a {
+  color: #06402B;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal-content a:hover {
+  opacity: 0.8;
+}
+
+.legal-tier-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: 15px;
+}
+
+.legal-tier-table th,
+.legal-tier-table td {
+  text-align: left;
+  padding: 10px 16px;
+  border: 1px solid #e0dbd0;
+}
+
+.legal-tier-table th {
+  background: #06402B;
+  color: #fff;
+  font-weight: 600;
+}
+
+.legal-tier-table td {
+  background: #fff;
+}
+
+.legal-footer {
+  border-top: 1px solid #e0dbd0;
+  padding: 32px 24px;
+  text-align: center;
+  font-size: 14px;
+  color: #555;
+}
+
+.legal-footer-links {
+  margin-top: 8px;
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+}
+
+.legal-footer-links a {
+  font-size: 14px;
+  color: #06402B;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.legal-footer-links a:hover {
+  text-decoration: underline;
+}
+
+/* ── Support page specifics ── */
+
+.support-content {
+  flex: 1;
+  max-width: 700px;
+  margin: 0 auto;
+  padding: 48px 24px 64px;
+  width: 100%;
+}
+
+.support-header {
+  text-align: center;
+  margin-bottom: 40px;
+}
+
+.support-header h1 {
+  font-family: var(--font-lora-serif), 'Lora', serif;
+  font-size: 2rem;
+  font-weight: 700;
+  color: #06402B;
+  margin-bottom: 8px;
+}
+
+.support-header p {
+  font-size: 1.05rem;
+  color: #5c5c5c;
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+.support-form {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.support-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.support-field label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a1a1a;
+}
+
+.support-field input,
+.support-field select,
+.support-field textarea {
+  font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  font-size: 16px;
+  color: #1a1a1a;
+  background: #fff;
+  border: 1px solid #e0dbd0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  min-height: 44px;
+  transition: border-color 200ms ease-out, box-shadow 200ms ease-out;
+}
+
+.support-field input:focus,
+.support-field select:focus,
+.support-field textarea:focus {
+  outline: none;
+  border-color: #06402B;
+  box-shadow: 0 0 0 3px rgba(6, 64, 43, 0.15);
+}
+
+.support-field input::placeholder,
+.support-field textarea::placeholder {
+  color: #a0a0a0;
+}
+
+.support-field select {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='8' viewBox='0 0 12 8' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M1 1.5L6 6.5L11 1.5' stroke='%235c5c5c' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 16px center;
+  padding-right: 40px;
+  cursor: pointer;
+}
+
+.support-field textarea {
+  min-height: 160px;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.support-submit {
+  font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
+  font-size: 16px;
+  font-weight: 600;
+  color: #fff;
+  background: #06402B;
+  border: none;
+  border-radius: 999px;
+  padding: 14px 32px;
+  min-height: 48px;
+  cursor: pointer;
+  align-self: flex-start;
+  transition: background 200ms ease-out, transform 100ms ease-out;
+}
+
+.support-submit:hover {
+  background: #053822;
+}
+
+.support-submit:active {
+  transform: scale(0.98);
+}
+
+.support-direct {
+  margin-top: 40px;
+  text-align: center;
+  padding-top: 32px;
+  border-top: 1px solid #e0dbd0;
+  color: #5c5c5c;
+  font-size: 15px;
+}
+
+.support-direct a {
+  color: #06402B;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.support-direct a:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 600px) {
+  .legal-content h1,
+  .support-header h1 { font-size: 1.75rem; }
+  .legal-content h2 { font-size: 1.15rem; }
+  .support-submit { width: 100%; text-align: center; }
+}
