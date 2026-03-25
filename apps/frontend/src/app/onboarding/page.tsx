@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CreateOrganization, useAuth, useUser } from "@clerk/nextjs";
+import { CreateOrganization, useAuth, useOrganizationList, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { User, Users } from "lucide-react";
@@ -11,11 +11,28 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { isLoaded } = useAuth();
   const { user } = useUser();
+  const { userMemberships, isLoaded: orgsLoaded, setActive } = useOrganizationList({
+    userMemberships: { infinite: true },
+  });
   const api = useApi();
   const [mode, setMode] = useState<"choose" | "personal" | "org">("choose");
   const [loading, setLoading] = useState(false);
 
-  if (!isLoaded) return null;
+  // If user already belongs to an org (e.g. accepted an invite), activate it and skip onboarding
+  useEffect(() => {
+    if (!orgsLoaded || !isLoaded || !setActive) return;
+    const memberships = userMemberships?.data;
+    if (memberships && memberships.length > 0) {
+      setActive({ organization: memberships[0].organization.id }).then(() => {
+        router.push("/chat");
+      });
+    }
+  }, [orgsLoaded, isLoaded, userMemberships, setActive, router]);
+
+  if (!isLoaded || !orgsLoaded) return null;
+
+  // If user has org memberships, we're redirecting — show nothing
+  if (userMemberships?.data && userMemberships.data.length > 0) return null;
 
   async function handlePersonal() {
     setLoading(true);
