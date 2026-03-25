@@ -259,10 +259,39 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
       return next;
     });
     try {
+      // Enable WhatsApp plugin if not already enabled (required for brand-new users)
+      const snapshot = configData as ConfigSnapshot | undefined;
+      const waAlreadyEnabled =
+        (snapshot?.config as Record<string, unknown> | undefined)?.channels !== undefined &&
+        ((snapshot?.config as Record<string, Record<string, unknown>>)
+          ?.channels?.["whatsapp"] as { enabled?: boolean } | undefined)?.enabled === true;
+
+      if (!waAlreadyEnabled && snapshot?.hash) {
+        setWaMessage("Enabling WhatsApp…");
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        // Poll until the gateway is back up after restarting (max 20s).
+        setWaMessage("Waiting for gateway to restart…");
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await callRpc("config.get", undefined);
+            break; // Gateway responded — plugin is loaded
+          } catch {
+            // Still restarting, keep waiting
+          }
+        }
+        setWaMessage(null);
+      }
+
+      // Pass a 60s frontend RPC timeout — the 30s OpenClaw-side timeout plus buffer
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force: waLoginFailed,
         timeoutMs: 30000,
-      });
+      }, 60000);
       setQrDataUrl(res.qrDataUrl ?? null);
       setWaMessage(res.message ?? null);
     } catch (err) {
@@ -271,6 +300,7 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
         whatsapp: err instanceof Error ? err.message : String(err),
       }));
       setQrDataUrl(null);
+      setWaMessage(null);
     } finally {
       setWaBusy(null);
     }
@@ -284,9 +314,10 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
       return next;
     });
     try {
+      // 130s frontend RPC timeout = 120s OpenClaw wait + 10s network buffer
       const res = await callRpc<WebLoginResult>("web.login.wait", {
         timeoutMs: 120000,
-      });
+      }, 130000);
       if (res.connected) {
         setQrDataUrl(null);
         setWaMessage(null);
