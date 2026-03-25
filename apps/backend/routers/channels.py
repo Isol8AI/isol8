@@ -10,7 +10,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager, get_gateway_pool
 
 logger = logging.getLogger(__name__)
@@ -42,11 +42,12 @@ async def _send_channel_rpc(user_id: str, method: str, params: dict) -> dict:
 @router.get("")
 async def list_channels(auth: AuthContext = Depends(get_current_user)):
     """List connected channels and their status."""
+    owner_id = resolve_owner_id(auth)
     try:
-        result = await _send_channel_rpc(auth.user_id, "channels.status", {})
+        result = await _send_channel_rpc(owner_id, "channels.status", {})
         return {"channels": result}
     except Exception as e:
-        logger.warning("Failed to get channel status for %s: %s", auth.user_id, e)
+        logger.warning("Failed to get channel status for %s: %s", owner_id, e)
         return {"channels": []}
 
 
@@ -56,8 +57,9 @@ async def configure_telegram(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Configure Telegram bot channel."""
+    owner_id = resolve_owner_id(auth)
     result = await _send_channel_rpc(
-        auth.user_id,
+        owner_id,
         "channels.configure",
         {"provider": "telegram", "token": body.bot_token},
     )
@@ -70,8 +72,9 @@ async def configure_discord(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Configure Discord bot channel."""
+    owner_id = resolve_owner_id(auth)
     result = await _send_channel_rpc(
-        auth.user_id,
+        owner_id,
         "channels.configure",
         {
             "provider": "discord",
@@ -85,8 +88,9 @@ async def configure_discord(
 @router.post("/whatsapp/pair")
 async def whatsapp_pair(auth: AuthContext = Depends(get_current_user)):
     """Initiate WhatsApp QR code pairing."""
+    owner_id = resolve_owner_id(auth)
     result = await _send_channel_rpc(
-        auth.user_id,
+        owner_id,
         "channels.whatsapp.pair",
         {},
     )
@@ -96,8 +100,9 @@ async def whatsapp_pair(auth: AuthContext = Depends(get_current_user)):
 @router.get("/whatsapp/qr")
 async def whatsapp_qr(auth: AuthContext = Depends(get_current_user)):
     """Poll for current WhatsApp QR code."""
+    owner_id = resolve_owner_id(auth)
     result = await _send_channel_rpc(
-        auth.user_id,
+        owner_id,
         "channels.whatsapp.qr",
         {},
     )
@@ -110,11 +115,12 @@ async def disconnect_channel(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Disconnect a messaging channel."""
+    owner_id = resolve_owner_id(auth)
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
 
     await _send_channel_rpc(
-        auth.user_id,
+        owner_id,
         "channels.disconnect",
         {"provider": provider},
     )

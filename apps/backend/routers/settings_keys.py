@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.services.key_service import SUPPORTED_TOOLS, KeyService
 
 logger = logging.getLogger(__name__)
@@ -21,8 +21,9 @@ async def list_keys(
     auth: AuthContext = Depends(get_current_user),
 ):
     """List configured API keys (no values exposed)."""
+    owner_id = resolve_owner_id(auth)
     service = KeyService()
-    keys = await service.list_keys(auth.user_id)
+    keys = await service.list_keys(owner_id)
     return {"keys": keys, "supported_tools": list(SUPPORTED_TOOLS.keys())}
 
 
@@ -33,11 +34,14 @@ async def set_key(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Store an API key for a tool."""
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
     if tool_id not in SUPPORTED_TOOLS:
         raise HTTPException(status_code=400, detail=f"Unsupported tool: {tool_id}")
 
     service = KeyService()
-    await service.set_key(auth.user_id, tool_id, body.api_key)
+    await service.set_key(owner_id, tool_id, body.api_key)
 
     # TODO: update openclaw.json on EFS + send config.apply RPC
     return {"status": "ok", "tool_id": tool_id}
@@ -49,11 +53,14 @@ async def delete_key(
     auth: AuthContext = Depends(get_current_user),
 ):
     """Remove an API key and revert to Isol8-provided proxy."""
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
     if tool_id not in SUPPORTED_TOOLS:
         raise HTTPException(status_code=400, detail=f"Unsupported tool: {tool_id}")
 
     service = KeyService()
-    deleted = await service.delete_key(auth.user_id, tool_id)
+    deleted = await service.delete_key(owner_id, tool_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Key not found")
 
