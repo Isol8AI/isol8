@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatInput } from "./ChatInput";
 import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { MessageList, MessageListHandle } from "./MessageList";
-import { ChannelCards, isChannelCardsDismissed } from "./ChannelCards";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
 import { Loader2 } from "lucide-react";
@@ -41,7 +40,6 @@ export function AgentChatWindow({
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
-  const [showChannelCards, setShowChannelCards] = useState(() => !isChannelCardsDismissed());
   const messageListRef = useRef<MessageListHandle>(null);
 
   const isInitialState = chatMessages.length === 0;
@@ -136,18 +134,6 @@ export function AgentChatWindow({
   }
 
   if (isInitialState) {
-    // Show channel cards on first visit (one-time onboarding)
-    if (showChannelCards) {
-      return (
-        <div className="flex flex-col h-full bg-background/20">
-          <ConnectionStatusBar />
-          <div className="flex-1 flex items-center justify-center p-4">
-            <ChannelCards onDismiss={() => setShowChannelCards(false)} />
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="flex flex-col h-full bg-background/20">
         <ConnectionStatusBar />

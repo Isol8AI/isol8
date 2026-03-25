@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { ChannelSetupStep } from "@/components/chat/ChannelSetupStep";
+import { ChannelCards, isChannelCardsDismissed } from "@/components/chat/ChannelCards";
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
 const STEPS: { phase: Phase; label: string; activeLabel: string }[] = [
@@ -35,7 +35,10 @@ export function ProvisioningStepper({
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // Lazy initializer reads localStorage once on mount. isChannelCardsDismissed()
+  // guards SSR (returns true when window is undefined) so this is SSR-safe.
+  // eslint-config-next blocks setState-in-effect, so useEffect is not an option here.
+  const [onboardingComplete, setOnboardingComplete] = useState(() => isChannelCardsDismissed());
 
   // Poll container status every 3s once subscribed
   const { container, refresh: refreshContainer } = useContainerStatus({
@@ -107,9 +110,7 @@ export function ProvisioningStepper({
   if (phase === "channels") {
     return (
       <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-sm">
-          <ChannelSetupStep onComplete={() => setOnboardingComplete(true)} />
-        </div>
+        <ChannelCards onDismiss={() => setOnboardingComplete(true)} />
       </div>
     );
   }
