@@ -1,9 +1,28 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
 
-const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/auth/desktop-callback"]);
+const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/auth/desktop-callback", "/onboarding"]);
 
 export default clerkMiddleware(async (auth, req) => {
-  if (isProtectedRoute(req)) await auth.protect();
+  const authObj = await auth();
+
+  if (isProtectedRoute(req)) {
+    if (!authObj.userId) {
+      return authObj.redirectToSignIn();
+    }
+
+    // Redirect to onboarding if user hasn't completed it yet
+    // Skip if already on onboarding page
+    if (req.nextUrl.pathname !== "/onboarding") {
+      const onboarded = authObj.sessionClaims?.unsafeMetadata?.onboarded;
+      const hasOrg = !!authObj.orgId;
+
+      // User needs onboarding if they haven't chosen personal or org
+      if (!onboarded && !hasOrg) {
+        return NextResponse.redirect(new URL("/onboarding", req.url));
+      }
+    }
+  }
 });
 
 export const config = {
