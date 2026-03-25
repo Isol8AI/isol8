@@ -299,6 +299,7 @@ class TestCreateUserService:
                     "gateway_token": "token-abc",
                     "status": "provisioning",
                     "substatus": None,
+                    "owner_type": "personal",
                 },
             )
 

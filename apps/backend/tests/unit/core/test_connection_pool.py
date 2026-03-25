@@ -217,7 +217,7 @@ class TestGatewayConnectionHandshake:
 
     @pytest.mark.asyncio
     async def test_handshake_sends_connect_with_token(self, connection):
-        """_handshake sends the auth token in the connect params."""
+        """_handshake sends a trusted-proxy connect request with operator role."""
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
             side_effect=[
@@ -232,8 +232,9 @@ class TestGatewayConnectionHandshake:
         sent_raw = mock_ws.send.call_args[0][0]
         sent = json.loads(sent_raw)
         assert sent["method"] == "connect"
-        assert sent["params"]["auth"]["token"] == "test-token"
         assert sent["params"]["role"] == "operator"
+        assert sent["params"]["minProtocol"] == 3
+        assert sent["params"]["maxProtocol"] == 3
 
     @pytest.mark.asyncio
     async def test_verify_health_raises_on_unhealthy(self, connection):
