@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAuth, UserButton } from "@clerk/nextjs";
+import { useAuth, UserButton, OrganizationSwitcher } from "@clerk/nextjs";
 import { Bot, Trash2 } from "lucide-react";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -161,6 +161,11 @@ export function ChatLayout({
 
         <main className="flex-1 min-h-0 flex flex-col relative bg-background/20">
           <header className="h-14 border-b border-border flex items-center justify-end gap-2 px-4 backdrop-blur-sm bg-background/20 absolute top-0 right-0 left-0 z-20">
+            <OrganizationSwitcher
+              hidePersonal={false}
+              afterSelectOrganizationUrl="/chat"
+              afterSelectPersonalUrl="/chat"
+            />
             <UserButton
               appearance={{
                 elements: {
