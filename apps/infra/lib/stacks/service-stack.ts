@@ -484,12 +484,12 @@ export class ServiceStack extends cdk.Stack {
         FREE_TIER_MODEL: "us.minimax.minimax-m2-1-v1:0",
         STRIPE_STARTER_PRICE_ID:
           env === "prod"
-            ? "price_1TF5GII54BysGS3r9z4c9tjL"
-            : "price_1TF59oI54BysGS3rxOiEauom",
+            ? "price_1TF5MkI54BysGS3rLYE6K0fZ"
+            : "price_1TF5MDI54BysGS3rlT80MMI8",
         STRIPE_PRO_PRICE_ID:
           env === "prod"
-            ? "price_1TF5GRI54BysGS3rqKQVK6DE"
-            : "price_1TF5A5I54BysGS3r1ijYSeGD",
+            ? "price_1TF5MkI54BysGS3regYBZj6a"
+            : "price_1TF5MEI54BysGS3rAxoFnoeX",
         STRIPE_ENTERPRISE_PRICE_ID:
           env === "prod"
             ? "price_1TF5GiI54BysGS3rJ2n5EyNw"
