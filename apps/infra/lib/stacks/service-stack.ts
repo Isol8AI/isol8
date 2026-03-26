@@ -482,13 +482,25 @@ export class ServiceStack extends cdk.Stack {
               ? "https://isol8.co"
               : "https://dev.isol8.co",
         FREE_TIER_MODEL: "us.minimax.minimax-m2-1-v1:0",
+        STRIPE_STARTER_PRICE_ID:
+          env === "prod"
+            ? "price_1TF5GII54BysGS3r9z4c9tjL"
+            : "price_1TF59oI54BysGS3rxOiEauom",
+        STRIPE_PRO_PRICE_ID:
+          env === "prod"
+            ? "price_1TF5GRI54BysGS3rqKQVK6DE"
+            : "price_1TF5A5I54BysGS3r1ijYSeGD",
+        STRIPE_ENTERPRISE_PRICE_ID:
+          env === "prod"
+            ? "price_1TF5GiI54BysGS3rJ2n5EyNw"
+            : "price_1TF5ARI54BysGS3rPkwQYZ6L",
         STRIPE_METERED_PRICE_ID:
           env === "prod"
-            ? "price_TODO_PROD"
+            ? "price_1TF5HOI54BysGS3r5Jp56FV5"
             : "price_1TBm0fI54BysGS3rrqTaZ5Zz",
         STRIPE_METER_ID:
           env === "prod"
-            ? "mtr_TODO_PROD"
+            ? "mtr_61UOTDUyCfar5AIY541I54BysGS3rToW"
             : "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC",
         FRONTEND_URL:
           env === "local"
