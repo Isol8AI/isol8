@@ -18,8 +18,14 @@ import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { ChannelCards, isChannelCardsDismissed } from "@/components/chat/ChannelCards";
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
-const STEPS: { phase: Phase; label: string; activeLabel: string }[] = [
+const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
+  { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
+  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
+  { phase: "ready", label: "Ready", activeLabel: "Ready!" },
+];
+
+const STEPS_FREE: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
   { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
@@ -34,7 +40,8 @@ export function ProvisioningStepper({
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
-  const { isLoading: billingLoading, isSubscribed, createCheckout } = useBilling();
+  const { isLoading: billingLoading, isSubscribed, planTier, createCheckout } = useBilling();
+  const isFree = planTier === "free";
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
@@ -43,17 +50,18 @@ export function ProvisioningStepper({
   // eslint-config-next blocks setState-in-effect, so useEffect is not an option here.
   const [onboardingComplete, setOnboardingComplete] = useState(() => isChannelCardsDismissed());
 
-  // Poll container status every 3s once subscribed
+  // Poll container status every 3s once subscribed or on free tier (auto-provisioned)
+  const shouldPollContainer = isSubscribed || isFree;
   const { container, refresh: refreshContainer } = useContainerStatus({
-    refreshInterval: isSubscribed ? 3000 : 0,
-    enabled: isSubscribed,
+    refreshInterval: shouldPollContainer ? 3000 : 0,
+    enabled: shouldPollContainer,
   });
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
-    isSubscribed && containerReady ? "health" : null,
+    shouldPollContainer && containerReady ? "health" : null,
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
@@ -69,7 +77,8 @@ export function ProvisioningStepper({
 
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
-    if (!isSubscribed) return "payment";
+    // Free tier auto-provisions; paid tiers need subscription first
+    if (!isSubscribed && !isFree) return "payment";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
     if (!containerReady || !gatewayHealth) return "gateway";
@@ -91,7 +100,7 @@ export function ProvisioningStepper({
 
     // No channels connected — show onboarding
     return "channels";
-  }, [isSubscribed, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
+  }, [isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
@@ -127,8 +136,8 @@ export function ProvisioningStepper({
     );
   }
 
-  // Not subscribed — show pricing
-  if (!isSubscribed) {
+  // Not subscribed and not free — show pricing
+  if (!isSubscribed && !isFree) {
     return <PricingCards checkoutLoading={checkoutLoading} isOrg={isOrg} orgName={organization?.name} onCheckout={async (tier) => {
       setCheckoutLoading(tier);
       try {
@@ -145,7 +154,7 @@ export function ProvisioningStepper({
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center space-y-6 max-w-sm">
-          <StepperDisplay currentPhase={phase} error />
+          <StepperDisplay currentPhase={phase} steps={isFree ? STEPS_FREE : STEPS_PAID} error />
           <div className="space-y-2">
             <XCircle className="h-8 w-8 text-red-500 mx-auto" />
             <h2 className="text-lg font-medium">Setup failed</h2>
@@ -169,6 +178,8 @@ export function ProvisioningStepper({
   }
 
   // Provisioning stepper — always shown during container/gateway phases
+  const steps = isFree ? STEPS_FREE : STEPS_PAID;
+
   return (
     <div className="flex-1 flex items-center justify-center">
       <div className="text-center space-y-8 max-w-sm">
@@ -182,7 +193,12 @@ export function ProvisioningStepper({
             This usually takes about 30-60 seconds.
           </p>
         </div>
-        <StepperDisplay currentPhase={phase} />
+        {isFree && (
+          <div className="px-4 py-3 bg-blue-900/20 border border-blue-500/30 rounded-lg text-sm text-blue-200">
+            You have $2 in free usage. Subscribe anytime for more.
+          </div>
+        )}
+        <StepperDisplay currentPhase={phase} steps={steps} />
         {timedOut && (
           <div className="space-y-4 pt-2">
             <div className="flex items-center justify-center gap-2 text-yellow-500">
@@ -206,16 +222,18 @@ export function ProvisioningStepper({
 
 function StepperDisplay({
   currentPhase,
+  steps,
   error = false,
 }: {
   currentPhase: Phase;
+  steps: { phase: Phase; label: string; activeLabel: string }[];
   error?: boolean;
 }) {
-  const currentIdx = STEPS.findIndex((s) => s.phase === currentPhase);
+  const currentIdx = steps.findIndex((s) => s.phase === currentPhase);
 
   return (
     <div className="space-y-3 text-left mx-auto w-fit">
-      {STEPS.map((step, idx) => {
+      {steps.map((step, idx) => {
         const isComplete = idx < currentIdx;
         const isCurrent = idx === currentIdx;
         const isErrorStep = error && isCurrent;

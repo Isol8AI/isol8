@@ -13,7 +13,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { useGateway, type ChatIncomingMessage } from "@/hooks/useGateway";
+import { useGateway, type ChatIncomingMessage, type BudgetExceededPayload } from "@/hooks/useGateway";
 
 // =============================================================================
 // Friendly error messages
@@ -88,6 +88,7 @@ export interface UseAgentChatReturn {
   messages: AgentMessage[];
   isStreaming: boolean;
   error: string | null;
+  budgetError: BudgetExceededPayload | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
   clearMessages: () => void;
@@ -132,6 +133,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [budgetError, setBudgetError] = useState<BudgetExceededPayload | null>(null);
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
 
@@ -240,6 +242,30 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
       }
 
       if (msg.type === "error") {
+        // Handle budget exceeded errors specially
+        if (msg.code === "BUDGET_EXCEEDED") {
+          setBudgetError({
+            code: "BUDGET_EXCEEDED",
+            current_spend: msg.current_spend ?? 0,
+            included_budget: msg.included_budget ?? 0,
+            within_included: msg.within_included ?? false,
+            overage_available: msg.overage_available ?? false,
+            overage_enabled: msg.overage_enabled ?? false,
+            is_subscribed: msg.is_subscribed ?? false,
+            tier: msg.tier ?? "free",
+          });
+          // Remove the empty assistant message placeholder
+          if (currentAssistantIdRef.current) {
+            setMessages((prev) =>
+              prev.filter((m) => m.id !== currentAssistantIdRef.current),
+            );
+          }
+          setIsStreaming(false);
+          currentAssistantIdRef.current = null;
+          streamContentRef.current = "";
+          return;
+        }
+
         const displayError = friendlyError(msg.message);
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>
@@ -321,6 +347,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
       }
 
       setError(null);
+      setBudgetError(null);
 
       // Clear bootstrap flag once user sends their first message
       if (agentIdRef.current) _needsBootstrap.delete(agentIdRef.current);
@@ -415,6 +442,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
     messages: externalMessages,
     isStreaming,
     error,
+    budgetError,
     sendMessage,
     cancelMessage,
     clearMessages,

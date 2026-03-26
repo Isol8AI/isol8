@@ -41,10 +41,21 @@ function getWebSocketUrl(): string {
 // =============================================================================
 
 /** Chat message types received from backend */
+export interface BudgetExceededPayload {
+  code: "BUDGET_EXCEEDED";
+  current_spend: number;
+  included_budget: number;
+  within_included: boolean;
+  overage_available: boolean;
+  overage_enabled: boolean;
+  is_subscribed: boolean;
+  tier: string;
+}
+
 export type ChatIncomingMessage =
   | { type: "chunk"; content: string }
   | { type: "done" }
-  | { type: "error"; message: string }
+  | { type: "error"; message: string; code?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
   | { type: "tool_start"; tool: string }
   | { type: "tool_end"; tool: string };

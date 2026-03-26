@@ -18,6 +18,7 @@ interface ChatInputProps {
   isUploading?: boolean;
   isStreaming?: boolean;
   suggestedMessage?: string;
+  budgetExceeded?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -26,7 +27,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
-export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage }: ChatInputProps) {
+export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage, budgetExceeded }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -86,7 +87,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
     e.preventDefault();
   };
 
-  const isDisabled = disabled || isUploading;
+  const isDisabled = disabled || isUploading || budgetExceeded;
 
   return (
     <div className={cn("p-4", !centered && "bg-black/40 backdrop-blur-md")}>
@@ -149,7 +150,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={suggestedMessage ? "" : "Ask anything"}
+              placeholder={budgetExceeded ? "Usage limit reached" : suggestedMessage ? "" : "Ask anything"}
               rows={1}
               className="w-full min-h-6 max-h-50 resize-none bg-transparent text-white placeholder:text-white/30 focus:outline-none text-sm leading-6 py-1"
               disabled={isDisabled}
