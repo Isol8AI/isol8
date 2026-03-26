@@ -37,6 +37,8 @@ interface ModelSelectorProps {
   selectedModel: string;
   onModelChange: (modelId: string) => void;
   disabled?: boolean;
+  /** Model ID that is included with the user's current tier (shown with badge). */
+  tierModel?: string;
 }
 
 interface ProviderConfig {
@@ -105,11 +107,22 @@ function ProviderIcon({ config, size = 16 }: { config: ProviderConfig; size?: nu
   return <Icon size={size} />;
 }
 
+/**
+ * Check if a model ID matches the tier model, handling the `amazon-bedrock/` prefix
+ * that OpenClaw adds to Bedrock model IDs in the config catalog.
+ */
+function isTierModel(modelId: string, tierModelId: string): boolean {
+  const bare = modelId.replace(/^amazon-bedrock\//, "");
+  const bareTier = tierModelId.replace(/^amazon-bedrock\//, "");
+  return bare === bareTier;
+}
+
 export function ModelSelector({
   models,
   selectedModel,
   onModelChange,
   disabled = false,
+  tierModel,
 }: ModelSelectorProps) {
   const [open, setOpen] = React.useState(false);
   const [search, setSearch] = React.useState("");
@@ -280,8 +293,15 @@ export function ModelSelector({
                                   : "text-white/70 hover:bg-white/5 hover:text-white"
                               )}
                             >
-                              <div className="font-medium truncate text-left">
-                                {model.name}
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-medium truncate text-left">
+                                  {model.name}
+                                </span>
+                                {tierModel && isTierModel(model.id, tierModel) && (
+                                  <span className="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+                                    Included
+                                  </span>
+                                )}
                               </div>
                               {isSelected && (
                                 <div className="h-1.5 w-1.5 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.5)] shrink-0 ml-2" />

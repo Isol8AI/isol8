@@ -17,6 +17,8 @@ import {
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useBilling } from "@/hooks/useBilling";
+import { ModelSelector } from "@/components/chat/ModelSelector";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 type AgentTab = "overview" | "files" | "tools";
@@ -351,13 +353,29 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
   const [updatingModel, setUpdatingModel] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
 
+  // Fetch tier model from billing pricing API for the "Included" badge
+  const { fetchPricing } = useBilling();
+  const [tierModel, setTierModel] = useState<string | undefined>(undefined);
+  useEffect(() => {
+    let cancelled = false;
+    fetchPricing().then((pricing) => {
+      if (!cancelled && pricing?.tier_model) {
+        setTierModel(pricing.tier_model);
+      }
+    }).catch(() => { /* non-critical */ });
+    return () => { cancelled = true; };
+  }, [fetchPricing]);
+
   const identity = data || agent?.identity;
 
   // config.get returns a ConfigSnapshot wrapper; actual config is under .config
   const configInner = configSnapshot?.config;
 
   // Model catalog: agents.defaults.models (dict of modelId -> { alias? })
-  const modelsCatalog = configInner?.agents?.defaults?.models ?? {};
+  const modelsCatalog = useMemo(
+    () => configInner?.agents?.defaults?.models ?? {},
+    [configInner?.agents?.defaults?.models],
+  );
 
   // Default model: agents.defaults.model (string or { primary })
   const defaultModelPrimary = resolveModelPrimary(configInner?.agents?.defaults?.model);
@@ -394,16 +412,16 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
     }
   }, [callRpc, agentId, onAgentUpdated, mutateConfig]);
 
-  // Build options list — catalog models + current model if not in catalog
-  const modelOptions: { id: string; label: string }[] = Object.entries(modelsCatalog).map(
-    ([id, entry]) => ({ id, label: entry.alias || id.split("/").pop() || id })
-  );
-  if (currentModel && !modelsCatalog[currentModel]) {
-    modelOptions.unshift({ id: currentModel, label: `Current (${currentModel.split("/").pop()})` });
-  }
-
-  // Is this the default agent? (no per-agent override = inherits default)
-  const isDefault = !agentModelPrimary;
+  // Build model list for the ModelSelector from the tier-filtered catalog
+  const selectorModels = useMemo(() => {
+    const models: { id: string; name: string }[] = Object.entries(modelsCatalog).map(
+      ([id, entry]) => ({ id, name: entry.alias || id.split("/").pop() || id })
+    );
+    if (currentModel && !modelsCatalog[currentModel]) {
+      models.unshift({ id: currentModel, name: currentModel.split("/").pop() || currentModel });
+    }
+    return models;
+  }, [modelsCatalog, currentModel]);
 
   return (
     <div className="space-y-4 mt-2">
@@ -420,26 +438,14 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
       {/* Model selector */}
       <div className="rounded-lg border border-border p-4 space-y-3">
         <h3 className="text-sm font-medium">Model</h3>
-        {modelOptions.length > 0 || defaultModelPrimary ? (
-          <select
-            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary"
-            value={isDefault ? "" : currentModel}
-            onChange={(e) => handleModelChange(e.target.value)}
+        {selectorModels.length > 0 ? (
+          <ModelSelector
+            models={selectorModels}
+            selectedModel={currentModel}
+            onModelChange={handleModelChange}
             disabled={updatingModel || !configSnapshot?.hash}
-          >
-            {!isDefault && (
-              <option value="">
-                {defaultModelPrimary
-                  ? `Inherit default (${defaultModelPrimary.split("/").pop()})`
-                  : "Inherit default"}
-              </option>
-            )}
-            {modelOptions.map((opt) => (
-              <option key={opt.id} value={opt.id}>
-                {opt.label}{opt.id === defaultModelPrimary ? " (default)" : ""}
-              </option>
-            ))}
-          </select>
+            tierModel={tierModel}
+          />
         ) : (
           <p className="text-xs text-muted-foreground">
             {currentModel ? currentModel.split("/").pop() : "No models configured in gateway"}
