@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
+import cronstrue from "cronstrue";
 import {
   Loader2,
   RefreshCw,
@@ -218,8 +219,19 @@ function CronJobForm({
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
+  const cronValidation = useMemo<{ ok: boolean; description?: string; error?: string }>(() => {
+    const expr = form.cronExpr.trim();
+    if (!expr) return { ok: false };
+    try {
+      const description = cronstrue.toString(expr, { throwExceptionOnParseError: true });
+      return { ok: true, description };
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : "Invalid cron expression" };
+    }
+  }, [form.cronExpr]);
+
   const canSubmit = form.name.trim() && form.message.trim() && (
-    (form.scheduleKind === "cron" && form.cronExpr.trim()) ||
+    (form.scheduleKind === "cron" && cronValidation.ok) ||
     (form.scheduleKind === "every" && form.everyValue > 0) ||
     (form.scheduleKind === "at" && form.atDatetime)
   );
@@ -255,19 +267,31 @@ function CronJobForm({
         </div>
 
         {form.scheduleKind === "cron" && (
-          <div className="flex gap-2">
-            <Input
-              value={form.cronExpr}
-              onChange={(e) => update("cronExpr", e.target.value)}
-              placeholder="0 9 * * *"
-              className="h-8 text-sm font-mono flex-1"
-            />
-            <Input
-              value={form.cronTz}
-              onChange={(e) => update("cronTz", e.target.value)}
-              placeholder="Timezone (optional)"
-              className="h-8 text-sm w-40"
-            />
+          <div className="space-y-1.5">
+            <div className="flex gap-2">
+              <Input
+                value={form.cronExpr}
+                onChange={(e) => update("cronExpr", e.target.value)}
+                placeholder="0 9 * * *"
+                className={cn(
+                  "h-8 text-sm font-mono flex-1",
+                  form.cronExpr.trim() && !cronValidation.ok && "border-destructive focus-visible:ring-destructive",
+                )}
+              />
+              <Input
+                value={form.cronTz}
+                onChange={(e) => update("cronTz", e.target.value)}
+                placeholder="Timezone (optional)"
+                className="h-8 text-sm w-40"
+              />
+            </div>
+            {form.cronExpr.trim() && (
+              cronValidation.ok ? (
+                <p className="text-xs text-green-500">{cronValidation.description}</p>
+              ) : (
+                <p className="text-xs text-destructive">{cronValidation.error}</p>
+              )
+            )}
           </div>
         )}
 
