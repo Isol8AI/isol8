@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.containers.ecs_manager import GATEWAY_PORT
+GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
 
