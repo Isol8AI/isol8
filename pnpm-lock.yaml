@@ -52,6 +52,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      cronstrue:
+        specifier: ^3.14.0
+        version: 3.14.0
       framer-motion:
         specifier: ^12.29.0
         version: 12.36.0(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
@@ -2477,6 +2480,10 @@ packages:
 
   create-require@1.1.1:
     resolution: {integrity: sha512-dcKFX3jn0MpIaXjisoRvexIJVEKzaq7z2rZKxf+MSr9TkdmHmsU4m2lcLojrj/FHl8mk5VxMmYA+ftRkP/3oKQ==}
+
+  cronstrue@3.14.0:
+    resolution: {integrity: sha512-XnW4vuK/jPJjmTyDWiej1Zq36Od7ITwxaV2O1pzHZuyMVvdy7NAvyvIBzybt+idqSpfqYuoDG7uf/ocGtJVWxA==}
+    hasBin: true
 
   cross-spawn@7.0.6:
     resolution: {integrity: sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==}
@@ -7338,6 +7345,8 @@ snapshots:
       - ts-node
 
   create-require@1.1.1: {}
+
+  cronstrue@3.14.0: {}
 
   cross-spawn@7.0.6:
     dependencies:
