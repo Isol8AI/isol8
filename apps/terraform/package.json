@@ -1,9 +1,0 @@
-{
-  "name": "@isol8/terraform",
-  "private": true,
-  "scripts": {
-    "lint": "terraform fmt -check -recursive",
-    "test": "terraform validate",
-    "build": "echo 'no build step'"
-  }
-}
