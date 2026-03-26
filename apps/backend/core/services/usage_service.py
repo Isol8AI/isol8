@@ -49,7 +49,22 @@ async def record_usage(
     period = _current_period()
 
     # Triple-write: monthly + lifetime + member
-    await usage_repo.increment(
+    # Use return_new on the relevant counter to get the post-increment value
+    # atomically, avoiding a separate read for the overage check.
+    account = None
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+    except Exception as e:
+        logger.warning("Failed to fetch billing account for %s: %s", owner_id, e)
+
+    tier = account.get("plan_tier", "free") if account else "free"
+    tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    budget_type = tier_config["budget_type"]
+
+    # Determine which counter to return atomically for the overage check
+    need_lifetime_new = budget_type == "lifetime"
+
+    monthly_new = await usage_repo.increment(
         owner_id,
         period,
         spend_microdollars,
@@ -57,8 +72,9 @@ async def record_usage(
         output_tokens,
         cache_read,
         cache_write,
+        return_new=not need_lifetime_new,
     )
-    await usage_repo.increment(
+    lifetime_new = await usage_repo.increment(
         owner_id,
         "lifetime",
         spend_microdollars,
@@ -66,6 +82,7 @@ async def record_usage(
         output_tokens,
         cache_read,
         cache_write,
+        return_new=need_lifetime_new,
     )
     await usage_repo.increment(
         owner_id,
@@ -79,21 +96,14 @@ async def record_usage(
 
     # Report overage to Stripe (only if over included budget and overage enabled)
     try:
-        account = await billing_repo.get_by_owner_id(owner_id)
         if not account:
             return
 
-        tier = account.get("plan_tier", "free")
-        tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
         included_budget = tier_config["included_budget_microdollars"]
-        budget_type = tier_config["budget_type"]
 
-        if budget_type == "lifetime":
-            current = await usage_repo.get_period_usage(owner_id, "lifetime")
-        else:
-            current = await usage_repo.get_period_usage(owner_id, period)
-
-        current_spend = current["total_spend_microdollars"] if current else 0
+        # Use the atomically-returned post-increment value
+        current_counters = lifetime_new if need_lifetime_new else monthly_new
+        current_spend = current_counters["total_spend_microdollars"] if current_counters else 0
 
         if (
             current_spend > included_budget

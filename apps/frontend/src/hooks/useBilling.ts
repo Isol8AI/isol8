@@ -22,14 +22,16 @@ export interface BillingAccount {
 
 export interface MemberUsage {
   user_id: string;
-  email?: string;
-  name?: string;
+  display_name: string | null;
+  email: string | null;
   total_spend: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
   request_count: number;
 }
 
 export interface UsageSummary {
-  period: { start: string; end: string };
+  period: string;
   total_spend: number;
   total_input_tokens: number;
   total_output_tokens: number;

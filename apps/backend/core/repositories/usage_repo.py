@@ -19,11 +19,15 @@ async def increment(
     output_tokens: int,
     cache_read_tokens: int,
     cache_write_tokens: int,
-) -> None:
-    """Atomically increment all counters for an owner+period."""
+    return_new: bool = False,
+) -> dict | None:
+    """Atomically increment all counters for an owner+period.
+
+    If *return_new* is True, returns the post-increment counter values so
+    the caller can do an atomic overage check without a separate read.
+    """
     table = _get_table()
-    await run_in_thread(
-        table.update_item,
+    kwargs: dict = dict(
         Key={"owner_id": owner_id, "period": period},
         UpdateExpression=(
             "ADD total_spend_microdollars :spend, "
@@ -42,6 +46,22 @@ async def increment(
             ":one": Decimal("1"),
         },
     )
+    if return_new:
+        kwargs["ReturnValues"] = "ALL_NEW"
+
+    response = await run_in_thread(table.update_item, **kwargs)
+
+    if return_new:
+        attrs = response.get("Attributes", {})
+        return {
+            "total_spend_microdollars": int(attrs.get("total_spend_microdollars", 0)),
+            "total_input_tokens": int(attrs.get("total_input_tokens", 0)),
+            "total_output_tokens": int(attrs.get("total_output_tokens", 0)),
+            "total_cache_read_tokens": int(attrs.get("total_cache_read_tokens", 0)),
+            "total_cache_write_tokens": int(attrs.get("total_cache_write_tokens", 0)),
+            "request_count": int(attrs.get("request_count", 0)),
+        }
+    return None
 
 
 async def get_period_usage(owner_id: str, period: str) -> dict | None:

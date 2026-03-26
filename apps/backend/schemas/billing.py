@@ -1,7 +1,7 @@
 """Pydantic schemas for billing API endpoints."""
 
 from enum import Enum
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 
 class PlanTier(str, Enum):
@@ -24,6 +24,13 @@ class BillingAccountResponse(BaseModel):
 
 class CheckoutRequest(BaseModel):
     tier: PlanTier
+
+    @field_validator("tier")
+    @classmethod
+    def validate_tier(cls, v: PlanTier) -> PlanTier:
+        if v == PlanTier.FREE:
+            raise ValueError("Cannot checkout for free tier")
+        return v
 
 
 class CheckoutResponse(BaseModel):

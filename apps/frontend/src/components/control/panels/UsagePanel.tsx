@@ -143,7 +143,7 @@ export function UsagePanel() {
           )}
           {usage?.period && (
             <span>
-              Period: <span className="font-medium text-foreground">{usage.period.start} — {usage.period.end}</span>
+              Period: <span className="font-medium text-foreground">{usage.period}</span>
             </span>
           )}
         </div>
@@ -286,8 +286,8 @@ export function UsagePanel() {
               {usage.by_member.map((member) => (
                 <tr key={member.user_id} className="border-b border-border/50 hover:bg-accent/30">
                   <td className="px-4 py-2">
-                    <div>{member.name || member.email || member.user_id}</div>
-                    {member.name && member.email && (
+                    <div>{member.display_name || member.email || member.user_id}</div>
+                    {member.display_name && member.email && (
                       <div className="text-muted-foreground/60">{member.email}</div>
                     )}
                   </td>
