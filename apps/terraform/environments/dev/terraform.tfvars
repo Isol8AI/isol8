@@ -29,8 +29,6 @@ github_org   = "Isol8AI"
 github_repos = ["backend", "terraform", "isol8"]
 
 # Stripe billing (test mode)
-stripe_starter_fixed_price_id = "price_1TBm0NI54BysGS3r57fcRXOJ"
-stripe_pro_fixed_price_id     = "price_1TBm0PI54BysGS3rFjUOtmrR"
 stripe_metered_price_id       = "price_1TBm0fI54BysGS3rrqTaZ5Zz"
 stripe_meter_id               = "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC"
 

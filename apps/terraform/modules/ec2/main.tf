@@ -105,8 +105,6 @@ resource "aws_launch_template" "main" {
     frontend_url                  = var.frontend_url
     ws_connections_table          = var.ws_connections_table
     ws_management_api_url         = var.ws_management_api_url
-    stripe_starter_fixed_price_id = var.stripe_starter_fixed_price_id
-    stripe_pro_fixed_price_id     = var.stripe_pro_fixed_price_id
     stripe_metered_price_id       = var.stripe_metered_price_id
     stripe_meter_id               = var.stripe_meter_id
     container_execution_role_arn  = var.container_execution_role_arn
