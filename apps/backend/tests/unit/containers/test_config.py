@@ -78,7 +78,7 @@ class TestWriteOpenclawConfig:
         assert config["gateway"]["mode"] == "local"
         assert config["gateway"]["auth"]["mode"] == "trusted-proxy"
         assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
-        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8"]
+        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8", "127.0.0.1", "::1"]
 
     def test_control_ui_disabled(self):
         """Control UI is disabled in production containers."""
