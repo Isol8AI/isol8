@@ -29,7 +29,7 @@ const NAV_ITEMS = [
   { key: "usage", label: "Usage", icon: BarChart3 },
 ];
 
-const ADMIN_ONLY_PANELS = new Set(["channels"]);
+const ADMIN_ONLY_PANELS = new Set(["channels", "usage"]);
 
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
   const { membership } = useOrganization();
