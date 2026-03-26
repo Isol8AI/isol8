@@ -8,7 +8,7 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type
-from core.config import settings, PLAN_BUDGETS
+from core.config import settings, TIER_CONFIG
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.containers.workspace import WorkspaceError
@@ -52,7 +52,8 @@ async def get_billing_account(
         owner_type = get_owner_type(auth)
         account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
 
-    budget = PLAN_BUDGETS.get(account.get("plan_tier", "free"), 0)
+    tier = TIER_CONFIG.get(account.get("plan_tier", "free"), TIER_CONFIG["free"])
+    budget = tier["included_budget_microdollars"]
     budget_dollars = budget / 1_000_000
 
     # Usage tracking is not yet migrated to DynamoDB; return zero usage for now
