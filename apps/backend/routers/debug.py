@@ -70,6 +70,7 @@ async def provision_container(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
+            tier="starter",
         )
         get_workspace().write_file(owner_id, "openclaw.json", config_json)
         get_workspace().write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
@@ -118,6 +119,7 @@ async def redeploy_container(
             region=settings.AWS_REGION,
             gateway_token=container["gateway_token"],
             proxy_base_url=settings.PROXY_BASE_URL,
+            tier="starter",
         )
         get_workspace().write_file(owner_id, "openclaw.json", config_json)
 

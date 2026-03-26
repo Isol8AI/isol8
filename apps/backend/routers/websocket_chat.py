@@ -275,6 +275,33 @@ async def ws_message(
             )
             return Response(status_code=200)
 
+        # Budget check before forwarding to gateway
+        from core.services.usage_service import check_budget
+
+        budget = await check_budget(owner_id)
+        if not budget["allowed"]:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "error",
+                    "code": "BUDGET_EXCEEDED",
+                    "message": (
+                        "You've used your included LLM budget for this month."
+                        if budget["is_subscribed"]
+                        else "You've reached your free tier limit."
+                    ),
+                    "current_spend": budget["current_spend"],
+                    "included_budget": budget["included_budget"],
+                    "within_included": budget["within_included"],
+                    "overage_available": budget["overage_available"],
+                    "overage_enabled": budget["overage_enabled"],
+                    "is_subscribed": budget["is_subscribed"],
+                    "tier": budget["tier"],
+                },
+            )
+            return Response(status_code=200)
+
         background_tasks.add_task(
             _process_agent_chat_background,
             connection_id=x_connection_id,

@@ -572,7 +572,7 @@ class EcsManager:
             pass
         return None
 
-    async def provision_user_container(self, user_id: str, owner_type: str = "personal") -> str:
+    async def provision_user_container(self, user_id: str, owner_type: str = "personal", tier: str = "free") -> str:
         """Provision or recover a user's container.
 
         Handles all scenarios:
@@ -619,7 +619,7 @@ class EcsManager:
                     )
 
                 try:
-                    await self._write_user_configs(user_id, gateway_token)
+                    await self._write_user_configs(user_id, gateway_token, tier=tier)
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
@@ -705,7 +705,7 @@ class EcsManager:
 
         # Step 3: Write configs to EFS
         try:
-            await self._write_user_configs(user_id, gateway_token)
+            await self._write_user_configs(user_id, gateway_token, tier=tier)
         except Exception as e:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
@@ -720,12 +720,13 @@ class EcsManager:
         logger.info("Provisioned container %s for user %s", service_name, user_id)
         return service_name
 
-    async def _write_user_configs(self, user_id: str, gateway_token: str) -> None:
+    async def _write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
         """Write OpenClaw config files to the user's EFS workspace."""
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
+            tier=tier,
         )
         workspace = get_workspace()
         workspace.write_file(user_id, "openclaw.json", config_json)

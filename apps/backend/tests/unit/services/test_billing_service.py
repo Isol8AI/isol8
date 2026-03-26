@@ -1,4 +1,4 @@
-"""Tests for BillingService (DynamoDB-backed)."""
+"""Tests for BillingService (DynamoDB-backed) — hybrid tier model."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -78,8 +78,8 @@ class TestBillingServiceCheckout:
 
     @pytest.mark.asyncio
     @patch(
-        "core.services.billing_service.PLAN_PRICES",
-        {"starter": {"fixed": "price_starter", "metered": "price_metered"}},
+        "core.services.billing_service.TIER_PRICES",
+        {"starter": "price_starter"},
     )
     @patch("core.services.billing_service.stripe")
     async def test_create_checkout_session(self, mock_stripe, service, billing_account):
@@ -96,8 +96,8 @@ class TestBillingServiceCheckout:
 
     @pytest.mark.asyncio
     @patch(
-        "core.services.billing_service.PLAN_PRICES",
-        {"pro": {"fixed": "price_pro", "metered": "price_metered"}},
+        "core.services.billing_service.TIER_PRICES",
+        {"pro": "price_pro"},
     )
     @patch("core.services.billing_service.stripe")
     async def test_checkout_passes_plan_tier_metadata(self, mock_stripe, service, billing_account):
@@ -110,14 +110,10 @@ class TestBillingServiceCheckout:
         assert call_kwargs["subscription_data"]["metadata"]["plan_tier"] == "pro"
 
     @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.PLAN_PRICES",
-        {"empty_tier": {"fixed": "", "metered": ""}},
-    )
-    async def test_checkout_rejects_empty_price_ids(self, service, billing_account):
-        """Should raise error when no price IDs are configured for tier."""
-        with pytest.raises(BillingServiceError, match="No Stripe price IDs configured"):
-            await service.create_checkout_session(billing_account=billing_account, tier="empty_tier")
+    async def test_checkout_rejects_unknown_tier(self, service, billing_account):
+        """Should raise error for unknown tier."""
+        with pytest.raises(BillingServiceError, match="Unknown tier"):
+            await service.create_checkout_session(billing_account=billing_account, tier="diamond")
 
 
 class TestBillingServicePortal:
@@ -182,7 +178,7 @@ class TestBillingServiceSubscription:
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
     async def test_cancel_subscription(self, mock_repo, service, billing_account):
-        """Should revert to free tier on cancellation."""
+        """Should revert to free tier and disable overage on cancellation."""
         mock_repo.update_subscription = AsyncMock(
             return_value={
                 "owner_id": "user_sub",
@@ -190,6 +186,7 @@ class TestBillingServiceSubscription:
                 "plan_tier": "free",
             }
         )
+        mock_repo.set_overage_enabled = AsyncMock(return_value={})
 
         await service.cancel_subscription(billing_account)
 
@@ -198,3 +195,4 @@ class TestBillingServiceSubscription:
             stripe_subscription_id=None,
             plan_tier="free",
         )
+        mock_repo.set_overage_enabled.assert_called_once_with("user_sub", False)
