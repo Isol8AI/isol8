@@ -6,9 +6,9 @@ export function Footer() {
       <div className="footer-inner">
         <span className="footer-logo">ISOL8</span>
         <div className="footer-links">
-          <Link href="#">Privacy Policy</Link>
-          <Link href="#">Terms of Service</Link>
-          <Link href="#">Twitter</Link>
+          <Link href="/privacy">Privacy Policy</Link>
+          <Link href="/terms">Terms of Service</Link>
+          <Link href="/support">Support</Link>
         </div>
         <span className="footer-copy">
           © {new Date().getFullYear()} isol8 Inc. All rights reserved.
