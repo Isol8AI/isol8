@@ -86,3 +86,21 @@ async def update_subscription(
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def set_overage_enabled(owner_id: str, enabled: bool, overage_limit: int | None = None) -> dict | None:
+    """Toggle overage for the current billing period."""
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+
+    existing["overage_enabled"] = enabled
+    if overage_limit is not None:
+        existing["overage_limit"] = Decimal(str(overage_limit))
+    elif not enabled:
+        existing.pop("overage_limit", None)
+    existing["updated_at"] = utc_now_iso()
+
+    table = _get_table()
+    await run_in_thread(table.put_item, Item=existing)
+    return existing
