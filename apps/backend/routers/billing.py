@@ -1,31 +1,55 @@
-"""Billing API endpoints with ECS Fargate container provisioning."""
+"""Billing API endpoints — hybrid tier model with usage-based billing."""
 
 import asyncio
 import logging
-from datetime import date
 
+import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type
-from core.config import settings, PLAN_BUDGETS
-from core.containers import get_ecs_manager
-from core.containers.ecs_manager import EcsManagerError
-from core.containers.workspace import WorkspaceError
-from core.repositories import billing_repo
+from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
+from core.config import settings, TIER_CONFIG
+from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService
+from core.services.usage_service import check_budget, get_usage_summary
+from core.services.bedrock_pricing import get_all_prices
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
     CheckoutResponse,
     PortalResponse,
-    UsagePeriod,
-    UsageResponse,
+    OverageToggleRequest,
+    UsageSummary,
+    MemberUsage,
+    PricingResponse,
+    ModelPriceResponse,
 )
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _resolve_clerk_user(user_id: str) -> dict:
+    """Resolve a Clerk user ID to display name and email."""
+    if not settings.CLERK_SECRET_KEY:
+        return {}
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(
+                f"https://api.clerk.com/v1/users/{user_id}",
+                headers={"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "display_name": f"{data.get('first_name', '')} {data.get('last_name', '')}".strip() or None,
+                    "email": (data.get("email_addresses") or [{}])[0].get("email_address"),
+                }
+    except Exception:
+        pass
+    return {}
 
 
 async def _get_billing_account(auth: AuthContext) -> dict | None:
@@ -37,67 +61,123 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
     "/account",
     response_model=BillingAccountResponse,
     summary="Get billing account",
-    description="Returns billing account details and current period usage summary.",
+    description="Returns billing account details with real spend data.",
     operation_id="get_billing_account",
-    responses={404: {"description": "Billing account not found"}},
 )
 async def get_billing_account(
     auth: AuthContext = Depends(get_current_user),
 ):
+    owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
     if not account:
         # Auto-create for users who signed up before billing existed
         billing_service = BillingService()
-        owner_id = resolve_owner_id(auth)
         owner_type = get_owner_type(auth)
         account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
 
-    budget = PLAN_BUDGETS.get(account.get("plan_tier", "free"), 0)
-    budget_dollars = budget / 1_000_000
+    budget = await check_budget(owner_id)
 
-    # Usage tracking is not yet migrated to DynamoDB; return zero usage for now
-    monthly_dollars = 0
-    overage = 0
-    percent = 0
-
-    today = date.today()
-    period_start = today.replace(day=1)
-    if today.month == 12:
-        period_end = today.replace(year=today.year + 1, month=1, day=1)
-    else:
-        period_end = today.replace(month=today.month + 1, day=1)
+    # Lifetime spend
+    lifetime_usage = await usage_repo.get_period_usage(owner_id, "lifetime")
+    lifetime_spend = (lifetime_usage["total_spend_microdollars"] if lifetime_usage else 0) / 1_000_000
 
     return BillingAccountResponse(
-        plan_tier=account.get("plan_tier", "free"),
-        has_subscription=account.get("stripe_subscription_id") is not None,
-        current_period=UsagePeriod(
-            start=period_start,
-            end=period_end,
-            included_budget=budget_dollars,
-            used=monthly_dollars,
-            overage=overage,
-            percent_used=round(percent, 1),
-        ),
+        tier=budget["tier"],
+        is_subscribed=budget["is_subscribed"],
+        current_spend=budget["current_spend"],
+        included_budget=budget["included_budget"],
+        lifetime_spend=lifetime_spend,
+        overage_enabled=budget["overage_enabled"],
+        overage_limit=float(account.get("overage_limit", 0)) / 1_000_000 if account.get("overage_limit") else None,
+        within_included=budget["within_included"],
     )
 
 
 @router.get(
     "/usage",
-    response_model=UsageResponse,
-    summary="Get usage breakdown",
-    description="Returns current period usage breakdown by model and day.",
+    response_model=UsageSummary,
+    summary="Get usage summary",
+    description="Returns current period usage breakdown. Org admins see per-member usage.",
     operation_id="get_usage",
-    responses={404: {"description": "Billing account not found"}},
 )
 async def get_usage(
     auth: AuthContext = Depends(get_current_user),
 ):
-    account = await _get_billing_account(auth)
-    if not account:
-        raise HTTPException(status_code=404, detail="Billing account not found")
+    owner_id = resolve_owner_id(auth)
+    summary = await get_usage_summary(owner_id)
 
-    # Usage tracking stubbed out — return empty data
-    return UsageResponse(period=None, total_cost=0, total_requests=0, by_model=[], by_day=[])
+    by_member: list[MemberUsage] = []
+
+    # Org admins can see per-member breakdown
+    if auth.is_org_context:
+        require_org_admin(auth)
+        members_raw = await usage_repo.get_member_usage(owner_id, summary["period"])
+
+        # Resolve Clerk names in parallel
+        async def _enrich(m: dict) -> MemberUsage:
+            clerk_info = await _resolve_clerk_user(m["user_id"])
+            return MemberUsage(
+                user_id=m["user_id"],
+                display_name=clerk_info.get("display_name"),
+                email=clerk_info.get("email"),
+                total_spend=m["total_spend_microdollars"] / 1_000_000,
+                total_input_tokens=m["total_input_tokens"],
+                total_output_tokens=m["total_output_tokens"],
+                request_count=m["request_count"],
+            )
+
+        by_member = await asyncio.gather(*[_enrich(m) for m in members_raw])
+
+    return UsageSummary(
+        period=summary["period"],
+        total_spend=summary["total_spend"],
+        total_input_tokens=summary["total_input_tokens"],
+        total_output_tokens=summary["total_output_tokens"],
+        total_cache_read_tokens=summary["total_cache_read_tokens"],
+        total_cache_write_tokens=summary["total_cache_write_tokens"],
+        request_count=summary["request_count"],
+        lifetime_spend=summary["lifetime_spend"],
+        by_member=list(by_member),
+    )
+
+
+@router.get(
+    "/pricing",
+    response_model=PricingResponse,
+    summary="Get model pricing",
+    description="Returns per-token model pricing with markup.",
+    operation_id="get_pricing",
+)
+async def get_pricing(
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id)
+    tier = account.get("plan_tier", "free") if account else "free"
+    tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+
+    all_prices = get_all_prices()
+    markup = settings.BILLING_MARKUP
+
+    models = {}
+    for model_id, price in all_prices.items():
+        models[model_id] = ModelPriceResponse(
+            input=price["input"] * markup,
+            output=price["output"] * markup,
+            cache_read=price["cache_read"] * markup,
+            cache_write=price["cache_write"] * markup,
+        )
+
+    # Strip the amazon-bedrock/ prefix from tier model IDs for response
+    primary = tier_config["primary_model"].replace("amazon-bedrock/", "")
+    subagent = tier_config["subagent_model"].replace("amazon-bedrock/", "")
+
+    return PricingResponse(
+        models=models,
+        markup=markup,
+        tier_model=primary,
+        subagent_model=subagent,
+    )
 
 
 @router.post(
@@ -106,16 +186,17 @@ async def get_usage(
     summary="Create checkout session",
     description="Creates a Stripe Checkout session to subscribe to a plan.",
     operation_id="create_checkout",
-    responses={404: {"description": "Billing account not found"}},
 )
 async def create_checkout(
     request: CheckoutRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
     billing_service = BillingService()
     account = await _get_billing_account(auth)
     if not account:
-        # Auto-create billing account for users who signed up before billing existed
         owner_id = resolve_owner_id(auth)
         owner_type = get_owner_type(auth)
         account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
@@ -130,11 +211,13 @@ async def create_checkout(
     summary="Create customer portal session",
     description="Creates a Stripe Customer Portal session for payment management.",
     operation_id="create_portal",
-    responses={404: {"description": "Billing account not found"}},
 )
 async def create_portal(
     auth: AuthContext = Depends(get_current_user),
 ):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
     account = await _get_billing_account(auth)
     if not account:
         raise HTTPException(status_code=404, detail="Billing account not found")
@@ -142,6 +225,29 @@ async def create_portal(
     billing_service = BillingService()
     url = await billing_service.create_portal_session(account)
     return PortalResponse(portal_url=url)
+
+
+@router.put(
+    "/overage",
+    summary="Toggle overage",
+    description="Enable or disable overage billing for the account.",
+    operation_id="toggle_overage",
+)
+async def toggle_overage(
+    request: OverageToggleRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    owner_id = resolve_owner_id(auth)
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Billing account not found")
+
+    limit_microdollars = int(request.limit_dollars * 1_000_000) if request.limit_dollars is not None else None
+    await billing_repo.set_overage_enabled(owner_id, request.enabled, overage_limit=limit_microdollars)
+    return {"status": "ok"}
 
 
 @router.post(
@@ -174,33 +280,16 @@ async def handle_stripe_webhook(
         subscription_id = event_data["id"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
-        # GSI lookup — retry once if eventual consistency returns None
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
-        if account is None:
-            await asyncio.sleep(1)
-            account = await billing_repo.get_by_stripe_customer_id(customer_id)
-
         if account:
             await billing_service.update_subscription(account, subscription_id, tier)
-
-            # Provision ECS Service for subscriber
-            try:
-                owner_id = account["owner_id"]
-                owner_type = account.get("owner_type", "personal")
-                service_name = await get_ecs_manager().provision_user_container(owner_id, owner_type=owner_type)
-                logger.info("ECS service %s provisioned for owner %s (tier=%s)", service_name, owner_id, tier)
-            except (EcsManagerError, WorkspaceError) as e:
-                logger.error("Failed to provision ECS service for owner %s: %s", account["owner_id"], e)
+            logger.info("Subscription created for owner %s (tier=%s)", account["owner_id"], tier)
 
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
-        if account is None:
-            await asyncio.sleep(1)
-            account = await billing_repo.get_by_stripe_customer_id(customer_id)
-
         if account:
             await billing_service.update_subscription(account, event_data["id"], tier)
 
@@ -208,19 +297,9 @@ async def handle_stripe_webhook(
         customer_id = event_data["customer"]
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
-        if account is None:
-            await asyncio.sleep(1)
-            account = await billing_repo.get_by_stripe_customer_id(customer_id)
-
         if account:
             await billing_service.cancel_subscription(account)
-
-            # Stop ECS Service (EFS volume preserved for 30-day grace period)
-            try:
-                await get_ecs_manager().stop_user_service(account["owner_id"])
-                logger.info("ECS service stopped for owner %s (subscription cancelled)", account["owner_id"])
-            except EcsManagerError as e:
-                logger.error("Failed to stop ECS service for owner %s: %s", account["owner_id"], e)
+            logger.info("Subscription cancelled for owner %s", account["owner_id"])
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))

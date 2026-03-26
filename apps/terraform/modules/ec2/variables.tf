@@ -103,18 +103,6 @@ variable "ws_management_api_url" {
 }
 
 # Stripe billing
-variable "stripe_starter_fixed_price_id" {
-  description = "Stripe Price ID for Starter plan monthly fee"
-  type        = string
-  default     = ""
-}
-
-variable "stripe_pro_fixed_price_id" {
-  description = "Stripe Price ID for Pro plan monthly fee"
-  type        = string
-  default     = ""
-}
-
 variable "stripe_metered_price_id" {
   description = "Stripe Price ID for metered LLM usage (shared across tiers)"
   type        = string

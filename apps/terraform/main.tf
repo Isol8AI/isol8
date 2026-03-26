@@ -344,8 +344,6 @@ module "ec2" {
   ws_management_api_url = module.websocket_api.management_api_url
 
   # Stripe billing
-  stripe_starter_fixed_price_id = var.stripe_starter_fixed_price_id
-  stripe_pro_fixed_price_id     = var.stripe_pro_fixed_price_id
   stripe_metered_price_id       = var.stripe_metered_price_id
   stripe_meter_id               = var.stripe_meter_id
 

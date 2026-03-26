@@ -66,12 +66,35 @@ def connected_user(mock_connection_service):
     return "test-user-456"
 
 
+@pytest.fixture
+def mock_check_budget_allowed():
+    """Mock check_budget to return an allowed result."""
+    with patch("core.services.usage_service.check_budget", new_callable=AsyncMock) as mock_cb:
+        mock_cb.return_value = {
+            "allowed": True,
+            "within_included": True,
+            "overage_available": False,
+            "overage_enabled": False,
+            "current_spend": 0,
+            "included_budget": 2_000_000,
+            "is_subscribed": False,
+            "tier": "free",
+        }
+        yield mock_cb
+
+
 class TestAgentChatMessageRouting:
     """Tests that the ws_message endpoint correctly routes agent_chat messages."""
 
     @pytest.mark.asyncio
     async def test_agent_chat_message_accepted(
-        self, test_app, mock_connection_service, mock_management_api, valid_agent_chat_message, connected_user
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        valid_agent_chat_message,
+        connected_user,
+        mock_check_budget_allowed,
     ):
         """Send valid agent_chat message, verify 200 response.
 
@@ -163,7 +186,12 @@ class TestAgentChatBackgroundTask:
 
     @pytest.mark.asyncio
     async def test_background_task_receives_correct_args(
-        self, test_app, mock_connection_service, mock_management_api, connected_user
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        connected_user,
+        mock_check_budget_allowed,
     ):
         """Background task should receive connection_id, user_id, agent_id, message."""
         with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:

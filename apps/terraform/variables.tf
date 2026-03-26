@@ -157,18 +157,6 @@ variable "encryption_key" {
 }
 
 # Stripe billing configuration (non-secret price IDs)
-variable "stripe_starter_fixed_price_id" {
-  description = "Stripe Price ID for Starter plan ($25/mo)"
-  type        = string
-  default     = ""
-}
-
-variable "stripe_pro_fixed_price_id" {
-  description = "Stripe Price ID for Pro plan ($75/mo)"
-  type        = string
-  default     = ""
-}
-
 variable "stripe_metered_price_id" {
   description = "Stripe Price ID for metered LLM usage billing"
   type        = string

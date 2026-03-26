@@ -53,6 +53,16 @@ async def get_management_api_client() -> ManagementApiClient:
     return _management_api_client
 
 
+async def _safe_record_usage(**kwargs) -> None:
+    """Record usage, catching errors so they never propagate."""
+    try:
+        from core.services.usage_service import record_usage
+
+        await record_usage(**kwargs)
+    except Exception:
+        logger.exception("Usage recording failed for owner %s", kwargs.get("owner_id"))
+
+
 async def _send_connect_challenge(connection_id: str) -> None:
     """Send OpenClaw connect.challenge to a newly connected client.
 
@@ -239,6 +249,20 @@ async def ws_message(
         )
         return Response(status_code=200)
 
+    if msg_type == "usage":
+        asyncio.create_task(
+            _safe_record_usage(
+                owner_id=owner_id,
+                user_id=user_id,
+                model=body.get("model", "unknown"),
+                input_tokens=body.get("inputTokens", 0),
+                output_tokens=body.get("outputTokens", 0),
+                cache_read=body.get("cacheRead", 0),
+                cache_write=body.get("cacheWrite", 0),
+            )
+        )
+        return Response(status_code=200)
+
     if msg_type == "agent_chat":
         agent_id = body.get("agent_id")
         message = body.get("message")
@@ -248,6 +272,33 @@ async def ws_message(
             management_api.send_message(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id or message"},
+            )
+            return Response(status_code=200)
+
+        # Budget check before forwarding to gateway
+        from core.services.usage_service import check_budget
+
+        budget = await check_budget(owner_id)
+        if not budget["allowed"]:
+            management_api = await get_management_api_client()
+            management_api.send_message(
+                x_connection_id,
+                {
+                    "type": "error",
+                    "code": "BUDGET_EXCEEDED",
+                    "message": (
+                        "You've used your included LLM budget for this month."
+                        if budget["is_subscribed"]
+                        else "You've reached your free tier limit."
+                    ),
+                    "current_spend": budget["current_spend"],
+                    "included_budget": budget["included_budget"],
+                    "within_included": budget["within_included"],
+                    "overage_available": budget["overage_available"],
+                    "overage_enabled": budget["overage_enabled"],
+                    "is_subscribed": budget["is_subscribed"],
+                    "tier": budget["tier"],
+                },
             )
             return Response(status_code=200)
 

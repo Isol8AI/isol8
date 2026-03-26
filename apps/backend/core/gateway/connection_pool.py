@@ -12,11 +12,11 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.containers.ecs_manager import GATEWAY_PORT
+GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
 
@@ -28,23 +28,17 @@ _GRACE_PERIOD = 30  # seconds before closing idle connection
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
 
-    # Type alias for the usage callback:
-    # (user_id, model_id, input_tokens, output_tokens) -> Coroutine
-    UsageCallback = Callable[[str, str, int, int], Coroutine[Any, Any, None]]
-
     def __init__(
         self,
         user_id: str,
         ip: str,
         token: str,
         management_api: Any,
-        on_usage: Optional["GatewayConnection.UsageCallback"] = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
         self._management_api = management_api
-        self._on_usage = on_usage
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
@@ -225,51 +219,24 @@ class GatewayConnection:
                 logger.warning("Failed to forward message to %s", conn_id)
 
     def _fire_usage_callback(self, payload: dict) -> None:
-        """Extract token usage from a chat final payload and fire the callback."""
-        if not self._on_usage:
-            logger.debug("No usage callback registered for user %s", self.user_id)
-            return
-
-        # Log the full payload keys to diagnose missing token fields
-        logger.info(
-            "Chat final payload for user %s — keys: %s",
-            self.user_id,
-            list(payload.keys()),
-        )
-
-        # Try multiple field name conventions (OpenClaw may use camelCase or nested)
-        input_tokens = payload.get("inputTokens") or payload.get("input_tokens")
-        output_tokens = payload.get("outputTokens") or payload.get("output_tokens")
-
-        # Check nested usage object (some OpenClaw versions nest under "usage")
-        if not input_tokens or not output_tokens:
-            usage_obj = payload.get("usage")
-            if isinstance(usage_obj, dict):
-                input_tokens = input_tokens or usage_obj.get("inputTokens") or usage_obj.get("input_tokens")
-                output_tokens = output_tokens or usage_obj.get("outputTokens") or usage_obj.get("output_tokens")
-
-        if not input_tokens or not output_tokens:
-            logger.warning(
-                "Missing token counts in chat final for user %s (inputTokens=%s, outputTokens=%s). Payload sample: %s",
-                self.user_id,
-                input_tokens,
-                output_tokens,
-                {k: payload[k] for k in list(payload.keys())[:10]},
-            )
-            return
-
+        """Extract token usage from chat final and forward as usage event."""
+        input_tokens = int(payload.get("inputTokens", 0) or 0)
+        output_tokens = int(payload.get("outputTokens", 0) or 0)
+        cache_read = int(payload.get("cacheRead", 0) or 0)
+        cache_write = int(payload.get("cacheWrite", 0) or 0)
         model = payload.get("model") or "unknown"
-        try:
-            asyncio.create_task(self._on_usage(self.user_id, model, int(input_tokens), int(output_tokens)))
-            logger.info(
-                "Scheduled usage recording for user %s: model=%s in=%d out=%d",
-                self.user_id,
-                model,
-                int(input_tokens),
-                int(output_tokens),
+
+        if input_tokens > 0 or output_tokens > 0:
+            self._forward_to_frontends(
+                {
+                    "type": "usage",
+                    "model": model,
+                    "inputTokens": input_tokens,
+                    "outputTokens": output_tokens,
+                    "cacheRead": cache_read,
+                    "cacheWrite": cache_write,
+                }
             )
-        except Exception:
-            logger.warning("Failed to schedule usage recording for user %s", self.user_id)
 
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -422,10 +389,8 @@ class GatewayConnectionPool:
     def __init__(
         self,
         management_api: Any,
-        on_usage: Optional[GatewayConnection.UsageCallback] = None,
     ) -> None:
         self._management_api = management_api
-        self._on_usage = on_usage
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
@@ -438,7 +403,6 @@ class GatewayConnectionPool:
             ip=ip,
             token=token,
             management_api=self._management_api,
-            on_usage=self._on_usage,
         )
         # Transfer any already-registered frontend connections
         for fc in self._frontend_connections.get(user_id, set()):

@@ -337,72 +337,67 @@ class TestExtractChatText:
 
 
 class TestFireUsageCallback:
-    """Test token extraction and callback dispatch for chat final events."""
+    """Test token extraction and usage event forwarding for chat final events."""
 
     @pytest.fixture
-    def connection_with_callback(self):
-        callback = AsyncMock()
+    def connection(self):
+        mgmt = MagicMock()
         conn = GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
-            management_api=MagicMock(),
-            on_usage=callback,
+            management_api=mgmt,
         )
-        return conn, callback
+        conn._frontend_connections = {"conn-1"}
+        return conn, mgmt
 
-    def test_fires_callback_with_camel_case_tokens(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "inputTokens": 100,
-                    "outputTokens": 50,
-                    "model": "claude-3-5-sonnet",
-                }
-            )
-            mock_create_task.assert_called_once()
-
-    def test_fires_callback_with_snake_case_tokens(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "input_tokens": 200,
-                    "output_tokens": 80,
-                    "model": "claude-3",
-                }
-            )
-            mock_create_task.assert_called_once()
-
-    def test_fires_callback_with_nested_usage_object(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "model": "claude-3",
-                    "usage": {"inputTokens": 300, "outputTokens": 120},
-                }
-            )
-            mock_create_task.assert_called_once()
-
-    def test_does_not_fire_when_tokens_missing(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({"model": "claude-3"})
-            mock_create_task.assert_not_called()
-
-    def test_does_not_fire_when_no_callback(self):
-        conn = GatewayConnection(
-            user_id="test-user",
-            ip="10.0.0.1",
-            token="tok",
-            management_api=MagicMock(),
-            on_usage=None,
+    def test_forwards_usage_event_with_tokens(self, connection):
+        conn, mgmt = connection
+        conn._fire_usage_callback(
+            {
+                "inputTokens": 100,
+                "outputTokens": 50,
+                "model": "claude-3-5-sonnet",
+                "cacheRead": 10,
+                "cacheWrite": 5,
+            }
         )
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({"inputTokens": 100, "outputTokens": 50, "model": "m"})
-            mock_create_task.assert_not_called()
+        mgmt.send_message.assert_called_once_with(
+            "conn-1",
+            {
+                "type": "usage",
+                "model": "claude-3-5-sonnet",
+                "inputTokens": 100,
+                "outputTokens": 50,
+                "cacheRead": 10,
+                "cacheWrite": 5,
+            },
+        )
+
+    def test_defaults_missing_fields_to_zero(self, connection):
+        conn, mgmt = connection
+        conn._fire_usage_callback(
+            {
+                "inputTokens": 200,
+                "outputTokens": 80,
+                "model": "claude-3",
+            }
+        )
+        mgmt.send_message.assert_called_once()
+        msg = mgmt.send_message.call_args[0][1]
+        assert msg["cacheRead"] == 0
+        assert msg["cacheWrite"] == 0
+
+    def test_does_not_forward_when_no_tokens(self, connection):
+        conn, mgmt = connection
+        conn._fire_usage_callback({"model": "claude-3"})
+        mgmt.send_message.assert_not_called()
+
+    def test_uses_unknown_model_when_missing(self, connection):
+        conn, mgmt = connection
+        conn._fire_usage_callback({"inputTokens": 10, "outputTokens": 5})
+        msg = mgmt.send_message.call_args[0][1]
+        assert msg["model"] == "unknown"
 
 
 class TestHandleMessageChatEvents:

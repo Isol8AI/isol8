@@ -1,7 +1,7 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/auth/desktop-callback", "/onboarding"]);
+const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/auth/desktop-callback", "/onboarding", "/settings(.*)"]);
 
 export default clerkMiddleware(async (auth, req) => {
   const authObj = await auth();

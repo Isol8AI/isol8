@@ -7,9 +7,13 @@ import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
-import { Loader2 } from "lucide-react";
+import { useBilling } from "@/hooks/useBilling";
+import { useOrganization } from "@clerk/nextjs";
+import { Loader2, AlertTriangle } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 import type { ToolUse } from "@/hooks/useAgentChat";
+import type { BudgetExceededPayload } from "@/hooks/useGateway";
 
 interface Message {
   id: string;
@@ -24,6 +28,67 @@ interface AgentChatWindowProps {
   agentId: string | null;
 }
 
+function BudgetExceededBanner({
+  budgetError,
+}: {
+  budgetError: BudgetExceededPayload;
+}) {
+  const { createCheckout, toggleOverage } = useBilling();
+  const { organization, membership } = useOrganization();
+  const [loading, setLoading] = useState(false);
+
+  const isOrg = !!organization;
+  const isOrgAdmin = membership?.role === "org:admin";
+
+  const handleAction = useCallback(async () => {
+    setLoading(true);
+    try {
+      if (!budgetError.is_subscribed) {
+        await createCheckout("starter");
+      } else if (budgetError.overage_available && !budgetError.overage_enabled) {
+        await toggleOverage(true);
+      }
+    } catch (err) {
+      console.error("Budget action failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [budgetError, createCheckout, toggleOverage]);
+
+  let message: string;
+  let actionLabel: string | null = null;
+
+  if (isOrg && !isOrgAdmin) {
+    message = "Your organization has reached its usage limit. Contact your admin.";
+  } else if (!budgetError.is_subscribed) {
+    message = "You've reached your free tier limit. Subscribe to continue.";
+    actionLabel = "Subscribe";
+  } else if (budgetError.overage_available && !budgetError.overage_enabled) {
+    message = "Your included LLM budget is used up. Enable pay-as-you-go to continue.";
+    actionLabel = "Enable pay-as-you-go";
+  } else {
+    message = "You've reached your usage limit for this billing period.";
+  }
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg flex items-center gap-3">
+      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+      <p className="text-sm text-amber-200 flex-1">{message}</p>
+      {actionLabel && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-amber-500/40 text-amber-200 hover:bg-amber-900/30"
+          onClick={handleAction}
+          disabled={loading}
+        >
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : actionLabel}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function AgentChatWindow({
   agentId,
 }: AgentChatWindowProps): React.ReactElement {
@@ -31,6 +96,7 @@ export function AgentChatWindow({
     messages: chatMessages,
     isStreaming,
     error: chatError,
+    budgetError,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -44,6 +110,7 @@ export function AgentChatWindow({
 
   const isInitialState = chatMessages.length === 0;
   const isTyping = isStreaming;
+  const isBudgetExceeded = !!budgetError;
 
   const prevAgentIdRef = useRef<string | null | undefined>(undefined);
 
@@ -147,6 +214,7 @@ export function AgentChatWindow({
             </p>
           </div>
           <div className="w-full max-w-2xl">
+            {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
@@ -155,6 +223,7 @@ export function AgentChatWindow({
               centered
               isUploading={isUploading}
               suggestedMessage={needsBootstrap ? BOOTSTRAP_MESSAGE : undefined}
+              budgetExceeded={isBudgetExceeded}
             />
           </div>
         </div>
@@ -166,7 +235,15 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-background/20">
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
-      <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
+      {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
+      <ChatInput
+        onSend={handleSend}
+        onStop={cancelMessage}
+        disabled={isTyping}
+        isStreaming={isStreaming}
+        isUploading={isUploading}
+        budgetExceeded={isBudgetExceeded}
+      />
     </div>
   );
 }

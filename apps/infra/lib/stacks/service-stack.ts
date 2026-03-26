@@ -37,6 +37,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     containersTable: dynamodb.Table;
     billingTable: dynamodb.Table;
     apiKeysTable: dynamodb.Table;
+    usageCountersTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -218,6 +219,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.containersTable.grantReadWriteData(this.taskRole);
     props.database.billingTable.grantReadWriteData(this.taskRole);
     props.database.apiKeysTable.grantReadWriteData(this.taskRole);
+    props.database.usageCountersTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -479,21 +481,26 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        STRIPE_STARTER_FIXED_PRICE_ID:
+        FREE_TIER_MODEL: "us.minimax.minimax-m2-1-v1:0",
+        STRIPE_STARTER_PRICE_ID:
           env === "prod"
-            ? "price_TODO_PROD"
-            : "price_1TBm0NI54BysGS3r57fcRXOJ",
-        STRIPE_PRO_FIXED_PRICE_ID:
+            ? "price_1TF5MkI54BysGS3rLYE6K0fZ"
+            : "price_1TF5MDI54BysGS3rlT80MMI8",
+        STRIPE_PRO_PRICE_ID:
           env === "prod"
-            ? "price_TODO_PROD"
-            : "price_1TBm0PI54BysGS3rFjUOtmrR",
+            ? "price_1TF5MkI54BysGS3regYBZj6a"
+            : "price_1TF5MEI54BysGS3rAxoFnoeX",
+        STRIPE_ENTERPRISE_PRICE_ID:
+          env === "prod"
+            ? "price_1TF5GiI54BysGS3rJ2n5EyNw"
+            : "price_1TF5ARI54BysGS3rPkwQYZ6L",
         STRIPE_METERED_PRICE_ID:
           env === "prod"
-            ? "price_TODO_PROD"
+            ? "price_1TF5HOI54BysGS3r5Jp56FV5"
             : "price_1TBm0fI54BysGS3rrqTaZ5Zz",
         STRIPE_METER_ID:
           env === "prod"
-            ? "mtr_TODO_PROD"
+            ? "mtr_61UOTDUyCfar5AIY541I54BysGS3rToW"
             : "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC",
         FRONTEND_URL:
           env === "local"
