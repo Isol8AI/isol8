@@ -37,6 +37,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     containersTable: dynamodb.Table;
     billingTable: dynamodb.Table;
     apiKeysTable: dynamodb.Table;
+    usageCountersTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -218,6 +219,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.containersTable.grantReadWriteData(this.taskRole);
     props.database.billingTable.grantReadWriteData(this.taskRole);
     props.database.apiKeysTable.grantReadWriteData(this.taskRole);
+    props.database.usageCountersTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -479,14 +481,7 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        STRIPE_STARTER_FIXED_PRICE_ID:
-          env === "prod"
-            ? "price_TODO_PROD"
-            : "price_1TBm0NI54BysGS3r57fcRXOJ",
-        STRIPE_PRO_FIXED_PRICE_ID:
-          env === "prod"
-            ? "price_TODO_PROD"
-            : "price_1TBm0PI54BysGS3rFjUOtmrR",
+        FREE_TIER_MODEL: "us.minimax.minimax-m2-1-v1:0",
         STRIPE_METERED_PRICE_ID:
           env === "prod"
             ? "price_TODO_PROD"

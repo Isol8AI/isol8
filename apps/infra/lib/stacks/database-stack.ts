@@ -18,6 +18,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly containersTable: dynamodb.Table;
   public readonly billingTable: dynamodb.Table;
   public readonly apiKeysTable: dynamodb.Table;
+  public readonly usageCountersTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -75,6 +76,17 @@ export class DatabaseStack extends cdk.Stack {
       tableName: `isol8-${env}-api-keys`,
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "tool_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    this.usageCountersTable = new dynamodb.Table(this, "UsageCountersTable", {
+      tableName: `isol8-${env}-usage-counters`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "period", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,
