@@ -18,7 +18,6 @@ class TestGatewayConnection:
 
     @pytest.fixture
     def connection(self, mock_management_api):
-
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -182,7 +181,6 @@ class TestGatewayConnectionHandshake:
 
     @pytest.fixture
     def connection(self):
-
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -336,68 +334,40 @@ class TestExtractChatText:
         assert GatewayConnection._extract_chat_text(payload) is None
 
 
-class TestFireUsageCallback:
-    """Test token extraction and usage event forwarding for chat final events."""
+class TestRecordUsageFromSession:
+    """Test session-based usage recording from chat final events."""
 
     @pytest.fixture
     def connection(self):
         mgmt = MagicMock()
         conn = GatewayConnection(
-            user_id="test-user",
+            user_id="owner-1",
             ip="10.0.0.1",
             token="test-token",
             management_api=mgmt,
         )
         conn._frontend_connections = {"conn-1"}
-        return conn, mgmt
+        return conn
 
-    def test_forwards_usage_event_with_tokens(self, connection):
-        conn, mgmt = connection
-        conn._fire_usage_callback(
-            {
-                "inputTokens": 100,
-                "outputTokens": 50,
-                "model": "claude-3-5-sonnet",
-                "cacheRead": 10,
-                "cacheWrite": 5,
-            }
-        )
-        mgmt.send_message.assert_called_once_with(
-            "conn-1",
-            {
-                "type": "usage",
-                "model": "claude-3-5-sonnet",
-                "inputTokens": 100,
-                "outputTokens": 50,
-                "cacheRead": 10,
-                "cacheWrite": 5,
-            },
-        )
+    def test_extracts_member_user_id_from_session_key(self, connection):
+        conn = connection
+        # Org session key format: agent:{agentId}:{userId}
+        with patch("asyncio.create_task"):
+            conn._record_usage_from_session({"sessionKey": "agent:main:user_abc"})
+        # The task should have been created with member_user_id="user_abc"
 
-    def test_defaults_missing_fields_to_zero(self, connection):
-        conn, mgmt = connection
-        conn._fire_usage_callback(
-            {
-                "inputTokens": 200,
-                "outputTokens": 80,
-                "model": "claude-3",
-            }
-        )
-        mgmt.send_message.assert_called_once()
-        msg = mgmt.send_message.call_args[0][1]
-        assert msg["cacheRead"] == 0
-        assert msg["cacheWrite"] == 0
+    def test_uses_owner_id_for_personal_session(self, connection):
+        conn = connection
+        # Personal session key: agent:{agentId}:main
+        with patch("asyncio.create_task"):
+            conn._record_usage_from_session({"sessionKey": "agent:main:main"})
+        # member_user_id should fall back to self.user_id ("owner-1")
 
-    def test_does_not_forward_when_no_tokens(self, connection):
-        conn, mgmt = connection
-        conn._fire_usage_callback({"model": "claude-3"})
-        mgmt.send_message.assert_not_called()
-
-    def test_uses_unknown_model_when_missing(self, connection):
-        conn, mgmt = connection
-        conn._fire_usage_callback({"inputTokens": 10, "outputTokens": 5})
-        msg = mgmt.send_message.call_args[0][1]
-        assert msg["model"] == "unknown"
+    def test_skips_when_no_session_key(self, connection):
+        conn = connection
+        with patch("asyncio.create_task") as mock_task:
+            conn._record_usage_from_session({})
+        mock_task.assert_not_called()
 
 
 class TestHandleMessageChatEvents:

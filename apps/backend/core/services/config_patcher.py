@@ -51,8 +51,8 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
     def _do_patch():
         lock_fd = None
         try:
-            lock_fd = open(config_path, "r")
-            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            lock_fd = open(config_path, "r+")
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
             with open(config_path, "r") as f:
                 current = json.load(f)
@@ -75,7 +75,7 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
 
         finally:
             if lock_fd:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
                 lock_fd.close()
 
     await asyncio.to_thread(_do_patch)

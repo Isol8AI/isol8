@@ -218,25 +218,87 @@ class GatewayConnection:
             except Exception:
                 logger.warning("Failed to forward message to %s", conn_id)
 
-    def _fire_usage_callback(self, payload: dict) -> None:
-        """Extract token usage from chat final and forward as usage event."""
-        input_tokens = int(payload.get("inputTokens", 0) or 0)
-        output_tokens = int(payload.get("outputTokens", 0) or 0)
-        cache_read = int(payload.get("cacheRead", 0) or 0)
-        cache_write = int(payload.get("cacheWrite", 0) or 0)
-        model = payload.get("model") or "unknown"
+    def _record_usage_from_session(self, payload: dict) -> None:
+        """Record usage after chat.final by querying the session for token counts.
 
-        if input_tokens > 0 or output_tokens > 0:
-            self._forward_to_frontends(
-                {
-                    "type": "usage",
-                    "model": model,
-                    "inputTokens": input_tokens,
-                    "outputTokens": output_tokens,
-                    "cacheRead": cache_read,
-                    "cacheWrite": cache_write,
-                }
-            )
+        The chat.final event itself doesn't contain token counts. We extract
+        the sessionKey from the payload, parse the member user_id from it
+        (org sessions use format agent:{agentId}:{userId}), then fire an
+        async task that calls sessions.list RPC to get the actual token data
+        and records it via usage_service.
+        """
+        session_key = payload.get("sessionKey", "")
+        if not session_key:
+            logger.debug("No sessionKey in chat.final for user %s", self.user_id)
+            return
+
+        # Extract member user_id from session key: "agent:{agentId}:{target}"
+        # For org members, target is the user_id. For personal, it's "main".
+        parts = session_key.split(":")
+        member_user_id = parts[2] if len(parts) >= 3 and parts[2] != "main" else self.user_id
+
+        asyncio.create_task(self._fetch_and_record_usage(session_key, member_user_id))
+
+    async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
+        """Fetch session token counts via RPC and record usage."""
+        try:
+            # Query sessions.list to get token data for this session
+            req_id = str(uuid.uuid4())
+            await self.send_rpc(req_id, "sessions.list", {})
+            result = await self.wait_for_response(req_id, timeout=10)
+
+            if not isinstance(result, dict):
+                logger.warning("sessions.list returned non-dict for user %s", self.user_id)
+                return
+
+            # Find our session in the list
+            sessions = result.get("sessions", [])
+            session = None
+            for s in sessions:
+                if s.get("sessionKey") == session_key:
+                    session = s
+                    break
+
+            if not session:
+                logger.debug("Session %s not found in sessions.list for user %s", session_key, self.user_id)
+                return
+
+            input_tokens = int(session.get("inputTokens", 0) or 0)
+            output_tokens = int(session.get("outputTokens", 0) or 0)
+            cache_read = int(session.get("cacheRead", 0) or 0)
+            cache_write = int(session.get("cacheWrite", 0) or 0)
+            model = session.get("model") or "unknown"
+
+            if input_tokens <= 0 and output_tokens <= 0:
+                logger.debug("No token usage in session %s for user %s", session_key, self.user_id)
+                return
+
+            # Record usage directly
+            try:
+                from core.services.usage_service import record_usage
+
+                await record_usage(
+                    owner_id=self.user_id,
+                    user_id=member_user_id,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read=cache_read,
+                    cache_write=cache_write,
+                )
+                logger.info(
+                    "Recorded usage for user %s (member=%s): model=%s in=%d out=%d",
+                    self.user_id,
+                    member_user_id,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                )
+            except Exception:
+                logger.exception("Failed to record usage for user %s", self.user_id)
+
+        except Exception:
+            logger.exception("Failed to fetch session usage for user %s", self.user_id)
 
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -309,8 +371,8 @@ class GatewayConnection:
                     if final_text:
                         self._forward_to_frontends({"type": "chunk", "content": final_text})
                     self._forward_to_frontends({"type": "done"})
-                    # Record usage if token counts present
-                    self._fire_usage_callback(payload)
+                    # Record usage by querying session for token counts
+                    self._record_usage_from_session(payload)
                 elif state == "error":
                     err = payload.get("error", {})
                     msg = (
