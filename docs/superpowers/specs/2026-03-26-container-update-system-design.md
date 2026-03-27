@@ -54,12 +54,19 @@ Changes to hot-reloadable `openclaw.json` fields. No notification, no user conse
 **New function: `patch_openclaw_config(owner_id, patch: dict)`**
 
 1. Resolve EFS path: `{EFS_MOUNT_PATH}/{owner_id}/openclaw.json`
-2. Read current `openclaw.json` from EFS
-3. Deep-merge the patch into the existing config (only update specified keys, leave everything else untouched)
-4. Write back to EFS
-5. OpenClaw file watcher detects the change and hot-applies within ~300ms
+2. Acquire file lock (`fcntl.flock`) to prevent concurrent read-modify-write races
+3. Read current `openclaw.json` from EFS
+4. Back up to `openclaw.json.bak` (for rollback on failure)
+5. Deep-merge the patch into the existing config (only update specified keys, leave everything else untouched)
+6. Validate the result is valid JSON
+7. Write to a temp file, then `os.rename()` for atomic replacement
+8. Release file lock
+9. OpenClaw file watcher detects the change and hot-applies within ~300ms
+10. Verify gateway health after 2 seconds — if unhealthy, restore from backup
 
 **Critical:** Deep-merge, not replace. If the patch only contains `agents.defaults.model`, every other field in the config stays exactly the same. This ensures `gateway.*` fields never diff and never trigger a restart.
+
+**Concurrency:** The file lock prevents two concurrent patches (e.g., Stripe webhook + admin push) from racing. The atomic rename prevents OpenClaw from reading a half-written file.
 
 **File:** `apps/backend/core/services/config_patcher.py`
 
@@ -110,9 +117,12 @@ Attributes:
   description: "OpenClaw v2026.4.1 available"
   created_at: ISO8601
   applied_at: ISO8601 | null
+  last_snoozed_at: ISO8601 | null
+  force_by: ISO8601 | null  // admin can force-apply after this time
+  ttl: Number  // DynamoDB TTL — auto-delete 30 days after applied_at
 ```
 
-No GSIs needed — queries are always by `owner_id`.
+**GSI:** `status-index` with PK=`status` (String), SK=`scheduled_at` (String). Used by the scheduled worker to efficiently query `status == "scheduled"` items.
 
 ### API Endpoints
 
@@ -251,6 +261,101 @@ Container update on tier change is fully addressed via Track 1 (silent model pat
 | `apps/infra/lib/stacks/service-stack.ts` | Wire table permissions |
 | `apps/frontend/src/components/chat/AgentChatWindow.tsx` | Update banner component |
 | `apps/frontend/src/hooks/useGateway.tsx` | Handle `update_available` WebSocket event |
+
+## Owner-to-Container Mapping
+
+Track 2 apply needs to find the ECS service for a given `owner_id`. The `container_repo` stores this mapping:
+
+```
+containers table: owner_id → {service_name, task_arn, access_point_id, status, ...}
+```
+
+The apply logic uses `container_repo.get_by_owner_id(owner_id)` to get the service name, then calls `EcsManager` methods with it. This is the same pattern used by `provision_user_container()` and the debug endpoints.
+
+## Scheduled Worker: Single-Leader
+
+The backend runs on EC2 behind an ASG. Multiple instances would each run the scheduled worker, causing duplicate apply attempts. The DynamoDB conditional write (`status == "pending" or "scheduled"` → `"applying"`) prevents double-apply, but multiple instances still waste resources querying and failing.
+
+**Solution:** Use a DynamoDB-based leader lease. Before the worker loop, attempt to acquire a lease item (`PK: "worker_lease", SK: "scheduled_updates"`) with a TTL of 90 seconds. Only the instance holding the lease runs the query. The lease auto-expires if the instance dies. This is a standard pattern for single-leader election on DynamoDB.
+
+The apply logic itself must also be idempotent — `register_task_definition` creates a new revision (safe to retry), and `update_service` with `forceNewDeployment` is idempotent.
+
+## Mid-Session Behavior
+
+When Track 2 "Update Now" is clicked while the user has an active chat session:
+
+1. The banner shows a warning: "Your current conversation will be briefly interrupted (~30s). Any in-progress agent response will be lost."
+2. User confirms
+3. Container is replaced — WebSocket disconnects
+4. `ConnectionStatusBar` shows "Reconnecting..."
+5. Gateway comes back, WebSocket auto-reconnects
+6. Chat history is preserved (stored on EFS in `.jsonl` files)
+7. User can continue chatting — only the in-flight response (if any) is lost
+
+For "Tonight at 2 AM" — no warning needed since the user is likely not active.
+
+## Fleet-Wide Update Scalability
+
+When `POST /container/updates` is called with `owner_id: "all"`:
+
+1. The endpoint returns immediately with `{status: "queuing", job_id: "..."}`
+2. A background task queries all active owners from `billing-accounts` table
+3. Uses DynamoDB `batch_write_item` (25 items per batch) to create pending update records
+4. Logs progress: "Queued 150/500 updates..."
+
+This prevents HTTP timeout on large fleets and provides visibility into progress.
+
+## Snooze Tracking
+
+"Remind Me Later" is primarily frontend (localStorage snooze), but the backend also tracks it:
+
+- When a user snoozes, the frontend calls `POST /container/updates/{id}/apply` with `{schedule: "remind_later"}`
+- Backend sets `last_snoozed_at` on the update record (no status change)
+- Admin can query: "How many users are snoozing this critical update?" via the fleet inventory
+
+For critical security updates, admin can set `force_by: ISO8601` on the update record. If `force_by` passes and the update is still pending/snoozed, the scheduled worker auto-applies it.
+
+## DynamoDB TTL
+
+Applied and failed update records get a TTL of 30 days after `applied_at` or `created_at`. DynamoDB auto-deletes expired items, keeping the table lean.
+
+The scheduled worker query uses a GSI: `status-index` with PK=`status`, SK=`scheduled_at`. This avoids full table scans. Only `"scheduled"` items are queried.
+
+## Model Aliases Per Tier
+
+`TIER_CONFIG` in `config.py` needs a `model_aliases` field defining which models appear in the selector per tier. The Track 1 patch includes both `agents.defaults.model` (primary) and `agents.defaults.models` (alias map).
+
+```python
+TIER_CONFIG = {
+    "free": {
+        ...
+        "model_aliases": {
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+        },
+    },
+    "starter": {
+        ...
+        "model_aliases": {
+            "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0": {"alias": "Kimi K2.5"},
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+        },
+    },
+    # ... etc
+}
+```
+
+The Stripe webhook patch then includes:
+```python
+await patch_openclaw_config(owner_id, {
+    "agents": {
+        "defaults": {
+            "model": {"primary": tier_config["primary_model"]},
+            "models": tier_config["model_aliases"],
+            "subagents": {"model": tier_config["subagent_model"]},
+        }
+    }
+})
+```
 
 ## Out of Scope
 
