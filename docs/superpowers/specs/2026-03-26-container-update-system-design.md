@@ -272,13 +272,13 @@ containers table: owner_id → {service_name, task_arn, access_point_id, status,
 
 The apply logic uses `container_repo.get_by_owner_id(owner_id)` to get the service name, then calls `EcsManager` methods with it. This is the same pattern used by `provision_user_container()` and the debug endpoints.
 
-## Scheduled Worker: Single-Leader
+## Scheduled Worker: Concurrency Safety
 
-The backend runs on EC2 behind an ASG. Multiple instances would each run the scheduled worker, causing duplicate apply attempts. The DynamoDB conditional write (`status == "pending" or "scheduled"` → `"applying"`) prevents double-apply, but multiple instances still waste resources querying and failing.
+The backend runs as an ECS Fargate service (`desiredCount: 2` in prod). Both tasks run `main.py` and both start the scheduled worker. This means two workers poll DynamoDB for scheduled updates simultaneously.
 
-**Solution:** Use a DynamoDB-based leader lease. Before the worker loop, attempt to acquire a lease item (`PK: "worker_lease", SK: "scheduled_updates"`) with a TTL of 90 seconds. Only the instance holding the lease runs the query. The lease auto-expires if the instance dies. This is a standard pattern for single-leader election on DynamoDB.
+**This is safe without leader election.** The DynamoDB conditional write (`status == "scheduled"` → `"applying"`) ensures only one worker applies each update. The losing worker gets a `ConditionalCheckFailedException` and silently moves on. The apply logic is idempotent — `register_task_definition` creates a new revision (safe to retry), and `update_service` with `forceNewDeployment` is idempotent.
 
-The apply logic itself must also be idempotent — `register_task_definition` creates a new revision (safe to retry), and `update_service` with `forceNewDeployment` is idempotent.
+The only cost is a redundant DynamoDB query every 60 seconds from the second task — negligible at PAY_PER_REQUEST pricing.
 
 ## Mid-Session Behavior
 
