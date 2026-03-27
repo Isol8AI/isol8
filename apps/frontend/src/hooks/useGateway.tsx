@@ -58,7 +58,8 @@ export type ChatIncomingMessage =
   | { type: "error"; message: string; code?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
   | { type: "tool_start"; tool: string }
-  | { type: "tool_end"; tool: string };
+  | { type: "tool_end"; tool: string }
+  | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
 export interface GatewayEvent {
@@ -181,7 +182,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "error" ||
       msgType === "heartbeat" ||
       msgType === "tool_start" ||
-      msgType === "tool_end"
+      msgType === "tool_end" ||
+      msgType === "update_available"
     ) {
       const chatMsg = data as unknown as ChatIncomingMessage;
       for (const handler of chatHandlersRef.current) {
