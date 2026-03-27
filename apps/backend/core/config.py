@@ -100,6 +100,9 @@ TIER_CONFIG = {
         "budget_type": "lifetime",
         "primary_model": "amazon-bedrock/us.minimax.minimax-m2-1-v1:0",
         "subagent_model": "amazon-bedrock/us.minimax.minimax-m2-1-v1:0",
+        "model_aliases": {
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+        },
         "container_cpu": "512",
         "container_memory": "1024",
         "scale_to_zero": True,
@@ -109,6 +112,10 @@ TIER_CONFIG = {
         "budget_type": "monthly",
         "primary_model": "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0",
         "subagent_model": "amazon-bedrock/us.minimax.minimax-m2-1-v1:0",
+        "model_aliases": {
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0": {"alias": "Kimi K2.5"},
+        },
         "container_cpu": "512",
         "container_memory": "1024",
         "scale_to_zero": False,
@@ -118,6 +125,10 @@ TIER_CONFIG = {
         "budget_type": "monthly",
         "primary_model": "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0",
         "subagent_model": "amazon-bedrock/us.minimax.minimax-m2-1-v1:0",
+        "model_aliases": {
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0": {"alias": "Kimi K2.5"},
+        },
         "container_cpu": "1024",
         "container_memory": "2048",
         "scale_to_zero": False,
@@ -127,6 +138,10 @@ TIER_CONFIG = {
         "budget_type": "monthly",
         "primary_model": "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0",
         "subagent_model": "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0",
+        "model_aliases": {
+            "amazon-bedrock/us.minimax.minimax-m2-1-v1:0": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/us.moonshotai.kimi-k2-5-v1:0": {"alias": "Kimi K2.5"},
+        },
         "container_cpu": "2048",
         "container_memory": "4096",
         "scale_to_zero": False,

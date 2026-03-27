@@ -9,11 +9,12 @@ import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useOrganization } from "@clerk/nextjs";
-import { Loader2, AlertTriangle } from "lucide-react";
+import { Loader2, AlertTriangle, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useGateway } from "@/hooks/useGateway";
 
 import type { ToolUse } from "@/hooks/useAgentChat";
-import type { BudgetExceededPayload } from "@/hooks/useGateway";
+import type { BudgetExceededPayload, ChatIncomingMessage } from "@/hooks/useGateway";
 
 interface Message {
   id: string;
@@ -85,6 +86,216 @@ function BudgetExceededBanner({
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : actionLabel}
         </Button>
       )}
+    </div>
+  );
+}
+
+// =============================================================================
+// Update Banner
+// =============================================================================
+
+interface PendingUpdate {
+  id: string;
+  description: string;
+  current_version: string;
+  target_version: string;
+  update_type: string;
+  status: string;
+}
+
+interface SnoozeEntry {
+  update_id: string;
+  snoozed_until: number;
+}
+
+function getSnooze(updateId: string): SnoozeEntry | null {
+  try {
+    const raw = localStorage.getItem(`isol8_update_snooze_${updateId}`);
+    if (!raw) return null;
+    const entry: SnoozeEntry = JSON.parse(raw);
+    if (Date.now() < entry.snoozed_until) return entry;
+    // Expired -- clean up
+    localStorage.removeItem(`isol8_update_snooze_${updateId}`);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function setSnooze(updateId: string, durationMs: number): void {
+  const entry: SnoozeEntry = {
+    update_id: updateId,
+    snoozed_until: Date.now() + durationMs,
+  };
+  localStorage.setItem(`isol8_update_snooze_${updateId}`, JSON.stringify(entry));
+}
+
+function UpdateBanner() {
+  const api = useApi();
+  const { organization, membership } = useOrganization();
+  const { onChatMessage } = useGateway();
+
+  const [updates, setUpdates] = useState<PendingUpdate[]>([]);
+  const [applying, setApplying] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  const isOrg = !!organization;
+  const isOrgAdmin = membership?.role === "org:admin";
+
+  const fetchUpdates = useCallback(async () => {
+    try {
+      const data = (await api.get("/container/updates")) as { updates: PendingUpdate[] };
+      const pending = (data.updates || []).filter(
+        (u) => u.status === "pending" && !getSnooze(u.id),
+      );
+      setUpdates(pending);
+      setDismissed(false);
+    } catch {
+      // Endpoint may not exist yet -- silently ignore
+    }
+  }, [api]);
+
+  // Fetch on mount
+  useEffect(() => {
+    fetchUpdates();
+  }, [fetchUpdates]);
+
+  // Listen for update_available WS events to trigger refetch
+  useEffect(() => {
+    const unsub = onChatMessage((msg: ChatIncomingMessage) => {
+      if (msg.type === "update_available") {
+        fetchUpdates();
+      }
+    });
+    return unsub;
+  }, [onChatMessage, fetchUpdates]);
+
+  const handleApplyNow = useCallback(
+    async (updateId: string) => {
+      setApplying(true);
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
+        setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+      } catch (err) {
+        console.error("Failed to apply update:", err);
+      } finally {
+        setApplying(false);
+      }
+    },
+    [api],
+  );
+
+  const handleScheduleTonight = useCallback(
+    async (updateId: string) => {
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
+        setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+      } catch (err) {
+        console.error("Failed to schedule update:", err);
+      }
+    },
+    [api],
+  );
+
+  const handleRemindLater = useCallback(
+    async (updateId: string) => {
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "remind_later" });
+      } catch {
+        // best-effort
+      }
+      // Snooze for 4 hours
+      setSnooze(updateId, 4 * 60 * 60 * 1000);
+      setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+    },
+    [api],
+  );
+
+  if (dismissed || updates.length === 0) return null;
+
+  const firstUpdate = updates[0];
+  const description =
+    updates.length > 1
+      ? `${updates.length} updates available`
+      : firstUpdate.description;
+
+  // During apply -- show spinner state
+  if (applying) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
+        <Loader2 className="h-4 w-4 text-blue-400 shrink-0 animate-spin" />
+        <p className="text-sm text-blue-200 flex-1">Updating your agent...</p>
+      </div>
+    );
+  }
+
+  // Org member (non-admin) -- info only
+  if (isOrg && !isOrgAdmin) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
+        <p className="text-sm text-blue-200 flex-1">
+          An update is available. Your admin can apply it.
+        </p>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-blue-400 hover:text-blue-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg">
+      <div className="flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-blue-200">
+            Update available: {description}
+          </p>
+          <p className="text-xs text-blue-300/70 mt-0.5">
+            Your agent needs a brief restart (~30s) to apply.
+          </p>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-blue-400 hover:text-blue-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex items-center gap-2 mt-2 ml-7">
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleApplyNow(firstUpdate.id)}
+        >
+          <RefreshCw className="h-3 w-3 mr-1" />
+          Update Now
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleScheduleTonight(firstUpdate.id)}
+        >
+          <Clock className="h-3 w-3 mr-1" />
+          Tonight at 2 AM
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleRemindLater(firstUpdate.id)}
+        >
+          Remind Me Later
+        </Button>
+      </div>
     </div>
   );
 }
@@ -214,6 +425,7 @@ export function AgentChatWindow({
             </p>
           </div>
           <div className="w-full max-w-2xl">
+            <UpdateBanner />
             {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
               onSend={handleSend}
@@ -235,6 +447,7 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-background/20">
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
+      <UpdateBanner />
       {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
       <ChatInput
         onSend={handleSend}

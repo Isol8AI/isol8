@@ -78,6 +78,7 @@ export class LocalStage extends cdk.Stage {
         billingTable: database.billingTable,
         apiKeysTable: database.apiKeysTable,
         usageCountersTable: database.usageCountersTable,
+        pendingUpdatesTable: database.pendingUpdatesTable,
       },
       secretNames: {
         clerkIssuer: `isol8/${env}/clerk_issuer`,
