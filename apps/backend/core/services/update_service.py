@@ -166,9 +166,16 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
         new_memory = changes.get("new_memory")
 
         if new_image or new_cpu or new_memory:
-            # TODO: call ecs_manager.update_user_container() once implemented
+            from core.containers import get_ecs_manager
+
+            await get_ecs_manager().resize_user_container(
+                user_id=owner_id,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
+                new_image=new_image,
+            )
             logger.info(
-                "TODO: ECS update for owner=%s image=%s cpu=%s mem=%s (update=%s)",
+                "ECS update applied for owner=%s image=%s cpu=%s mem=%s (update=%s)",
                 owner_id,
                 new_image,
                 new_cpu,

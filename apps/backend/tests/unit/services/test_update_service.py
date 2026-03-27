@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import boto3
 import pytest
@@ -184,10 +184,15 @@ async def test_queue_image_update_custom_description(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_apply_update_marks_applied(dynamodb_table):
+@patch("core.containers.get_ecs_manager")
+async def test_apply_update_marks_applied(mock_ecs_mgr, dynamodb_table):
     """apply_update transitions status to applied."""
     from core.repositories import update_repo
     from core.services.update_service import apply_update
+
+    mock_mgr = MagicMock()
+    mock_mgr.resize_user_container = AsyncMock(return_value="arn:task:new")
+    mock_ecs_mgr.return_value = mock_mgr
 
     item = await update_repo.create(
         owner_id="user_1",
@@ -199,9 +204,10 @@ async def test_apply_update_marks_applied(dynamodb_table):
     ok = await apply_update("user_1", item["update_id"])
     assert ok is True
 
-    # Should no longer be pending
     pending = await update_repo.get_pending("user_1")
     assert len(pending) == 0
+
+    mock_mgr.resize_user_container.assert_called_once()
 
 
 @pytest.mark.asyncio

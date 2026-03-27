@@ -1,4 +1,4 @@
-"""Container updates router -- pending updates, apply/schedule, admin creation."""
+"""Container updates router -- pending updates, apply/schedule, admin config patches."""
 
 import logging
 from datetime import datetime, timedelta, timezone
@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.repositories import update_repo
+from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
 
 logger = logging.getLogger(__name__)
@@ -126,3 +127,79 @@ async def admin_create_update(
         force_by=body.force_by,
     )
     return {"status": "created", "update": item}
+
+
+# ---------------------------------------------------------------------------
+# Direct config patching (admin — no notification, immediate apply)
+# ---------------------------------------------------------------------------
+
+
+class ConfigPatchRequest(BaseModel):
+    patch: dict = Field(..., description="Config patch to deep-merge into openclaw.json")
+
+
+@router.patch(
+    "/config/{owner_id}",
+    summary="Patch a single user's config",
+    description="Deep-merges the patch into the owner's openclaw.json on EFS. "
+    "OpenClaw file watcher hot-reloads immediately. Zero downtime for hot-reloadable fields.",
+)
+async def patch_single_config(
+    owner_id: str,
+    body: ConfigPatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    try:
+        await patch_openclaw_config(owner_id, body.patch)
+    except ConfigPatchError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    return {"status": "patched", "owner_id": owner_id, "keys": list(body.patch.keys())}
+
+
+@router.patch(
+    "/config",
+    summary="Patch ALL users' configs (fleet-wide)",
+    description="Deep-merges the patch into every active owner's openclaw.json. "
+    "Runs in the request — for large fleets, consider using the async update system instead.",
+)
+async def patch_fleet_config(
+    body: ConfigPatchRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    # Scan all owners from billing-accounts
+    from core.dynamodb import get_table, run_in_thread
+
+    table = get_table("billing-accounts")
+    owners = []
+    last_key = None
+    while True:
+        scan_kwargs: dict = {"ProjectionExpression": "owner_id"}
+        if last_key:
+            scan_kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.scan, **scan_kwargs)
+        owners.extend(item["owner_id"] for item in response.get("Items", []) if "owner_id" in item)
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+
+    patched = 0
+    failed = 0
+    for oid in owners:
+        try:
+            await patch_openclaw_config(oid, body.patch)
+            patched += 1
+        except ConfigPatchError:
+            failed += 1
+            logger.warning("Skipped config patch for owner %s (no config file)", oid)
+        except Exception:
+            failed += 1
+            logger.exception("Failed to patch config for owner %s", oid)
+
+    return {"status": "done", "patched": patched, "failed": failed, "total": len(owners)}

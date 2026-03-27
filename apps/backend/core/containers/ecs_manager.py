@@ -7,6 +7,7 @@ for data isolation. Task IPs are discovered via the ECS describe_tasks
 API.
 """
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -377,6 +378,90 @@ class EcsManager:
             await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
+
+    async def resize_user_container(
+        self,
+        user_id: str,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
+        new_image: str | None = None,
+    ) -> str:
+        """Update a user's container with new CPU/memory/image and force redeploy.
+
+        Registers a new task definition revision with the updated values,
+        then updates the ECS service to use it with forceNewDeployment.
+
+        Args:
+            user_id: Owner ID (user or org).
+            new_cpu: New CPU value (e.g. "1024"). None = keep current.
+            new_memory: New memory value (e.g. "2048"). None = keep current.
+            new_image: New container image. None = keep current.
+
+        Returns:
+            The ARN of the new task definition revision.
+        """
+        container = await container_repo.get_by_owner_id(user_id)
+        if not container or not container.get("task_def_arn"):
+            raise EcsManagerError(f"No container found for user {user_id}", user_id)
+
+        service_name = self._service_name(user_id)
+        current_task_def_arn = container["task_def_arn"]
+
+        try:
+            # Read the current per-user task definition
+            desc_resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=current_task_def_arn)
+            base = desc_resp["taskDefinition"]
+
+            # Build updated kwargs
+            reg_kwargs = dict(
+                family=base["family"],
+                taskRoleArn=base.get("taskRoleArn", ""),
+                executionRoleArn=base.get("executionRoleArn", ""),
+                networkMode=base.get("networkMode", "awsvpc"),
+                containerDefinitions=base["containerDefinitions"],
+                volumes=base.get("volumes", []),
+                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
+                cpu=new_cpu or base.get("cpu", "256"),
+                memory=new_memory or base.get("memory", "512"),
+            )
+            if base.get("runtimePlatform"):
+                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
+
+            # Update image if specified
+            if new_image and reg_kwargs["containerDefinitions"]:
+                for container_def in reg_kwargs["containerDefinitions"]:
+                    container_def["image"] = new_image
+
+            # Register new revision
+            reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
+            new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)
+
+            # Update service to use new task def + force redeploy
+            await asyncio.to_thread(
+                self._ecs.update_service,
+                cluster=self._cluster,
+                service=service_name,
+                taskDefinition=new_task_def_arn,
+                forceNewDeployment=True,
+            )
+
+            # Update DB record
+            await self._update_container(user_id, task_def_arn=new_task_def_arn, status="provisioning")
+
+            logger.info(
+                "Resized container for user %s: cpu=%s memory=%s image=%s",
+                user_id,
+                new_cpu,
+                new_memory,
+                new_image,
+            )
+            return new_task_def_arn
+
+        except EcsManagerError:
+            raise
+        except Exception as e:
+            raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
