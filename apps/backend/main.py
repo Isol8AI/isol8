@@ -27,6 +27,7 @@ from routers import (
     integrations,
     proxy,
     settings_keys,
+    updates,
     users,
     websocket_chat,
 )
@@ -37,14 +38,24 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    import asyncio
+
+    from core.services.update_service import run_scheduled_worker
+
     # Startup
     logger.info("Starting application...")
     await startup_containers()
+    worker_task = asyncio.create_task(run_scheduled_worker())
 
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
     await shutdown_containers()
 
 
@@ -166,6 +177,9 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 
 # Container RPC proxy & file uploads (POST /rpc, POST /gateway/restart, POST /files)
 app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
+
+# Container updates (pending updates, apply/schedule)
+app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", tags=["container"])
 
 # Control UI proxy (embedded OpenClaw control UI SPA)
 app.include_router(control_ui_proxy.router, prefix="/api/v1/control-ui", tags=["control-ui"])
