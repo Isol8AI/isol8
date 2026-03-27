@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth, UserButton } from "@clerk/nextjs";
-import { Bot, Trash2 } from "lucide-react";
+import { Bot, CreditCard, Trash2 } from "lucide-react";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { useApi } from "@/lib/api";
@@ -167,7 +167,11 @@ export function ChatLayout({
                   avatarBox: "h-8 w-8",
                 },
               }}
-            />
+            >
+              <UserButton.MenuItems>
+                <UserButton.Link label="Billing" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings/billing" />
+              </UserButton.MenuItems>
+            </UserButton>
           </header>
 
           <div className="flex-1 min-h-0 pt-14 flex flex-col overflow-y-auto">
