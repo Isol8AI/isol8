@@ -38,6 +38,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     billingTable: dynamodb.Table;
     apiKeysTable: dynamodb.Table;
     usageCountersTable: dynamodb.Table;
+    pendingUpdatesTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -220,6 +221,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.billingTable.grantReadWriteData(this.taskRole);
     props.database.apiKeysTable.grantReadWriteData(this.taskRole);
     props.database.usageCountersTable.grantReadWriteData(this.taskRole);
+    props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
