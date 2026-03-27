@@ -59,17 +59,7 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
-        # No container exists — auto-provision in background and return provisioning status.
-        # This is the primary provisioning trigger, called by ProvisioningStepper polling.
-        asyncio.create_task(_background_provision(owner_id))
-        return {
-            "service_name": None,
-            "status": "provisioning",
-            "substatus": "auto_provision",
-            "created_at": None,
-            "updated_at": None,
-            "region": settings.AWS_REGION,
-        }
+        raise HTTPException(status_code=404, detail="No container found")
 
     # Auto-retry: if container is in a failed/stuck state and user has a subscription,
     # trigger re-provisioning in the background.
@@ -88,6 +78,50 @@ async def container_status(
         "updated_at": container.get("updated_at"),
         "region": settings.AWS_REGION,
     }
+
+
+@router.post(
+    "/provision",
+    summary="Provision a container for the current owner",
+    description=(
+        "Creates a new container for the authenticated owner (user or org). "
+        "Idempotent — returns existing container if one already exists. "
+        "Only provisions for the resolved owner_id (org in org context, user in personal)."
+    ),
+    operation_id="container_provision",
+    responses={
+        200: {"description": "Container provisioned or already exists"},
+        503: {"description": "Provisioning failed"},
+    },
+)
+async def container_provision(
+    auth: AuthContext = Depends(get_current_user),
+):
+    owner_id = resolve_owner_id(auth)
+
+    # Check if container already exists (idempotent)
+    existing = await container_repo.get_by_owner_id(owner_id)
+    if existing:
+        return {
+            "status": existing.get("status", "unknown"),
+            "service_name": existing.get("service_name"),
+            "owner_id": owner_id,
+            "already_existed": True,
+        }
+
+    # Provision new container
+    try:
+        service_name = await get_ecs_manager().provision_user_container(owner_id)
+        logger.info("Provisioned container %s for owner %s", service_name, owner_id)
+        return {
+            "status": "provisioning",
+            "service_name": service_name,
+            "owner_id": owner_id,
+            "already_existed": False,
+        }
+    except EcsManagerError as e:
+        logger.error("Provisioning failed for owner %s: %s", owner_id, e)
+        raise HTTPException(status_code=503, detail=str(e))
 
 
 @router.post(

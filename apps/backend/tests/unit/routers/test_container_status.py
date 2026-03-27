@@ -74,16 +74,14 @@ class TestContainerStatus:
 
     @pytest.mark.asyncio
     @patch("routers.container.get_ecs_manager")
-    async def test_auto_provisions_without_container(self, mock_get_ecs, async_client):
-        """Should auto-provision when user has no container."""
+    async def test_returns_404_without_container(self, mock_get_ecs, async_client):
+        """Should return 404 when user has no container."""
         mock_ecs = AsyncMock()
         mock_get_ecs.return_value = mock_ecs
         mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
         mock_ecs.get_service_status = AsyncMock(return_value=None)
         response = await async_client.get("/api/v1/container/status")
-        assert response.status_code == 200
-        assert response.json()["status"] == "provisioning"
-        assert response.json()["substatus"] == "auto_provision"
+        assert response.status_code == 404
 
 
 class TestGatewayRestart:

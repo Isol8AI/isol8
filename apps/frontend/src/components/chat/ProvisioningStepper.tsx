@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Zap,
@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
+import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
@@ -40,8 +41,10 @@ export function ProvisioningStepper({
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
+  const api = useApi();
   const { isLoading: billingLoading, isSubscribed, planTier, createCheckout } = useBilling();
   const isFree = planTier === "free";
+  const provisionRequestedRef = useRef(false);
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
@@ -56,6 +59,16 @@ export function ProvisioningStepper({
     refreshInterval: shouldPollContainer ? 3000 : 0,
     enabled: shouldPollContainer,
   });
+
+  // When container status returns null (404), trigger provisioning once
+  useEffect(() => {
+    if (container === null && shouldPollContainer && !provisionRequestedRef.current) {
+      provisionRequestedRef.current = true;
+      api.post("/container/provision", {}).catch((err: unknown) => {
+        console.error("Container provision failed:", err);
+      });
+    }
+  }, [container, shouldPollContainer, api]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
