@@ -129,8 +129,8 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config(tier="starter"))
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
         model_ids = [m["id"] for m in models]
-        assert "us.minimax.minimax-m2-1-v1:0" in model_ids
-        assert "us.moonshotai.kimi-k2-5-v1:0" in model_ids
+        assert "minimax.minimax-m2.1" in model_ids
+        assert "moonshotai.kimi-k2.5" in model_ids
         assert len(models) == 2
 
     def test_memory_search_enabled(self):

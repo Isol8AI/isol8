@@ -77,7 +77,7 @@ class TestBillingSchemas:
         """Should serialize pricing data."""
         resp = PricingResponse(
             models={
-                "us.minimax.minimax-m2-1-v1:0": ModelPriceResponse(
+                "minimax.minimax-m2.1": ModelPriceResponse(
                     input=0.42e-6,
                     output=1.68e-6,
                     cache_read=0.0,
@@ -85,12 +85,12 @@ class TestBillingSchemas:
                 ),
             },
             markup=1.4,
-            tier_model="us.minimax.minimax-m2-1-v1:0",
-            subagent_model="us.minimax.minimax-m2-1-v1:0",
+            tier_model="minimax.minimax-m2.1",
+            subagent_model="minimax.minimax-m2.1",
         )
         data = resp.model_dump()
         assert data["markup"] == 1.4
-        assert "us.minimax.minimax-m2-1-v1:0" in data["models"]
+        assert "minimax.minimax-m2.1" in data["models"]
 
     def test_overage_toggle_request(self):
         """Should accept overage toggle with optional limit."""

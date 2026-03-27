@@ -67,7 +67,7 @@ async def test_record_usage_increments_owner_and_member(dynamodb_tables, mock_st
     await record_usage(
         owner_id="org_1",
         user_id="user_a",
-        model="us.moonshotai.kimi-k2-5-v1:0",
+        model="moonshotai.kimi-k2.5",
         input_tokens=1000,
         output_tokens=500,
         cache_read=0,

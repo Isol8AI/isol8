@@ -121,7 +121,7 @@ class TestGetPricing:
         """Should return model pricing with markup."""
         mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "plan_tier": "free"})
         mock_get_prices.return_value = {
-            "us.minimax.minimax-m2-1-v1:0": {
+            "minimax.minimax-m2.1": {
                 "input": 0.30e-6,
                 "output": 1.20e-6,
                 "cache_read": 0.0,
@@ -132,7 +132,7 @@ class TestGetPricing:
         response = await async_client.get("/api/v1/billing/pricing")
         assert response.status_code == 200
         data = response.json()
-        assert "us.minimax.minimax-m2-1-v1:0" in data["models"]
+        assert "minimax.minimax-m2.1" in data["models"]
         assert data["markup"] == 1.4
         assert data["tier_model"] is not None
 

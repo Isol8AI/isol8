@@ -27,13 +27,13 @@ class ModelPrice(TypedDict):
 
 # Per-token USD. Source: aws.amazon.com/bedrock/pricing/ — verified 2026-03-25
 FALLBACK_PRICING: dict[str, ModelPrice] = {
-    "us.minimax.minimax-m2-1-v1:0": {
+    "minimax.minimax-m2.1": {
         "input": 0.30 / 1e6,
         "output": 1.20 / 1e6,
         "cache_read": 0.0,
         "cache_write": 0.0,
     },
-    "us.moonshotai.kimi-k2-5-v1:0": {
+    "moonshotai.kimi-k2.5": {
         "input": 0.72 / 1e6,
         "output": 3.60 / 1e6,
         "cache_read": 0.0,

@@ -15,7 +15,7 @@ from core.config import TIER_CONFIG
 ALL_BEDROCK_MODELS = [
     # --- MiniMax ---
     {
-        "id": "us.minimax.minimax-m2-1-v1:0",
+        "id": "minimax.minimax-m2.1",
         "name": "MiniMax M2.1",
         "contextWindow": 128000,
         "maxTokens": 8192,
@@ -25,7 +25,7 @@ ALL_BEDROCK_MODELS = [
     },
     # --- Moonshot (Kimi) ---
     {
-        "id": "us.moonshotai.kimi-k2-5-v1:0",
+        "id": "moonshotai.kimi-k2.5",
         "name": "Kimi K2.5",
         "contextWindow": 128000,
         "maxTokens": 8192,
@@ -166,15 +166,15 @@ _MODEL_NAME_MAP = {m["id"]: m["name"] for m in ALL_BEDROCK_MODELS}
 # + Kimi; enterprise gets everything.
 _TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
     "free": {
-        "us.minimax.minimax-m2-1-v1:0",
+        "minimax.minimax-m2.1",
     },
     "starter": {
-        "us.minimax.minimax-m2-1-v1:0",
-        "us.moonshotai.kimi-k2-5-v1:0",
+        "minimax.minimax-m2.1",
+        "moonshotai.kimi-k2.5",
     },
     "pro": {
-        "us.minimax.minimax-m2-1-v1:0",
-        "us.moonshotai.kimi-k2-5-v1:0",
+        "minimax.minimax-m2.1",
+        "moonshotai.kimi-k2.5",
     },
     "enterprise": None,  # None means all models allowed
 }

@@ -483,7 +483,7 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        FREE_TIER_MODEL: "us.minimax.minimax-m2-1-v1:0",
+        FREE_TIER_MODEL: "minimax.minimax-m2.1",
         STRIPE_STARTER_PRICE_ID:
           env === "prod"
             ? "price_1TF5MkI54BysGS3rLYE6K0fZ"
