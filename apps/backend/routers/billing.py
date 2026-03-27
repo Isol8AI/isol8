@@ -13,6 +13,8 @@ from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService
 from core.services.usage_service import check_budget, get_usage_summary
 from core.services.bedrock_pricing import get_all_prices
+from core.services.update_service import queue_tier_change
+from core.services.config_patcher import ConfigPatchError
 from schemas.billing import (
     BillingAccountResponse,
     CheckoutRequest,
@@ -282,8 +284,17 @@ async def handle_stripe_webhook(
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
         if account:
+            old_tier = account.get("plan_tier", "free")
             await billing_service.update_subscription(account, subscription_id, tier)
             logger.info("Subscription created for owner %s (tier=%s)", account["owner_id"], tier)
+            try:
+                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier=tier)
+            except ConfigPatchError:
+                logger.warning(
+                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
+                )
+            except Exception:
+                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.updated":
         customer_id = event_data["customer"]
@@ -291,15 +302,33 @@ async def handle_stripe_webhook(
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
         if account:
+            old_tier = account.get("plan_tier", "free")
             await billing_service.update_subscription(account, event_data["id"], tier)
+            try:
+                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier=tier)
+            except ConfigPatchError:
+                logger.warning(
+                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
+                )
+            except Exception:
+                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.deleted":
         customer_id = event_data["customer"]
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
         if account:
+            old_tier = account.get("plan_tier", "free")
             await billing_service.cancel_subscription(account)
             logger.info("Subscription cancelled for owner %s", account["owner_id"])
+            try:
+                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier="free")
+            except ConfigPatchError:
+                logger.warning(
+                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
+                )
+            except Exception:
+                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "invoice.payment_failed":
         logger.warning("Payment failed for customer %s", event_data.get("customer"))
