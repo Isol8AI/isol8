@@ -59,7 +59,17 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
-        raise HTTPException(status_code=404, detail="No container found")
+        # No container exists — auto-provision in background and return provisioning status.
+        # This is the primary provisioning trigger, called by ProvisioningStepper polling.
+        asyncio.create_task(_background_provision(owner_id))
+        return {
+            "service_name": None,
+            "status": "provisioning",
+            "substatus": "auto_provision",
+            "created_at": None,
+            "updated_at": None,
+            "region": settings.AWS_REGION,
+        }
 
     # Auto-retry: if container is in a failed/stuck state and user has a subscription,
     # trigger re-provisioning in the background.

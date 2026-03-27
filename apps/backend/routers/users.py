@@ -5,10 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import get_current_user, AuthContext, resolve_owner_id, get_owner_type
-from core.containers import get_ecs_manager
-from core.containers.ecs_manager import EcsManagerError
-from core.containers.workspace import WorkspaceError
-from core.repositories import user_repo, container_repo
+from core.repositories import user_repo
 from core.services.billing_service import BillingService
 from schemas.user_schemas import SyncUserResponse
 
@@ -54,14 +51,9 @@ async def sync_user(auth: AuthContext = Depends(get_current_user)):
     except Exception as e:
         logger.warning("Failed to ensure billing account for user %s: %s", user_id, e)
 
-    # Auto-provision container for new users
-    owner_id = resolve_owner_id(auth)
-    existing_container = await container_repo.get_by_owner_id(owner_id)
-    if not existing_container:
-        try:
-            service_name = await get_ecs_manager().provision_user_container(owner_id)
-            logger.info("Auto-provisioned container %s for owner %s", service_name, owner_id)
-        except (EcsManagerError, WorkspaceError) as e:
-            logger.error("Auto-provision failed for owner %s: %s", owner_id, e)
+    # Container provisioning is handled by GET /container/status (ProvisioningStepper polls it).
+    # We do NOT auto-provision here because sync is called from multiple places
+    # (onboarding, ChatLayout mount) and the JWT may not have org context yet,
+    # which would incorrectly create a personal container for an org member.
 
     return {"status": status, "user_id": user_id}
