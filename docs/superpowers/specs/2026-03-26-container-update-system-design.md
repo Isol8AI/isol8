@@ -33,7 +33,7 @@ OpenClaw has a built-in file watcher (`chokidar`) that monitors `openclaw.json` 
 - **File watcher** (our path): Diffs changes, hot-reloads when possible, only restarts for gateway/plugin changes
 - **RPC** (`config.apply` / `config.patch`): Always restarts the gateway regardless of what changed. This is for agent-initiated runtime changes, not admin updates.
 
-We use the file watcher path exclusively — write directly to EFS, never use the RPC for admin-initiated changes.
+We use the file watcher path exclusively — write directly to EFS, never use the RPC for admin-initiated changes. 
 
 ## Track 1: Silent Apply (Zero Downtime)
 
@@ -213,14 +213,14 @@ When a user upgrades from Free → Starter:
 
 When upgrading Starter → Pro:
 
-1-3. Same as above (model access patched silently)
+1-3. Same as above (model access patched silently) - model change needed
 4. **Track 2:** Pro is 1 vCPU/2GB (different from Starter's 0.5/1GB). Queue pending update: "Your container is being upgraded to Pro specs." User sees banner, picks when to apply.
 
 When downgrading (subscription.deleted):
 
 1. Backend reverts to free tier
 2. **Track 1:** Patch model access back to MiniMax M2.1 only. Immediate.
-3. **Track 2 (if size changes):** If container was Pro/Enterprise size, queue a downgrade resize. User picks when.
+3. **Track 2 (if size changes):** If container was Pro/Enterprise size, trigger a downgrade resize. 
 
 ## Integration Points
 
@@ -274,7 +274,7 @@ The apply logic uses `container_repo.get_by_owner_id(owner_id)` to get the servi
 
 ## Scheduled Worker: Concurrency Safety
 
-The backend runs as an ECS Fargate service (`desiredCount: 2` in prod). Both tasks run `main.py` and both start the scheduled worker. This means two workers poll DynamoDB for scheduled updates simultaneously.
+The backend runs as an ECS Fargate service (`desiredCount: 1` in both dev and prod). If scaled to 2+ tasks in the future, both would run `main.py` and both would start the scheduled worker.
 
 **This is safe without leader election.** The DynamoDB conditional write (`status == "scheduled"` → `"applying"`) ensures only one worker applies each update. The losing worker gets a `ConditionalCheckFailedException` and silently moves on. The apply logic is idempotent — `register_task_definition` creates a new revision (safe to retry), and `update_service` with `forceNewDeployment` is idempotent.
 
