@@ -228,14 +228,21 @@ class GatewayConnection:
         and records it via usage_service.
         """
         session_key = payload.get("sessionKey", "")
+        logger.info(
+            "chat.final for user %s: sessionKey=%s payload_keys=%s",
+            self.user_id,
+            session_key or "(empty)",
+            list(payload.keys()),
+        )
         if not session_key:
-            logger.debug("No sessionKey in chat.final for user %s", self.user_id)
+            logger.warning("No sessionKey in chat.final for user %s — cannot record usage", self.user_id)
             return
 
         # Extract member user_id from session key: "agent:{agentId}:{target}"
         # For org members, target is the user_id. For personal, it's "main".
         parts = session_key.split(":")
         member_user_id = parts[2] if len(parts) >= 3 and parts[2] != "main" else self.user_id
+        logger.info("Usage: querying sessions.list for session=%s member=%s", session_key, member_user_id)
 
         asyncio.create_task(self._fetch_and_record_usage(session_key, member_user_id))
 
@@ -248,11 +255,21 @@ class GatewayConnection:
             result = await self.wait_for_response(req_id, timeout=10)
 
             if not isinstance(result, dict):
-                logger.warning("sessions.list returned non-dict for user %s", self.user_id)
+                logger.warning(
+                    "sessions.list returned non-dict for user %s: type=%s",
+                    self.user_id,
+                    type(result).__name__,
+                )
                 return
 
             # Find our session in the list
             sessions = result.get("sessions", [])
+            logger.info(
+                "sessions.list returned %d sessions for user %s, looking for %s",
+                len(sessions),
+                self.user_id,
+                session_key,
+            )
             session = None
             for s in sessions:
                 if s.get("sessionKey") == session_key:
@@ -260,7 +277,13 @@ class GatewayConnection:
                     break
 
             if not session:
-                logger.debug("Session %s not found in sessions.list for user %s", session_key, self.user_id)
+                available_keys = [s.get("sessionKey", "?") for s in sessions[:5]]
+                logger.warning(
+                    "Session %s not found for user %s. Available: %s",
+                    session_key,
+                    self.user_id,
+                    available_keys,
+                )
                 return
 
             input_tokens = int(session.get("inputTokens", 0) or 0)
@@ -269,8 +292,23 @@ class GatewayConnection:
             cache_write = int(session.get("cacheWrite", 0) or 0)
             model = session.get("model") or "unknown"
 
+            logger.info(
+                "Session %s tokens: in=%d out=%d cache_r=%d cache_w=%d model=%s",
+                session_key,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_write,
+                model,
+            )
+
             if input_tokens <= 0 and output_tokens <= 0:
-                logger.debug("No token usage in session %s for user %s", session_key, self.user_id)
+                logger.warning(
+                    "Zero tokens in session %s for user %s — session keys: %s",
+                    session_key,
+                    self.user_id,
+                    list(session.keys()),
+                )
                 return
 
             # Record usage directly
