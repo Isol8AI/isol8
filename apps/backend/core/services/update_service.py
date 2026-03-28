@@ -26,7 +26,7 @@ def _build_tier_config_patch(tier_config: dict, tier: str) -> dict:
             "defaults": {
                 "model": {"primary": tier_config["primary_model"]},
                 "models": tier_config.get("model_aliases", {}),
-                "subagent": {"model": tier_config["subagent_model"]},
+                "subagents": {"model": {"primary": tier_config["subagent_model"]}},
             }
         },
     }

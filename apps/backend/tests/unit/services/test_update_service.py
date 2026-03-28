@@ -138,7 +138,7 @@ async def test_queue_tier_change_patches_subagent_model(dynamodb_table, efs_dir)
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
     # Enterprise has kimi as subagent model
-    assert config["agents"]["defaults"]["subagent"]["model"] == "amazon-bedrock/moonshotai.kimi-k2.5"
+    assert config["agents"]["defaults"]["subagents"]["model"]["primary"] == "amazon-bedrock/moonshotai.kimi-k2.5"
 
 
 @pytest.mark.asyncio
