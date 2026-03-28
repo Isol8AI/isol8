@@ -211,6 +211,7 @@ export class ContainerStack extends cdk.Stack {
       workingDirectory: "/home/node",
       environment: {
         HOME: "/home/node",
+        CHOKIDAR_USEPOLLING: "true",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
