@@ -401,11 +401,14 @@ class EcsManager:
             The ARN of the new task definition revision.
         """
         container = await container_repo.get_by_owner_id(user_id)
-        if not container or not container.get("task_def_arn"):
+        if not container:
             raise EcsManagerError(f"No container found for user {user_id}", user_id)
 
+        current_task_def_arn = container.get("task_definition_arn")
+        if not current_task_def_arn:
+            raise EcsManagerError(f"No task definition ARN for user {user_id}", user_id)
+
         service_name = self._service_name(user_id)
-        current_task_def_arn = container["task_def_arn"]
 
         try:
             # Read the current per-user task definition
@@ -447,7 +450,7 @@ class EcsManager:
             )
 
             # Update DB record
-            await self._update_container(user_id, task_def_arn=new_task_def_arn, status="provisioning")
+            await self._update_container(user_id, task_definition_arn=new_task_def_arn, status="provisioning")
 
             logger.info(
                 "Resized container for user %s: cpu=%s memory=%s image=%s",

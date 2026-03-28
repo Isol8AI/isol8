@@ -91,10 +91,10 @@ class TestWriteOpenclawConfig:
         endpoints = config["gateway"]["http"]["endpoints"]
         assert endpoints["chatCompletions"]["enabled"] is False
 
-    def test_bedrock_discovery_enabled(self):
-        """Bedrock discovery is enabled for runtime model discovery."""
+    def test_bedrock_discovery_disabled(self):
+        """Bedrock discovery is disabled — we control the model catalog via config."""
         config = json.loads(write_openclaw_config())
-        assert config["models"]["bedrockDiscovery"]["enabled"] is True
+        assert config["models"]["bedrockDiscovery"]["enabled"] is False
 
     def test_free_tier_single_model_catalog(self):
         """Free tier catalog has only MiniMax model."""
