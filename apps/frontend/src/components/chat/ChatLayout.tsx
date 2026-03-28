@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAuth, UserButton } from "@clerk/nextjs";
+import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
+import { useRouter } from "next/navigation";
 import { Bot, CreditCard, Trash2 } from "lucide-react";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -38,6 +39,9 @@ export function ChatLayout({
   onPanelChange,
 }: ChatLayoutProps): React.ReactElement {
   const { isSignedIn } = useAuth();
+  const { user, isLoaded: userLoaded } = useUser();
+  const { organization } = useOrganization();
+  const router = useRouter();
   const api = useApi();
   const { agents, defaultId, deleteAgent } = useAgents();
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
@@ -45,10 +49,19 @@ export function ChatLayout({
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
 
+  // Client-side onboarding check: redirect if user hasn't onboarded and has no org
+  useEffect(() => {
+    if (!userLoaded || !isSignedIn) return;
+    const onboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded;
+    if (!onboarded && !organization) {
+      router.replace("/onboarding");
+    }
+  }, [userLoaded, isSignedIn, user, organization, router]);
+
   useEffect(() => {
     if (!isSignedIn) return;
 
-    api.syncUser().catch((err) => console.error("User sync failed:", err));
+    api.syncUser().catch((err: unknown) => console.error("User sync failed:", err));
   }, [isSignedIn, api]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
