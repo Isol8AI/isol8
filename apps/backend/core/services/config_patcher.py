@@ -66,6 +66,11 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
             try:
                 with os.fdopen(fd, "w") as f:
                     json.dump(merged, f, indent=2)
+                # Match OpenClaw container ownership (node uid=1000 gid=1000).
+                # Only chown if running as root (backend container runs as root,
+                # but tests run as the local user).
+                if os.getuid() == 0:
+                    os.chown(tmp_path, 1000, 1000)
                 os.rename(tmp_path, config_path)
             except Exception:
                 os.unlink(tmp_path)
