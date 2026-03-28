@@ -136,8 +136,6 @@ export class ContainerStack extends cdk.Stack {
         actions: [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
-          "bedrock:ListFoundationModels",
-          "bedrock:ListInferenceProfiles",
         ],
         resources: ["*"],
       }),
