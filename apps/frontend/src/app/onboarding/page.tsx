@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CreateOrganization, useAuth, useOrganizationList, useUser } from "@clerk/nextjs";
+import { CreateOrganization, useAuth, useOrganizationList, useSession, useUser } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { User, Users } from "lucide-react";
@@ -11,6 +11,7 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { isLoaded } = useAuth();
   const { user } = useUser();
+  const { session } = useSession();
   const { userMemberships, isLoaded: orgsLoaded, setActive } = useOrganizationList({
     userMemberships: { infinite: true },
   });
@@ -39,6 +40,9 @@ export default function OnboardingPage() {
     try {
       // Mark onboarding complete and sync user
       await user?.update({ unsafeMetadata: { onboarded: true } });
+      // Reload session so the JWT reflects the updated metadata
+      // before middleware checks it on /chat navigation
+      await session?.reload();
       await api.syncUser();
       router.push("/chat");
     } catch {
