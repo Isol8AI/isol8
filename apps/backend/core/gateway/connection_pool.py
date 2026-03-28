@@ -262,8 +262,11 @@ class GatewayConnection:
                 )
                 return
 
-            # Find our session in the list
+            # Find our session in the list.
+            # sessions.list returns "key" (not "sessionKey"), and chat.final
+            # lowercases the session key, so compare case-insensitively.
             sessions = result.get("sessions", [])
+            session_key_lower = session_key.lower()
             logger.info(
                 "sessions.list returned %d sessions for user %s, looking for %s",
                 len(sessions),
@@ -272,12 +275,13 @@ class GatewayConnection:
             )
             session = None
             for s in sessions:
-                if s.get("sessionKey") == session_key:
+                s_key = s.get("key", "")
+                if s_key.lower() == session_key_lower:
                     session = s
                     break
 
             if not session:
-                available_keys = [s.get("sessionKey", "?") for s in sessions[:5]]
+                available_keys = [s.get("key", "?") for s in sessions[:5]]
                 logger.warning(
                     "Session %s not found for user %s. Available: %s",
                     session_key,
