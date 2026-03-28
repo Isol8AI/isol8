@@ -95,12 +95,12 @@ function BudgetExceededBanner({
 // =============================================================================
 
 interface PendingUpdate {
-  id: string;
+  update_id: string;
   description: string;
-  current_version: string;
-  target_version: string;
-  update_type: string;
+  type: string;
   status: string;
+  created_at: string;
+  scheduled_at?: string;
 }
 
 interface SnoozeEntry {
@@ -146,7 +146,7 @@ function UpdateBanner() {
     try {
       const data = (await api.get("/container/updates")) as { updates: PendingUpdate[] };
       const pending = (data.updates || []).filter(
-        (u) => u.status === "pending" && !getSnooze(u.id),
+        (u) => u.status === "pending" && !getSnooze(u.update_id),
       );
       setUpdates(pending);
       setDismissed(false);
@@ -175,7 +175,7 @@ function UpdateBanner() {
       setApplying(true);
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
-        setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to apply update:", err);
       } finally {
@@ -189,7 +189,7 @@ function UpdateBanner() {
     async (updateId: string) => {
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
-        setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to schedule update:", err);
       }
@@ -206,7 +206,7 @@ function UpdateBanner() {
       }
       // Snooze for 4 hours
       setSnooze(updateId, 4 * 60 * 60 * 1000);
-      setUpdates((prev) => prev.filter((u) => u.id !== updateId));
+      setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
     },
     [api],
   );
@@ -273,7 +273,7 @@ function UpdateBanner() {
           size="sm"
           variant="outline"
           className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
-          onClick={() => handleApplyNow(firstUpdate.id)}
+          onClick={() => handleApplyNow(firstUpdate.update_id)}
         >
           <RefreshCw className="h-3 w-3 mr-1" />
           Update Now
@@ -282,7 +282,7 @@ function UpdateBanner() {
           size="sm"
           variant="outline"
           className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
-          onClick={() => handleScheduleTonight(firstUpdate.id)}
+          onClick={() => handleScheduleTonight(firstUpdate.update_id)}
         >
           <Clock className="h-3 w-3 mr-1" />
           Tonight at 2 AM
@@ -291,7 +291,7 @@ function UpdateBanner() {
           size="sm"
           variant="outline"
           className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
-          onClick={() => handleRemindLater(firstUpdate.id)}
+          onClick={() => handleRemindLater(firstUpdate.update_id)}
         >
           Remind Me Later
         </Button>
