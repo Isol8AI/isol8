@@ -292,7 +292,7 @@ def write_openclaw_config(
                 "models": tier_models,
             },
         }
-        bedrock_discovery = {"enabled": True}
+        bedrock_discovery = {"enabled": False}
         agent_models = _agent_models_for_tier(tier, primary_model)
 
     config = {

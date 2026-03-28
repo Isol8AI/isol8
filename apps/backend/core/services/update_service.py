@@ -5,21 +5,30 @@ import logging
 
 from core.config import TIER_CONFIG
 from core.repositories import update_repo
+from core.containers.config import _models_for_tier
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
 
-def _build_tier_config_patch(tier_config: dict) -> dict:
+def _build_tier_config_patch(tier_config: dict, tier: str) -> dict:
     """Build the openclaw.json patch dict for a given tier config."""
     return {
+        "models": {
+            "providers": {
+                "amazon-bedrock": {
+                    "models": _models_for_tier(tier),
+                },
+            },
+            "bedrockDiscovery": {"enabled": False},
+        },
         "agents": {
             "defaults": {
                 "model": {"primary": tier_config["primary_model"]},
                 "models": tier_config.get("model_aliases", {}),
                 "subagent": {"model": tier_config["subagent_model"]},
             }
-        }
+        },
     }
 
 
@@ -39,8 +48,8 @@ async def queue_tier_change(owner_id: str, old_tier: str, new_tier: str) -> dict
     if not old_config:
         raise ValueError(f"Unknown tier: {old_tier}")
 
-    # Track 1: always patch config
-    patch = _build_tier_config_patch(new_config)
+    # Track 1: always patch config (agent models + provider catalog)
+    patch = _build_tier_config_patch(new_config, new_tier)
     await patch_openclaw_config(owner_id, patch)
     logger.info("Patched openclaw.json for tier change %s -> %s (owner=%s)", old_tier, new_tier, owner_id)
 
