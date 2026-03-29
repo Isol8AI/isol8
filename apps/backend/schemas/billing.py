@@ -16,6 +16,7 @@ class BillingAccountResponse(BaseModel):
     is_subscribed: bool
     current_spend: float
     included_budget: float
+    budget_percent: float
     lifetime_spend: float
     overage_enabled: bool
     overage_limit: float | None

@@ -41,6 +41,7 @@ class TestGetBillingAccount:
         assert data["is_subscribed"] is True
         assert data["current_spend"] == 3.50
         assert data["included_budget"] == 10.0
+        assert data["budget_percent"] == 35.0
         assert data["lifetime_spend"] == 5.0
         assert data["within_included"] is True
 
@@ -82,6 +83,7 @@ class TestGetBillingAccount:
         data = response.json()
         assert data["tier"] == "free"
         assert data["is_subscribed"] is False
+        assert data["budget_percent"] == 0.0
 
 
 class TestGetUsage:

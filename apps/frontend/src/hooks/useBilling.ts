@@ -14,6 +14,7 @@ export interface BillingAccount {
   is_subscribed: boolean;
   current_spend: number;
   included_budget: number;
+  budget_percent: number;
   lifetime_spend: number;
   overage_enabled: boolean;
   overage_limit: number | null;

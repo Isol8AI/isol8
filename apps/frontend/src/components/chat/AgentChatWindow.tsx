@@ -34,7 +34,7 @@ function BudgetExceededBanner({
 }: {
   budgetError: BudgetExceededPayload;
 }) {
-  const { createCheckout, toggleOverage } = useBilling();
+  const { account, createCheckout, toggleOverage } = useBilling();
   const { organization, membership } = useOrganization();
   const [loading, setLoading] = useState(false);
 
@@ -57,6 +57,7 @@ function BudgetExceededBanner({
   }, [budgetError, createCheckout, toggleOverage]);
 
   let message: string;
+  let subtext: string | null = null;
   let actionLabel: string | null = null;
 
   if (isOrg && !isOrgAdmin) {
@@ -66,7 +67,11 @@ function BudgetExceededBanner({
     actionLabel = "Subscribe";
   } else if (budgetError.overage_available && !budgetError.overage_enabled) {
     message = "Your included LLM budget is used up. Enable pay-as-you-go to continue.";
+    subtext = "Overage is billed at 1.4x standard rates";
     actionLabel = "Enable pay-as-you-go";
+  } else if (account?.overage_enabled && account?.overage_limit !== null) {
+    message = "You've reached your usage limit for this billing period.";
+    subtext = `Overage limit: $${account.overage_limit.toFixed(2)}`;
   } else {
     message = "You've reached your usage limit for this billing period.";
   }
@@ -74,7 +79,12 @@ function BudgetExceededBanner({
   return (
     <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg flex items-center gap-3">
       <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
-      <p className="text-sm text-amber-200 flex-1">{message}</p>
+      <div className="flex-1">
+        <p className="text-sm text-amber-200">{message}</p>
+        {subtext && (
+          <p className="text-xs text-amber-300/70 mt-0.5">{subtext}</p>
+        )}
+      </div>
       {actionLabel && (
         <Button
           size="sm"
@@ -88,6 +98,112 @@ function BudgetExceededBanner({
       )}
     </div>
   );
+}
+
+// =============================================================================
+// Approach-Limit Banner
+// =============================================================================
+
+const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function getBudgetSnooze(threshold: number): boolean {
+  try {
+    const raw = localStorage.getItem(`isol8_budget_snooze_${threshold}`);
+    if (!raw) return false;
+    const snoozedUntil = JSON.parse(raw) as number;
+    if (Date.now() < snoozedUntil) return true;
+    localStorage.removeItem(`isol8_budget_snooze_${threshold}`);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function setBudgetSnooze(threshold: number): void {
+  localStorage.setItem(
+    `isol8_budget_snooze_${threshold}`,
+    JSON.stringify(Date.now() + SNOOZE_DURATION_MS),
+  );
+}
+
+function ApproachLimitBanner() {
+  const { account, isSubscribed, toggleOverage } = useBilling();
+  const [dismissed75, setDismissed75] = useState(() => getBudgetSnooze(75));
+  const [dismissed90, setDismissed90] = useState(() => getBudgetSnooze(90));
+  const [loading, setLoading] = useState(false);
+
+  if (!account || !isSubscribed) return null;
+
+  const pct = account.budget_percent;
+
+  if (pct >= 90 && !dismissed90) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-orange-900/20 border border-orange-500/30 rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm text-orange-200">
+            You&apos;ve used {Math.round(pct)}% of your included LLM budget. Consider enabling pay-as-you-go.
+          </p>
+          <p className="text-xs text-orange-300/70 mt-0.5">
+            Overage is billed at 1.4x standard rates
+          </p>
+        </div>
+        {!account.overage_enabled && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0 border-orange-500/40 text-orange-200 hover:bg-orange-900/30"
+            onClick={async () => {
+              setLoading(true);
+              try {
+                await toggleOverage(true);
+              } catch (err) {
+                console.error("Failed to enable overage:", err);
+              } finally {
+                setLoading(false);
+              }
+            }}
+            disabled={loading}
+          >
+            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enable pay-as-you-go"}
+          </Button>
+        )}
+        <button
+          onClick={() => {
+            setBudgetSnooze(90);
+            setDismissed90(true);
+          }}
+          className="text-orange-400 hover:text-orange-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  if (pct >= 75 && !dismissed75) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-yellow-400 shrink-0" />
+        <p className="text-sm text-yellow-200 flex-1">
+          You&apos;ve used {Math.round(pct)}% of your included LLM budget this month.
+        </p>
+        <button
+          onClick={() => {
+            setBudgetSnooze(75);
+            setDismissed75(true);
+          }}
+          className="text-yellow-400 hover:text-yellow-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return null;
 }
 
 // =============================================================================
@@ -426,6 +542,7 @@ export function AgentChatWindow({
           </div>
           <div className="w-full max-w-2xl">
             <UpdateBanner />
+            <ApproachLimitBanner />
             {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
               onSend={handleSend}
@@ -448,6 +565,7 @@ export function AgentChatWindow({
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
       <UpdateBanner />
+      <ApproachLimitBanner />
       {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
       <ChatInput
         onSend={handleSend}

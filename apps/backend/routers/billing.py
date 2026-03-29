@@ -83,11 +83,14 @@ async def get_billing_account(
     lifetime_usage = await usage_repo.get_period_usage(owner_id, "lifetime")
     lifetime_spend = (lifetime_usage["total_spend_microdollars"] if lifetime_usage else 0) / 1_000_000
 
+    budget_percent = (budget["current_spend"] / budget["included_budget"] * 100) if budget["included_budget"] > 0 else 0
+
     return BillingAccountResponse(
         tier=budget["tier"],
         is_subscribed=budget["is_subscribed"],
         current_spend=budget["current_spend"],
         included_budget=budget["included_budget"],
+        budget_percent=round(budget_percent, 1),
         lifetime_spend=lifetime_spend,
         overage_enabled=budget["overage_enabled"],
         overage_limit=float(account.get("overage_limit", 0)) / 1_000_000 if account.get("overage_limit") else None,

@@ -24,6 +24,7 @@ class TestBillingSchemas:
             is_subscribed=True,
             current_spend=11.42,
             included_budget=15.00,
+            budget_percent=76.1,
             lifetime_spend=50.0,
             overage_enabled=False,
             overage_limit=None,
@@ -33,6 +34,7 @@ class TestBillingSchemas:
         assert data["tier"] == "starter"
         assert data["included_budget"] == 15.00
         assert data["current_spend"] == 11.42
+        assert data["budget_percent"] == 76.1
         assert data["within_included"] is True
 
     def test_checkout_request_validation(self):
