@@ -200,7 +200,7 @@ export function ChatLayout({
               }}
             >
               <UserButton.MenuItems>
-                <UserButton.Link label="Billing" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings/billing" />
+                <UserButton.Link label="Settings" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings" />
               </UserButton.MenuItems>
             </UserButton>
           </header>
