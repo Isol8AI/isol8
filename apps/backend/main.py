@@ -47,7 +47,15 @@ async def lifespan(app: FastAPI):
     logger.info("Starting application...")
     await startup_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
-    idle_checker_task = asyncio.create_task(get_gateway_pool().run_idle_checker())
+
+    async def _safe_idle_checker():
+        try:
+            pool = get_gateway_pool()
+            await pool.run_idle_checker()
+        except Exception:
+            logger.warning("Idle checker not available (gateway pool init failed)")
+
+    idle_checker_task = asyncio.create_task(_safe_idle_checker())
 
     yield
 
