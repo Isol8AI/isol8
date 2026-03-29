@@ -14,8 +14,30 @@ const TASKS = [
 
 const ROTATE_INTERVAL = 2800;
 
-function LogoSvg({ dark }: { dark?: boolean }) {
-  return (
+export default function Page() {
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [exitIndex, setExitIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const prefersReduced = window.matchMedia(
+      "(prefers-reduced-motion: reduce)"
+    ).matches;
+    if (prefersReduced) return;
+
+    const interval = setInterval(() => {
+      setCurrentIndex((prev) => {
+        setExitIndex(prev);
+        return (prev + 1) % TASKS.length;
+      });
+      setTimeout(() => {
+        setExitIndex(null);
+      }, 500);
+    }, ROTATE_INTERVAL);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  const LogoSvg = ({ dark }: { dark?: boolean }) => (
     <svg
       width="40"
       height="40"
@@ -44,30 +66,6 @@ function LogoSvg({ dark }: { dark?: boolean }) {
       </text>
     </svg>
   );
-}
-
-export default function Page() {
-  const [currentIndex, setCurrentIndex] = useState(0);
-  const [exitIndex, setExitIndex] = useState<number | null>(null);
-
-  useEffect(() => {
-    const prefersReduced = window.matchMedia(
-      "(prefers-reduced-motion: reduce)"
-    ).matches;
-    if (prefersReduced) return;
-
-    const interval = setInterval(() => {
-      setCurrentIndex((prev) => {
-        setExitIndex(prev);
-        return (prev + 1) % TASKS.length;
-      });
-      setTimeout(() => {
-        setExitIndex(null);
-      }, 500);
-    }, ROTATE_INTERVAL);
-
-    return () => clearInterval(interval);
-  }, []);
 
   return (
     <>
