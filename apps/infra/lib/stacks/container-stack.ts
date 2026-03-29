@@ -204,7 +204,7 @@ export class ContainerStack extends cdk.Stack {
     ].join("; ");
 
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: ecs.ContainerImage.fromRegistry("ghcr.io/openclaw/openclaw:latest"),
+      image: ecs.ContainerImage.fromRegistry("alpine/openclaw:2026.3.24"),
       essential: true,
       command: ["sh", "-c", startupCommand],
       user: "0:0",
