@@ -217,8 +217,9 @@ class GatewayConnection:
 
     def _forward_to_frontends(self, message: dict) -> None:
         """Send a message to all registered frontend connections."""
-        if self._on_activity:
-            self._on_activity(self.user_id)
+        # Don't update activity here — passive gateway events (tick, health)
+        # would prevent idle detection. Activity is tracked only on user-initiated
+        # actions (RPC sends, frontend connection registration).
         for conn_id in list(self._frontend_connections):
             try:
                 self._management_api.send_message(conn_id, message)
