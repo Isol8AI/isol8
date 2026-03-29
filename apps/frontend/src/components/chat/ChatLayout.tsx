@@ -3,16 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Bot, CheckCircle, CreditCard, Trash2 } from "lucide-react";
+import { Settings, Plus, Bot, Trash2, CheckCircle, CreditCard } from "lucide-react";
+import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
-import { Button } from "@/components/ui/button";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
-import { cn } from "@/lib/utils";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -44,8 +42,8 @@ export function ChatLayout({
   const { organization } = useOrganization();
   const router = useRouter();
   const api = useApi();
-  const { agents, defaultId, deleteAgent } = useAgents();
-  const { refresh: refreshBilling } = useBilling();
+  const { agents, defaultId, deleteAgent, createAgent } = useAgents();
+  const { refresh: refreshBilling, account } = useBilling();
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
@@ -55,6 +53,15 @@ export function ChatLayout({
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
+
+  const planTier = account?.tier ?? "free";
+  const userName = user?.fullName || user?.firstName || "User";
+  const userInitials = userName
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
 
   // Client-side onboarding check: redirect if user hasn't onboarded and has no org
   useEffect(() => {
@@ -108,33 +115,332 @@ export function ChatLayout({
     }
   }
 
-  return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden relative selection:bg-primary/20">
-      {/* Global Grain Overlay */}
-      <div className="fixed inset-0 z-0 pointer-events-none bg-noise opacity-[0.03]" />
+  async function handleCreateAgent(): Promise<void> {
+    const name = "Agent " + (agents.length + 1);
+    await createAgent({ name, workspace: name.toLowerCase().replace(/\s+/g, "-") });
+  }
 
-      <div className="relative z-10 flex w-full h-full">
-        <div className="w-64 hidden md:flex flex-col border-r border-border bg-sidebar/50 backdrop-blur-xl">
+  return (
+    <>
+      <style>{`
+        .app-shell {
+          display: grid;
+          grid-template-columns: 260px 1fr;
+          height: 100vh;
+          overflow: hidden;
+        }
+        .cream-sidebar {
+          background: #f3efe6;
+          border-right: 1px solid #e0dbd0;
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+        }
+        .sidebar-header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 16px 20px;
+          border-bottom: 1px solid #e0dbd0;
+        }
+        .sidebar-logo {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .sidebar-logo svg {
+          width: 24px;
+          height: 24px;
+        }
+        .sidebar-logo span {
+          font-size: 16px;
+          font-weight: 600;
+          color: #1a1a1a;
+          letter-spacing: -0.01em;
+        }
+        .sidebar-settings-link {
+          color: #8a8578;
+          transition: color 0.15s;
+          display: flex;
+          align-items: center;
+        }
+        .sidebar-settings-link:hover {
+          color: #1a1a1a;
+        }
+        .tab-switcher {
+          display: flex;
+          margin: 12px 16px;
+          background: #e8e3d9;
+          border-radius: 999px;
+          padding: 3px;
+        }
+        .tab-btn {
+          flex: 1;
+          padding: 6px 0;
+          font-size: 13px;
+          font-weight: 500;
+          text-align: center;
+          border-radius: 999px;
+          border: none;
+          cursor: pointer;
+          transition: all 0.15s;
+          background: transparent;
+          color: #8a8578;
+        }
+        .tab-btn.active {
+          background: #fff;
+          color: #1a1a1a;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .tab-btn:not(.active):hover {
+          color: #1a1a1a;
+        }
+        .new-agent-btn {
+          margin: 4px 16px 8px;
+          padding: 8px 12px;
+          border: 1.5px dashed #cdc7ba;
+          border-radius: 8px;
+          background: transparent;
+          color: #8a8578;
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: all 0.15s;
+        }
+        .new-agent-btn:hover {
+          border-color: #8a8578;
+          color: #1a1a1a;
+          background: rgba(255,255,255,0.5);
+        }
+        .agent-list {
+          flex: 1;
+          overflow-y: auto;
+          padding: 0 12px;
+        }
+        .agent-item {
+          display: flex;
+          align-items: center;
+          padding: 8px 8px;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background 0.15s;
+          position: relative;
+          gap: 10px;
+        }
+        .agent-item:hover {
+          background: rgba(255,255,255,0.6);
+        }
+        .agent-item.active {
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .agent-avatar {
+          width: 32px;
+          height: 32px;
+          border-radius: 6px;
+          background: #2d8a4e;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-shrink: 0;
+        }
+        .agent-avatar svg {
+          color: #fff;
+          width: 16px;
+          height: 16px;
+        }
+        .agent-info {
+          flex: 1;
+          min-width: 0;
+        }
+        .agent-name {
+          font-size: 13px;
+          font-weight: 500;
+          color: #1a1a1a;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .agent-model {
+          font-size: 11px;
+          color: #8a8578;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .agent-status-dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          background: #2d8a4e;
+          flex-shrink: 0;
+        }
+        .agent-delete-btn {
+          position: absolute;
+          right: 4px;
+          top: 50%;
+          transform: translateY(-50%);
+          opacity: 0;
+          background: none;
+          border: none;
+          padding: 4px;
+          cursor: pointer;
+          color: #8a8578;
+          border-radius: 4px;
+          display: flex;
+          align-items: center;
+          transition: all 0.15s;
+        }
+        .agent-item:hover .agent-delete-btn {
+          opacity: 1;
+        }
+        .agent-delete-btn:hover {
+          color: #dc2626;
+          background: rgba(220,38,38,0.08);
+        }
+        .sidebar-footer {
+          border-top: 1px solid #e0dbd0;
+          padding: 12px 16px;
+        }
+        .user-row {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        .user-avatar {
+          width: 32px;
+          height: 32px;
+          border-radius: 50%;
+          background: #d4cfc4;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-size: 12px;
+          font-weight: 600;
+          color: #5a5549;
+          flex-shrink: 0;
+        }
+        .user-info {
+          flex: 1;
+          min-width: 0;
+        }
+        .user-name {
+          font-size: 13px;
+          font-weight: 500;
+          color: #1a1a1a;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+        .plan-badge {
+          font-size: 10px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          padding: 1px 6px;
+          border-radius: 4px;
+          background: #e8e3d9;
+          color: #8a8578;
+        }
+        .version-text {
+          text-align: center;
+          font-size: 10px;
+          color: #b5ae9e;
+          font-family: monospace;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          padding-top: 8px;
+        }
+        .main-area {
+          background: #faf7f2;
+          display: flex;
+          flex-direction: column;
+          min-height: 0;
+          position: relative;
+        }
+        .main-header {
+          height: 56px;
+          border-bottom: 1px solid #e0dbd0;
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          padding: 0 16px;
+          background: #faf7f2;
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          z-index: 20;
+        }
+        .main-content {
+          flex: 1;
+          min-height: 0;
+          padding-top: 56px;
+          display: flex;
+          flex-direction: column;
+          overflow-y: auto;
+        }
+        .subscription-banner {
+          margin: 8px 16px;
+          padding: 12px;
+          background: rgba(45,138,78,0.08);
+          border: 1px solid rgba(45,138,78,0.2);
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .subscription-banner svg {
+          color: #2d8a4e;
+          flex-shrink: 0;
+        }
+        .subscription-banner p {
+          font-size: 14px;
+          color: #2d6b3f;
+          margin: 0;
+        }
+        @media (max-width: 768px) {
+          .app-shell {
+            grid-template-columns: 1fr;
+          }
+          .cream-sidebar {
+            display: none;
+          }
+        }
+      `}</style>
+
+      <div className="app-shell">
+        <div className="cream-sidebar">
+          {/* Header */}
+          <div className="sidebar-header">
+            <div className="sidebar-logo">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="3" width="18" height="18" rx="4" fill="#1a1a1a"/>
+                <rect x="7" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="13" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="7" y="13" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="13" y="13" width="4" height="4" rx="1" fill="#2d8a4e"/>
+              </svg>
+              <span>isol8</span>
+            </div>
+            <Link href="/settings" className="sidebar-settings-link">
+              <Settings size={18} />
+            </Link>
+          </div>
+
           {/* Tab Switcher */}
-          <div className="flex border-b border-border">
+          <div className="tab-switcher">
             <button
-              className={cn(
-                "flex-1 px-3 py-2 text-xs font-medium uppercase tracking-wider transition-colors",
-                activeView === "chat"
-                  ? "text-foreground border-b-2 border-primary"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
+              className={`tab-btn${activeView === "chat" ? " active" : ""}`}
               onClick={() => onViewChange("chat")}
             >
               Chat
             </button>
             <button
-              className={cn(
-                "flex-1 px-3 py-2 text-xs font-medium uppercase tracking-wider transition-colors",
-                activeView === "control"
-                  ? "text-foreground border-b-2 border-primary"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
+              className={`tab-btn${activeView === "control" ? " active" : ""}`}
               onClick={() => onViewChange("control")}
             >
               Control
@@ -143,55 +449,64 @@ export function ChatLayout({
 
           {activeView === "chat" ? (
             <>
+              {/* New Agent Button */}
+              <button className="new-agent-btn" onClick={handleCreateAgent}>
+                <Plus size={14} />
+                New Agent
+              </button>
+
               {/* Agent List */}
-              <ScrollArea className="flex-1 px-3 py-2">
-                <div className="space-y-1">
-                  {agents.map((agent) => (
-                    <div key={agent.id} className="group flex items-center">
-                      <Button
-                        variant="ghost"
-                        className={cn(
-                          "flex-1 justify-start gap-2 font-normal truncate transition-all h-auto py-1.5",
-                          currentAgentId === agent.id
-                            ? "bg-accent text-accent-foreground"
-                            : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
-                        )}
-                        onClick={() => handleSelectAgent(agent.id)}
-                      >
-                        <Bot className="h-4 w-4 flex-shrink-0 opacity-70" />
-                        <div className="flex flex-col items-start min-w-0">
-                          <span className="truncate w-full text-left">{agentDisplayName(agent)}</span>
-                          {agent.model && (
-                            <span className="text-[10px] text-muted-foreground/60 truncate w-full text-left">
-                              {agent.model.split("/").pop()?.replace(/-v\d+:\d+$/, "") || agent.model}
-                            </span>
-                          )}
-                        </div>
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-                        onClick={() => handleDeleteAgent(agent.id)}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
+              <div className="agent-list">
+                {agents.map((agent) => (
+                  <div
+                    key={agent.id}
+                    className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
+                    onClick={() => handleSelectAgent(agent.id)}
+                  >
+                    <div className="agent-avatar">
+                      <Bot />
                     </div>
-                  ))}
-                </div>
-              </ScrollArea>
+                    <div className="agent-info">
+                      <div className="agent-name">{agentDisplayName(agent)}</div>
+                      {agent.model && (
+                        <div className="agent-model">
+                          {agent.model.split("/").pop()?.replace(/-v\d+:\d+$/, "") || agent.model}
+                        </div>
+                      )}
+                    </div>
+                    <div className="agent-status-dot" />
+                    <button
+                      className="agent-delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteAgent(agent.id);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </>
           ) : (
             <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
           )}
 
-          <div className="p-4 border-t border-border text-[10px] text-muted-foreground/40 text-center uppercase tracking-widest font-mono">
-            Isol8 v0.1
+          {/* Footer */}
+          <div className="sidebar-footer">
+            <div className="user-row">
+              <div className="user-avatar">{userInitials}</div>
+              <div className="user-info">
+                <div className="user-name">{userName}</div>
+              </div>
+              <span className="plan-badge">{planTier}</span>
+            </div>
+            <div className="version-text">isol8 v0.1</div>
           </div>
         </div>
 
-        <main className="flex-1 min-h-0 flex flex-col relative bg-background/20">
-          <header className="h-14 border-b border-border flex items-center justify-end gap-2 px-4 backdrop-blur-sm bg-background/20 absolute top-0 right-0 left-0 z-20">
+        <div className="main-area">
+          <div className="main-header">
             <UserButton
               appearance={{
                 elements: {
@@ -203,21 +518,19 @@ export function ChatLayout({
                 <UserButton.Link label="Settings" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings" />
               </UserButton.MenuItems>
             </UserButton>
-          </header>
+          </div>
 
-          <div className="flex-1 min-h-0 pt-14 flex flex-col overflow-y-auto">
+          <div className="main-content">
             {showSubscriptionSuccess && (
-              <div className="mx-4 mt-2 p-3 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex items-center gap-3">
-                <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
-                <p className="text-sm text-emerald-200">
-                  Subscription confirmed! Your agent is being upgraded.
-                </p>
+              <div className="subscription-banner">
+                <CheckCircle size={16} />
+                <p>Subscription confirmed! Your agent is being upgraded.</p>
               </div>
             )}
             <ProvisioningStepper>{children}</ProvisioningStepper>
           </div>
-        </main>
+        </div>
       </div>
-    </div>
+    </>
   );
 }
