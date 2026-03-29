@@ -113,7 +113,7 @@ export function GooseTown() {
               <span className="gt-toptab">Apartment</span>
             </div>
             <div className="gt-topbar-right">
-              <button className="gt-music-btn">🔊 Music</button>
+              <span className="gt-music-btn" aria-hidden="true">🔊 Music</span>
               <span className="gt-topbar-user">Præs(ddi...</span>
             </div>
           </div>
@@ -124,7 +124,7 @@ export function GooseTown() {
             <div className="gt-sidebar">
               <div className="gt-sb-hd">
                 <span>YOUR AGENTS (1)</span>
-                <button className="gt-add-btn">+ Add</button>
+                <span className="gt-add-btn" aria-hidden="true">+ Add</span>
               </div>
               <div className="gt-agent-card">
                 <div className="gt-card-top">
@@ -147,7 +147,7 @@ export function GooseTown() {
                   </div>
                   <span className="gt-energy-val">96%</span>
                 </div>
-                <span className="gt-view-link">View in town →</span>
+                <span className="gt-view-link" aria-hidden="true">View in town →</span>
               </div>
             </div>
 
