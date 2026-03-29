@@ -113,6 +113,53 @@ class TestGetUsage:
         assert data["by_member"] == []
 
 
+class TestGetMyUsage:
+    """Test GET /api/v1/billing/my-usage."""
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.usage_repo")
+    async def test_get_my_usage_with_data(self, mock_usage_repo, async_client):
+        """Should return current user's own usage for the billing period."""
+        mock_usage_repo.get_period_usage = AsyncMock(
+            return_value={
+                "total_spend_microdollars": 3_500_000,
+                "total_input_tokens": 8000,
+                "total_output_tokens": 4000,
+                "total_cache_read_tokens": 100,
+                "total_cache_write_tokens": 50,
+                "request_count": 25,
+            }
+        )
+
+        response = await async_client.get("/api/v1/billing/my-usage")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_spend"] == 3.5
+        assert data["total_input_tokens"] == 8000
+        assert data["total_output_tokens"] == 4000
+        assert data["request_count"] == 25
+        assert "period" in data
+
+        # Verify it was called with the member key pattern
+        call_args = mock_usage_repo.get_period_usage.call_args
+        assert call_args[0][0] == "user_test_123"  # owner_id
+        assert call_args[0][1].startswith("member:user_test_123:")  # member key
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.usage_repo")
+    async def test_get_my_usage_no_data(self, mock_usage_repo, async_client):
+        """Should return zeros when user has no usage data."""
+        mock_usage_repo.get_period_usage = AsyncMock(return_value=None)
+
+        response = await async_client.get("/api/v1/billing/my-usage")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["total_spend"] == 0.0
+        assert data["total_input_tokens"] == 0
+        assert data["total_output_tokens"] == 0
+        assert data["request_count"] == 0
+
+
 class TestGetPricing:
     """Test GET /api/v1/billing/pricing."""
 

@@ -80,6 +80,14 @@ class ModelPriceResponse(BaseModel):
     cache_write: float
 
 
+class MyUsageResponse(BaseModel):
+    period: str
+    total_spend: float
+    total_input_tokens: int
+    total_output_tokens: int
+    request_count: int
+
+
 class PricingResponse(BaseModel):
     models: dict[str, ModelPriceResponse]
     markup: float
