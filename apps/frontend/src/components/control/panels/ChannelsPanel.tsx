@@ -537,7 +537,7 @@ export function ChannelsPanel() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -545,7 +545,7 @@ export function ChannelsPanel() {
   if (error) {
     return (
       <div className="p-6 space-y-3">
-        <p className="text-sm text-destructive">{error.message}</p>
+        <p className="text-sm text-red-600">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -586,7 +586,7 @@ export function ChannelsPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Channels</h2>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-[#8a8578]">
             Connect communication channels to your agent.
           </p>
         </div>
@@ -610,11 +610,11 @@ export function ChannelsPanel() {
 
       {/* Action feedback */}
       {actionError && (
-        <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
-          <AlertCircle className="h-4 w-4 text-destructive shrink-0" />
-          <p className="text-xs text-destructive">{actionError}</p>
+        <div className="flex items-center gap-2 rounded-md border border-red-300/50 bg-red-50 p-3">
+          <AlertCircle className="h-4 w-4 text-red-600 shrink-0" />
+          <p className="text-xs text-red-600">{actionError}</p>
           <button
-            className="ml-auto text-xs text-muted-foreground hover:text-foreground"
+            className="ml-auto text-xs text-[#8a8578] hover:text-[#1a1a1a]"
             onClick={() => setActionError(null)}
           >
             dismiss
@@ -668,16 +668,16 @@ export function ChannelsPanel() {
       {/* Raw snapshot for debugging */}
       {snapshot && (
         <details className="text-xs">
-          <summary className="text-muted-foreground cursor-pointer hover:text-foreground">
+          <summary className="text-[#8a8578] cursor-pointer hover:text-[#1a1a1a]">
             Raw gateway response
           </summary>
-          <pre className="mt-2 p-3 rounded-md bg-muted/30 border border-border/40 overflow-auto max-h-60 text-[10px] leading-tight">
+          <pre className="mt-2 p-3 rounded-md bg-white/80 border border-[#e0dbd0] overflow-auto max-h-60 text-[10px] leading-tight">
             {JSON.stringify(snapshot, null, 2)}
           </pre>
         </details>
       )}
       {!snapshot && !isLoading && !error && (
-        <p className="text-xs text-muted-foreground">
+        <p className="text-xs text-[#8a8578]">
           No response from gateway. WebSocket may not be connected.
         </p>
       )}
@@ -748,21 +748,21 @@ function ChannelCard({
   );
 
   return (
-    <div className="rounded-lg border border-border overflow-hidden">
+    <div className="rounded-lg border border-[#e0dbd0] overflow-hidden bg-white">
       {/* Header */}
       <div className="flex items-center justify-between p-4 pb-2">
         <div className="flex items-center gap-2">
-          <Radio className="h-4 w-4 text-muted-foreground" />
+          <Radio className="h-4 w-4 text-[#8a8578]" />
           <div>
             <h3 className="text-sm font-semibold">{label}</h3>
             {detail && (
-              <p className="text-xs text-muted-foreground">{detail}</p>
+              <p className="text-xs text-[#8a8578]">{detail}</p>
             )}
           </div>
         </div>
         <div className="flex items-center gap-2">
           {account?.connected && (
-            <span className="inline-flex items-center gap-1 text-xs text-green-600 font-medium">
+            <span className="inline-flex items-center gap-1 text-xs text-[#2d8a4e] font-medium">
               <CheckCircle2 className="h-3 w-3" />
               Connected
             </span>
@@ -783,13 +783,13 @@ function ChannelCard({
       {/* Status grid */}
       {account ? (
         <div className="px-4 pb-3">
-          <div className="rounded-md border border-border/60 bg-muted/10 p-3">
+          <div className="rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-x-4 gap-y-1.5">
               {[...coreFields, ...fields].map((field) => {
                 const { text, variant } = formatValue(field, account[field]);
                 return (
                   <div key={field} className="flex items-center gap-1.5 text-xs">
-                    <span className="text-muted-foreground">
+                    <span className="text-[#8a8578]">
                       {STATUS_LABELS[field] || field}:
                     </span>
                     <StatusBadge text={text} variant={variant} />
@@ -801,7 +801,7 @@ function ChannelCard({
         </div>
       ) : (
         <div className="px-4 pb-3">
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-[#8a8578]">
             Not configured.{" "}
             {configFields
               ? "Click the gear icon to set up this channel."
@@ -826,7 +826,7 @@ function ChannelCard({
       {/* WhatsApp QR code display */}
       {isWhatsApp && qrDataUrl && (
         <div className="px-4 pb-3">
-          <div className="rounded-md border border-border/60 bg-background p-4 flex flex-col items-center gap-3">
+          <div className="rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-4 flex flex-col items-center gap-3">
             <Image
               src={qrDataUrl}
               alt="WhatsApp QR Code"
@@ -835,7 +835,7 @@ function ChannelCard({
               unoptimized
               className="rounded"
             />
-            <p className="text-xs text-muted-foreground text-center">
+            <p className="text-xs text-[#8a8578] text-center">
               Scan this QR code with WhatsApp on your phone
             </p>
           </div>
@@ -845,7 +845,7 @@ function ChannelCard({
       {/* WhatsApp login message */}
       {isWhatsApp && loginMessage && (
         <div className="px-4 pb-3">
-          <p className="text-xs text-muted-foreground bg-muted/20 rounded p-2">
+          <p className="text-xs text-[#8a8578] bg-[#f3efe6] rounded p-2">
             {loginMessage}
           </p>
         </div>
@@ -905,13 +905,13 @@ function ChannelCard({
       {/* Allowlist section */}
       <div className="px-4 pb-4 space-y-2">
         <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold text-muted-foreground">Allowed Users</span>
+          <span className="text-xs font-semibold text-[#8a8578]">Allowed Users</span>
           {dmPolicy && (
             <span className={cn(
               "text-[10px] font-medium px-1.5 py-0.5 rounded",
-              dmPolicy === "open" ? "bg-emerald-500/10 text-emerald-400"
-                : dmPolicy === "pairing" ? "bg-amber-500/10 text-amber-400"
-                : "bg-muted text-muted-foreground"
+              dmPolicy === "open" ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                : dmPolicy === "pairing" ? "bg-amber-50 text-amber-700"
+                : "bg-[#f3efe6] text-[#8a8578]"
             )}>
               {dmPolicy}
             </span>
@@ -920,9 +920,9 @@ function ChannelCard({
         {allowFrom.length > 0 && (
           <div className="flex flex-wrap gap-1.5">
             {allowFrom.map((userId) => (
-              <span key={userId} className="inline-flex items-center gap-1 text-[11px] font-mono bg-muted/30 px-2 py-0.5 rounded border border-border/50">
+              <span key={userId} className="inline-flex items-center gap-1 text-[11px] font-mono bg-[#f3efe6] px-2 py-0.5 rounded border border-[#e0dbd0]">
                 {userId}
-                <button className="text-muted-foreground hover:text-destructive ml-0.5" onClick={() => onRemoveFromAllowlist(userId)} disabled={busy}>&times;</button>
+                <button className="text-[#8a8578] hover:text-red-600 ml-0.5" onClick={() => onRemoveFromAllowlist(userId)} disabled={busy}>&times;</button>
               </span>
             ))}
           </div>
@@ -934,7 +934,7 @@ function ChannelCard({
             value={allowlistInput}
             onChange={(e) => onAllowlistInputChange(e.target.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && allowlistInput.trim()) onAddToAllowlist(allowlistInput.trim()); }}
-            className="w-40 rounded-md border border-border bg-background px-2 py-1 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring"
+            className="w-40 rounded-md border border-[#e0dbd0] bg-white px-2 py-1 text-xs font-mono text-[#1a1a1a] placeholder:text-[#8a8578]/50 focus:outline-none focus:ring-1 focus:ring-[#06402B]/20"
           />
           <Button variant="outline" size="sm" onClick={() => { if (allowlistInput.trim()) onAddToAllowlist(allowlistInput.trim()); }} disabled={!allowlistInput.trim() || busy}>
             Add
@@ -1000,8 +1000,8 @@ function ChannelConfigForm({
 
   return (
     <div className="px-4 pb-3">
-      <div className="rounded-md border border-border/60 bg-muted/5 p-4 space-y-3">
-        <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+      <div className="rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-4 space-y-3">
+        <h4 className="text-xs font-semibold text-[#8a8578] uppercase tracking-wide">
           Configuration
         </h4>
 
@@ -1012,7 +1012,7 @@ function ChannelConfigForm({
 
           return (
             <div key={field.key} className="space-y-1">
-              <label className="text-xs font-medium text-foreground">
+              <label className="text-xs font-medium text-[#1a1a1a]">
                 {field.label}
               </label>
               <div className="relative">
@@ -1028,7 +1028,7 @@ function ChannelConfigForm({
                     }
                   }}
                   disabled={busy}
-                  className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                  className="w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-1.5 text-xs font-mono text-[#1a1a1a] placeholder:text-[#8a8578]/50 focus:outline-none focus:ring-1 focus:ring-[#06402B]/20 disabled:opacity-50"
                 />
                 {isSecret && (
                   <button
@@ -1039,7 +1039,7 @@ function ChannelConfigForm({
                         [field.key]: !prev[field.key],
                       }))
                     }
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8a8578] hover:text-[#1a1a1a]"
                   >
                     {showing ? (
                       <EyeOff className="h-3 w-3" />
@@ -1050,7 +1050,7 @@ function ChannelConfigForm({
                 )}
               </div>
               {field.help && (
-                <p className="text-[10px] text-muted-foreground">{field.help}</p>
+                <p className="text-[10px] text-[#8a8578]">{field.help}</p>
               )}
             </div>
           );
@@ -1071,7 +1071,7 @@ function ChannelConfigForm({
             Save
           </Button>
           {saved && !busy && (
-            <span className="text-xs text-green-600">
+            <span className="text-xs text-[#2d8a4e]">
               Saved! Gateway restarting...
             </span>
           )}
@@ -1094,7 +1094,7 @@ function StatusBadge({
 }) {
   if (variant === "yes") {
     return (
-      <span className="inline-flex items-center gap-0.5 text-green-600">
+      <span className="inline-flex items-center gap-0.5 text-[#2d8a4e]">
         <CheckCircle2 className="h-3 w-3" />
         <span className="font-medium">{text}</span>
       </span>
@@ -1117,7 +1117,7 @@ function StatusBadge({
   }
   if (variant === "muted") {
     return (
-      <span className="inline-flex items-center gap-0.5 text-muted-foreground/50">
+      <span className="inline-flex items-center gap-0.5 text-[#8a8578]/60">
         <MinusCircle className="h-3 w-3" />
         <span>{text}</span>
       </span>

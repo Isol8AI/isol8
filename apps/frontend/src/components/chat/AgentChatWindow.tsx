@@ -77,19 +77,19 @@ function BudgetExceededBanner({
   }
 
   return (
-    <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg flex items-center gap-3">
-      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+    <div className="mx-4 mb-2 p-3 bg-[#fff8e1] border border-[#ffe0b2] rounded-lg flex items-center gap-3">
+      <AlertTriangle className="h-4 w-4 text-[#8a6a22] shrink-0" />
       <div className="flex-1">
-        <p className="text-sm text-amber-200">{message}</p>
+        <p className="text-sm text-[#5a4510]">{message}</p>
         {subtext && (
-          <p className="text-xs text-amber-300/70 mt-0.5">{subtext}</p>
+          <p className="text-xs text-[#8a6a22] mt-0.5">{subtext}</p>
         )}
       </div>
       {actionLabel && (
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-amber-500/40 text-amber-200 hover:bg-amber-900/30"
+          className="shrink-0 border-[#ffe0b2] text-[#5a4510] hover:bg-[#fff3cc]"
           onClick={handleAction}
           disabled={loading}
         >
@@ -138,13 +138,13 @@ function ApproachLimitBanner() {
 
   if (pct >= 90 && !dismissed90) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-orange-900/20 border border-orange-500/30 rounded-lg flex items-center gap-3">
-        <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0" />
+      <div className="mx-4 mb-2 p-3 bg-[#fff3e0] border border-[#ffcc80] rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-[#e65100] shrink-0" />
         <div className="flex-1">
-          <p className="text-sm text-orange-200">
+          <p className="text-sm text-[#5a3500]">
             You&apos;ve used {Math.round(pct)}% of your included LLM budget. Consider enabling pay-as-you-go.
           </p>
-          <p className="text-xs text-orange-300/70 mt-0.5">
+          <p className="text-xs text-[#8a6200] mt-0.5">
             Overage is billed at 1.4x standard rates
           </p>
         </div>
@@ -152,7 +152,7 @@ function ApproachLimitBanner() {
           <Button
             size="sm"
             variant="outline"
-            className="shrink-0 border-orange-500/40 text-orange-200 hover:bg-orange-900/30"
+            className="shrink-0 border-[#ffcc80] text-[#5a3500] hover:bg-[#ffe0b2]"
             onClick={async () => {
               setLoading(true);
               try {
@@ -173,7 +173,7 @@ function ApproachLimitBanner() {
             setBudgetSnooze(90);
             setDismissed90(true);
           }}
-          className="text-orange-400 hover:text-orange-300 shrink-0"
+          className="text-[#e65100] hover:text-[#e65100] shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -184,9 +184,9 @@ function ApproachLimitBanner() {
 
   if (pct >= 75 && !dismissed75) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg flex items-center gap-3">
-        <AlertTriangle className="h-4 w-4 text-yellow-400 shrink-0" />
-        <p className="text-sm text-yellow-200 flex-1">
+      <div className="mx-4 mb-2 p-3 bg-[#fff8e1] border border-[#ffe082] rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-[#f9a825] shrink-0" />
+        <p className="text-sm text-[#5a4510] flex-1">
           You&apos;ve used {Math.round(pct)}% of your included LLM budget this month.
         </p>
         <button
@@ -194,7 +194,7 @@ function ApproachLimitBanner() {
             setBudgetSnooze(75);
             setDismissed75(true);
           }}
-          className="text-yellow-400 hover:text-yellow-300 shrink-0"
+          className="text-[#f9a825] hover:text-[#f9a825] shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -338,9 +338,9 @@ function UpdateBanner() {
   // During apply -- show spinner state
   if (applying) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
-        <Loader2 className="h-4 w-4 text-blue-400 shrink-0 animate-spin" />
-        <p className="text-sm text-blue-200 flex-1">Updating your agent...</p>
+      <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg flex items-center gap-3">
+        <Loader2 className="h-4 w-4 text-[#2d8a4e] shrink-0 animate-spin" />
+        <p className="text-sm text-[#1a5c32] flex-1">Updating your agent...</p>
       </div>
     );
   }
@@ -348,14 +348,14 @@ function UpdateBanner() {
   // Org member (non-admin) -- info only
   if (isOrg && !isOrgAdmin) {
     return (
-      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
-        <p className="text-sm text-blue-200 flex-1">
+      <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-[#2d8a4e] shrink-0" />
+        <p className="text-sm text-[#1a5c32] flex-1">
           An update is available. Your admin can apply it.
         </p>
         <button
           onClick={() => setDismissed(true)}
-          className="text-blue-400 hover:text-blue-300 shrink-0"
+          className="text-[#2d8a4e] hover:text-[#2d8a4e] shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -365,20 +365,20 @@ function UpdateBanner() {
   }
 
   return (
-    <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg">
+    <div className="mx-4 mb-2 p-3 bg-[#e8f5e9] border border-[#c8e6c9] rounded-lg">
       <div className="flex items-center gap-3">
-        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
+        <RefreshCw className="h-4 w-4 text-[#2d8a4e] shrink-0" />
         <div className="flex-1 min-w-0">
-          <p className="text-sm text-blue-200">
+          <p className="text-sm text-[#1a5c32]">
             Update available: {description}
           </p>
-          <p className="text-xs text-blue-300/70 mt-0.5">
+          <p className="text-xs text-[#2d7a50] mt-0.5">
             Your agent needs a brief restart (~30s) to apply.
           </p>
         </div>
         <button
           onClick={() => setDismissed(true)}
-          className="text-blue-400 hover:text-blue-300 shrink-0"
+          className="text-[#2d8a4e] hover:text-[#2d8a4e] shrink-0"
           aria-label="Dismiss"
         >
           <X className="h-4 w-4" />
@@ -388,7 +388,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
           onClick={() => handleApplyNow(firstUpdate.update_id)}
         >
           <RefreshCw className="h-3 w-3 mr-1" />
@@ -397,7 +397,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
           onClick={() => handleScheduleTonight(firstUpdate.update_id)}
         >
           <Clock className="h-3 w-3 mr-1" />
@@ -406,7 +406,7 @@ function UpdateBanner() {
         <Button
           size="sm"
           variant="outline"
-          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          className="shrink-0 border-[#c8e6c9] text-[#1a5c32] hover:bg-[#c8e6c9]"
           onClick={() => handleRemindLater(firstUpdate.update_id)}
         >
           Remind Me Later
@@ -426,14 +426,14 @@ function DowngradeBanner() {
   if (!wasDowngraded) return null;
 
   return (
-    <div className="mx-4 mb-2 p-3 bg-rose-900/20 border border-rose-500/30 rounded-lg flex items-center gap-3">
-      <ArrowDownCircle className="h-4 w-4 text-rose-400 shrink-0" />
-      <p className="text-sm text-rose-200 flex-1">
+    <div className="mx-4 mb-2 p-3 bg-[#fce4ec] border border-[#f8bbd0] rounded-lg flex items-center gap-3">
+      <ArrowDownCircle className="h-4 w-4 text-[#c62828] shrink-0" />
+      <p className="text-sm text-[#a5311f] flex-1">
         Your subscription has ended. You&apos;re now on the free tier with $2 lifetime usage.
       </p>
       <button
         onClick={clearDowngrade}
-        className="text-rose-400 hover:text-rose-300 shrink-0"
+        className="text-[#c62828] hover:text-[#c62828] shrink-0"
         aria-label="Dismiss"
       >
         <X className="h-4 w-4" />
@@ -526,13 +526,13 @@ export function AgentChatWindow({
 
   if (chatError) {
     return (
-      <div className="flex flex-col h-full bg-background/20">
+      <div className="flex flex-col h-full bg-[#faf7f2]">
         <ConnectionStatusBar />
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
             <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
           )}
-          <div className="p-4 m-4 bg-red-900/20 text-red-300 rounded-lg">
+          <div className="p-4 m-4 bg-[#fce4ec] text-[#a5311f] rounded-lg">
             <p className="font-medium">Error</p>
             <p className="text-sm">{chatError}</p>
           </div>
@@ -544,10 +544,10 @@ export function AgentChatWindow({
 
   if (isLoadingHistory) {
     return (
-      <div className="flex flex-col h-full bg-background/20">
+      <div className="flex flex-col h-full bg-[#faf7f2]">
         <ConnectionStatusBar />
         <div className="flex-1 flex items-center justify-center">
-          <Loader2 className="h-6 w-6 animate-spin text-white/40" />
+          <Loader2 className="h-6 w-6 animate-spin text-[#8a8578]" />
         </div>
       </div>
     );
@@ -555,14 +555,14 @@ export function AgentChatWindow({
 
   if (isInitialState) {
     return (
-      <div className="flex flex-col h-full bg-background/20">
+      <div className="flex flex-col h-full bg-[#faf7f2]">
         <ConnectionStatusBar />
         <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="text-center mb-8">
-            <h1 className="text-4xl font-bold mb-3 text-foreground tracking-tight font-host">
+            <h1 className="text-4xl font-bold mb-3 text-[#1a1a1a] tracking-tight font-host">
               {agentId ?? "Select an agent"}
             </h1>
-            <p className="text-muted-foreground text-lg font-light">
+            <p className="text-[#8a8578] text-lg font-light">
               Start a conversation with your agent
             </p>
           </div>
@@ -588,7 +588,7 @@ export function AgentChatWindow({
   }
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-background/20">
+    <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
       <UpdateBanner />

@@ -47,8 +47,8 @@ export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarPro
               className={cn(
                 "w-full justify-start gap-2 font-normal transition-all h-auto py-1.5",
                 activePanel === key
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:text-foreground hover:bg-accent/50",
+                  ? "bg-white text-[#1a1a1a] shadow-sm"
+                  : "text-[#8a8578] hover:text-[#1a1a1a] hover:bg-white/60",
               )}
               onClick={() => onPanelChange?.(key)}
             >

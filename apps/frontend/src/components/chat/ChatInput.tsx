@@ -90,7 +90,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
   const isDisabled = disabled || isUploading || budgetExceeded;
 
   return (
-    <div className={cn("p-4", !centered && "bg-black/40 backdrop-blur-md")}>
+    <div className={cn("p-4", !centered && "bg-[#f3efe6] border-t border-[#e0dbd0]")}>
       <div
         className="relative flex flex-col max-w-3xl mx-auto"
         onDrop={handleDrop}
@@ -101,15 +101,15 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
             {pendingFiles.map((pf) => (
               <div
                 key={pf.id}
-                className="flex items-center gap-1.5 bg-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white/70"
+                className="flex items-center gap-1.5 bg-[#e8e3d9] rounded-lg px-2.5 py-1.5 text-xs text-[#5a5549]"
               >
-                <FileIcon className="h-3.5 w-3.5 shrink-0 text-white/40" />
+                <FileIcon className="h-3.5 w-3.5 shrink-0 text-[#8a8578]" />
                 <span className="truncate max-w-37.5">{pf.file.name}</span>
-                <span className="text-white/30">{formatFileSize(pf.file.size)}</span>
+                <span className="text-[#b5ae9e]">{formatFileSize(pf.file.size)}</span>
                 <button
                   type="button"
                   onClick={() => removeFile(pf.id)}
-                  className="ml-0.5 text-white/30 hover:text-white/60 transition-colors"
+                  className="ml-0.5 text-[#b5ae9e] hover:text-[#5a5549] transition-colors"
                   aria-label={`Remove ${pf.file.name}`}
                 >
                   <X className="h-3 w-3" />
@@ -119,7 +119,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
           </div>
         )}
 
-        <div className="relative flex items-end gap-2 border border-white/15 rounded-full bg-white/5 px-3 py-2 focus-within:ring-1 focus-within:ring-white/20 focus-within:bg-white/10 transition-all">
+        <div className="relative flex items-end gap-2 border border-[#e0dbd0] rounded-full bg-white px-3 py-2 focus-within:ring-1 focus-within:ring-[#06402B]/20 focus-within:border-[#06402B]/30 transition-all">
           <input
             ref={fileInputRef}
             type="file"
@@ -131,7 +131,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
           <Button
             size="icon"
             variant="ghost"
-            className="shrink-0 h-8 w-8 rounded-full text-white/40 hover:text-white/70 hover:bg-white/10"
+            className="shrink-0 h-8 w-8 rounded-full text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]"
             onClick={() => fileInputRef.current?.click()}
             disabled={isDisabled}
             aria-label="Attach file"
@@ -141,9 +141,9 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
 
           <div className="relative flex-1">
             {suggestedMessage && !input && (
-              <div className="absolute inset-0 pointer-events-none text-white/20 text-sm leading-6 py-1 truncate">
+              <div className="absolute inset-0 pointer-events-none text-[#b5ae9e] text-sm leading-6 py-1 truncate">
                 {suggestedMessage}
-                <span className="ml-2 text-white/30 text-xs">[Tab]</span>
+                <span className="ml-2 text-[#cdc7ba] text-xs">[Tab]</span>
               </div>
             )}
             <textarea
@@ -152,7 +152,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
               onKeyDown={handleKeyDown}
               placeholder={budgetExceeded ? "Usage limit reached" : suggestedMessage ? "" : "Ask anything"}
               rows={1}
-              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-white placeholder:text-white/30 focus:outline-none text-sm leading-6 py-1"
+              className="w-full min-h-6 max-h-50 resize-none bg-transparent text-[#1a1a1a] placeholder:text-[#b5ae9e] focus:outline-none text-sm leading-6 py-1"
               disabled={isDisabled}
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />

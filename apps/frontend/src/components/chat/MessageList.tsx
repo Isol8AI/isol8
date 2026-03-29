@@ -35,7 +35,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   if (!match) {
     // Inline code
     return (
-      <code className="bg-white/10 rounded px-1.5 py-0.5 text-sm" {...props}>
+      <code className="bg-[#e8e3d9] rounded px-1.5 py-0.5 text-sm text-[#1a1a1a]" {...props}>
         {children}
       </code>
     );
@@ -43,12 +43,12 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
 
   // Fenced code block
   return (
-    <div className="relative group/code my-4 rounded-lg overflow-hidden border border-white/10">
-      <div className="flex items-center justify-between px-4 py-2 bg-white/5 border-b border-white/10">
-        <span className="text-xs text-white/40">{match[1]}</span>
+    <div className="relative group/code my-4 rounded-lg overflow-hidden border border-[#e0dbd0]">
+      <div className="flex items-center justify-between px-4 py-2 bg-[#f3efe6] border-b border-[#e0dbd0]">
+        <span className="text-xs text-[#8a8578]">{match[1]}</span>
         <button
           onClick={() => { navigator.clipboard.writeText(codeString).catch(() => {}); }}
-          className="text-xs text-white/40 hover:text-white transition-colors flex items-center gap-1"
+          className="text-xs text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex items-center gap-1"
         >
           <Copy className="h-3 w-3" />
           Copy
@@ -58,7 +58,7 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
         style={oneDark}
         language={match[1]}
         PreTag="div"
-        customStyle={{ margin: 0, borderRadius: 0, background: "rgba(255,255,255,0.03)" }}
+        customStyle={{ margin: 0, borderRadius: 0, background: "#f8f5f0" }}
       >
         {codeString}
       </SyntaxHighlighter>
@@ -80,7 +80,7 @@ const MarkdownContent = React.memo(function MarkdownContent({ content }: { conte
         a: ({ href, children }) => {
           const isSafe = !href?.match(/^(javascript|data|vbscript):/i);
           return (
-            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-blue-400 hover:underline">
+            <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[#06402B] hover:underline">
               {children}
             </a>
           );
@@ -89,18 +89,18 @@ const MarkdownContent = React.memo(function MarkdownContent({ content }: { conte
         ol: ({ children }) => <ol className="list-decimal list-inside mb-3 space-y-1">{children}</ol>,
         li: ({ children }) => <li className="ml-2">{children}</li>,
         blockquote: ({ children }) => (
-          <blockquote className="border-l-2 border-white/20 pl-4 text-white/60 my-3">{children}</blockquote>
+          <blockquote className="border-l-2 border-[#e0dbd0] pl-4 text-[#8a8578] my-3">{children}</blockquote>
         ),
         table: ({ children }) => (
           <div className="overflow-x-auto my-4">
-            <table className="w-full border-collapse border border-white/10 text-sm">{children}</table>
+            <table className="w-full border-collapse border border-[#e0dbd0] text-sm">{children}</table>
           </div>
         ),
-        thead: ({ children }) => <thead className="bg-white/5">{children}</thead>,
-        th: ({ children }) => <th className="border border-white/10 px-3 py-2 text-left font-medium">{children}</th>,
-        td: ({ children }) => <td className="border border-white/10 px-3 py-2">{children}</td>,
-        tr: ({ children }) => <tr className="even:bg-white/5">{children}</tr>,
-        hr: () => <hr className="border-white/10 my-4" />,
+        thead: ({ children }) => <thead className="bg-[#f3efe6]">{children}</thead>,
+        th: ({ children }) => <th className="border border-[#e0dbd0] px-3 py-2 text-left font-medium">{children}</th>,
+        td: ({ children }) => <td className="border border-[#e0dbd0] px-3 py-2">{children}</td>,
+        tr: ({ children }) => <tr className="even:bg-[#f3efe6]">{children}</tr>,
+        hr: () => <hr className="border-[#e0dbd0] my-4" />,
         pre: ({ children }) => <>{children}</>,
       }}
     >
@@ -113,20 +113,20 @@ function ThinkingBlock({ content }: { content: string }) {
   const [isExpanded, setIsExpanded] = React.useState(false);
 
   return (
-    <div className="mb-4 border border-white/10 rounded-lg overflow-hidden">
+    <div className="mb-4 border border-[#e0dbd0] rounded-lg overflow-hidden">
       <button
         onClick={() => setIsExpanded(!isExpanded)}
-        className="w-full flex items-center gap-2 px-3 py-2 bg-white/5 hover:bg-white/10 transition-colors text-left"
+        className="w-full flex items-center gap-2 px-3 py-2 bg-[#f3efe6] hover:bg-[#ece7dc] transition-colors text-left"
       >
         {isExpanded ? (
-          <ChevronDown className="h-4 w-4 text-white/60" />
+          <ChevronDown className="h-4 w-4 text-[#8a8578]" />
         ) : (
-          <ChevronRight className="h-4 w-4 text-white/60" />
+          <ChevronRight className="h-4 w-4 text-[#8a8578]" />
         )}
-        <span className="text-sm text-white/60 italic">Thinking...</span>
+        <span className="text-sm text-[#8a8578] italic">Thinking...</span>
       </button>
       {isExpanded && (
-        <div className="px-3 py-2 text-sm text-white/50 border-t border-white/10">
+        <div className="px-3 py-2 text-sm text-[#8a8578] border-t border-[#e0dbd0]">
           <MarkdownContent content={content} />
         </div>
       )}
@@ -144,14 +144,14 @@ function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
           className={cn(
             "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
             t.status === "running"
-              ? "bg-blue-500/10 text-blue-300 border-blue-500/20"
-              : "bg-white/5 text-white/50 border-white/10",
+              ? "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]"
+              : "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
           )}
         >
           {t.status === "running" ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[#2d8a4e] animate-pulse" />
           ) : (
-            <span className="w-1.5 h-1.5 rounded-full bg-white/30" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[#cdc7ba]" />
           )}
           {t.tool}
         </span>
@@ -163,17 +163,17 @@ function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
 function MessageToolbar({ modelName }: { modelName?: string }) {
     return (
         <div className="flex items-center gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-xs font-medium text-white/40 mr-2 flex items-center gap-1">
+            <span className="text-xs font-medium text-[#8a8578] mr-2 flex items-center gap-1">
                 <Bot className="h-3 w-3" />
                 {modelName || "Assistant"}
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-white/40 hover:text-white hover:bg-white/10">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
                 <Copy className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-white/40 hover:text-white hover:bg-white/10">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
                 <RefreshCw className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-white/40 hover:text-white hover:bg-white/10">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
                 <Share2 className="h-3 w-3" />
             </Button>
         </div>
@@ -183,12 +183,12 @@ function MessageToolbar({ modelName }: { modelName?: string }) {
 function ErrorToolbar({ messageId, onRetry }: { messageId: string; onRetry?: (id: string) => void }) {
     return (
         <div className="flex items-center gap-2 mb-2">
-            <span className="text-xs font-medium text-red-400">Failed to generate</span>
+            <span className="text-xs font-medium text-[#dc2626]">Failed to generate</span>
             {onRetry && (
                 <Button
                     variant="ghost"
                     size="icon"
-                    className="h-6 w-6 text-red-400 hover:text-white hover:bg-white/10"
+                    className="h-6 w-6 text-[#dc2626] hover:text-[#1a1a1a] hover:bg-[#f3efe6]"
                     onClick={() => onRetry(messageId)}
                 >
                     <RefreshCw className="h-3 w-3" />
@@ -240,8 +240,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 className={cn(
                   "relative text-sm leading-7",
                   msg.role === "user"
-                    ? "text-white max-w-[85%] text-right"
-                    : "text-white/90 w-full pl-0"
+                    ? "text-[#1a1a1a] max-w-[85%] text-right"
+                    : "text-[#302d28] w-full pl-0"
                 )}
               >
                 {msg.role === "assistant" && msg.thinking && (
@@ -255,7 +255,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 <div className={cn(
                   "wrap-break-word",
                   msg.role === "user" && "whitespace-pre-wrap",
-                  msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-red-400/80"
+                  msg.role === "assistant" && msg.content.startsWith("Error: ") && "text-[#dc2626]"
                 )}>
                   {msg.role === "assistant" && msg.content.startsWith("Error: ")
                     ? msg.content.slice(7)
@@ -263,19 +263,19 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                       ? <MarkdownContent content={msg.content} />
                       : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
                           <span className="inline-flex gap-1 items-center h-5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
                           </span>
                         ) : null)}
                 </div>
 
                 {isTyping && isLastAssistant && msg.content && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-white/40">
+                  <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
                     <span className="inline-flex gap-1 items-center">
-                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-white/40 animate-bounce" style={{ animationDelay: '300ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
                     </span>
                     <span>Agent is working</span>
                   </div>

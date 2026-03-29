@@ -111,7 +111,7 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
   return (
     <div className="flex flex-col h-full">
       {/* Tab bar */}
-      <div className="flex border-b border-border px-2">
+      <div className="flex border-b border-[#e0dbd0] px-2">
         {TABS.map((tab) => {
           const Icon = tab.icon;
           return (
@@ -120,8 +120,8 @@ export function SkillsPanel({ agentId }: { agentId?: string }) {
               className={cn(
                 "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors border-b-2 -mb-px",
                 activeTab === tab.id
-                  ? "border-primary text-foreground"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
+                  ? "border-[#2d8a4e] text-[#1a1a1a]"
+                  : "border-transparent text-[#8a8578] hover:text-[#1a1a1a]",
               )}
               onClick={() => setActiveTab(tab.id)}
             >
@@ -179,7 +179,7 @@ function SkillsTab({ agentId }: { agentId?: string }) {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -215,17 +215,17 @@ function SkillsTab({ agentId }: { agentId?: string }) {
           </Button>
         </div>
       </div>
-      <p className="text-xs text-muted-foreground">
+      <p className="text-xs text-[#8a8578]">
         Discover more skills on{" "}
         <a href="https://clawhub.ai" target="_blank" rel="noopener noreferrer" className="underline">
           clawhub.ai
         </a>
-        . Ask your agent to install them with <code className="text-[11px] bg-muted px-1 rounded">clawhub install &lt;slug&gt;</code>.
+        . Ask your agent to install them with <code className="text-[11px] bg-[#f3efe6] px-1 rounded">clawhub install &lt;slug&gt;</code>.
       </p>
 
       {/* Filter */}
       <div className="relative">
-        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+        <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-[#8a8578]" />
         <Input
           placeholder="Filter skills..."
           className="pl-8 h-8 text-sm"
@@ -236,7 +236,7 @@ function SkillsTab({ agentId }: { agentId?: string }) {
 
       {/* Grouped skill cards */}
       {groups.length === 0 && (
-        <p className="text-sm text-muted-foreground">No skills found.</p>
+        <p className="text-sm text-[#8a8578]">No skills found.</p>
       )}
 
       {groups.map((group) => {
@@ -244,7 +244,7 @@ function SkillsTab({ agentId }: { agentId?: string }) {
         return (
           <div key={group.source} className="space-y-2">
             <button
-              className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wider text-[#8a8578] hover:text-[#1a1a1a] transition-colors"
               onClick={() => toggleGroup(group.source)}
             >
               {collapsed ? (
@@ -365,7 +365,7 @@ function SkillCard({
   };
 
   return (
-    <div className="rounded-lg border border-border p-4 space-y-3 bg-card/30">
+    <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white/80">
       {/* Row 1: Name + Toggle */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -374,7 +374,7 @@ function SkillCard({
             <h3 className="text-sm font-medium truncate">{skill.name}</h3>
           </div>
           {skill.description && (
-            <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+            <p className="text-xs text-[#8a8578] mt-1 line-clamp-2">
               {skill.description}
             </p>
           )}
@@ -399,11 +399,11 @@ function SkillCard({
 
       {/* Row 2: Badges */}
       <div className="flex items-center gap-1.5 flex-wrap">
-        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-muted text-muted-foreground">
+        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#f3efe6] text-[#8a8578]">
           {SOURCE_LABELS[skill.source] || skill.source}
         </span>
         {skill.eligible ? (
-          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-500/10 text-green-500">
+          <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-[#e8f5e9] text-[#2d8a4e]">
             eligible
           </span>
         ) : (
@@ -468,7 +468,7 @@ function SkillCard({
       {/* Row 5: API key input */}
       {skill.primaryEnv && (
         <div className="space-y-1.5">
-          <label className="text-xs text-muted-foreground">API key</label>
+          <label className="text-xs text-[#8a8578]">API key</label>
           <div className="flex gap-2">
             <div className="relative flex-1">
               <Input
@@ -483,7 +483,7 @@ function SkillCard({
               />
               <button
                 type="button"
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-[#8a8578] hover:text-[#1a1a1a]"
                 onClick={() => setApiKeyVisible(!apiKeyVisible)}
               >
                 {apiKeyVisible ? (

@@ -189,7 +189,7 @@ function jobToForm(job: CronJob): FormState {
 function StatusBadge({ status }: { status?: "ok" | "error" | "skipped" }) {
   if (!status) return null;
   const config = {
-    ok: { icon: CheckCircle2, label: "OK", className: "text-green-500" },
+    ok: { icon: CheckCircle2, label: "OK", className: "text-[#2d8a4e]" },
     error: { icon: XCircle, label: "Error", className: "text-red-500" },
     skipped: { icon: MinusCircle, label: "Skipped", className: "text-yellow-500" },
   };
@@ -237,10 +237,10 @@ function CronJobForm({
   );
 
   return (
-    <div className="rounded-lg border border-border p-4 space-y-4 bg-muted/30">
+    <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-4 bg-white/80">
       {/* Name */}
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Name</label>
+        <label className="text-xs font-medium text-[#8a8578]">Name</label>
         <Input
           value={form.name}
           onChange={(e) => update("name", e.target.value)}
@@ -251,7 +251,7 @@ function CronJobForm({
 
       {/* Schedule type selector */}
       <div className="space-y-2">
-        <label className="text-xs font-medium text-muted-foreground">Schedule</label>
+        <label className="text-xs font-medium text-[#8a8578]">Schedule</label>
         <div className="flex gap-1">
           {(["cron", "every", "at"] as const).map((kind) => (
             <Button
@@ -287,7 +287,7 @@ function CronJobForm({
             </div>
             {form.cronExpr.trim() && (
               cronValidation.ok ? (
-                <p className="text-xs text-green-500">{cronValidation.description}</p>
+                <p className="text-xs text-[#2d8a4e]">{cronValidation.description}</p>
               ) : (
                 <p className="text-xs text-destructive">{cronValidation.error}</p>
               )
@@ -297,7 +297,7 @@ function CronJobForm({
 
         {form.scheduleKind === "every" && (
           <div className="flex gap-2 items-center">
-            <span className="text-sm text-muted-foreground">Every</span>
+            <span className="text-sm text-[#8a8578]">Every</span>
             <Input
               type="number"
               min={1}
@@ -308,7 +308,7 @@ function CronJobForm({
             <select
               value={form.everyUnit}
               onChange={(e) => update("everyUnit", e.target.value as "minutes" | "hours" | "days")}
-              className="h-8 rounded-md border border-input bg-background px-2 text-sm"
+              className="h-8 rounded-md border border-[#e0dbd0] bg-[#faf7f2] px-2 text-sm"
             >
               <option value="minutes">minutes</option>
               <option value="hours">hours</option>
@@ -329,13 +329,13 @@ function CronJobForm({
 
       {/* Message */}
       <div className="space-y-1">
-        <label className="text-xs font-medium text-muted-foreground">Agent message</label>
+        <label className="text-xs font-medium text-[#8a8578]">Agent message</label>
         <textarea
           value={form.message}
           onChange={(e) => update("message", e.target.value)}
           placeholder="What should the agent do?"
           rows={3}
-          className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-ring"
+          className="w-full rounded-md border border-[#e0dbd0] bg-[#faf7f2] px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-[#06402B]/20"
         />
       </div>
 
@@ -376,7 +376,7 @@ function RunHistory({ jobId }: { jobId: string }) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-2 py-2 text-xs text-[#8a8578]">
         <Loader2 className="h-3 w-3 animate-spin" /> Loading history...
       </div>
     );
@@ -388,20 +388,20 @@ function RunHistory({ jobId }: { jobId: string }) {
 
   const entries = data?.entries ?? [];
   if (entries.length === 0) {
-    return <p className="text-xs text-muted-foreground py-1">No runs yet</p>;
+    return <p className="text-xs text-[#8a8578] py-1">No runs yet</p>;
   }
 
   return (
     <div className="space-y-1">
       {entries.map((entry, i) => (
-        <div key={i} className="flex items-center gap-3 text-xs py-1 border-t border-border/50">
+        <div key={i} className="flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0]">
           <StatusBadge status={entry.status} />
-          <span className="text-muted-foreground">{formatTimestamp(entry.triggeredAtMs)}</span>
+          <span className="text-[#8a8578]">{formatTimestamp(entry.triggeredAtMs)}</span>
           {entry.durationMs != null && (
-            <span className="text-muted-foreground">{formatDuration(entry.durationMs)}</span>
+            <span className="text-[#8a8578]">{formatDuration(entry.durationMs)}</span>
           )}
           {entry.summary && (
-            <span className="text-muted-foreground/70 truncate flex-1">{entry.summary}</span>
+            <span className="text-[#5a5549] truncate flex-1">{entry.summary}</span>
           )}
           {entry.error && (
             <span className="text-destructive truncate flex-1">{entry.error}</span>
@@ -511,7 +511,7 @@ export function CronPanel() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -553,7 +553,7 @@ export function CronPanel() {
           className={cn(
             "flex items-center justify-between rounded-md px-3 py-2 text-sm",
             feedback.type === "success"
-              ? "bg-green-500/10 text-green-500 border border-green-500/20"
+              ? "bg-[#e8f5e9] text-[#2d8a4e] border border-[#2d8a4e]/20"
               : "bg-destructive/10 text-destructive border border-destructive/20",
           )}
         >
@@ -591,8 +591,8 @@ export function CronPanel() {
       {mode === "list" && jobs.length === 0 && (
         <div className="text-center py-8 space-y-2">
           <Clock className="h-8 w-8 mx-auto opacity-30" />
-          <p className="text-sm text-muted-foreground">No cron jobs configured.</p>
-          <p className="text-xs text-muted-foreground/70">Create a job to schedule recurring agent tasks.</p>
+          <p className="text-sm text-[#8a8578]">No cron jobs configured.</p>
+          <p className="text-xs text-[#5a5549]">Create a job to schedule recurring agent tasks.</p>
         </div>
       )}
 
@@ -603,7 +603,7 @@ export function CronPanel() {
             const isDeleting = deletingJob === job.id;
 
             return (
-              <div key={job.id} className="rounded-lg border border-border overflow-hidden">
+              <div key={job.id} className="rounded-lg border border-[#e0dbd0] overflow-hidden">
                 {/* Job header */}
                 <div className="p-3 space-y-2">
                   <div className="flex items-center justify-between">
@@ -622,8 +622,8 @@ export function CronPanel() {
                         className={cn(
                           "text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
                           job.enabled
-                            ? "bg-green-500/10 text-green-500"
-                            : "bg-muted text-muted-foreground",
+                            ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                            : "bg-[#f3efe6] text-[#8a8578]",
                         )}
                       >
                         {job.enabled ? "active" : "paused"}
@@ -669,7 +669,7 @@ export function CronPanel() {
                   </div>
 
                   {/* Schedule + last run info */}
-                  <div className="flex items-center gap-3 text-xs text-muted-foreground pl-7">
+                  <div className="flex items-center gap-3 text-xs text-[#8a8578] pl-7">
                     <span>{formatSchedule(job.schedule)}</span>
                     {job.state?.lastRunStatus && (
                       <>
@@ -686,7 +686,7 @@ export function CronPanel() {
                   </div>
 
                   {job.description && (
-                    <div className="text-xs text-muted-foreground/70 pl-7">{job.description}</div>
+                    <div className="text-xs text-[#5a5549] pl-7">{job.description}</div>
                   )}
                 </div>
 
@@ -719,8 +719,8 @@ export function CronPanel() {
 
                 {/* Expanded: run history */}
                 {isExpanded && (
-                  <div className="px-3 pb-3 pl-7 border-t border-border/50">
-                    <p className="text-xs font-medium text-muted-foreground pt-2 pb-1">Run History</p>
+                  <div className="px-3 pb-3 pl-7 border-t border-[#e0dbd0]">
+                    <p className="text-xs font-medium text-[#8a8578] pt-2 pb-1">Run History</p>
                     <RunHistory jobId={job.id} />
                   </div>
                 )}
