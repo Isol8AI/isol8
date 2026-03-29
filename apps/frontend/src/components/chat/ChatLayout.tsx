@@ -2,12 +2,13 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
-import { useRouter } from "next/navigation";
-import { Bot, CreditCard, Trash2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Bot, CheckCircle, CreditCard, Trash2 } from "lucide-react";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
+import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
@@ -44,7 +45,12 @@ export function ChatLayout({
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, deleteAgent } = useAgents();
+  const { refresh: refreshBilling } = useBilling();
+  const searchParams = useSearchParams();
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
+  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
+    () => searchParams.get("subscription") === "success",
+  );
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -72,6 +78,17 @@ export function ChatLayout({
       dispatchSelectAgentEvent(currentAgentId);
     }
   }, [currentAgentId]);
+
+  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss
+  useEffect(() => {
+    if (!showSubscriptionSuccess) return;
+
+    refreshBilling();
+    router.replace("/chat", { scroll: false });
+
+    const timer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
+    return () => clearTimeout(timer);
+  }, [showSubscriptionSuccess, refreshBilling, router]);
 
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
@@ -188,6 +205,14 @@ export function ChatLayout({
           </header>
 
           <div className="flex-1 min-h-0 pt-14 flex flex-col overflow-y-auto">
+            {showSubscriptionSuccess && (
+              <div className="mx-4 mt-2 p-3 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex items-center gap-3">
+                <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                <p className="text-sm text-emerald-200">
+                  Subscription confirmed! Your agent is being upgraded.
+                </p>
+              </div>
+            )}
             <ProvisioningStepper>{children}</ProvisioningStepper>
           </div>
         </main>

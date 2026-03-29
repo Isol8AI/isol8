@@ -9,7 +9,7 @@ import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useOrganization } from "@clerk/nextjs";
-import { Loader2, AlertTriangle, RefreshCw, Clock, X } from "lucide-react";
+import { Loader2, AlertTriangle, ArrowDownCircle, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
 
@@ -416,6 +416,32 @@ function UpdateBanner() {
   );
 }
 
+// =============================================================================
+// Downgrade Banner
+// =============================================================================
+
+function DowngradeBanner() {
+  const { wasDowngraded, clearDowngrade } = useBilling();
+
+  if (!wasDowngraded) return null;
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-rose-900/20 border border-rose-500/30 rounded-lg flex items-center gap-3">
+      <ArrowDownCircle className="h-4 w-4 text-rose-400 shrink-0" />
+      <p className="text-sm text-rose-200 flex-1">
+        Your subscription has ended. You&apos;re now on the free tier with $2 lifetime usage.
+      </p>
+      <button
+        onClick={clearDowngrade}
+        className="text-rose-400 hover:text-rose-300 shrink-0"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
 export function AgentChatWindow({
   agentId,
 }: AgentChatWindowProps): React.ReactElement {
@@ -542,6 +568,7 @@ export function AgentChatWindow({
           </div>
           <div className="w-full max-w-2xl">
             <UpdateBanner />
+            <DowngradeBanner />
             <ApproachLimitBanner />
             {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
@@ -565,6 +592,7 @@ export function AgentChatWindow({
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
       <UpdateBanner />
+      <DowngradeBanner />
       <ApproachLimitBanner />
       {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
       <ChatInput
