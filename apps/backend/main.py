@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     import asyncio
 
+    from core.containers import get_gateway_pool
     from core.services.update_service import run_scheduled_worker
 
     # Startup
@@ -47,11 +48,25 @@ async def lifespan(app: FastAPI):
     await startup_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
+    async def _safe_idle_checker():
+        try:
+            pool = get_gateway_pool()
+            await pool.run_idle_checker()
+        except Exception:
+            logger.warning("Idle checker not available (gateway pool init failed)")
+
+    idle_checker_task = asyncio.create_task(_safe_idle_checker())
+
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    idle_checker_task.cancel()
     worker_task.cancel()
+    try:
+        await idle_checker_task
+    except asyncio.CancelledError:
+        pass
     try:
         await worker_task
     except asyncio.CancelledError:

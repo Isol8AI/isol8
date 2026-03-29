@@ -207,8 +207,13 @@ export function ProvisioningStepper({
           </p>
         </div>
         {isFree && (
-          <div className="px-4 py-3 bg-blue-900/20 border border-blue-500/30 rounded-lg text-sm text-blue-200">
-            You have $2 in free usage. Subscribe anytime for more.
+          <div className="space-y-2">
+            <div className="px-4 py-3 bg-blue-900/20 border border-blue-500/30 rounded-lg text-sm text-blue-200">
+              You have $2 in free usage. Subscribe anytime for more.
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Free tier agents sleep after 5 minutes of inactivity. They restart in ~30 seconds.
+            </p>
           </div>
         )}
         <StepperDisplay currentPhase={phase} steps={steps} />

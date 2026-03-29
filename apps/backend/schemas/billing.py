@@ -16,6 +16,7 @@ class BillingAccountResponse(BaseModel):
     is_subscribed: bool
     current_spend: float
     included_budget: float
+    budget_percent: float
     lifetime_spend: float
     overage_enabled: bool
     overage_limit: float | None
@@ -77,6 +78,14 @@ class ModelPriceResponse(BaseModel):
     output: float
     cache_read: float
     cache_write: float
+
+
+class MyUsageResponse(BaseModel):
+    period: str
+    total_spend: float
+    total_input_tokens: int
+    total_output_tokens: int
+    request_count: int
 
 
 class PricingResponse(BaseModel):

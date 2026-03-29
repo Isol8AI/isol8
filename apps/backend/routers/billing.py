@@ -23,6 +23,7 @@ from schemas.billing import (
     OverageToggleRequest,
     UsageSummary,
     MemberUsage,
+    MyUsageResponse,
     PricingResponse,
     ModelPriceResponse,
 )
@@ -83,11 +84,14 @@ async def get_billing_account(
     lifetime_usage = await usage_repo.get_period_usage(owner_id, "lifetime")
     lifetime_spend = (lifetime_usage["total_spend_microdollars"] if lifetime_usage else 0) / 1_000_000
 
+    budget_percent = (budget["current_spend"] / budget["included_budget"] * 100) if budget["included_budget"] > 0 else 0
+
     return BillingAccountResponse(
         tier=budget["tier"],
         is_subscribed=budget["is_subscribed"],
         current_spend=budget["current_spend"],
         included_budget=budget["included_budget"],
+        budget_percent=round(budget_percent, 1),
         lifetime_spend=lifetime_spend,
         overage_enabled=budget["overage_enabled"],
         overage_limit=float(account.get("overage_limit", 0)) / 1_000_000 if account.get("overage_limit") else None,
@@ -140,6 +144,36 @@ async def get_usage(
         request_count=summary["request_count"],
         lifetime_spend=summary["lifetime_spend"],
         by_member=list(by_member),
+    )
+
+
+@router.get(
+    "/my-usage",
+    response_model=MyUsageResponse,
+    summary="Get current user's own usage",
+    description="Returns the authenticated user's personal usage for the current billing period. No admin gating — any authenticated user can see their own usage.",
+    operation_id="get_my_usage",
+)
+async def get_my_usage(
+    auth: AuthContext = Depends(get_current_user),
+):
+    from datetime import datetime, timezone
+
+    owner_id = resolve_owner_id(auth)
+    user_id = auth.user_id
+
+    now = datetime.now(timezone.utc)
+    period = f"{now.year}-{now.month:02d}"
+
+    member_key = f"member:{user_id}:{period}"
+    member_usage = await usage_repo.get_period_usage(owner_id, member_key)
+
+    return MyUsageResponse(
+        period=period,
+        total_spend=(member_usage["total_spend_microdollars"] if member_usage else 0) / 1_000_000,
+        total_input_tokens=member_usage["total_input_tokens"] if member_usage else 0,
+        total_output_tokens=member_usage["total_output_tokens"] if member_usage else 0,
+        request_count=member_usage["request_count"] if member_usage else 0,
     )
 
 

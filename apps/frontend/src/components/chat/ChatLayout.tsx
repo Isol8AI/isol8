@@ -1,17 +1,27 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
-import { useRouter } from "next/navigation";
-import { Bot, CreditCard, Trash2 } from "lucide-react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Bot, CheckCircle, CreditCard, Trash2 } from "lucide-react";
+import useSWR from "swr";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
-import { useApi } from "@/lib/api";
+import { useApi, BACKEND_URL } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
+import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { cn } from "@/lib/utils";
+
+interface MyUsage {
+  period: string;
+  total_spend: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  request_count: number;
+}
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -38,13 +48,37 @@ export function ChatLayout({
   activePanel,
   onPanelChange,
 }: ChatLayoutProps): React.ReactElement {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization } = useOrganization();
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, deleteAgent } = useAgents();
+  const { refresh: refreshBilling } = useBilling();
+  const searchParams = useSearchParams();
+
+  const myUsageFetcher = useCallback(
+    async (url: string) => {
+      const token = await getToken();
+      if (!token) return null;
+      const res = await fetch(`${BACKEND_URL}${url}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    [getToken],
+  );
+
+  const { data: myUsage } = useSWR<MyUsage | null>(
+    isSignedIn ? "/billing/my-usage" : null,
+    myUsageFetcher,
+    { revalidateOnFocus: false, dedupingInterval: 60000 },
+  );
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
+  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
+    () => searchParams.get("subscription") === "success",
+  );
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -72,6 +106,17 @@ export function ChatLayout({
       dispatchSelectAgentEvent(currentAgentId);
     }
   }, [currentAgentId]);
+
+  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss
+  useEffect(() => {
+    if (!showSubscriptionSuccess) return;
+
+    refreshBilling();
+    router.replace("/chat", { scroll: false });
+
+    const timer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
+    return () => clearTimeout(timer);
+  }, [showSubscriptionSuccess, refreshBilling, router]);
 
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
@@ -174,6 +219,11 @@ export function ChatLayout({
 
         <main className="flex-1 min-h-0 flex flex-col relative bg-background/20">
           <header className="h-14 border-b border-border flex items-center justify-end gap-2 px-4 backdrop-blur-sm bg-background/20 absolute top-0 right-0 left-0 z-20">
+            {myUsage && myUsage.total_spend > 0 && (
+              <span className="text-xs text-muted-foreground">
+                ${myUsage.total_spend.toFixed(2)} this month
+              </span>
+            )}
             <UserButton
               appearance={{
                 elements: {
@@ -188,6 +238,14 @@ export function ChatLayout({
           </header>
 
           <div className="flex-1 min-h-0 pt-14 flex flex-col overflow-y-auto">
+            {showSubscriptionSuccess && (
+              <div className="mx-4 mt-2 p-3 bg-emerald-900/20 border border-emerald-500/30 rounded-lg flex items-center gap-3">
+                <CheckCircle className="h-4 w-4 text-emerald-400 shrink-0" />
+                <p className="text-sm text-emerald-200">
+                  Subscription confirmed! Your agent is being upgraded.
+                </p>
+              </div>
+            )}
             <ProvisioningStepper>{children}</ProvisioningStepper>
           </div>
         </main>

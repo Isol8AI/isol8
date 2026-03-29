@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback } from "react";
+import { useCallback, useRef, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { BACKEND_URL } from "@/lib/api";
@@ -14,6 +14,7 @@ export interface BillingAccount {
   is_subscribed: boolean;
   current_spend: number;
   included_budget: number;
+  budget_percent: number;
   lifetime_spend: number;
   overage_enabled: boolean;
   overage_limit: number | null;
@@ -68,6 +69,25 @@ export function useBilling() {
     [getToken],
   );
 
+  // Track downgrade from paid tier to free via SWR onSuccess callback.
+  const prevTierRef = useRef<string | null>(null);
+  const [wasDowngraded, setWasDowngraded] = useState(false);
+
+  const onSuccess = useCallback(
+    (data: BillingAccount | null) => {
+      if (!data) return;
+      const currentTier = data.tier ?? "free";
+      const prevTier = prevTierRef.current;
+
+      if (prevTier !== null && prevTier !== "free" && currentTier === "free") {
+        setWasDowngraded(true);
+      }
+
+      prevTierRef.current = currentTier;
+    },
+    [],
+  );
+
   const {
     data: account,
     error,
@@ -79,6 +99,7 @@ export function useBilling() {
     {
       revalidateOnFocus: false,
       dedupingInterval: 30000,
+      onSuccess,
     },
   );
 
@@ -184,6 +205,8 @@ export function useBilling() {
   const planTier = account?.tier ?? "free";
   const refresh = useCallback(() => mutate(), [mutate]);
 
+  const clearDowngrade = useCallback(() => setWasDowngraded(false), []);
+
   return {
     account,
     isLoading,
@@ -196,5 +219,7 @@ export function useBilling() {
     fetchPricing,
     toggleOverage,
     refresh,
+    wasDowngraded,
+    clearDowngrade,
   };
 }
