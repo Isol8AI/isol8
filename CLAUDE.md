@@ -237,7 +237,7 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 
 | File | Purpose |
 |------|---------|
-| `config.py` | Pydantic settings: ECS/EFS/CloudMap, Stripe billing, Bedrock, CORS, plan budgets ($2/$25/$75), S3 buckets, encryption key. |
+| `config.py` | Pydantic settings: ECS/EFS/CloudMap, Stripe billing, Bedrock, CORS, plan budgets (Free/$40/$75/$165), S3 buckets, encryption key. |
 | `auth.py` | Clerk JWT validation via PyJWT. `get_current_user` dependency returns `AuthContext`. JWKS cache with 1-hour TTL. |
 | `database.py` | Async SQLAlchemy with NullPool (pgbouncer-compatible). `get_session_factory()` for streaming. |
 | `constants.py` | `SYSTEM_ACTOR_ID = "__system__"` for audit logs. |
@@ -265,6 +265,7 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 | `billing_service.py` | Stripe: customers, checkout, portal, subscription lifecycle. |
 | `usage_service.py` | Usage tracking: `record_usage()` writes UsageEvent + UsageDaily rollup + Stripe Meters. |
 | `usage_poller.py` | Background task polling OpenClaw gateway for session usage, writes to billing. |
+| `update_service.py` | Container update system: silent config patches (Track 1) + queued image/resize updates (Track 2). |
 | `connection_service.py` | DynamoDB WebSocket connection state (connectionId -> user_id). |
 | `management_api_client.py` | Pushes messages to frontend via API Gateway Management API. |
 | `bedrock_discovery.py` | Discover available models via Bedrock APIs. 1-hour cache. |
@@ -293,6 +294,7 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 | `channels.py` | `/channels` | Messaging channel management (Telegram, Discord, WhatsApp) |
 | `settings_keys.py` | `/settings/keys` | BYOK API key CRUD (encrypted) |
 | `integrations.py` | `/` | MCP server integration management (mcporter) |
+| `updates.py` | `/container` | Container update system: `PATCH /config/{owner_id}`, `PATCH /config` (fleet), `GET /updates/{owner_id}` |
 | `debug.py` | `/debug` | Dev-only container provisioning (403 in prod) |
 | `town.py` | `/town` | GooseTown: status, state, descriptions, join, move, chat |
 
@@ -438,19 +440,37 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 ### Plan Tiers
 
-| Tier | Monthly Budget | Stripe Fixed Price | Stripe Metered Price |
-|------|---------------|-------------------|---------------------|
-| `free` | $2 | None | None |
-| `starter` | $25 | Yes | Yes |
-| `pro` | $75 | Yes | Yes |
+| Tier | Price | Container | Primary Model | Subagent Model | Included LLM | Overage |
+|------|-------|-----------|---------------|----------------|-------------|---------|
+| `free` | $0 | 0.5 vCPU/1GB, scale-to-zero (5 min idle) | MiniMax M2.1 | MiniMax M2.1 | $2 lifetime | Blocked |
+| `starter` | $40/mo | 0.5 vCPU/1GB, always-on | Kimi K2.5 | MiniMax M2.1 | $10/mo | Opt-in 1.4x |
+| `pro` | $75/mo | 1 vCPU/2GB, always-on | Kimi K2.5 | MiniMax M2.1 | $40/mo | Opt-in 1.4x |
+| `enterprise` | $165/mo | 2 vCPU/4GB, always-on | Kimi K2.5 | Kimi K2.5 | $80/mo | Opt-in 1.4x |
+
+### Scale-to-Zero (Free Tier)
+
+- Free tier containers stop after 5 minutes of inactivity
+- Cold start ~30 seconds when user returns
+- Cron jobs and channels disabled for free tier
 
 ### Usage Flow
 
-1. Agent chat completes -> `UsagePoller` polls gateway for session usage
-2. `UsageService.record_usage()` looks up `ModelPricing`, falls back to defaults
-3. Calculates cost, applies markup (default 1.4x)
-4. Writes `UsageEvent` (immutable) + upserts `UsageDaily` rollup
-5. Reports to Stripe Meters API (non-blocking)
+1. Agent chat completes -> `chat.final` event -> `sessions.list` RPC queries token counts
+2. `record_usage()` writes to DynamoDB atomic counters (owner + per-member)
+3. Budget check before each chat message (`check_budget()`)
+4. Overage reported to Stripe Meters API when over included budget
+
+### Container Update System
+
+- **Track 1 (silent):** Config patches via EFS deep merge + OpenClaw file watcher (chokidar polling). Deep merge preserves OpenClaw's runtime additions (`meta`, `commands`, `identity`).
+- **Track 2 (notification):** Image/resize updates queued in DynamoDB, user picks when via banner.
+- **Admin endpoints:** `PATCH /container/config/{owner_id}`, `PATCH /container/config` (fleet)
+
+### Config Patching Notes
+
+- `CHOKIDAR_USEPOLLING=true` env var required for EFS NFS compatibility
+- `fcntl.lockf()` for file locking (not `flock()` -- incompatible with NFS)
+- `chown` to UID 1000 after write (OpenClaw runs as node)
 
 ---
 
@@ -476,7 +496,7 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | `EFS_MOUNT_PATH` | EFS mount root | `/mnt/efs/users` |
 | `EFS_FILE_SYSTEM_ID` | EFS filesystem | Required |
 | `S3_CONFIG_BUCKET` | Config bucket | Required |
-| `OPENCLAW_IMAGE` | Container image | `ghcr.io/openclaw/openclaw:latest` |
+| `OPENCLAW_IMAGE` | Container image | `alpine/openclaw:2026.3.24` |
 | `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by Terraform |
 | `WS_CONNECTIONS_TABLE` | DynamoDB table | `isol8-websocket-connections` |
 | `STRIPE_SECRET_KEY` | Stripe API key | Empty |
@@ -486,6 +506,11 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | `ENCRYPTION_KEY` | Fernet key for BYOK | Required for key management |
 | `PERPLEXITY_API_KEY` | For search proxy | Optional |
 | `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
+| `STRIPE_STARTER_PRICE_ID` | Stripe fixed price for Starter tier | Required for billing |
+| `STRIPE_PRO_PRICE_ID` | Stripe fixed price for Pro tier | Required for billing |
+| `STRIPE_ENTERPRISE_PRICE_ID` | Stripe fixed price for Enterprise tier | Required for billing |
+| `STRIPE_METERED_PRICE_ID` | Stripe metered price for overage | Required for billing |
+| `FREE_TIER_MODEL` | Default model for free tier | `minimax.minimax-m2.1` |
 
 ### Frontend (.env.local)
 

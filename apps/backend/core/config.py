@@ -3,8 +3,6 @@ import os
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
-from core.services.bedrock_discovery import discover_models
-
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Isol8"
@@ -63,7 +61,7 @@ class Settings(BaseSettings):
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
     # --- OpenClaw ---
-    OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:latest")
+    OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:v2026.3.24")
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
@@ -77,6 +75,9 @@ class Settings(BaseSettings):
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
+
+    # Free tier default model
+    FREE_TIER_MODEL: str = os.getenv("FREE_TIER_MODEL", "minimax.minimax-m2.1")
 
     @field_validator("CLERK_ISSUER")
     @classmethod
@@ -92,41 +93,57 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-# Billing plan budgets in microdollars (1 microdollar = $0.000001)
-PLAN_BUDGETS = {
-    "free": 2_000_000,  # $2
-    "starter": 25_000_000,  # $25
-    "pro": 75_000_000,  # $75
+# Tier configuration
+TIER_CONFIG = {
+    "free": {
+        "included_budget_microdollars": 2_000_000,  # $2 lifetime
+        "budget_type": "lifetime",
+        "primary_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "model_aliases": {
+            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+        },
+        "container_cpu": "512",
+        "container_memory": "1024",
+        "scale_to_zero": True,
+    },
+    "starter": {
+        "included_budget_microdollars": 10_000_000,  # $10/mo
+        "budget_type": "monthly",
+        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "model_aliases": {
+            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+        },
+        "container_cpu": "512",
+        "container_memory": "1024",
+        "scale_to_zero": False,
+    },
+    "pro": {
+        "included_budget_microdollars": 40_000_000,  # $40/mo
+        "budget_type": "monthly",
+        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "model_aliases": {
+            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+        },
+        "container_cpu": "1024",
+        "container_memory": "2048",
+        "scale_to_zero": False,
+    },
+    "enterprise": {
+        "included_budget_microdollars": 80_000_000,  # $80/mo
+        "budget_type": "monthly",
+        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
+        "subagent_model": "amazon-bedrock/moonshotai.kimi-k2.5",
+        "model_aliases": {
+            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+        },
+        "container_cpu": "2048",
+        "container_memory": "4096",
+        "scale_to_zero": False,
+    },
 }
-
-# Fallback models used when Bedrock discovery is unavailable (e.g., local dev without AWS creds).
-FALLBACK_MODELS = [
-    # Claude
-    {"id": "us.anthropic.claude-opus-4-6-v1", "name": "Claude Opus 4.6"},
-    {"id": "us.anthropic.claude-opus-4-5-20251101-v1:0", "name": "Claude Opus 4.5"},
-    {"id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0", "name": "Claude Sonnet 4.5"},
-    {"id": "us.anthropic.claude-haiku-4-5-20251001-v1:0", "name": "Claude Haiku 4.5"},
-    # DeepSeek
-    {"id": "us.deepseek.r1-v1:0", "name": "DeepSeek R1"},
-    # Meta
-    {"id": "us.meta.llama3-3-70b-instruct-v1:0", "name": "Llama 3.3 70B"},
-    # Amazon
-    {"id": "us.amazon.nova-pro-v1:0", "name": "Amazon Nova Pro"},
-    {"id": "us.amazon.nova-lite-v1:0", "name": "Amazon Nova Lite"},
-    # OpenAI (GPT-OSS)
-    {"id": "us.openai.gpt-oss-120b-1:0", "name": "GPT-OSS 120B"},
-    {"id": "us.openai.gpt-oss-20b-1:0", "name": "GPT-OSS 20B"},
-    # Qwen
-    {"id": "us.qwen.qwen3-235b-a22b-2507-v1:0", "name": "Qwen3 235B"},
-    {"id": "us.qwen.qwen3-32b-v1:0", "name": "Qwen3 32B"},
-    # Mistral
-    {"id": "us.mistral.mistral-large-2512-v1:0", "name": "Mistral Large 3"},
-]
-
-
-def get_available_models() -> list[dict[str, str]]:
-    """Get available models via Bedrock discovery, falling back to hardcoded list."""
-    if not settings.BEDROCK_ENABLED:
-        return FALLBACK_MODELS
-    models = discover_models(region=settings.AWS_REGION)
-    return models if models else FALLBACK_MODELS

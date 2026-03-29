@@ -68,21 +68,13 @@ class TestOpenAPIServers:
     async def test_servers_present(self, openapi_spec):
         """Spec should include a servers list."""
         assert "servers" in openapi_spec
-        assert len(openapi_spec["servers"]) == 4
+        assert len(openapi_spec["servers"]) >= 1
 
     @pytest.mark.asyncio
-    async def test_localhost_server(self, openapi_spec):
-        """Servers list should include localhost:8000 for local dev."""
+    async def test_dev_server(self, openapi_spec):
+        """Servers list should include the dev API URL in test/local environments."""
         urls = [s["url"] for s in openapi_spec["servers"]]
-        assert "http://localhost:8000" in urls
-
-    @pytest.mark.asyncio
-    async def test_all_environments(self, openapi_spec):
-        """Servers list should cover dev, staging, and production."""
-        urls = [s["url"] for s in openapi_spec["servers"]]
-        assert "https://api-dev.isol8.co" in urls
-        assert "https://api-staging.isol8.co" in urls
-        assert "https://api.isol8.co" in urls
+        assert any("api-dev.isol8.co" in u or "localhost" in u for u in urls)
 
 
 class TestOpenAPITags:

@@ -66,12 +66,35 @@ def connected_user(mock_connection_service):
     return "test-user-456"
 
 
+@pytest.fixture
+def mock_check_budget_allowed():
+    """Mock check_budget to return an allowed result."""
+    with patch("core.services.usage_service.check_budget", new_callable=AsyncMock) as mock_cb:
+        mock_cb.return_value = {
+            "allowed": True,
+            "within_included": True,
+            "overage_available": False,
+            "overage_enabled": False,
+            "current_spend": 0,
+            "included_budget": 2_000_000,
+            "is_subscribed": False,
+            "tier": "free",
+        }
+        yield mock_cb
+
+
 class TestAgentChatMessageRouting:
     """Tests that the ws_message endpoint correctly routes agent_chat messages."""
 
     @pytest.mark.asyncio
     async def test_agent_chat_message_accepted(
-        self, test_app, mock_connection_service, mock_management_api, valid_agent_chat_message, connected_user
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        valid_agent_chat_message,
+        connected_user,
+        mock_check_budget_allowed,
     ):
         """Send valid agent_chat message, verify 200 response.
 
@@ -163,7 +186,12 @@ class TestAgentChatBackgroundTask:
 
     @pytest.mark.asyncio
     async def test_background_task_receives_correct_args(
-        self, test_app, mock_connection_service, mock_management_api, connected_user
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        connected_user,
+        mock_check_budget_allowed,
     ):
         """Background task should receive connection_id, user_id, agent_id, message."""
         with patch("routers.websocket_chat._process_agent_chat_background") as mock_bg:
@@ -181,6 +209,7 @@ class TestAgentChatBackgroundTask:
         mock_bg.assert_called_once_with(
             connection_id="test-conn-123",
             user_id="test-user-456",
+            owner_id="test-user-456",
             agent_id="luna",
             message="Tell me a story",
         )
@@ -217,7 +246,7 @@ class TestProcessAgentChatBackground:
         """Set up ECS manager to return a running container with IP."""
         container = {
             "gateway_token": "test-gw-token",
-            "user_id": "user-1",
+            "owner_id": "user-1",
             "service_name": "openclaw-test",
             "status": "running",
         }
@@ -230,6 +259,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -251,6 +281,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -268,6 +299,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )
@@ -285,6 +317,7 @@ class TestProcessAgentChatBackground:
         await _process_agent_chat_background(
             connection_id="conn-1",
             user_id="user-1",
+            owner_id="user-1",
             agent_id="luna",
             message="Hello!",
         )

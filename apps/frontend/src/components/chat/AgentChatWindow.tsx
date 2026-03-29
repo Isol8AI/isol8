@@ -5,12 +5,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatInput } from "./ChatInput";
 import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { MessageList, MessageListHandle } from "./MessageList";
-import { ChannelCards, isChannelCardsDismissed } from "./ChannelCards";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
-import { Loader2 } from "lucide-react";
+import { useBilling } from "@/hooks/useBilling";
+import { useOrganization } from "@clerk/nextjs";
+import { Loader2, AlertTriangle, ArrowDownCircle, RefreshCw, Clock, X } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { useGateway } from "@/hooks/useGateway";
 
 import type { ToolUse } from "@/hooks/useAgentChat";
+import type { BudgetExceededPayload, ChatIncomingMessage } from "@/hooks/useGateway";
 
 interface Message {
   id: string;
@@ -25,6 +29,419 @@ interface AgentChatWindowProps {
   agentId: string | null;
 }
 
+function BudgetExceededBanner({
+  budgetError,
+}: {
+  budgetError: BudgetExceededPayload;
+}) {
+  const { account, createCheckout, toggleOverage } = useBilling();
+  const { organization, membership } = useOrganization();
+  const [loading, setLoading] = useState(false);
+
+  const isOrg = !!organization;
+  const isOrgAdmin = membership?.role === "org:admin";
+
+  const handleAction = useCallback(async () => {
+    setLoading(true);
+    try {
+      if (!budgetError.is_subscribed) {
+        await createCheckout("starter");
+      } else if (budgetError.overage_available && !budgetError.overage_enabled) {
+        await toggleOverage(true);
+      }
+    } catch (err) {
+      console.error("Budget action failed:", err);
+    } finally {
+      setLoading(false);
+    }
+  }, [budgetError, createCheckout, toggleOverage]);
+
+  let message: string;
+  let subtext: string | null = null;
+  let actionLabel: string | null = null;
+
+  if (isOrg && !isOrgAdmin) {
+    message = "Your organization has reached its usage limit. Contact your admin.";
+  } else if (!budgetError.is_subscribed) {
+    message = "You've reached your free tier limit. Subscribe to continue.";
+    actionLabel = "Subscribe";
+  } else if (budgetError.overage_available && !budgetError.overage_enabled) {
+    message = "Your included LLM budget is used up. Enable pay-as-you-go to continue.";
+    subtext = "Overage is billed at 1.4x standard rates";
+    actionLabel = "Enable pay-as-you-go";
+  } else if (account?.overage_enabled && account?.overage_limit !== null) {
+    message = "You've reached your usage limit for this billing period.";
+    subtext = `Overage limit: $${account.overage_limit.toFixed(2)}`;
+  } else {
+    message = "You've reached your usage limit for this billing period.";
+  }
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg flex items-center gap-3">
+      <AlertTriangle className="h-4 w-4 text-amber-400 shrink-0" />
+      <div className="flex-1">
+        <p className="text-sm text-amber-200">{message}</p>
+        {subtext && (
+          <p className="text-xs text-amber-300/70 mt-0.5">{subtext}</p>
+        )}
+      </div>
+      {actionLabel && (
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-amber-500/40 text-amber-200 hover:bg-amber-900/30"
+          onClick={handleAction}
+          disabled={loading}
+        >
+          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : actionLabel}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// =============================================================================
+// Approach-Limit Banner
+// =============================================================================
+
+const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+function getBudgetSnooze(threshold: number): boolean {
+  try {
+    const raw = localStorage.getItem(`isol8_budget_snooze_${threshold}`);
+    if (!raw) return false;
+    const snoozedUntil = JSON.parse(raw) as number;
+    if (Date.now() < snoozedUntil) return true;
+    localStorage.removeItem(`isol8_budget_snooze_${threshold}`);
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function setBudgetSnooze(threshold: number): void {
+  localStorage.setItem(
+    `isol8_budget_snooze_${threshold}`,
+    JSON.stringify(Date.now() + SNOOZE_DURATION_MS),
+  );
+}
+
+function ApproachLimitBanner() {
+  const { account, isSubscribed, toggleOverage } = useBilling();
+  const [dismissed75, setDismissed75] = useState(() => getBudgetSnooze(75));
+  const [dismissed90, setDismissed90] = useState(() => getBudgetSnooze(90));
+  const [loading, setLoading] = useState(false);
+
+  if (!account || !isSubscribed) return null;
+
+  const pct = account.budget_percent;
+
+  if (pct >= 90 && !dismissed90) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-orange-900/20 border border-orange-500/30 rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-orange-400 shrink-0" />
+        <div className="flex-1">
+          <p className="text-sm text-orange-200">
+            You&apos;ve used {Math.round(pct)}% of your included LLM budget. Consider enabling pay-as-you-go.
+          </p>
+          <p className="text-xs text-orange-300/70 mt-0.5">
+            Overage is billed at 1.4x standard rates
+          </p>
+        </div>
+        {!account.overage_enabled && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="shrink-0 border-orange-500/40 text-orange-200 hover:bg-orange-900/30"
+            onClick={async () => {
+              setLoading(true);
+              try {
+                await toggleOverage(true);
+              } catch (err) {
+                console.error("Failed to enable overage:", err);
+              } finally {
+                setLoading(false);
+              }
+            }}
+            disabled={loading}
+          >
+            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enable pay-as-you-go"}
+          </Button>
+        )}
+        <button
+          onClick={() => {
+            setBudgetSnooze(90);
+            setDismissed90(true);
+          }}
+          className="text-orange-400 hover:text-orange-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  if (pct >= 75 && !dismissed75) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg flex items-center gap-3">
+        <AlertTriangle className="h-4 w-4 text-yellow-400 shrink-0" />
+        <p className="text-sm text-yellow-200 flex-1">
+          You&apos;ve used {Math.round(pct)}% of your included LLM budget this month.
+        </p>
+        <button
+          onClick={() => {
+            setBudgetSnooze(75);
+            setDismissed75(true);
+          }}
+          className="text-yellow-400 hover:text-yellow-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return null;
+}
+
+// =============================================================================
+// Update Banner
+// =============================================================================
+
+interface PendingUpdate {
+  update_id: string;
+  description: string;
+  type: string;
+  status: string;
+  created_at: string;
+  scheduled_at?: string;
+}
+
+interface SnoozeEntry {
+  update_id: string;
+  snoozed_until: number;
+}
+
+function getSnooze(updateId: string): SnoozeEntry | null {
+  try {
+    const raw = localStorage.getItem(`isol8_update_snooze_${updateId}`);
+    if (!raw) return null;
+    const entry: SnoozeEntry = JSON.parse(raw);
+    if (Date.now() < entry.snoozed_until) return entry;
+    // Expired -- clean up
+    localStorage.removeItem(`isol8_update_snooze_${updateId}`);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function setSnooze(updateId: string, durationMs: number): void {
+  const entry: SnoozeEntry = {
+    update_id: updateId,
+    snoozed_until: Date.now() + durationMs,
+  };
+  localStorage.setItem(`isol8_update_snooze_${updateId}`, JSON.stringify(entry));
+}
+
+function UpdateBanner() {
+  const api = useApi();
+  const { organization, membership } = useOrganization();
+  const { onChatMessage } = useGateway();
+
+  const [updates, setUpdates] = useState<PendingUpdate[]>([]);
+  const [applying, setApplying] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
+
+  const isOrg = !!organization;
+  const isOrgAdmin = membership?.role === "org:admin";
+
+  const fetchUpdates = useCallback(async () => {
+    try {
+      const data = (await api.get("/container/updates")) as { updates: PendingUpdate[] };
+      const pending = (data.updates || []).filter(
+        (u) => u.status === "pending" && !getSnooze(u.update_id),
+      );
+      setUpdates(pending);
+      setDismissed(false);
+    } catch {
+      // Endpoint may not exist yet -- silently ignore
+    }
+  }, [api]);
+
+  // Fetch on mount
+  useEffect(() => {
+    fetchUpdates();
+  }, [fetchUpdates]);
+
+  // Listen for update_available WS events to trigger refetch
+  useEffect(() => {
+    const unsub = onChatMessage((msg: ChatIncomingMessage) => {
+      if (msg.type === "update_available") {
+        fetchUpdates();
+      }
+    });
+    return unsub;
+  }, [onChatMessage, fetchUpdates]);
+
+  const handleApplyNow = useCallback(
+    async (updateId: string) => {
+      setApplying(true);
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
+        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+      } catch (err) {
+        console.error("Failed to apply update:", err);
+      } finally {
+        setApplying(false);
+      }
+    },
+    [api],
+  );
+
+  const handleScheduleTonight = useCallback(
+    async (updateId: string) => {
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
+        setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+      } catch (err) {
+        console.error("Failed to schedule update:", err);
+      }
+    },
+    [api],
+  );
+
+  const handleRemindLater = useCallback(
+    async (updateId: string) => {
+      try {
+        await api.post(`/container/updates/${updateId}/apply`, { schedule: "remind_later" });
+      } catch {
+        // best-effort
+      }
+      // Snooze for 4 hours
+      setSnooze(updateId, 4 * 60 * 60 * 1000);
+      setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
+    },
+    [api],
+  );
+
+  if (dismissed || updates.length === 0) return null;
+
+  const firstUpdate = updates[0];
+  const description =
+    updates.length > 1
+      ? `${updates.length} updates available`
+      : firstUpdate.description;
+
+  // During apply -- show spinner state
+  if (applying) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
+        <Loader2 className="h-4 w-4 text-blue-400 shrink-0 animate-spin" />
+        <p className="text-sm text-blue-200 flex-1">Updating your agent...</p>
+      </div>
+    );
+  }
+
+  // Org member (non-admin) -- info only
+  if (isOrg && !isOrgAdmin) {
+    return (
+      <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
+        <p className="text-sm text-blue-200 flex-1">
+          An update is available. Your admin can apply it.
+        </p>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-blue-400 hover:text-blue-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg">
+      <div className="flex items-center gap-3">
+        <RefreshCw className="h-4 w-4 text-blue-400 shrink-0" />
+        <div className="flex-1 min-w-0">
+          <p className="text-sm text-blue-200">
+            Update available: {description}
+          </p>
+          <p className="text-xs text-blue-300/70 mt-0.5">
+            Your agent needs a brief restart (~30s) to apply.
+          </p>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-blue-400 hover:text-blue-300 shrink-0"
+          aria-label="Dismiss"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex items-center gap-2 mt-2 ml-7">
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleApplyNow(firstUpdate.update_id)}
+        >
+          <RefreshCw className="h-3 w-3 mr-1" />
+          Update Now
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleScheduleTonight(firstUpdate.update_id)}
+        >
+          <Clock className="h-3 w-3 mr-1" />
+          Tonight at 2 AM
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="shrink-0 border-blue-500/40 text-blue-200 hover:bg-blue-900/30"
+          onClick={() => handleRemindLater(firstUpdate.update_id)}
+        >
+          Remind Me Later
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// =============================================================================
+// Downgrade Banner
+// =============================================================================
+
+function DowngradeBanner() {
+  const { wasDowngraded, clearDowngrade } = useBilling();
+
+  if (!wasDowngraded) return null;
+
+  return (
+    <div className="mx-4 mb-2 p-3 bg-rose-900/20 border border-rose-500/30 rounded-lg flex items-center gap-3">
+      <ArrowDownCircle className="h-4 w-4 text-rose-400 shrink-0" />
+      <p className="text-sm text-rose-200 flex-1">
+        Your subscription has ended. You&apos;re now on the free tier with $2 lifetime usage.
+      </p>
+      <button
+        onClick={clearDowngrade}
+        className="text-rose-400 hover:text-rose-300 shrink-0"
+        aria-label="Dismiss"
+      >
+        <X className="h-4 w-4" />
+      </button>
+    </div>
+  );
+}
+
 export function AgentChatWindow({
   agentId,
 }: AgentChatWindowProps): React.ReactElement {
@@ -32,6 +449,7 @@ export function AgentChatWindow({
     messages: chatMessages,
     isStreaming,
     error: chatError,
+    budgetError,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -41,11 +459,11 @@ export function AgentChatWindow({
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
-  const [showChannelCards, setShowChannelCards] = useState(() => !isChannelCardsDismissed());
   const messageListRef = useRef<MessageListHandle>(null);
 
   const isInitialState = chatMessages.length === 0;
   const isTyping = isStreaming;
+  const isBudgetExceeded = !!budgetError;
 
   const prevAgentIdRef = useRef<string | null | undefined>(undefined);
 
@@ -136,18 +554,6 @@ export function AgentChatWindow({
   }
 
   if (isInitialState) {
-    // Show channel cards on first visit (one-time onboarding)
-    if (showChannelCards) {
-      return (
-        <div className="flex flex-col h-full bg-background/20">
-          <ConnectionStatusBar />
-          <div className="flex-1 flex items-center justify-center p-4">
-            <ChannelCards onDismiss={() => setShowChannelCards(false)} />
-          </div>
-        </div>
-      );
-    }
-
     return (
       <div className="flex flex-col h-full bg-background/20">
         <ConnectionStatusBar />
@@ -161,6 +567,10 @@ export function AgentChatWindow({
             </p>
           </div>
           <div className="w-full max-w-2xl">
+            <UpdateBanner />
+            <DowngradeBanner />
+            <ApproachLimitBanner />
+            {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
@@ -169,6 +579,7 @@ export function AgentChatWindow({
               centered
               isUploading={isUploading}
               suggestedMessage={needsBootstrap ? BOOTSTRAP_MESSAGE : undefined}
+              budgetExceeded={isBudgetExceeded}
             />
           </div>
         </div>
@@ -180,7 +591,18 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-background/20">
       <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
-      <ChatInput onSend={handleSend} onStop={cancelMessage} disabled={isTyping} isStreaming={isStreaming} isUploading={isUploading} />
+      <UpdateBanner />
+      <DowngradeBanner />
+      <ApproachLimitBanner />
+      {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
+      <ChatInput
+        onSend={handleSend}
+        onStop={cancelMessage}
+        disabled={isTyping}
+        isStreaming={isStreaming}
+        isUploading={isUploading}
+        budgetExceeded={isBudgetExceeded}
+      />
     </div>
   );
 }

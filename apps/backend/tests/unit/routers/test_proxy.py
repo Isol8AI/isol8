@@ -63,14 +63,14 @@ class TestProxyRouter:
         """Proxy forwards valid request to upstream."""
         mock_container_repo.get_by_gateway_token = AsyncMock(
             return_value={
-                "user_id": "user_proxy_test",
+                "owner_id": "user_proxy_test",
                 "gateway_token": "test_gateway_token_proxy",
                 "status": "running",
             }
         )
-        mock_billing_repo.get_by_clerk_user_id = AsyncMock(
+        mock_billing_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "clerk_user_id": "user_proxy_test",
+                "owner_id": "user_proxy_test",
                 "stripe_customer_id": "cus_proxy_test",
                 "plan_tier": "free",
             }
@@ -107,12 +107,12 @@ class TestProxyRouter:
         """Proxy rejects requests from users without a billing account."""
         mock_container_repo.get_by_gateway_token = AsyncMock(
             return_value={
-                "user_id": "user_proxy_test",
+                "owner_id": "user_proxy_test",
                 "gateway_token": "test_gateway_token_proxy",
                 "status": "running",
             }
         )
-        mock_billing_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
+        mock_billing_repo.get_by_owner_id = AsyncMock(return_value=None)
 
         with patch("routers.proxy.settings") as mock_settings:
             mock_settings.PERPLEXITY_API_KEY = "pk_test_key"
@@ -133,12 +133,12 @@ class TestProxyRouter:
         # users without a billing account are rejected with 403.
         mock_container_repo.get_by_gateway_token = AsyncMock(
             return_value={
-                "user_id": "user_proxy_test",
+                "owner_id": "user_proxy_test",
                 "gateway_token": "test_gateway_token_proxy",
                 "status": "running",
             }
         )
-        mock_billing_repo.get_by_clerk_user_id = AsyncMock(return_value=None)
+        mock_billing_repo.get_by_owner_id = AsyncMock(return_value=None)
 
         with patch("routers.proxy.settings") as mock_settings:
             mock_settings.PERPLEXITY_API_KEY = "pk_test_key"

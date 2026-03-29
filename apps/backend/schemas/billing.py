@@ -1,46 +1,30 @@
 """Pydantic schemas for billing API endpoints."""
 
-from datetime import date
 from enum import Enum
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, field_validator
 
 
 class PlanTier(str, Enum):
     FREE = "free"
     STARTER = "starter"
     PRO = "pro"
-
-
-class UsagePeriod(BaseModel):
-    start: date
-    end: date
-    included_budget: float
-    used: float
-    overage: float
-    percent_used: float
-
-
-class ModelUsage(BaseModel):
-    model: str
-    cost: float
-    requests: int
-
-
-class DailyUsage(BaseModel):
-    date: date
-    cost: float
+    ENTERPRISE = "enterprise"
 
 
 class BillingAccountResponse(BaseModel):
-    plan_tier: str
-    has_subscription: bool
-    current_period: UsagePeriod
-
-    model_config = {"from_attributes": True}
+    tier: str
+    is_subscribed: bool
+    current_spend: float
+    included_budget: float
+    budget_percent: float
+    lifetime_spend: float
+    overage_enabled: bool
+    overage_limit: float | None
+    within_included: bool
 
 
 class CheckoutRequest(BaseModel):
-    tier: PlanTier = Field(..., description="Plan tier to subscribe to")
+    tier: PlanTier
 
     @field_validator("tier")
     @classmethod
@@ -58,9 +42,54 @@ class PortalResponse(BaseModel):
     portal_url: str
 
 
-class UsageResponse(BaseModel):
-    period: UsagePeriod | None = None
-    total_cost: float
-    total_requests: int
-    by_model: list[ModelUsage]
-    by_day: list[DailyUsage]
+class OverageToggleRequest(BaseModel):
+    enabled: bool
+    limit_dollars: float | None = None
+
+
+class SpendLimitRequest(BaseModel):
+    limit_dollars: float | None
+
+
+class MemberUsage(BaseModel):
+    user_id: str
+    display_name: str | None = None
+    email: str | None = None
+    total_spend: float
+    total_input_tokens: int
+    total_output_tokens: int
+    request_count: int
+
+
+class UsageSummary(BaseModel):
+    period: str
+    total_spend: float
+    total_input_tokens: int
+    total_output_tokens: int
+    total_cache_read_tokens: int
+    total_cache_write_tokens: int
+    request_count: int
+    lifetime_spend: float
+    by_member: list[MemberUsage] = []
+
+
+class ModelPriceResponse(BaseModel):
+    input: float
+    output: float
+    cache_read: float
+    cache_write: float
+
+
+class MyUsageResponse(BaseModel):
+    period: str
+    total_spend: float
+    total_input_tokens: int
+    total_output_tokens: int
+    request_count: int
+
+
+class PricingResponse(BaseModel):
+    models: dict[str, ModelPriceResponse]
+    markup: float
+    tier_model: str
+    subagent_model: str

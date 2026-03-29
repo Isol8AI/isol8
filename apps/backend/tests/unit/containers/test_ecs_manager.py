@@ -112,7 +112,7 @@ def _make_container_dict(
 ):
     """Helper to create a container dict for mocking DynamoDB repo responses."""
     d = {
-        "user_id": user_id,
+        "owner_id": user_id,
         "service_name": service_name,
         "gateway_token": gateway_token,
         "status": status,
@@ -299,6 +299,7 @@ class TestCreateUserService:
                     "gateway_token": "token-abc",
                     "status": "provisioning",
                     "substatus": None,
+                    "owner_type": "personal",
                 },
             )
 
@@ -427,7 +428,7 @@ class TestStopUserService:
     async def test_stop_scales_to_zero(self, manager, mock_ecs_client):
         """stop_user_service calls update_service with desiredCount=0."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="stopped"))
 
             await manager.stop_user_service("user_test_123")
@@ -443,7 +444,7 @@ class TestStopUserService:
     async def test_stop_no_db_record(self, manager, mock_ecs_client):
         """stop_user_service with no repo record still calls ECS but skips status update."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             await manager.stop_user_service("user_test_123")
 
@@ -474,7 +475,7 @@ class TestStartUserService:
     async def test_start_scales_to_one(self, manager, mock_ecs_client):
         """start_user_service calls update_service with desiredCount=1 and force."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
             await manager.start_user_service("user_test_123")
@@ -491,7 +492,7 @@ class TestStartUserService:
     async def test_start_no_db_record(self, manager, mock_ecs_client):
         """start_user_service with no repo record still calls ECS."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             await manager.start_user_service("user_test_123")
 
@@ -527,7 +528,7 @@ class TestDeleteUserService:
             task_definition_arn="arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:42",
         )
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
             mock_repo.delete = AsyncMock()
 
             await manager.delete_user_service("user_test_123")
@@ -557,7 +558,7 @@ class TestDeleteUserService:
     async def test_delete_no_db_record(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service with no repo record still deletes ECS service."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
             mock_repo.delete = AsyncMock()
 
             await manager.delete_user_service("user_test_123")
@@ -574,7 +575,7 @@ class TestDeleteUserService:
         """delete_user_service skips cleanup when container has no per-user resources."""
         container_dict = _make_container_dict(status="running")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
             mock_repo.delete = AsyncMock()
 
             await manager.delete_user_service("user_test_123")
@@ -738,7 +739,7 @@ class TestResolveRunningContainer:
         """Returns container dict and IP for a running container."""
         container_dict = _make_container_dict(status="running", service_name="openclaw-user_test_123-f4ae64abb2db")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
             manager.discover_ip = MagicMock(return_value="10.0.1.42")
 
             container, ip = await manager.resolve_running_container("user_test_123")
@@ -750,7 +751,7 @@ class TestResolveRunningContainer:
     async def test_returns_none_for_missing_container(self, manager):
         """Returns (None, None) when no container exists."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             container, ip = await manager.resolve_running_container("user_test_123")
 
@@ -761,7 +762,7 @@ class TestResolveRunningContainer:
     async def test_returns_none_for_stopped_container(self, manager):
         """Returns (None, None) when container status is not provisioning/running."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
 
             container, ip = await manager.resolve_running_container("user_test_123")
 
@@ -773,7 +774,7 @@ class TestResolveRunningContainer:
         """Provisioning container transitions to running when healthy."""
         container_dict = _make_container_dict(status="provisioning", service_name="openclaw-user_test_123-f4ae64abb2db")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
             mock_repo.update_fields = AsyncMock(return_value=container_dict)
             manager.discover_ip = MagicMock(return_value="10.0.1.42")
             manager.is_healthy = MagicMock(return_value=True)
@@ -798,7 +799,7 @@ class TestGetServiceStatus:
         """get_service_status returns the container dict."""
         container_dict = _make_container_dict(status="running")
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=container_dict)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
 
             result = await manager.get_service_status("user_test_123")
             assert result == container_dict
@@ -808,7 +809,7 @@ class TestGetServiceStatus:
     async def test_returns_none_when_not_found(self, manager):
         """get_service_status returns None when no record exists."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
-            mock_repo.get_by_user_id = AsyncMock(return_value=None)
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             result = await manager.get_service_status("user_nonexistent")
             assert result is None

@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from websockets import connect as ws_connect
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import GATEWAY_PORT
 
@@ -135,8 +135,9 @@ async def _call_gateway_rpc(
 async def gateway_restart(
     auth: AuthContext = Depends(get_current_user),
 ):
+    owner_id = resolve_owner_id(auth)
     ecs_manager = get_ecs_manager()
-    container, ip = await ecs_manager.resolve_running_container(auth.user_id)
+    container, ip = await ecs_manager.resolve_running_container(owner_id)
     if not container:
         raise HTTPException(status_code=404, detail="No running container")
     if not ip:
@@ -154,7 +155,7 @@ async def gateway_restart(
     except TimeoutError:
         raise HTTPException(status_code=502, detail="Gateway restart timed out")
     except Exception as e:
-        logger.error("Gateway restart failed for user %s: %s", auth.user_id, e)
+        logger.error("Gateway restart failed for user %s: %s", owner_id, e)
         raise HTTPException(status_code=502, detail="Gateway restart failed")
 
     return {"ok": True}
@@ -179,11 +180,11 @@ async def container_rpc(
     body: RpcRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    user_id = auth.user_id
+    owner_id = resolve_owner_id(auth)
 
     # Look up container and discover task IP
     ecs_manager = get_ecs_manager()
-    container, ip = await ecs_manager.resolve_running_container(user_id)
+    container, ip = await ecs_manager.resolve_running_container(owner_id)
     if not container:
         raise HTTPException(
             status_code=404,
@@ -200,16 +201,16 @@ async def container_rpc(
             params=body.params,
         )
     except ConnectionRefusedError:
-        logger.error("Gateway refused connection for user %s at %s", user_id, ip)
+        logger.error("Gateway refused connection for user %s at %s", owner_id, ip)
         raise HTTPException(status_code=502, detail="Container gateway is not responding")
     except TimeoutError:
-        logger.error("Gateway timeout for user %s at %s", user_id, ip)
+        logger.error("Gateway timeout for user %s at %s", owner_id, ip)
         raise HTTPException(status_code=502, detail="Container gateway timed out")
     except json.JSONDecodeError as e:
-        logger.error("Invalid JSON from gateway for user %s: %s", user_id, e)
+        logger.error("Invalid JSON from gateway for user %s: %s", owner_id, e)
         raise HTTPException(status_code=502, detail="Invalid response from container gateway")
     except Exception as e:
-        logger.error("RPC call failed for user %s: %s", user_id, e)
+        logger.error("RPC call failed for user %s: %s", owner_id, e)
         raise HTTPException(status_code=502, detail="Gateway RPC call failed")
 
     return {"result": result}
@@ -258,14 +259,16 @@ async def upload_files(
             detail=f"Too many files. Maximum {MAX_FILES_PER_REQUEST} per request.",
         )
 
+    owner_id = resolve_owner_id(auth)
+
     # Verify user has a container
     ecs_manager = get_ecs_manager()
-    container = await ecs_manager.get_service_status(auth.user_id)
+    container = await ecs_manager.get_service_status(owner_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
     workspace = get_workspace()
-    workspace.ensure_user_dir(auth.user_id)
+    workspace.ensure_user_dir(owner_id)
 
     uploaded = []
     for f in files:
@@ -278,11 +281,11 @@ async def upload_files(
 
         safe_name = _sanitize_filename(f.filename or "upload")
         dest_path = f"uploads/{safe_name}"
-        workspace.write_bytes(auth.user_id, dest_path, data)
+        workspace.write_bytes(owner_id, dest_path, data)
         # The agent's working dir is $HOME (/home/node) but EFS is mounted
         # at $HOME/.openclaw, so the agent path is .openclaw/uploads/filename
         agent_path = f".openclaw/{dest_path}"
         uploaded.append({"filename": safe_name, "path": agent_path, "size": len(data)})
-        logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), auth.user_id)
+        logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), owner_id)
 
     return {"uploaded": uploaded}

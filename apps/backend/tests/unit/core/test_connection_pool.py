@@ -18,7 +18,6 @@ class TestGatewayConnection:
 
     @pytest.fixture
     def connection(self, mock_management_api):
-
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -182,7 +181,6 @@ class TestGatewayConnectionHandshake:
 
     @pytest.fixture
     def connection(self):
-
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -217,7 +215,7 @@ class TestGatewayConnectionHandshake:
 
     @pytest.mark.asyncio
     async def test_handshake_sends_connect_with_token(self, connection):
-        """_handshake sends the auth token in the connect params."""
+        """_handshake sends a trusted-proxy connect request with operator role."""
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
             side_effect=[
@@ -232,8 +230,9 @@ class TestGatewayConnectionHandshake:
         sent_raw = mock_ws.send.call_args[0][0]
         sent = json.loads(sent_raw)
         assert sent["method"] == "connect"
-        assert sent["params"]["auth"]["token"] == "test-token"
         assert sent["params"]["role"] == "operator"
+        assert sent["params"]["minProtocol"] == 3
+        assert sent["params"]["maxProtocol"] == 3
 
     @pytest.mark.asyncio
     async def test_verify_health_raises_on_unhealthy(self, connection):
@@ -335,73 +334,40 @@ class TestExtractChatText:
         assert GatewayConnection._extract_chat_text(payload) is None
 
 
-class TestFireUsageCallback:
-    """Test token extraction and callback dispatch for chat final events."""
+class TestRecordUsageFromSession:
+    """Test session-based usage recording from chat final events."""
 
     @pytest.fixture
-    def connection_with_callback(self):
-        callback = AsyncMock()
+    def connection(self):
+        mgmt = MagicMock()
         conn = GatewayConnection(
-            user_id="test-user",
+            user_id="owner-1",
             ip="10.0.0.1",
             token="test-token",
-            management_api=MagicMock(),
-            on_usage=callback,
+            management_api=mgmt,
         )
-        return conn, callback
+        conn._frontend_connections = {"conn-1"}
+        return conn
 
-    def test_fires_callback_with_camel_case_tokens(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "inputTokens": 100,
-                    "outputTokens": 50,
-                    "model": "claude-3-5-sonnet",
-                }
-            )
-            mock_create_task.assert_called_once()
+    def test_extracts_member_user_id_from_session_key(self, connection):
+        conn = connection
+        # Org session key format: agent:{agentId}:{userId}
+        with patch("asyncio.create_task"):
+            conn._record_usage_from_session({"sessionKey": "agent:main:user_abc"})
+        # The task should have been created with member_user_id="user_abc"
 
-    def test_fires_callback_with_snake_case_tokens(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "input_tokens": 200,
-                    "output_tokens": 80,
-                    "model": "claude-3",
-                }
-            )
-            mock_create_task.assert_called_once()
+    def test_uses_owner_id_for_personal_session(self, connection):
+        conn = connection
+        # Personal session key: agent:{agentId}:main
+        with patch("asyncio.create_task"):
+            conn._record_usage_from_session({"sessionKey": "agent:main:main"})
+        # member_user_id should fall back to self.user_id ("owner-1")
 
-    def test_fires_callback_with_nested_usage_object(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback(
-                {
-                    "model": "claude-3",
-                    "usage": {"inputTokens": 300, "outputTokens": 120},
-                }
-            )
-            mock_create_task.assert_called_once()
-
-    def test_does_not_fire_when_tokens_missing(self, connection_with_callback):
-        conn, callback = connection_with_callback
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({"model": "claude-3"})
-            mock_create_task.assert_not_called()
-
-    def test_does_not_fire_when_no_callback(self):
-        conn = GatewayConnection(
-            user_id="test-user",
-            ip="10.0.0.1",
-            token="tok",
-            management_api=MagicMock(),
-            on_usage=None,
-        )
-        with patch("asyncio.create_task") as mock_create_task:
-            conn._fire_usage_callback({"inputTokens": 100, "outputTokens": 50, "model": "m"})
-            mock_create_task.assert_not_called()
+    def test_skips_when_no_session_key(self, connection):
+        conn = connection
+        with patch("asyncio.create_task") as mock_task:
+            conn._record_usage_from_session({})
+        mock_task.assert_not_called()
 
 
 class TestHandleMessageChatEvents:

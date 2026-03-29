@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Loader2,
   Zap,
@@ -10,15 +10,23 @@ import {
   XCircle,
   AlertTriangle,
 } from "lucide-react";
+import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
+import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { ChannelSetupStep } from "@/components/chat/ChannelSetupStep";
+import { ChannelCards, isChannelCardsDismissed } from "@/components/chat/ChannelCards";
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
-const STEPS: { phase: Phase; label: string; activeLabel: string }[] = [
+const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
+  { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
+  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
+  { phase: "ready", label: "Ready", activeLabel: "Ready!" },
+];
+
+const STEPS_FREE: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
   { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
@@ -31,23 +39,42 @@ export function ProvisioningStepper({
 }: {
   children: React.ReactNode;
 }) {
-  const { isLoading: billingLoading, isSubscribed, createCheckout } = useBilling();
+  const { organization } = useOrganization();
+  const isOrg = !!organization;
+  const api = useApi();
+  const { isLoading: billingLoading, isSubscribed, planTier, createCheckout } = useBilling();
+  const isFree = planTier === "free";
+  const provisionRequestedRef = useRef(false);
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
-  const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // Lazy initializer reads localStorage once on mount. isChannelCardsDismissed()
+  // guards SSR (returns true when window is undefined) so this is SSR-safe.
+  // eslint-config-next blocks setState-in-effect, so useEffect is not an option here.
+  const [onboardingComplete, setOnboardingComplete] = useState(() => isChannelCardsDismissed());
 
-  // Poll container status every 3s once subscribed
+  // Poll container status every 3s once subscribed or on free tier (auto-provisioned)
+  const shouldPollContainer = isSubscribed || isFree;
   const { container, refresh: refreshContainer } = useContainerStatus({
-    refreshInterval: isSubscribed ? 3000 : 0,
-    enabled: isSubscribed,
+    refreshInterval: shouldPollContainer ? 3000 : 0,
+    enabled: shouldPollContainer,
   });
+
+  // When container status returns null (404), trigger provisioning once
+  useEffect(() => {
+    if (container === null && shouldPollContainer && !provisionRequestedRef.current) {
+      provisionRequestedRef.current = true;
+      api.post("/container/provision", {}).catch((err: unknown) => {
+        console.error("Container provision failed:", err);
+      });
+    }
+  }, [container, shouldPollContainer, api]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
   // Poll gateway health every 3s once container looks ready
   const { data: gatewayHealth } = useGatewayRpc<Record<string, unknown>>(
-    isSubscribed && containerReady ? "health" : null,
+    shouldPollContainer && containerReady ? "health" : null,
     undefined,
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
@@ -63,7 +90,8 @@ export function ProvisioningStepper({
 
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
-    if (!isSubscribed) return "payment";
+    // Free tier auto-provisions; paid tiers need subscription first
+    if (!isSubscribed && !isFree) return "payment";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
     if (!containerReady || !gatewayHealth) return "gateway";
@@ -85,7 +113,7 @@ export function ProvisioningStepper({
 
     // No channels connected — show onboarding
     return "channels";
-  }, [isSubscribed, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
+  }, [isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
@@ -107,9 +135,7 @@ export function ProvisioningStepper({
   if (phase === "channels") {
     return (
       <div className="flex-1 flex items-center justify-center p-6">
-        <div className="w-full max-w-sm">
-          <ChannelSetupStep onComplete={() => setOnboardingComplete(true)} />
-        </div>
+        <ChannelCards onDismiss={() => setOnboardingComplete(true)} />
       </div>
     );
   }
@@ -123,9 +149,9 @@ export function ProvisioningStepper({
     );
   }
 
-  // Not subscribed — show pricing
-  if (!isSubscribed) {
-    return <PricingCards checkoutLoading={checkoutLoading} onCheckout={async (tier) => {
+  // Not subscribed and not free — show pricing
+  if (!isSubscribed && !isFree) {
+    return <PricingCards checkoutLoading={checkoutLoading} isOrg={isOrg} orgName={organization?.name} onCheckout={async (tier) => {
       setCheckoutLoading(tier);
       try {
         await createCheckout(tier);
@@ -141,12 +167,14 @@ export function ProvisioningStepper({
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="text-center space-y-6 max-w-sm">
-          <StepperDisplay currentPhase={phase} error />
+          <StepperDisplay currentPhase={phase} steps={isFree ? STEPS_FREE : STEPS_PAID} error />
           <div className="space-y-2">
             <XCircle className="h-8 w-8 text-red-500 mx-auto" />
             <h2 className="text-lg font-medium">Setup failed</h2>
             <p className="text-sm text-muted-foreground">
-              Something went wrong while setting up your container. This is usually temporary.
+              {isOrg
+                ? `Something went wrong while setting up the container for ${organization.name}. This is usually temporary.`
+                : "Something went wrong while setting up your container. This is usually temporary."}
             </p>
           </div>
           <div className="flex gap-3 justify-center">
@@ -163,16 +191,32 @@ export function ProvisioningStepper({
   }
 
   // Provisioning stepper — always shown during container/gateway phases
+  const steps = isFree ? STEPS_FREE : STEPS_PAID;
+
   return (
     <div className="flex-1 flex items-center justify-center">
       <div className="text-center space-y-8 max-w-sm">
         <div className="space-y-2">
-          <h2 className="text-xl font-semibold">Setting up your workspace</h2>
+          <h2 className="text-xl font-semibold">
+            {isOrg
+              ? `Setting up workspace for ${organization.name}...`
+              : "Setting up your personal workspace..."}
+          </h2>
           <p className="text-sm text-muted-foreground">
             This usually takes about 30-60 seconds.
           </p>
         </div>
-        <StepperDisplay currentPhase={phase} />
+        {isFree && (
+          <div className="space-y-2">
+            <div className="px-4 py-3 bg-blue-900/20 border border-blue-500/30 rounded-lg text-sm text-blue-200">
+              You have $2 in free usage. Subscribe anytime for more.
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Free tier agents sleep after 5 minutes of inactivity. They restart in ~30 seconds.
+            </p>
+          </div>
+        )}
+        <StepperDisplay currentPhase={phase} steps={steps} />
         {timedOut && (
           <div className="space-y-4 pt-2">
             <div className="flex items-center justify-center gap-2 text-yellow-500">
@@ -196,16 +240,18 @@ export function ProvisioningStepper({
 
 function StepperDisplay({
   currentPhase,
+  steps,
   error = false,
 }: {
   currentPhase: Phase;
+  steps: { phase: Phase; label: string; activeLabel: string }[];
   error?: boolean;
 }) {
-  const currentIdx = STEPS.findIndex((s) => s.phase === currentPhase);
+  const currentIdx = steps.findIndex((s) => s.phase === currentPhase);
 
   return (
     <div className="space-y-3 text-left mx-auto w-fit">
-      {STEPS.map((step, idx) => {
+      {steps.map((step, idx) => {
         const isComplete = idx < currentIdx;
         const isCurrent = idx === currentIdx;
         const isErrorStep = error && isCurrent;
@@ -243,9 +289,13 @@ function StepperDisplay({
 
 function PricingCards({
   checkoutLoading,
+  isOrg,
+  orgName,
   onCheckout,
 }: {
   checkoutLoading: string | null;
+  isOrg: boolean;
+  orgName?: string;
   onCheckout: (tier: "starter" | "pro") => Promise<void>;
 }) {
   return (
@@ -256,8 +306,9 @@ function PricingCards({
             Choose your plan
           </h2>
           <p className="text-muted-foreground text-sm max-w-md mx-auto">
-            Subscribe to get your own AI agent container with persistent memory,
-            custom personality, and access to top-tier models.
+            {isOrg
+              ? `Subscribe to get an AI agent container for ${orgName} with persistent memory, custom personality, and access to top-tier models.`
+              : "Subscribe to get your own AI agent container with persistent memory, custom personality, and access to top-tier models."}
           </p>
         </div>
 
@@ -274,7 +325,7 @@ function PricingCards({
               </div>
             </div>
             <ul className="text-sm text-muted-foreground space-y-2 text-left">
-              <li>Personal AI container</li>
+              <li>{isOrg ? "Organization AI container" : "Personal AI container"}</li>
               <li>Persistent memory</li>
               <li>1 free model included</li>
               <li>Pay-per-use premium models</li>

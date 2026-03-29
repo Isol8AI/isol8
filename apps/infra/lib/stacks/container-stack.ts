@@ -136,8 +136,6 @@ export class ContainerStack extends cdk.Stack {
         actions: [
           "bedrock:InvokeModel",
           "bedrock:InvokeModelWithResponseStream",
-          "bedrock:ListFoundationModels",
-          "bedrock:ListInferenceProfiles",
         ],
         resources: ["*"],
       }),
@@ -206,13 +204,14 @@ export class ContainerStack extends cdk.Stack {
     ].join("; ");
 
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: ecs.ContainerImage.fromRegistry("ghcr.io/openclaw/openclaw:latest"),
+      image: ecs.ContainerImage.fromRegistry("alpine/openclaw:2026.3.24"),
       essential: true,
       command: ["sh", "-c", startupCommand],
       user: "0:0",
       workingDirectory: "/home/node",
       environment: {
         HOME: "/home/node",
+        CHOKIDAR_USEPOLLING: "true",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({

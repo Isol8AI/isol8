@@ -7,6 +7,7 @@ for data isolation. Task IPs are discovered via the ECS describe_tasks
 API.
 """
 
+import asyncio
 import hashlib
 import logging
 import re
@@ -65,7 +66,7 @@ class EcsManager:
     # Per-user EFS access points
     # ------------------------------------------------------------------
 
-    def _create_access_point(self, user_id: str) -> str:
+    def _create_access_point(self, user_id: str, owner_type: str = "personal") -> str:
         """Create a per-user EFS access point rooted at /users/{user_id}.
 
         The access point enforces POSIX UID/GID 0 (matching the
@@ -95,7 +96,8 @@ class EcsManager:
                 },
                 Tags=[
                     {"Key": "Name", "Value": f"isol8-{user_id}"},
-                    {"Key": "user_id", "Value": user_id},
+                    {"Key": "owner_id", "Value": user_id},
+                    {"Key": "owner_type", "Value": owner_type},
                     {"Key": "ManagedBy", "Value": "isol8-backend"},
                 ],
             )
@@ -202,7 +204,7 @@ class EcsManager:
     # Service lifecycle
     # ------------------------------------------------------------------
 
-    async def create_user_service(self, user_id: str, gateway_token: str) -> str:
+    async def create_user_service(self, user_id: str, gateway_token: str, owner_type: str = "personal") -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
         1. Upserts the Container DB record (status=provisioning) so frontend can poll
@@ -234,12 +236,13 @@ class EcsManager:
                 "gateway_token": gateway_token,
                 "status": "provisioning",
                 "substatus": None,
+                "owner_type": owner_type,
             },
         )
 
         try:
             # Step 1: Create per-user EFS access point
-            access_point_id = self._create_access_point(user_id)
+            access_point_id = self._create_access_point(user_id, owner_type=owner_type)
             await self._update_container(
                 user_id,
                 access_point_id=access_point_id,
@@ -337,7 +340,7 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to stop ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "stopped")
 
@@ -370,11 +373,98 @@ class EcsManager:
             )
             raise EcsManagerError(f"Failed to start ECS service: {e}", user_id)
 
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
+
+    async def resize_user_container(
+        self,
+        user_id: str,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
+        new_image: str | None = None,
+    ) -> str:
+        """Update a user's container with new CPU/memory/image and force redeploy.
+
+        Registers a new task definition revision with the updated values,
+        then updates the ECS service to use it with forceNewDeployment.
+
+        Args:
+            user_id: Owner ID (user or org).
+            new_cpu: New CPU value (e.g. "1024"). None = keep current.
+            new_memory: New memory value (e.g. "2048"). None = keep current.
+            new_image: New container image. None = keep current.
+
+        Returns:
+            The ARN of the new task definition revision.
+        """
+        container = await container_repo.get_by_owner_id(user_id)
+        if not container:
+            raise EcsManagerError(f"No container found for user {user_id}", user_id)
+
+        current_task_def_arn = container.get("task_definition_arn")
+        if not current_task_def_arn:
+            raise EcsManagerError(f"No task definition ARN for user {user_id}", user_id)
+
+        service_name = self._service_name(user_id)
+
+        try:
+            # Read the current per-user task definition
+            desc_resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=current_task_def_arn)
+            base = desc_resp["taskDefinition"]
+
+            # Build updated kwargs
+            reg_kwargs = dict(
+                family=base["family"],
+                taskRoleArn=base.get("taskRoleArn", ""),
+                executionRoleArn=base.get("executionRoleArn", ""),
+                networkMode=base.get("networkMode", "awsvpc"),
+                containerDefinitions=base["containerDefinitions"],
+                volumes=base.get("volumes", []),
+                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
+                cpu=new_cpu or base.get("cpu", "256"),
+                memory=new_memory or base.get("memory", "512"),
+            )
+            if base.get("runtimePlatform"):
+                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
+
+            # Update image if specified
+            if new_image and reg_kwargs["containerDefinitions"]:
+                for container_def in reg_kwargs["containerDefinitions"]:
+                    container_def["image"] = new_image
+
+            # Register new revision
+            reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
+            new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)
+
+            # Update service to use new task def + force redeploy
+            await asyncio.to_thread(
+                self._ecs.update_service,
+                cluster=self._cluster,
+                service=service_name,
+                taskDefinition=new_task_def_arn,
+                forceNewDeployment=True,
+            )
+
+            # Update DB record
+            await self._update_container(user_id, task_definition_arn=new_task_def_arn, status="provisioning")
+
+            logger.info(
+                "Resized container for user %s: cpu=%s memory=%s image=%s",
+                user_id,
+                new_cpu,
+                new_memory,
+                new_image,
+            )
+            return new_task_def_arn
+
+        except EcsManagerError:
+            raise
+        except Exception as e:
+            raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
@@ -414,7 +504,7 @@ class EcsManager:
             raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
 
         # Clean up per-user resources and delete container record from DB
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if container:
             # Deregister per-user task definition
             if container.get("task_definition_arn"):
@@ -507,7 +597,7 @@ class EcsManager:
         Returns:
             Tuple of (container_dict, task_ip) or (None, None) if no active container.
         """
-        container = await container_repo.get_by_user_id(user_id)
+        container = await container_repo.get_by_owner_id(user_id)
         if not container or container.get("status") not in ("provisioning", "running"):
             return None, None
 
@@ -550,7 +640,7 @@ class EcsManager:
         Returns:
             The container dict, or None if not found.
         """
-        return await container_repo.get_by_user_id(user_id)
+        return await container_repo.get_by_owner_id(user_id)
 
     # ------------------------------------------------------------------
     # Full provisioning flow
@@ -570,7 +660,7 @@ class EcsManager:
             pass
         return None
 
-    async def provision_user_container(self, user_id: str) -> str:
+    async def provision_user_container(self, user_id: str, owner_type: str = "personal", tier: str = "free") -> str:
         """Provision or recover a user's container.
 
         Handles all scenarios:
@@ -593,7 +683,7 @@ class EcsManager:
         service_name = self._service_name(user_id)
 
         # Check current state
-        existing = await container_repo.get_by_user_id(user_id)
+        existing = await container_repo.get_by_owner_id(user_id)
         svc = self._service_exists(service_name)
 
         # --- Scenario: Service exists (ACTIVE or DRAINING) ---
@@ -617,7 +707,7 @@ class EcsManager:
                     )
 
                 try:
-                    await self._write_user_configs(user_id, gateway_token)
+                    await self._write_user_configs(user_id, gateway_token, tier=tier)
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
@@ -699,11 +789,11 @@ class EcsManager:
         gateway_token = secrets.token_urlsafe(32)
 
         # Step 2: Create ECS service (desiredCount=0)
-        service_name = await self.create_user_service(user_id, gateway_token)
+        service_name = await self.create_user_service(user_id, gateway_token, owner_type=owner_type)
 
         # Step 3: Write configs to EFS
         try:
-            await self._write_user_configs(user_id, gateway_token)
+            await self._write_user_configs(user_id, gateway_token, tier=tier)
         except Exception as e:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
@@ -718,12 +808,13 @@ class EcsManager:
         logger.info("Provisioned container %s for user %s", service_name, user_id)
         return service_name
 
-    async def _write_user_configs(self, user_id: str, gateway_token: str) -> None:
+    async def _write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
         """Write OpenClaw config files to the user's EFS workspace."""
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
+            tier=tier,
         )
         workspace = get_workspace()
         workspace.write_file(user_id, "openclaw.json", config_json)

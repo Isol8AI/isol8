@@ -11,26 +11,25 @@ req/res/event protocol. Background reader task handles incoming messages:
 import asyncio
 import json
 import logging
+import time
 import uuid
-from typing import Any, Callable, Coroutine, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.containers.ecs_manager import GATEWAY_PORT
+GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
 
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
+_IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
+_IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
 
 
 class GatewayConnection:
     """Single persistent WebSocket to a user's OpenClaw gateway."""
-
-    # Type alias for the usage callback:
-    # (user_id, model_id, input_tokens, output_tokens) -> Coroutine
-    UsageCallback = Callable[[str, str, int, int], Coroutine[Any, Any, None]]
 
     def __init__(
         self,
@@ -38,13 +37,13 @@ class GatewayConnection:
         ip: str,
         token: str,
         management_api: Any,
-        on_usage: Optional["GatewayConnection.UsageCallback"] = None,
+        on_activity: Any = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
         self._management_api = management_api
-        self._on_usage = on_usage
+        self._on_activity = on_activity  # callback(user_id) for idle tracking
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
@@ -218,58 +217,138 @@ class GatewayConnection:
 
     def _forward_to_frontends(self, message: dict) -> None:
         """Send a message to all registered frontend connections."""
+        # Don't update activity here — passive gateway events (tick, health)
+        # would prevent idle detection. Activity is tracked only on user-initiated
+        # actions (RPC sends, frontend connection registration).
         for conn_id in list(self._frontend_connections):
             try:
                 self._management_api.send_message(conn_id, message)
             except Exception:
                 logger.warning("Failed to forward message to %s", conn_id)
 
-    def _fire_usage_callback(self, payload: dict) -> None:
-        """Extract token usage from a chat final payload and fire the callback."""
-        if not self._on_usage:
-            logger.debug("No usage callback registered for user %s", self.user_id)
-            return
+    def _record_usage_from_session(self, payload: dict) -> None:
+        """Record usage after chat.final by querying the session for token counts.
 
-        # Log the full payload keys to diagnose missing token fields
+        The chat.final event itself doesn't contain token counts. We extract
+        the sessionKey from the payload, parse the member user_id from it
+        (org sessions use format agent:{agentId}:{userId}), then fire an
+        async task that calls sessions.list RPC to get the actual token data
+        and records it via usage_service.
+        """
+        session_key = payload.get("sessionKey", "")
         logger.info(
-            "Chat final payload for user %s — keys: %s",
+            "chat.final for user %s: sessionKey=%s payload_keys=%s",
             self.user_id,
+            session_key or "(empty)",
             list(payload.keys()),
         )
-
-        # Try multiple field name conventions (OpenClaw may use camelCase or nested)
-        input_tokens = payload.get("inputTokens") or payload.get("input_tokens")
-        output_tokens = payload.get("outputTokens") or payload.get("output_tokens")
-
-        # Check nested usage object (some OpenClaw versions nest under "usage")
-        if not input_tokens or not output_tokens:
-            usage_obj = payload.get("usage")
-            if isinstance(usage_obj, dict):
-                input_tokens = input_tokens or usage_obj.get("inputTokens") or usage_obj.get("input_tokens")
-                output_tokens = output_tokens or usage_obj.get("outputTokens") or usage_obj.get("output_tokens")
-
-        if not input_tokens or not output_tokens:
-            logger.warning(
-                "Missing token counts in chat final for user %s (inputTokens=%s, outputTokens=%s). Payload sample: %s",
-                self.user_id,
-                input_tokens,
-                output_tokens,
-                {k: payload[k] for k in list(payload.keys())[:10]},
-            )
+        if not session_key:
+            logger.warning("No sessionKey in chat.final for user %s — cannot record usage", self.user_id)
             return
 
-        model = payload.get("model") or "unknown"
+        # Extract member user_id from session key: "agent:{agentId}:{target}"
+        # For org members, target is the user_id. For personal, it's "main".
+        parts = session_key.split(":")
+        member_user_id = parts[2] if len(parts) >= 3 and parts[2] != "main" else self.user_id
+        logger.info("Usage: querying sessions.list for session=%s member=%s", session_key, member_user_id)
+
+        asyncio.create_task(self._fetch_and_record_usage(session_key, member_user_id))
+
+    async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
+        """Fetch session token counts via RPC and record usage."""
         try:
-            asyncio.create_task(self._on_usage(self.user_id, model, int(input_tokens), int(output_tokens)))
+            # Query sessions.list to get token data for this session
+            req_id = str(uuid.uuid4())
+            await self.send_rpc(req_id, "sessions.list", {})
+            result = await self.wait_for_response(req_id, timeout=10)
+
+            if not isinstance(result, dict):
+                logger.warning(
+                    "sessions.list returned non-dict for user %s: type=%s",
+                    self.user_id,
+                    type(result).__name__,
+                )
+                return
+
+            # Find our session in the list.
+            # sessions.list returns "key" (not "sessionKey"), and chat.final
+            # lowercases the session key, so compare case-insensitively.
+            sessions = result.get("sessions", [])
+            session_key_lower = session_key.lower()
             logger.info(
-                "Scheduled usage recording for user %s: model=%s in=%d out=%d",
+                "sessions.list returned %d sessions for user %s, looking for %s",
+                len(sessions),
                 self.user_id,
-                model,
-                int(input_tokens),
-                int(output_tokens),
+                session_key,
             )
+            session = None
+            for s in sessions:
+                s_key = s.get("key", "")
+                if s_key.lower() == session_key_lower:
+                    session = s
+                    break
+
+            if not session:
+                available_keys = [s.get("key", "?") for s in sessions[:5]]
+                logger.warning(
+                    "Session %s not found for user %s. Available: %s",
+                    session_key,
+                    self.user_id,
+                    available_keys,
+                )
+                return
+
+            input_tokens = int(session.get("inputTokens", 0) or 0)
+            output_tokens = int(session.get("outputTokens", 0) or 0)
+            cache_read = int(session.get("cacheRead", 0) or 0)
+            cache_write = int(session.get("cacheWrite", 0) or 0)
+            model = session.get("model") or "unknown"
+
+            logger.info(
+                "Session %s tokens: in=%d out=%d cache_r=%d cache_w=%d model=%s",
+                session_key,
+                input_tokens,
+                output_tokens,
+                cache_read,
+                cache_write,
+                model,
+            )
+
+            if input_tokens <= 0 and output_tokens <= 0:
+                logger.warning(
+                    "Zero tokens in session %s for user %s — session keys: %s",
+                    session_key,
+                    self.user_id,
+                    list(session.keys()),
+                )
+                return
+
+            # Record usage directly
+            try:
+                from core.services.usage_service import record_usage
+
+                await record_usage(
+                    owner_id=self.user_id,
+                    user_id=member_user_id,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read=cache_read,
+                    cache_write=cache_write,
+                )
+                logger.info(
+                    "Recorded usage for user %s (member=%s): model=%s in=%d out=%d",
+                    self.user_id,
+                    member_user_id,
+                    model,
+                    input_tokens,
+                    output_tokens,
+                )
+            except Exception:
+                logger.exception("Failed to record usage for user %s", self.user_id)
+
         except Exception:
-            logger.warning("Failed to schedule usage recording for user %s", self.user_id)
+            logger.exception("Failed to fetch session usage for user %s", self.user_id)
 
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -342,8 +421,8 @@ class GatewayConnection:
                     if final_text:
                         self._forward_to_frontends({"type": "chunk", "content": final_text})
                     self._forward_to_frontends({"type": "done"})
-                    # Record usage if token counts present
-                    self._fire_usage_callback(payload)
+                    # Record usage by querying session for token counts
+                    self._record_usage_from_session(payload)
                 elif state == "error":
                     err = payload.get("error", {})
                     msg = (
@@ -422,14 +501,17 @@ class GatewayConnectionPool:
     def __init__(
         self,
         management_api: Any,
-        on_usage: Optional[GatewayConnection.UsageCallback] = None,
     ) -> None:
         self._management_api = management_api
-        self._on_usage = on_usage
         self._connections: Dict[str, GatewayConnection] = {}
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
+        self._last_activity: Dict[str, float] = {}  # user_id -> last activity timestamp
+
+    def _touch_activity(self, user_id: str) -> None:
+        """Update last activity timestamp for a user."""
+        self._last_activity[user_id] = time.time()
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
@@ -438,7 +520,7 @@ class GatewayConnectionPool:
             ip=ip,
             token=token,
             management_api=self._management_api,
-            on_usage=self._on_usage,
+            on_activity=self._touch_activity,
         )
         # Transfer any already-registered frontend connections
         for fc in self._frontend_connections.get(user_id, set()):
@@ -457,6 +539,7 @@ class GatewayConnectionPool:
         token: str,
     ) -> Any:
         """Send RPC via persistent connection (create if needed)."""
+        self._last_activity[user_id] = time.time()
         async with self._lock:
             conn = self._connections.get(user_id)
             if conn is not None and not conn.is_connected:
@@ -470,6 +553,7 @@ class GatewayConnectionPool:
 
     def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
         """Register a frontend WS connection for event forwarding."""
+        self._last_activity[user_id] = time.time()
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
@@ -515,9 +599,67 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
-        self._device_identities.pop(user_id, None)
+        self._last_activity.pop(user_id, None)
 
     async def close_all(self) -> None:
         """Shutdown: close all connections."""
         for user_id in list(self._connections.keys()):
             await self.close_user(user_id)
+
+    async def run_idle_checker(self) -> None:
+        """Background task: stop free-tier containers after 5 minutes of inactivity.
+
+        Runs every 60 seconds. For each user in the pool, checks:
+        1. No frontend connections (no active WebSocket clients)
+        2. No activity for 5 minutes
+        3. User is on free tier (billing_repo.get_by_owner_id)
+
+        If all conditions are met, stops the container via ECS and closes
+        the gateway connection.
+        """
+        from core.containers.ecs_manager import EcsManagerError
+
+        logger.info("Idle checker started (interval=%ds, timeout=%ds)", _IDLE_CHECK_INTERVAL, _IDLE_TIMEOUT)
+        try:
+            while True:
+                await asyncio.sleep(_IDLE_CHECK_INTERVAL)
+                now = time.time()
+
+                # Snapshot user_ids with active connections
+                user_ids = list(self._connections.keys())
+                for user_id in user_ids:
+                    # Skip if user has active frontend connections
+                    fcs = self._frontend_connections.get(user_id, set())
+                    if fcs:
+                        continue
+
+                    # Skip if recent activity
+                    last = self._last_activity.get(user_id, now)
+                    if now - last < _IDLE_TIMEOUT:
+                        continue
+
+                    # Check if user is on the free tier
+                    try:
+                        from core.repositories import billing_repo
+
+                        account = await billing_repo.get_by_owner_id(user_id)
+                        if not account or account.get("plan_tier") != "free":
+                            continue
+                    except Exception:
+                        logger.warning("Idle checker: failed to look up billing for user %s, skipping", user_id)
+                        continue
+
+                    # Scale to zero
+                    try:
+                        from core.containers import get_ecs_manager
+
+                        await get_ecs_manager().stop_user_service(user_id)
+                        await self.close_user(user_id)
+                        logger.info("Scale-to-zero: stopped container for idle free user %s", user_id)
+                    except EcsManagerError as e:
+                        logger.error("Scale-to-zero: failed to stop container for user %s: %s", user_id, e)
+                    except Exception:
+                        logger.exception("Scale-to-zero: unexpected error for user %s", user_id)
+        except asyncio.CancelledError:
+            logger.info("Idle checker stopped")
+            return

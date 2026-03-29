@@ -11,7 +11,7 @@ class TestSyncUser:
     @patch("routers.users.BillingService")
     @patch("routers.users.user_repo")
     async def test_sync_creates_new_user(self, mock_repo, mock_billing_cls, async_client):
-        """Sync creates new user when not exists."""
+        """Sync creates new user when not exists. No container provisioning."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_billing_svc = AsyncMock()

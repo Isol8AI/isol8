@@ -332,6 +332,35 @@ export function ChannelsPanel() {
     setActionError(null);
     setLoginMessage(null);
     try {
+      // Ensure the WhatsApp plugin is loaded. The plugin only loads when channels.whatsapp
+      // has at least one key beyond "enabled". Old containers may only have { enabled: false },
+      // which means the plugin is absent — patching dmPolicy triggers a gateway restart that
+      // loads it (channels.whatsapp has no registered reload rule when the plugin is missing).
+      const snapshot = configData as ConfigSnapshot | undefined;
+      const waConfig = (snapshot?.config as Record<string, Record<string, unknown>> | undefined)
+        ?.channels?.["whatsapp"] as Record<string, unknown> | undefined;
+      const pluginLikelyLoaded = waConfig != null && Object.keys(waConfig).some((k) => k !== "enabled");
+
+      if (!pluginLikelyLoaded && snapshot?.hash) {
+        setLoginMessage("Preparing WhatsApp…");
+        await callRpc("config.patch", {
+          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
+          baseHash: snapshot.hash,
+        });
+        setLoginMessage("Waiting for gateway…");
+        const pollDeadline = Date.now() + 20_000;
+        while (Date.now() < pollDeadline) {
+          await new Promise((r) => setTimeout(r, 1500));
+          try {
+            await callRpc("config.get", undefined);
+            break;
+          } catch {
+            // Still restarting
+          }
+        }
+        setLoginMessage(null);
+      }
+
       // 60s frontend timeout = 30s OpenClaw QR timeout + 30s buffer
       const res = await callRpc<WebLoginResult>("web.login.start", {
         force,
@@ -350,9 +379,6 @@ export function ChannelsPanel() {
   const attemptWhatsApp515Recovery = async (): Promise<boolean> => {
     setLoginMessage("Verifying WhatsApp pairing...");
     try {
-      // Wait for creds to flush to EFS
-      await new Promise((r) => setTimeout(r, 3000));
-
       const status = await callRpc<{
         channelAccounts: Record<string, { linked?: boolean; configured?: boolean }[]>;
       }>("channels.status", {});
@@ -363,18 +389,16 @@ export function ChannelsPanel() {
         return false;
       }
 
-      // Trigger gateway restart via config.patch to start the WhatsApp channel
+      // Persist enabled + dmPolicy. channels.whatsapp is a noop prefix — no restart occurs.
       const snapshot = configData as ConfigSnapshot | undefined;
       if (snapshot?.hash) {
-        await callRpc("config.patch", {
-          raw: JSON.stringify({ channels: { whatsapp: { dmPolicy: "pairing" } } }),
-          baseHash: snapshot.hash,
-        });
-        // Poll until gateway is back up (max 20s)
-        const pollDeadline = Date.now() + 20_000;
-        while (Date.now() < pollDeadline) {
-          await new Promise((r) => setTimeout(r, 1500));
-          try { await callRpc("config.get", undefined); break; } catch { /* still restarting */ }
+        try {
+          await callRpc("config.patch", {
+            raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
+            baseHash: snapshot.hash,
+          });
+        } catch {
+          // best-effort
         }
       }
 
@@ -396,6 +420,18 @@ export function ChannelsPanel() {
         timeoutMs: 120000,
       }, 130000);
       if (res.connected) {
+        // Persist enabled=true so the channel auto-starts on next gateway restart.
+        const snapshot = configData as ConfigSnapshot | undefined;
+        if (snapshot?.hash) {
+          try {
+            await callRpc("config.patch", {
+              raw: JSON.stringify({ channels: { whatsapp: { enabled: true, dmPolicy: "pairing" } } }),
+              baseHash: snapshot.hash,
+            });
+          } catch {
+            // best-effort
+          }
+        }
         setQrDataUrl(null);
         setLoginMessage("Connected!");
         mutate();

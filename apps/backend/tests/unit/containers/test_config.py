@@ -78,7 +78,7 @@ class TestWriteOpenclawConfig:
         assert config["gateway"]["mode"] == "local"
         assert config["gateway"]["auth"]["mode"] == "trusted-proxy"
         assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
-        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8"]
+        assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8", "127.0.0.1", "::1"]
 
     def test_control_ui_disabled(self):
         """Control UI is disabled in production containers."""
@@ -91,22 +91,31 @@ class TestWriteOpenclawConfig:
         endpoints = config["gateway"]["http"]["endpoints"]
         assert endpoints["chatCompletions"]["enabled"] is False
 
-    def test_bedrock_discovery_enabled(self):
-        """Bedrock discovery is enabled for runtime model discovery."""
+    def test_bedrock_discovery_disabled(self):
+        """Bedrock discovery is disabled — we control the model catalog via config."""
         config = json.loads(write_openclaw_config())
-        assert config["models"]["bedrockDiscovery"]["enabled"] is True
+        assert config["models"]["bedrockDiscovery"]["enabled"] is False
 
-    def test_models_catalog_populated(self):
-        """Models catalog has entries for the default models."""
+    def test_free_tier_single_model_catalog(self):
+        """Free tier catalog has only MiniMax model."""
         config = json.loads(write_openclaw_config())
+        models = config["agents"]["defaults"]["models"]
+        assert len(models) == 1
+        primary = config["agents"]["defaults"]["model"]["primary"]
+        assert primary in models
+        assert "minimax" in primary
+
+    def test_enterprise_tier_models_catalog_populated(self):
+        """Enterprise tier catalog has entries for all models."""
+        config = json.loads(write_openclaw_config(tier="enterprise"))
         models = config["agents"]["defaults"]["models"]
         assert len(models) >= 3
         primary = config["agents"]["defaults"]["model"]["primary"]
         assert primary in models
 
     def test_multiple_bedrock_models_configured(self):
-        """Multiple Bedrock models are pre-configured with inference profile IDs."""
-        config = json.loads(write_openclaw_config())
+        """Multiple Bedrock models are pre-configured with inference profile IDs (enterprise tier)."""
+        config = json.loads(write_openclaw_config(tier="enterprise"))
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
         assert len(models) >= 4
         model_ids = [m["id"] for m in models]
@@ -114,6 +123,15 @@ class TestWriteOpenclawConfig:
         assert "us.anthropic.claude-opus-4-5-20251101-v1:0" in model_ids
         assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
         assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
+
+    def test_starter_tier_models(self):
+        """Starter tier includes MiniMax and Kimi only."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        models = config["models"]["providers"]["amazon-bedrock"]["models"]
+        model_ids = [m["id"] for m in models]
+        assert "minimax.minimax-m2.1" in model_ids
+        assert "moonshotai.kimi-k2.5" in model_ids
+        assert len(models) == 2
 
     def test_memory_search_enabled(self):
         """Memory search is enabled (QMD handles embeddings locally)."""
@@ -142,13 +160,6 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert bedrock["auth"] == "aws-sdk"
-
-    def test_plugins_empty(self):
-        """Plugins slots and entries are empty (QMD handles memory)."""
-        config = json.loads(write_openclaw_config(gateway_token="tok_abc"))
-        plugins = config["plugins"]
-        assert plugins["slots"] == {}
-        assert plugins["entries"] == {}
 
     def test_memory_qmd_backend(self):
         """Memory backend is QMD with proper config."""

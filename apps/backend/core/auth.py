@@ -78,6 +78,23 @@ class AuthContext:
         return self.org_role == "org:admin"
 
 
+def resolve_owner_id(auth: AuthContext) -> str:
+    """Return the container/workspace owner: org_id if in org, else user_id."""
+    return auth.org_id if auth.is_org_context else auth.user_id
+
+
+def get_owner_type(auth: AuthContext) -> str:
+    """Return 'org' or 'personal' based on auth context."""
+    return "org" if auth.is_org_context else "personal"
+
+
+def require_org_admin(auth: AuthContext) -> AuthContext:
+    """Raise 403 if user is in an org but not an admin. Personal context passes through."""
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(status_code=403, detail="Organization admin access required")
+    return auth
+
+
 def _find_rsa_key(jwks: dict, kid: str) -> dict | None:
     """Find RSA key in JWKS by key ID."""
     for key in jwks.get("keys", []):

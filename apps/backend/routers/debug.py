@@ -9,8 +9,8 @@ import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import AuthContext, get_current_user
-from core.config import settings
+from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
+from core.config import settings, TIER_CONFIG
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.config import write_mcporter_config, write_openclaw_config
 from core.containers.ecs_manager import EcsManagerError
@@ -45,15 +45,17 @@ async def require_non_production() -> None:
 async def provision_container(
     auth: AuthContext = Depends(get_current_user),
 ):
-    user_id = auth.user_id
+    owner_id = resolve_owner_id(auth)
+    owner_type = get_owner_type(auth)
 
     # Check for existing service
-    existing = await container_repo.get_by_user_id(user_id)
+    existing = await container_repo.get_by_owner_id(owner_id)
     if existing and existing.get("status") in ("running", "provisioning"):
         return {
             "status": "already_running",
             "service_name": existing.get("service_name"),
-            "user_id": user_id,
+            "owner_id": owner_id,
+            "owner_type": owner_type,
         }
 
     try:
@@ -61,27 +63,29 @@ async def provision_container(
 
         # Step 1: Create ECS service (desiredCount=0) — creates access
         # point and EFS dir, but does NOT start the container yet.
-        service_name = await get_ecs_manager().create_user_service(user_id, gateway_token)
+        service_name = await get_ecs_manager().create_user_service(owner_id, gateway_token)
 
         # Step 2: Write all configs to EFS before the container boots.
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
             proxy_base_url=settings.PROXY_BASE_URL,
+            tier="starter",
         )
-        get_workspace().write_file(user_id, "openclaw.json", config_json)
-        get_workspace().write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+        get_workspace().write_file(owner_id, "openclaw.json", config_json)
+        get_workspace().write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
 
         # Step 3: Now start the container — configs are on EFS.
-        await get_ecs_manager().start_user_service(user_id)
+        await get_ecs_manager().start_user_service(owner_id)
 
         return {
             "status": "provisioned",
             "service_name": service_name,
-            "user_id": user_id,
+            "owner_id": owner_id,
+            "owner_type": owner_type,
         }
     except EcsManagerError as e:
-        logger.error("Dev provision failed for user %s: %s", user_id, e)
+        logger.error("Dev provision failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
 
 
@@ -103,29 +107,67 @@ async def provision_container(
 async def redeploy_container(
     auth: AuthContext = Depends(get_current_user),
 ):
-    user_id = auth.user_id
+    owner_id = resolve_owner_id(auth)
+    owner_type = get_owner_type(auth)
 
-    container = await container_repo.get_by_user_id(user_id)
+    container = await container_repo.get_by_owner_id(owner_id)
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
-        config_json = write_openclaw_config(
-            region=settings.AWS_REGION,
-            gateway_token=container["gateway_token"],
-            proxy_base_url=settings.PROXY_BASE_URL,
-        )
-        get_workspace().write_file(user_id, "openclaw.json", config_json)
+        # Look up billing tier for this owner
+        from core.repositories import billing_repo
 
-        await get_ecs_manager().start_user_service(user_id)
+        account = await billing_repo.get_by_owner_id(owner_id)
+        tier = account.get("plan_tier", "free") if account else "free"
+        tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+
+        # Deep-merge only the fields we control (preserves OpenClaw's runtime additions)
+        from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
+        from core.containers.config import _models_for_tier
+
+        patch = {
+            "models": {
+                "providers": {
+                    "amazon-bedrock": {
+                        "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+                        "api": "bedrock-converse-stream",
+                        "auth": "aws-sdk",
+                        "models": _models_for_tier(tier),
+                    },
+                },
+            },
+            "agents": {
+                "defaults": {
+                    "model": {"primary": tier_cfg["primary_model"]},
+                    "models": tier_cfg.get("model_aliases", {}),
+                },
+            },
+        }
+
+        try:
+            await patch_openclaw_config(owner_id, patch)
+        except ConfigPatchError:
+            # No existing config — fall back to full write (first provision)
+            config_json = write_openclaw_config(
+                region=settings.AWS_REGION,
+                gateway_token=container["gateway_token"],
+                proxy_base_url=settings.PROXY_BASE_URL,
+                tier=tier,
+            )
+            get_workspace().write_file(owner_id, "openclaw.json", config_json)
+
+        await get_ecs_manager().start_user_service(owner_id)
 
         return {
             "status": "redeploying",
             "service_name": container["service_name"],
-            "user_id": user_id,
+            "owner_id": owner_id,
+            "owner_type": owner_type,
+            "tier": tier,
         }
     except EcsManagerError as e:
-        logger.error("Dev redeploy failed for user %s: %s", user_id, e)
+        logger.error("Dev redeploy failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
 
 
@@ -143,11 +185,13 @@ async def redeploy_container(
 async def remove_container(
     auth: AuthContext = Depends(get_current_user),
 ):
-    user_id = auth.user_id
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
 
     try:
-        await get_ecs_manager().delete_user_service(user_id)
+        await get_ecs_manager().delete_user_service(owner_id)
         return {"status": "removed"}
     except EcsManagerError as e:
-        logger.error("Dev remove failed for user %s: %s", user_id, e)
+        logger.error("Dev remove failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))

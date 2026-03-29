@@ -27,6 +27,7 @@ from routers import (
     integrations,
     proxy,
     settings_keys,
+    updates,
     users,
     websocket_chat,
 )
@@ -37,14 +38,39 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    import asyncio
+
+    from core.containers import get_gateway_pool
+    from core.services.update_service import run_scheduled_worker
+
     # Startup
     logger.info("Starting application...")
     await startup_containers()
+    worker_task = asyncio.create_task(run_scheduled_worker())
+
+    async def _safe_idle_checker():
+        try:
+            pool = get_gateway_pool()
+            await pool.run_idle_checker()
+        except Exception:
+            logger.warning("Idle checker not available (gateway pool init failed)")
+
+    idle_checker_task = asyncio.create_task(_safe_idle_checker())
 
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    idle_checker_task.cancel()
+    worker_task.cancel()
+    try:
+        await idle_checker_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
     await shutdown_containers()
 
 
@@ -100,12 +126,16 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=None if settings.ENVIRONMENT == "prod" else "/docs",
     redoc_url=None if settings.ENVIRONMENT == "prod" else "/redoc",
-    servers=[
-        {"url": "http://localhost:8000", "description": "Local development"},
-        {"url": "https://api-dev.isol8.co", "description": "Development"},
-        {"url": "https://api-staging.isol8.co", "description": "Staging"},
-        {"url": "https://api.isol8.co", "description": "Production"},
-    ],
+    servers=(
+        [{"url": "https://api-dev.isol8.co", "description": "Development"}]
+        if settings.ENVIRONMENT == "dev"
+        else [{"url": "https://api.isol8.co", "description": "Production"}]
+        if settings.ENVIRONMENT == "prod"
+        else [
+            {"url": "http://localhost:8000", "description": "Local development"},
+            {"url": "https://api-dev.isol8.co", "description": "Development"},
+        ]
+    ),
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
@@ -166,6 +196,9 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 
 # Container RPC proxy & file uploads (POST /rpc, POST /gateway/restart, POST /files)
 app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
+
+# Container updates (pending updates, apply/schedule)
+app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", tags=["container"])
 
 # Control UI proxy (embedded OpenClaw control UI SPA)
 app.include_router(control_ui_proxy.router, prefix="/api/v1/control-ui", tags=["control-ui"])

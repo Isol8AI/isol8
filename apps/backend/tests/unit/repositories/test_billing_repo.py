@@ -18,9 +18,9 @@ def dynamodb_table():
         client = boto3.resource("dynamodb", region_name="us-east-1")
         table = client.create_table(
             TableName="test-billing-accounts",
-            KeySchema=[{"AttributeName": "clerk_user_id", "KeyType": "HASH"}],
+            KeySchema=[{"AttributeName": "owner_id", "KeyType": "HASH"}],
             AttributeDefinitions=[
-                {"AttributeName": "clerk_user_id", "AttributeType": "S"},
+                {"AttributeName": "owner_id", "AttributeType": "S"},
                 {"AttributeName": "stripe_customer_id", "AttributeType": "S"},
             ],
             GlobalSecondaryIndexes=[
@@ -46,22 +46,22 @@ async def test_create_and_get(dynamodb_table):
     from core.repositories import billing_repo
 
     result = await billing_repo.create("user_1", "cus_abc")
-    assert result["clerk_user_id"] == "user_1"
+    assert result["owner_id"] == "user_1"
     assert result["stripe_customer_id"] == "cus_abc"
     assert result["plan_tier"] == "free"
     assert result["markup_multiplier"] == Decimal("1.4")
     assert "id" in result
 
-    item = await billing_repo.get_by_clerk_user_id("user_1")
+    item = await billing_repo.get_by_owner_id("user_1")
     assert item is not None
     assert item["stripe_customer_id"] == "cus_abc"
 
 
 @pytest.mark.asyncio
-async def test_get_by_clerk_user_id_nonexistent(dynamodb_table):
+async def test_get_by_owner_id_nonexistent(dynamodb_table):
     from core.repositories import billing_repo
 
-    item = await billing_repo.get_by_clerk_user_id("ghost")
+    item = await billing_repo.get_by_owner_id("ghost")
     assert item is None
 
 
@@ -72,7 +72,7 @@ async def test_get_by_stripe_customer_id(dynamodb_table):
     await billing_repo.create("user_2", "cus_def")
     item = await billing_repo.get_by_stripe_customer_id("cus_def")
     assert item is not None
-    assert item["clerk_user_id"] == "user_2"
+    assert item["owner_id"] == "user_2"
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_get_or_create_new(dynamodb_table):
     from core.repositories import billing_repo
 
     result = await billing_repo.get_or_create("user_new", "cus_new")
-    assert result["clerk_user_id"] == "user_new"
+    assert result["owner_id"] == "user_new"
     assert result["stripe_customer_id"] == "cus_new"
 
 
@@ -126,5 +126,5 @@ async def test_delete(dynamodb_table):
 
     await billing_repo.create("user_5", "cus_mno")
     await billing_repo.delete("user_5")
-    item = await billing_repo.get_by_clerk_user_id("user_5")
+    item = await billing_repo.get_by_owner_id("user_5")
     assert item is None

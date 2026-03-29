@@ -18,6 +18,8 @@ export class DatabaseStack extends cdk.Stack {
   public readonly containersTable: dynamodb.Table;
   public readonly billingTable: dynamodb.Table;
   public readonly apiKeysTable: dynamodb.Table;
+  public readonly usageCountersTable: dynamodb.Table;
+  public readonly pendingUpdatesTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -37,7 +39,7 @@ export class DatabaseStack extends cdk.Stack {
 
     this.containersTable = new dynamodb.Table(this, "ContainersTable", {
       tableName: `isol8-${env}-containers`,
-      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,
@@ -52,10 +54,14 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "status-index",
       partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
     });
+    this.containersTable.addGlobalSecondaryIndex({
+      indexName: "owner-type-index",
+      partitionKey: { name: "owner_type", type: dynamodb.AttributeType.STRING },
+    });
 
     this.billingTable = new dynamodb.Table(this, "BillingTable", {
       tableName: `isol8-${env}-billing-accounts`,
-      partitionKey: { name: "clerk_user_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,
@@ -76,6 +82,34 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+
+    this.usageCountersTable = new dynamodb.Table(this, "UsageCountersTable", {
+      tableName: `isol8-${env}-usage-counters`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "period", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    this.pendingUpdatesTable = new dynamodb.Table(this, "PendingUpdatesTable", {
+      tableName: `isol8-${env}-pending-updates`,
+      partitionKey: { name: "owner_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "update_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      timeToLiveAttribute: "ttl",
+    });
+    this.pendingUpdatesTable.addGlobalSecondaryIndex({
+      indexName: "status-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "scheduled_at", type: dynamodb.AttributeType.STRING },
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

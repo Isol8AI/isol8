@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useUser, UserButton } from "@clerk/nextjs";
-import { Settings, Plus, Bot } from "lucide-react";
+import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Settings, Plus, Bot, Trash2, CheckCircle, CreditCard } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -10,7 +11,6 @@ import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
-import { cn } from "@/lib/utils";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -38,19 +38,44 @@ export function ChatLayout({
   onPanelChange,
 }: ChatLayoutProps): React.ReactElement {
   const { isSignedIn } = useAuth();
-  const { user } = useUser();
+  const { user, isLoaded: userLoaded } = useUser();
+  const { organization } = useOrganization();
+  const router = useRouter();
   const api = useApi();
   const { agents, defaultId, deleteAgent, createAgent } = useAgents();
-  const { account } = useBilling();
+  const { refresh: refreshBilling, account } = useBilling();
+  const searchParams = useSearchParams();
+
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
+  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
+    () => searchParams.get("subscription") === "success",
+  );
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
 
+  const planTier = account?.tier ?? "free";
+  const userName = user?.fullName || user?.firstName || "User";
+  const userInitials = userName
+    .split(" ")
+    .map((n: string) => n[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
+  // Client-side onboarding check: redirect if user hasn't onboarded and has no org
+  useEffect(() => {
+    if (!userLoaded || !isSignedIn) return;
+    const onboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded;
+    if (!onboarded && !organization) {
+      router.replace("/onboarding");
+    }
+  }, [userLoaded, isSignedIn, user, organization, router]);
+
   useEffect(() => {
     if (!isSignedIn) return;
 
-    api.syncUser().catch((err) => console.error("User sync failed:", err));
+    api.syncUser().catch((err: unknown) => console.error("User sync failed:", err));
   }, [isSignedIn, api]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
@@ -61,6 +86,17 @@ export function ChatLayout({
       dispatchSelectAgentEvent(currentAgentId);
     }
   }, [currentAgentId]);
+
+  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss
+  useEffect(() => {
+    if (!showSubscriptionSuccess) return;
+
+    refreshBilling();
+    router.replace("/chat", { scroll: false });
+
+    const timer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
+    return () => clearTimeout(timer);
+  }, [showSubscriptionSuccess, refreshBilling, router]);
 
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
@@ -80,267 +116,252 @@ export function ChatLayout({
   }
 
   async function handleCreateAgent(): Promise<void> {
-    const name = `Agent ${agents.length + 1}`;
+    const name = "Agent " + (agents.length + 1);
     await createAgent({ name, workspace: name.toLowerCase().replace(/\s+/g, "-") });
   }
-
-  const planTier = account?.plan_tier ?? "free";
-  const userName = user?.fullName || user?.firstName || "User";
-  const userInitials =
-    user?.firstName && user?.lastName
-      ? `${user.firstName[0]}${user.lastName[0]}`
-      : user?.firstName?.[0] ?? "U";
 
   return (
     <>
       <style>{`
-        /* ── APP SHELL ── */
         .app-shell {
           display: grid;
           grid-template-columns: 260px 1fr;
           height: 100vh;
-          background: #faf7f2;
-          color: #1a1a1a;
           overflow: hidden;
         }
-
-        /* ── SIDEBAR ── */
-        .app-sidebar {
-          display: flex;
-          flex-direction: column;
+        .cream-sidebar {
           background: #f3efe6;
           border-right: 1px solid #e0dbd0;
+          display: flex;
+          flex-direction: column;
           overflow: hidden;
-          font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
         }
-
-        .app-sb-header {
-          padding: 16px 16px 0;
+        .sidebar-header {
           display: flex;
           align-items: center;
           justify-content: space-between;
+          padding: 16px 20px;
+          border-bottom: 1px solid #e0dbd0;
         }
-
-        .app-sb-logo {
-          display: inline-flex;
-          transition: opacity 0.2s;
-        }
-        .app-sb-logo:hover { opacity: 0.8; }
-
-        .app-sb-settings-btn {
-          width: 44px;
-          height: 44px;
-          border-radius: 10px;
-          border: none;
-          background: transparent;
-          cursor: pointer;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          color: #706b63;
-          transition: background 0.15s ease-out, color 0.15s ease-out;
-        }
-        .app-sb-settings-btn:hover {
-          background: rgba(6,64,43,0.06);
-          color: #06402B;
-        }
-
-        /* view tabs */
-        .app-sb-tabs {
-          display: flex;
-          margin: 16px 16px 0;
-          background: rgba(0,0,0,0.04);
-          border-radius: 10px;
-          padding: 3px;
-        }
-        .app-sb-tab {
-          flex: 1;
-          padding: 10px 0;
-          min-height: 44px;
-          font-size: 12px;
-          font-weight: 600;
-          text-align: center;
-          border-radius: 8px;
-          border: none;
-          background: transparent;
-          color: #706b63;
-          cursor: pointer;
-          transition: background 0.15s ease-out, color 0.15s ease-out, box-shadow 0.15s ease-out;
-          text-transform: uppercase;
-          letter-spacing: 1px;
-          font-family: inherit;
-        }
-        .app-sb-tab.active {
-          background: white;
-          color: #1a1a1a;
-          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
-        }
-        .app-sb-tab:not(.active):hover { color: #4a4640; }
-        .app-sb-tab:active { transform: scale(0.98); }
-
-        /* new agent button */
-        .app-sb-new-btn {
+        .sidebar-logo {
           display: flex;
           align-items: center;
           gap: 8px;
-          width: calc(100% - 32px);
-          margin: 12px 16px 0;
-          padding: 12px 14px;
-          min-height: 44px;
-          border-radius: 10px;
-          border: 1px dashed #d4cfc5;
-          background: transparent;
-          font-size: 13px;
-          font-weight: 500;
-          font-family: inherit;
-          color: #706b63;
-          cursor: pointer;
-          transition: border-color 0.15s ease-out, color 0.15s ease-out, background 0.15s ease-out;
         }
-        .app-sb-new-btn:hover {
-          border-color: #06402B;
-          color: #06402B;
-          background: rgba(6,64,43,0.03);
+        .sidebar-logo svg {
+          width: 24px;
+          height: 24px;
         }
-        .app-sb-new-btn:active {
-          background: rgba(6,64,43,0.06);
+        .sidebar-logo span {
+          font-size: 16px;
+          font-weight: 600;
+          color: #1a1a1a;
+          letter-spacing: -0.01em;
         }
-
-        /* agent list */
-        .app-sb-list {
-          flex: 1;
-          overflow-y: auto;
-          padding: 8px 12px;
-        }
-        .app-sb-list::-webkit-scrollbar { width: 4px; }
-        .app-sb-list::-webkit-scrollbar-thumb { background: #d4cfc5; border-radius: 2px; }
-
-        .app-sb-item {
+        .sidebar-settings-link {
+          color: #8a8578;
+          transition: color 0.15s;
           display: flex;
           align-items: center;
-          gap: 10px;
-          padding: 10px 12px;
-          min-height: 44px;
-          border-radius: 10px;
-          cursor: pointer;
-          transition: background 0.15s ease-out;
-          position: relative;
-          border: none;
-          background: transparent;
-          width: 100%;
-          text-align: left;
-          font-family: inherit;
         }
-        .app-sb-item:hover { background: rgba(0,0,0,0.04); }
-        .app-sb-item:active { background: rgba(0,0,0,0.07); }
-        .app-sb-item.active { background: rgba(6,64,43,0.08); }
-
-        .app-sb-item-avatar {
+        .sidebar-settings-link:hover {
+          color: #1a1a1a;
+        }
+        .tab-switcher {
+          display: flex;
+          margin: 12px 16px;
+          background: #e8e3d9;
+          border-radius: 999px;
+          padding: 3px;
+        }
+        .tab-btn {
+          flex: 1;
+          padding: 6px 0;
+          font-size: 13px;
+          font-weight: 500;
+          text-align: center;
+          border-radius: 999px;
+          border: none;
+          cursor: pointer;
+          transition: all 0.15s;
+          background: transparent;
+          color: #8a8578;
+        }
+        .tab-btn.active {
+          background: #fff;
+          color: #1a1a1a;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .tab-btn:not(.active):hover {
+          color: #1a1a1a;
+        }
+        .new-agent-btn {
+          margin: 4px 16px 8px;
+          padding: 8px 12px;
+          border: 1.5px dashed #cdc7ba;
+          border-radius: 8px;
+          background: transparent;
+          color: #8a8578;
+          font-size: 13px;
+          font-weight: 500;
+          cursor: pointer;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          transition: all 0.15s;
+        }
+        .new-agent-btn:hover {
+          border-color: #8a8578;
+          color: #1a1a1a;
+          background: rgba(255,255,255,0.5);
+        }
+        .agent-list {
+          flex: 1;
+          overflow-y: auto;
+          padding: 0 12px;
+        }
+        .agent-item {
+          display: flex;
+          align-items: center;
+          padding: 8px 8px;
+          border-radius: 8px;
+          cursor: pointer;
+          transition: background 0.15s;
+          position: relative;
+          gap: 10px;
+        }
+        .agent-item:hover {
+          background: rgba(255,255,255,0.6);
+        }
+        .agent-item.active {
+          background: #fff;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+        }
+        .agent-avatar {
           width: 32px;
           height: 32px;
-          border-radius: 10px;
-          background: #06402B;
+          border-radius: 6px;
+          background: #2d8a4e;
           display: flex;
           align-items: center;
           justify-content: center;
           flex-shrink: 0;
         }
-
-        .app-sb-item-info {
+        .agent-avatar svg {
+          color: #fff;
+          width: 16px;
+          height: 16px;
+        }
+        .agent-info {
           flex: 1;
           min-width: 0;
         }
-        .app-sb-item-name {
+        .agent-name {
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 500;
           color: #1a1a1a;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .app-sb-item-model {
-          font-size: 12px;
-          color: #7a756d;
+        .agent-model {
+          font-size: 11px;
+          color: #8a8578;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .app-sb-item-status {
+        .agent-status-dot {
           width: 7px;
           height: 7px;
           border-radius: 50%;
-          background: #4a9e74;
+          background: #2d8a4e;
           flex-shrink: 0;
-          box-shadow: 0 0 0 2px #f3efe6;
         }
-        .app-sb-item.active .app-sb-item-status {
-          box-shadow: 0 0 0 2px rgba(6,64,43,0.08);
+        .agent-delete-btn {
+          position: absolute;
+          right: 4px;
+          top: 50%;
+          transform: translateY(-50%);
+          opacity: 0;
+          background: none;
+          border: none;
+          padding: 4px;
+          cursor: pointer;
+          color: #8a8578;
+          border-radius: 4px;
+          display: flex;
+          align-items: center;
+          transition: all 0.15s;
         }
-
-        /* sidebar footer */
-        .app-sb-footer {
-          padding: 12px 16px;
+        .agent-item:hover .agent-delete-btn {
+          opacity: 1;
+        }
+        .agent-delete-btn:hover {
+          color: #dc2626;
+          background: rgba(220,38,38,0.08);
+        }
+        .sidebar-footer {
           border-top: 1px solid #e0dbd0;
+          padding: 12px 16px;
+        }
+        .user-row {
           display: flex;
           align-items: center;
           gap: 10px;
         }
-        .app-sb-user-avatar {
-          width: 28px;
-          height: 28px;
+        .user-avatar {
+          width: 32px;
+          height: 32px;
           border-radius: 50%;
-          background: #06402B;
+          background: #d4cfc4;
           display: flex;
           align-items: center;
           justify-content: center;
-          font-size: 11px;
+          font-size: 12px;
           font-weight: 600;
-          color: white;
+          color: #5a5549;
           flex-shrink: 0;
         }
-        .app-sb-user-name {
+        .user-info {
+          flex: 1;
+          min-width: 0;
+        }
+        .user-name {
           font-size: 13px;
           font-weight: 500;
           color: #1a1a1a;
-          flex: 1;
-          min-width: 0;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
-        .app-sb-plan-badge {
+        .plan-badge {
           font-size: 10px;
-          font-weight: 700;
-          letter-spacing: 1px;
+          font-weight: 600;
           text-transform: uppercase;
-          color: #06402B;
-          background: rgba(6,64,43,0.08);
-          padding: 3px 10px;
-          border-radius: 999px;
-          flex-shrink: 0;
+          letter-spacing: 0.05em;
+          padding: 1px 6px;
+          border-radius: 4px;
+          background: #e8e3d9;
+          color: #8a8578;
         }
-
-        /* version text */
-        .app-sb-version {
-          padding: 0 16px 12px;
-          font-size: 10px;
-          color: #b0aa9f;
+        .version-text {
           text-align: center;
-          letter-spacing: 2px;
-          text-transform: uppercase;
+          font-size: 10px;
+          color: #b5ae9e;
           font-family: monospace;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          padding-top: 8px;
         }
-
-        /* ── MAIN AREA ── */
-        .app-main {
+        .main-area {
+          background: #faf7f2;
           display: flex;
           flex-direction: column;
-          overflow: hidden;
+          min-height: 0;
           position: relative;
-          background: #faf7f2;
         }
-
-        .app-main-header {
+        .main-header {
           height: 56px;
           border-bottom: 1px solid #e0dbd0;
           display: flex;
@@ -348,59 +369,78 @@ export function ChatLayout({
           justify-content: flex-end;
           padding: 0 16px;
           background: #faf7f2;
-          flex-shrink: 0;
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
           z-index: 20;
         }
-
-        .app-main-content {
+        .main-content {
           flex: 1;
           min-height: 0;
+          padding-top: 56px;
           display: flex;
           flex-direction: column;
           overflow-y: auto;
         }
-
-        /* mobile sidebar hidden */
-        @media (max-width: 767px) {
+        .subscription-banner {
+          margin: 8px 16px;
+          padding: 12px;
+          background: rgba(45,138,78,0.08);
+          border: 1px solid rgba(45,138,78,0.2);
+          border-radius: 8px;
+          display: flex;
+          align-items: center;
+          gap: 12px;
+        }
+        .subscription-banner svg {
+          color: #2d8a4e;
+          flex-shrink: 0;
+        }
+        .subscription-banner p {
+          font-size: 14px;
+          color: #2d6b3f;
+          margin: 0;
+        }
+        @media (max-width: 768px) {
           .app-shell {
             grid-template-columns: 1fr;
           }
-          .app-sidebar {
+          .cream-sidebar {
             display: none;
           }
         }
       `}</style>
 
       <div className="app-shell">
-        {/* ════════════ SIDEBAR ════════════ */}
-        <nav className="app-sidebar" aria-label="Main navigation">
-          {/* Header: Logo + Settings */}
-          <div className="app-sb-header">
-            <Link href="/" className="app-sb-logo" aria-label="isol8 home">
-              <svg width="28" height="28" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <rect width="100" height="100" rx="22" fill="#06402B"/>
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), 'Lora', serif" fontStyle="italic" fontSize="52" fill="white">8</text>
+        <div className="cream-sidebar">
+          {/* Header */}
+          <div className="sidebar-header">
+            <div className="sidebar-logo">
+              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect x="3" y="3" width="18" height="18" rx="4" fill="#1a1a1a"/>
+                <rect x="7" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="13" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="7" y="13" width="4" height="4" rx="1" fill="#f3efe6"/>
+                <rect x="13" y="13" width="4" height="4" rx="1" fill="#2d8a4e"/>
               </svg>
-            </Link>
-            <Link href="/settings" className="app-sb-settings-btn" title="Settings" aria-label="Settings">
-              <Settings size={16} />
+              <span>isol8</span>
+            </div>
+            <Link href="/settings" className="sidebar-settings-link">
+              <Settings size={18} />
             </Link>
           </div>
 
-          {/* Chat / Control tab switcher */}
-          <div className="app-sb-tabs" role="tablist" aria-label="View switcher">
+          {/* Tab Switcher */}
+          <div className="tab-switcher">
             <button
-              className={cn("app-sb-tab", activeView === "chat" && "active")}
-              role="tab"
-              aria-selected={activeView === "chat"}
+              className={`tab-btn${activeView === "chat" ? " active" : ""}`}
               onClick={() => onViewChange("chat")}
             >
               Chat
             </button>
             <button
-              className={cn("app-sb-tab", activeView === "control" && "active")}
-              role="tab"
-              aria-selected={activeView === "control"}
+              className={`tab-btn${activeView === "control" ? " active" : ""}`}
               onClick={() => onViewChange("control")}
             >
               Control
@@ -410,34 +450,41 @@ export function ChatLayout({
           {activeView === "chat" ? (
             <>
               {/* New Agent Button */}
-              <button className="app-sb-new-btn" onClick={handleCreateAgent}>
-                <Plus size={14} strokeWidth={2.5} />
+              <button className="new-agent-btn" onClick={handleCreateAgent}>
+                <Plus size={14} />
                 New Agent
               </button>
 
               {/* Agent List */}
-              <div className="app-sb-list" role="listbox" aria-label="Agents">
+              <div className="agent-list">
                 {agents.map((agent) => (
-                  <button
+                  <div
                     key={agent.id}
-                    className={cn("app-sb-item", currentAgentId === agent.id && "active")}
-                    role="option"
-                    aria-selected={currentAgentId === agent.id}
+                    className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
                     onClick={() => handleSelectAgent(agent.id)}
                   >
-                    <div className="app-sb-item-avatar" aria-hidden="true">
-                      <Bot size={14} color="white" />
+                    <div className="agent-avatar">
+                      <Bot />
                     </div>
-                    <div className="app-sb-item-info">
-                      <div className="app-sb-item-name">{agentDisplayName(agent)}</div>
+                    <div className="agent-info">
+                      <div className="agent-name">{agentDisplayName(agent)}</div>
                       {agent.model && (
-                        <div className="app-sb-item-model">
+                        <div className="agent-model">
                           {agent.model.split("/").pop()?.replace(/-v\d+:\d+$/, "") || agent.model}
                         </div>
                       )}
                     </div>
-                    <div className="app-sb-item-status" aria-label="Online" />
-                  </button>
+                    <div className="agent-status-dot" />
+                    <button
+                      className="agent-delete-btn"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleDeleteAgent(agent.id);
+                      }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
                 ))}
               </div>
             </>
@@ -445,30 +492,41 @@ export function ChatLayout({
             <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
           )}
 
-          {/* User Footer */}
-          <div className="app-sb-footer">
-            <div className="app-sb-user-avatar" aria-hidden="true">{userInitials}</div>
-            <div className="app-sb-user-name">{userName}</div>
-            <div className="app-sb-plan-badge">{planTier}</div>
+          {/* Footer */}
+          <div className="sidebar-footer">
+            <div className="user-row">
+              <div className="user-avatar">{userInitials}</div>
+              <div className="user-info">
+                <div className="user-name">{userName}</div>
+              </div>
+              <span className="plan-badge">{planTier}</span>
+            </div>
+            <div className="version-text">isol8 v0.1</div>
           </div>
+        </div>
 
-          {/* Version */}
-          <div className="app-sb-version">isol8 v0.1</div>
-        </nav>
-
-        {/* ════════════ MAIN CONTENT ════════════ */}
-        <div className="app-main">
-          <header className="app-main-header">
+        <div className="main-area">
+          <div className="main-header">
             <UserButton
               appearance={{
                 elements: {
                   avatarBox: "h-8 w-8",
                 },
               }}
-            />
-          </header>
+            >
+              <UserButton.MenuItems>
+                <UserButton.Link label="Settings" labelIcon={<CreditCard className="h-4 w-4" />} href="/settings" />
+              </UserButton.MenuItems>
+            </UserButton>
+          </div>
 
-          <div className="app-main-content">
+          <div className="main-content">
+            {showSubscriptionSuccess && (
+              <div className="subscription-banner">
+                <CheckCircle size={16} />
+                <p>Subscription confirmed! Your agent is being upgraded.</p>
+              </div>
+            )}
             <ProvisioningStepper>{children}</ProvisioningStepper>
           </div>
         </div>

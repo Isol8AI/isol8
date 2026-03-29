@@ -11,7 +11,7 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.containers import get_workspace
 from core.containers.workspace import WorkspaceError
 
@@ -87,7 +87,8 @@ def _validate_servers(servers: dict) -> None:
 async def list_mcp_servers(
     auth: AuthContext = Depends(get_current_user),
 ):
-    config = _read_mcporter_config(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    config = _read_mcporter_config(owner_id)
     return {"servers": config.get("servers", {})}
 
 
@@ -103,10 +104,13 @@ async def replace_mcp_servers(
     body: PutServersRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
     _validate_servers(body.servers)
-    config = _read_mcporter_config(auth.user_id)
+    config = _read_mcporter_config(owner_id)
     config["servers"] = body.servers
-    _write_mcporter_config(auth.user_id, config)
+    _write_mcporter_config(owner_id, config)
     return {"servers": config["servers"]}
 
 
@@ -123,11 +127,14 @@ async def upsert_mcp_server(
     body: PatchServerRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
-    config = _read_mcporter_config(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
+    config = _read_mcporter_config(owner_id)
     servers = config.get("servers", {})
     servers[name] = body.model_dump()
     config["servers"] = servers
-    _write_mcporter_config(auth.user_id, config)
+    _write_mcporter_config(owner_id, config)
     return {"servers": config["servers"]}
 
 
@@ -143,9 +150,12 @@ async def delete_mcp_server(
     name: str,
     auth: AuthContext = Depends(get_current_user),
 ):
-    config = _read_mcporter_config(auth.user_id)
+    owner_id = resolve_owner_id(auth)
+    if auth.is_org_context:
+        require_org_admin(auth)
+    config = _read_mcporter_config(owner_id)
     servers = config.get("servers", {})
     servers.pop(name, None)
     config["servers"] = servers
-    _write_mcporter_config(auth.user_id, config)
+    _write_mcporter_config(owner_id, config)
     return {"servers": config["servers"]}
