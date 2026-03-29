@@ -403,6 +403,11 @@ def write_openclaw_config(
         "update": {"checkOnStart": False},
     }
 
+    # Disable cron for free tier -- containers scale to zero after idle,
+    # so cron jobs would prevent that or wake containers unnecessarily.
+    if tier == "free":
+        config["cron"] = {"enabled": False}
+
     return json.dumps(config, indent=2)
 
 

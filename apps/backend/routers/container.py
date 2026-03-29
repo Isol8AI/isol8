@@ -102,6 +102,20 @@ async def container_provision(
     # Check if container already exists (idempotent)
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing:
+        if existing.get("status") == "stopped":
+            # Container was scaled to zero -- restart it
+            try:
+                await get_ecs_manager().start_user_service(owner_id)
+                logger.info("Restarted stopped container for owner %s", owner_id)
+                return {
+                    "status": "provisioning",
+                    "service_name": existing.get("service_name"),
+                    "owner_id": owner_id,
+                    "already_existed": True,
+                }
+            except EcsManagerError as e:
+                logger.error("Restart failed for stopped container, owner %s: %s", owner_id, e)
+                raise HTTPException(status_code=503, detail=str(e))
         return {
             "status": existing.get("status", "unknown"),
             "service_name": existing.get("service_name"),

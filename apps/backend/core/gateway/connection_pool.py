@@ -11,6 +11,7 @@ req/res/event protocol. Background reader task handles incoming messages:
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any, Dict, Optional, Set
 
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
+_IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
+_IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
 
 
 class GatewayConnection:
@@ -34,11 +37,13 @@ class GatewayConnection:
         ip: str,
         token: str,
         management_api: Any,
+        on_activity: Any = None,
     ) -> None:
         self.user_id = user_id
         self.ip = ip
         self.token = token
         self._management_api = management_api
+        self._on_activity = on_activity  # callback(user_id) for idle tracking
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
@@ -212,6 +217,8 @@ class GatewayConnection:
 
     def _forward_to_frontends(self, message: dict) -> None:
         """Send a message to all registered frontend connections."""
+        if self._on_activity:
+            self._on_activity(self.user_id)
         for conn_id in list(self._frontend_connections):
             try:
                 self._management_api.send_message(conn_id, message)
@@ -499,6 +506,11 @@ class GatewayConnectionPool:
         self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
+        self._last_activity: Dict[str, float] = {}  # user_id -> last activity timestamp
+
+    def _touch_activity(self, user_id: str) -> None:
+        """Update last activity timestamp for a user."""
+        self._last_activity[user_id] = time.time()
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
@@ -507,6 +519,7 @@ class GatewayConnectionPool:
             ip=ip,
             token=token,
             management_api=self._management_api,
+            on_activity=self._touch_activity,
         )
         # Transfer any already-registered frontend connections
         for fc in self._frontend_connections.get(user_id, set()):
@@ -525,6 +538,7 @@ class GatewayConnectionPool:
         token: str,
     ) -> Any:
         """Send RPC via persistent connection (create if needed)."""
+        self._last_activity[user_id] = time.time()
         async with self._lock:
             conn = self._connections.get(user_id)
             if conn is not None and not conn.is_connected:
@@ -538,6 +552,7 @@ class GatewayConnectionPool:
 
     def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
         """Register a frontend WS connection for event forwarding."""
+        self._last_activity[user_id] = time.time()
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
@@ -583,8 +598,67 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
+        self._last_activity.pop(user_id, None)
 
     async def close_all(self) -> None:
         """Shutdown: close all connections."""
         for user_id in list(self._connections.keys()):
             await self.close_user(user_id)
+
+    async def run_idle_checker(self) -> None:
+        """Background task: stop free-tier containers after 5 minutes of inactivity.
+
+        Runs every 60 seconds. For each user in the pool, checks:
+        1. No frontend connections (no active WebSocket clients)
+        2. No activity for 5 minutes
+        3. User is on free tier (billing_repo.get_by_owner_id)
+
+        If all conditions are met, stops the container via ECS and closes
+        the gateway connection.
+        """
+        from core.containers.ecs_manager import EcsManagerError
+
+        logger.info("Idle checker started (interval=%ds, timeout=%ds)", _IDLE_CHECK_INTERVAL, _IDLE_TIMEOUT)
+        try:
+            while True:
+                await asyncio.sleep(_IDLE_CHECK_INTERVAL)
+                now = time.time()
+
+                # Snapshot user_ids with active connections
+                user_ids = list(self._connections.keys())
+                for user_id in user_ids:
+                    # Skip if user has active frontend connections
+                    fcs = self._frontend_connections.get(user_id, set())
+                    if fcs:
+                        continue
+
+                    # Skip if recent activity
+                    last = self._last_activity.get(user_id, now)
+                    if now - last < _IDLE_TIMEOUT:
+                        continue
+
+                    # Check if user is on the free tier
+                    try:
+                        from core.repositories import billing_repo
+
+                        account = await billing_repo.get_by_owner_id(user_id)
+                        if not account or account.get("plan_tier") != "free":
+                            continue
+                    except Exception:
+                        logger.warning("Idle checker: failed to look up billing for user %s, skipping", user_id)
+                        continue
+
+                    # Scale to zero
+                    try:
+                        from core.containers import get_ecs_manager
+
+                        await get_ecs_manager().stop_user_service(user_id)
+                        await self.close_user(user_id)
+                        logger.info("Scale-to-zero: stopped container for idle free user %s", user_id)
+                    except EcsManagerError as e:
+                        logger.error("Scale-to-zero: failed to stop container for user %s: %s", user_id, e)
+                    except Exception:
+                        logger.exception("Scale-to-zero: unexpected error for user %s", user_id)
+        except asyncio.CancelledError:
+            logger.info("Idle checker stopped")
+            return

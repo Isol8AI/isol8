@@ -40,18 +40,25 @@ async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     import asyncio
 
+    from core.containers import get_gateway_pool
     from core.services.update_service import run_scheduled_worker
 
     # Startup
     logger.info("Starting application...")
     await startup_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
+    idle_checker_task = asyncio.create_task(get_gateway_pool().run_idle_checker())
 
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    idle_checker_task.cancel()
     worker_task.cancel()
+    try:
+        await idle_checker_task
+    except asyncio.CancelledError:
+        pass
     try:
         await worker_task
     except asyncio.CancelledError:
