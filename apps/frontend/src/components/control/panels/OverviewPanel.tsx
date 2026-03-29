@@ -127,7 +127,7 @@ export function OverviewPanel() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -145,7 +145,7 @@ export function OverviewPanel() {
 
   if (!rawHealth && !container) {
     return (
-      <div className="p-6 text-sm text-muted-foreground">No container available.</div>
+      <div className="p-6 text-sm text-[#8a8578]">No container available.</div>
     );
   }
 
@@ -163,7 +163,7 @@ export function OverviewPanel() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold">Overview</h2>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-[#8a8578]">
             Container status and gateway health snapshot.
           </p>
         </div>
@@ -175,8 +175,8 @@ export function OverviewPanel() {
       {/* Two-column: Container Info + Snapshot */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Container Info */}
-        <div className="rounded-lg border border-border p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
             Container Info
           </h3>
           <div className="space-y-2">
@@ -210,8 +210,8 @@ export function OverviewPanel() {
         </div>
 
         {/* Snapshot */}
-        <div className="rounded-lg border border-border p-4 space-y-3">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+        <div className="rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
             Snapshot
           </h3>
           <div className="space-y-2">
@@ -288,7 +288,7 @@ function InfoRow({
 }) {
   const badgeClass =
     badge === "green"
-      ? "text-green-600 bg-green-500/10"
+      ? "text-[#2d8a4e] bg-[#e8f5e9]"
       : badge === "yellow"
         ? "text-yellow-600 bg-yellow-500/10"
         : badge === "red"
@@ -297,7 +297,7 @@ function InfoRow({
 
   return (
     <div className="flex items-center justify-between text-sm">
-      <div className="flex items-center gap-2 text-muted-foreground">
+      <div className="flex items-center gap-2 text-[#8a8578]">
         {icon}
         <span>{label}</span>
       </div>
@@ -322,10 +322,10 @@ function SummaryCard({
   value: string;
 }) {
   return (
-    <div className="rounded-lg border border-border p-3 text-center">
+    <div className="rounded-lg border border-[#e0dbd0] bg-white p-3 text-center">
       <div className="flex items-center justify-center gap-1.5 mb-1">
-        <Icon className="h-3 w-3 text-muted-foreground/60" />
-        <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60">
+        <Icon className="h-3 w-3 text-[#8a8578]/60" />
+        <span className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">
           {label}
         </span>
       </div>
@@ -373,7 +373,7 @@ function GatewayActions({ onRefresh }: { onRefresh: () => void }) {
 
   return (
     <div className="space-y-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
         Quick Actions
       </h3>
 
@@ -382,7 +382,7 @@ function GatewayActions({ onRefresh }: { onRefresh: () => void }) {
           className={cn(
             "flex items-center gap-2 rounded-md border p-2.5 text-xs",
             feedback.type === "success"
-              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-400"
+              ? "border-[#2d8a4e]/30 bg-[#e8f5e9] text-[#2d8a4e]"
               : "border-destructive/30 bg-destructive/5 text-destructive",
           )}
         >
@@ -393,7 +393,7 @@ function GatewayActions({ onRefresh }: { onRefresh: () => void }) {
           )}
           <span className="flex-1">{feedback.message}</span>
           <button
-            className="text-muted-foreground hover:text-foreground"
+            className="text-[#8a8578] hover:text-[#1a1a1a]"
             onClick={() => setFeedback(null)}
           >
             dismiss
@@ -461,14 +461,14 @@ function ActionButton({
   const isBusy = busy === busyKey;
   return (
     <button
-      className="flex items-center gap-2 rounded-lg border border-border p-2.5 text-left transition-colors hover:bg-accent/50 disabled:opacity-50 disabled:cursor-not-allowed"
+      className="flex items-center gap-2 rounded-lg border border-[#e0dbd0] bg-white p-2.5 text-left transition-colors hover:bg-[#f3efe6] disabled:opacity-50 disabled:cursor-not-allowed"
       disabled={busy !== null}
       onClick={onClick}
     >
       {isBusy ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground shrink-0" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578] shrink-0" />
       ) : (
-        <Icon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+        <Icon className="h-3.5 w-3.5 text-[#8a8578] shrink-0" />
       )}
       <span className="text-xs font-medium">{label}</span>
     </button>

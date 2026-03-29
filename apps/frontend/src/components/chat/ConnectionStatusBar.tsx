@@ -30,15 +30,15 @@ interface HealthData {
 
 const stateStyles: Record<ConnectionState, string> = {
   connected:
-    "bg-emerald-500/10 border-emerald-500/20 text-emerald-700 dark:text-emerald-400",
+    "bg-[#e8f5e9] border-[#c8e6c9] text-[#2d7a50]",
   connecting:
-    "bg-yellow-500/10 border-yellow-500/20 text-yellow-700 dark:text-yellow-400",
+    "bg-[#fff8e1] border-[#ffe0b2] text-[#8a6a22]",
   disconnected:
-    "bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400",
+    "bg-[#fce4ec] border-[#f8bbd0] text-[#a5311f]",
   container_starting:
-    "bg-yellow-500/10 border-yellow-500/20 text-yellow-700 dark:text-yellow-400",
+    "bg-[#fff8e1] border-[#ffe0b2] text-[#8a6a22]",
   container_down:
-    "bg-red-500/10 border-red-500/20 text-red-700 dark:text-red-400",
+    "bg-[#fce4ec] border-[#f8bbd0] text-[#a5311f]",
 };
 
 // ---------------------------------------------------------------------------
@@ -185,7 +185,7 @@ export function ConnectionStatusBar() {
         {connectionState === "disconnected" && (
           <button
             onClick={reconnect}
-            className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded hover:bg-black/5 transition-colors"
           >
             <RefreshCw className="h-3 w-3" />
             Reconnect
@@ -196,7 +196,7 @@ export function ConnectionStatusBar() {
           <button
             onClick={handleRestartGateway}
             disabled={restarting}
-            className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded hover:bg-black/5 dark:hover:bg-white/5 transition-colors disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 px-2 py-0.5 text-xs font-medium rounded hover:bg-black/5 transition-colors disabled:opacity-50"
           >
             {restarting ? (
               <Loader2 className="h-3 w-3 animate-spin" />

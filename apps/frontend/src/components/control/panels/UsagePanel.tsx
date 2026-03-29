@@ -102,7 +102,7 @@ export function UsagePanel() {
   if (accountLoading && usageLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -123,9 +123,9 @@ export function UsagePanel() {
       </div>
 
       {error && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/5 border border-destructive/20">
-          <AlertCircle className="h-3.5 w-3.5 text-destructive flex-shrink-0" />
-          <span className="text-xs text-destructive">{error}</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-red-50 border border-red-200">
+          <AlertCircle className="h-3.5 w-3.5 text-red-600 flex-shrink-0" />
+          <span className="text-xs text-red-600">{error}</span>
           <Button variant="outline" size="sm" className="ml-auto h-6 text-xs" onClick={handleRefresh}>
             Retry
           </Button>
@@ -134,16 +134,16 @@ export function UsagePanel() {
 
       {/* Plan + Status */}
       {account && (
-        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+        <div className="flex items-center gap-3 text-xs text-[#8a8578]">
           <span>
-            Plan: <span className="font-medium text-foreground capitalize">{account.tier}</span>
+            Plan: <span className="font-medium text-[#1a1a1a] capitalize">{account.tier}</span>
           </span>
           {account.is_subscribed && (
-            <span className="text-emerald-600 font-medium">Active Subscription</span>
+            <span className="text-[#2d8a4e] font-medium">Active Subscription</span>
           )}
           {usage?.period && (
             <span>
-              Period: <span className="font-medium text-foreground">{usage.period}</span>
+              Period: <span className="font-medium text-[#1a1a1a]">{usage.period}</span>
             </span>
           )}
         </div>
@@ -151,20 +151,20 @@ export function UsagePanel() {
 
       {/* Budget bar */}
       {account && (
-        <div className="rounded-lg border border-border p-4 space-y-2">
+        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-2">
           <div className="flex items-center justify-between text-sm">
             <span className="font-medium">Budget</span>
-            <span className="text-muted-foreground">
+            <span className="text-[#8a8578]">
               {formatDollars(currentSpend)} / {formatDollars(includedBudget)}
               <span className="ml-2 text-xs">({budgetPercent.toFixed(1)}%)</span>
             </span>
           </div>
-          <div className="h-2.5 rounded-full bg-muted/30 overflow-hidden">
+          <div className="h-2.5 rounded-full bg-[#e0dbd0]/50 overflow-hidden">
             <div
               className={cn(
                 "h-full rounded-full transition-all",
                 budgetPercent < 75
-                  ? "bg-emerald-500"
+                  ? "bg-[#06402B]"
                   : budgetPercent < 90
                     ? "bg-yellow-500"
                     : "bg-red-500",
@@ -173,7 +173,7 @@ export function UsagePanel() {
             />
           </div>
           {account.within_included ? (
-            <p className="text-xs text-emerald-600">Within included budget</p>
+            <p className="text-xs text-[#2d8a4e]">Within included budget</p>
           ) : (
             <p className="text-xs text-amber-600">Exceeding included budget</p>
           )}
@@ -182,27 +182,27 @@ export function UsagePanel() {
 
       {/* Token Breakdown */}
       {usage && (
-        <div className="rounded-lg border border-border p-4 space-y-3">
+        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
           <h3 className="text-sm font-medium">Token Usage</h3>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Input</div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">Input</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_input_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Output</div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">Output</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_output_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Cache Read</div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">Cache Read</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_cache_read_tokens)}</div>
             </div>
             <div>
-              <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Cache Write</div>
+              <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">Cache Write</div>
               <div className="text-lg font-semibold">{formatTokens(usage.total_cache_write_tokens)}</div>
             </div>
           </div>
-          <div className="border-t border-border pt-2 flex items-center justify-between text-xs text-muted-foreground">
+          <div className="border-t border-[#e0dbd0] pt-2 flex items-center justify-between text-xs text-[#8a8578]">
             <span>{usage.request_count} requests this period</span>
             <span>Total spend: {formatDollars(usage.total_spend, 4)}</span>
           </div>
@@ -211,12 +211,12 @@ export function UsagePanel() {
 
       {/* Overage Settings (paid tiers only) */}
       {isPaid && account && (
-        <div className="rounded-lg border border-border p-4 space-y-3">
+        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
           <h3 className="text-sm font-medium">Overage Settings</h3>
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
               <p className="text-sm">Allow overage spending</p>
-              <p className="text-xs text-muted-foreground">
+              <p className="text-xs text-[#8a8578]">
                 Continue using agents after exceeding your included budget
               </p>
             </div>
@@ -228,7 +228,7 @@ export function UsagePanel() {
               onClick={handleOverageToggle}
               className={cn(
                 "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                overageEnabled ? "bg-emerald-500" : "bg-muted",
+                overageEnabled ? "bg-[#2d8a4e]" : "bg-[#e0dbd0]",
                 overageSaving && "opacity-50 cursor-not-allowed",
               )}
             >
@@ -242,7 +242,7 @@ export function UsagePanel() {
           </div>
           {overageEnabled && (
             <div className="flex items-center gap-2 pt-1">
-              <label className="text-xs text-muted-foreground whitespace-nowrap">
+              <label className="text-xs text-[#8a8578] whitespace-nowrap">
                 Spending limit ($):
               </label>
               <Input
@@ -270,13 +270,13 @@ export function UsagePanel() {
 
       {/* Per-member table (org admins only) */}
       {isOrgAdmin && usage && usage.by_member && usage.by_member.length > 0 && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <div className="px-4 py-2 bg-muted/20 border-b border-border">
+        <div className="rounded-lg border border-[#e0dbd0] overflow-hidden">
+          <div className="px-4 py-2 bg-[#f3efe6] border-b border-[#e0dbd0]">
             <h3 className="text-sm font-medium">Usage by Member</h3>
           </div>
           <table className="w-full text-xs">
             <thead>
-              <tr className="border-b border-border text-muted-foreground">
+              <tr className="border-b border-[#e0dbd0] text-[#8a8578]">
                 <th className="text-left px-4 py-2 font-medium">Member</th>
                 <th className="text-right px-4 py-2 font-medium">Requests</th>
                 <th className="text-right px-4 py-2 font-medium">Spend</th>
@@ -284,14 +284,14 @@ export function UsagePanel() {
             </thead>
             <tbody>
               {usage.by_member.map((member) => (
-                <tr key={member.user_id} className="border-b border-border/50 hover:bg-accent/30">
+                <tr key={member.user_id} className="border-b border-[#e0dbd0]/50 hover:bg-[#f3efe6]/50">
                   <td className="px-4 py-2">
                     <div>{member.display_name || member.email || member.user_id}</div>
                     {member.display_name && member.email && (
-                      <div className="text-muted-foreground/60">{member.email}</div>
+                      <div className="text-[#8a8578]/60">{member.email}</div>
                     )}
                   </td>
-                  <td className="px-4 py-2 text-right text-muted-foreground">
+                  <td className="px-4 py-2 text-right text-[#8a8578]">
                     {member.request_count}
                   </td>
                   <td className="px-4 py-2 text-right font-mono">
@@ -306,9 +306,9 @@ export function UsagePanel() {
 
       {/* Lifetime spend */}
       {(usage || account) && (
-        <div className="rounded-lg border border-border p-4">
+        <div className="rounded-lg border border-[#e0dbd0] p-4">
           <div className="flex items-center justify-between text-sm">
-            <span className="text-muted-foreground">Lifetime Spend</span>
+            <span className="text-[#8a8578]">Lifetime Spend</span>
             <span className="font-mono font-medium">
               {formatDollars(usage?.lifetime_spend ?? account?.lifetime_spend ?? 0)}
             </span>

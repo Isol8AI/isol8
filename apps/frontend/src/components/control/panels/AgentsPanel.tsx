@@ -202,7 +202,7 @@ export function AgentsPanel() {
   if (isLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
+        <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
   }
@@ -210,7 +210,7 @@ export function AgentsPanel() {
   if (error) {
     return (
       <div className="p-6 space-y-3">
-        <p className="text-sm text-destructive">{error.message}</p>
+        <p className="text-sm text-[#dc2626]">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -235,11 +235,11 @@ export function AgentsPanel() {
   ];
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="p-6 space-y-4 bg-[#faf7f2]">
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-lg font-semibold">Agents</h2>
-          <p className="text-xs text-muted-foreground">{agents.length} configured.</p>
+          <h2 className="text-lg font-semibold text-[#1a1a1a]">Agents</h2>
+          <p className="text-xs text-[#8a8578]">{agents.length} configured.</p>
         </div>
         <div className="flex items-center gap-1">
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
@@ -289,15 +289,15 @@ export function AgentsPanel() {
       {current && (
         <>
           {/* Sub-tabs */}
-          <div className="flex gap-1 border-b border-border">
+          <div className="flex gap-1 border-b border-[#e0dbd0]">
             {TABS.map((tab) => (
               <button
                 key={tab.id}
                 className={cn(
                   "flex items-center gap-1 px-3 py-1.5 text-xs font-medium transition-colors",
                   activeTab === tab.id
-                    ? "text-foreground border-b-2 border-primary"
-                    : "text-muted-foreground hover:text-foreground"
+                    ? "text-[#1a1a1a] border-b-2 border-[#2d8a4e]"
+                    : "text-[#8a8578] hover:text-[#1a1a1a]"
                 )}
                 onClick={() => setActiveTab(tab.id)}
               >
@@ -425,8 +425,8 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
 
   return (
     <div className="space-y-4 mt-2">
-      <div className="rounded-lg border border-border p-4 space-y-3">
-        <h3 className="text-sm font-medium">Identity</h3>
+      <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
+        <h3 className="text-sm font-medium text-[#1a1a1a]">Identity</h3>
         <div className="grid grid-cols-2 gap-3">
           <InfoRow label="Agent ID" value={agentId} />
           <InfoRow label="Name" value={(identity as Record<string, unknown>)?.name as string || agent?.name || "\u2014"} />
@@ -436,8 +436,8 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
       </div>
 
       {/* Model selector */}
-      <div className="rounded-lg border border-border p-4 space-y-3">
-        <h3 className="text-sm font-medium">Model</h3>
+      <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
+        <h3 className="text-sm font-medium text-[#1a1a1a]">Model</h3>
         {selectorModels.length > 0 ? (
           <ModelSelector
             models={selectorModels}
@@ -447,13 +447,13 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
             tierModel={tierModel}
           />
         ) : (
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-[#8a8578]">
             {currentModel ? currentModel.split("/").pop() : "No models configured in gateway"}
           </p>
         )}
-        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578]" />}
         {modelError && (
-          <p className="text-xs text-destructive flex items-center gap-1">
+          <p className="text-xs text-[#dc2626] flex items-center gap-1">
             <AlertCircle className="h-3 w-3" /> {modelError}
           </p>
         )}
@@ -462,10 +462,10 @@ function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string;
       {/* Raw data */}
       {data && (
         <details className="group">
-          <summary className="text-xs text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">
+          <summary className="text-xs text-[#8a8578]/60 cursor-pointer hover:text-[#8a8578]">
             Raw identity data
           </summary>
-          <pre className="mt-2 text-xs bg-muted/30 rounded-lg p-3 overflow-auto max-h-48">
+          <pre className="mt-2 text-xs bg-[#f3efe6] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
             {JSON.stringify(data, null, 2)}
           </pre>
         </details>
@@ -530,13 +530,13 @@ function AgentFilesTab({ agentId }: { agentId: string }) {
   }, [callRpc, agentId, selectedFile, fileContent, mutate]);
 
   if (isLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-muted-foreground mt-4" />;
+    return <Loader2 className="h-4 w-4 animate-spin text-[#8a8578] mt-4" />;
   }
 
   if (error) {
     return (
       <div className="mt-4 space-y-2">
-        <p className="text-sm text-destructive">{error.message}</p>
+        <p className="text-sm text-[#dc2626]">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -560,7 +560,7 @@ function AgentFilesTab({ agentId }: { agentId: string }) {
   return (
     <div className="mt-2 space-y-3">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-muted-foreground">{allFiles.length} files</p>
+        <p className="text-xs text-[#8a8578]">{allFiles.length} files</p>
         <Button variant="ghost" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>
@@ -574,20 +574,20 @@ function AgentFilesTab({ agentId }: { agentId: string }) {
             className={cn(
               "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-left transition-colors",
               selectedFile === f.name
-                ? "bg-primary/10 text-primary border border-primary/30"
-                : "hover:bg-muted/50",
+                ? "bg-[#e8f5e9] text-[#2d8a4e] border border-[#2d8a4e]/30"
+                : "hover:bg-[#f3efe6]",
               f.missing && "opacity-50",
             )}
             onClick={() => handleFileClick(f.name)}
           >
             {f.missing ? (
-              <FileWarning className="h-3 w-3 flex-shrink-0 text-muted-foreground" />
+              <FileWarning className="h-3 w-3 flex-shrink-0 text-[#8a8578]" />
             ) : (
               <FileText className="h-3 w-3 flex-shrink-0" />
             )}
             <span className="truncate">{f.name}</span>
             {f.size != null && !f.missing && (
-              <span className="text-[10px] text-muted-foreground/50 ml-auto flex-shrink-0">
+              <span className="text-[10px] text-[#8a8578]/50 ml-auto flex-shrink-0">
                 {f.size > 1024 ? `${(f.size / 1024).toFixed(1)}k` : `${f.size}b`}
               </span>
             )}
@@ -597,8 +597,8 @@ function AgentFilesTab({ agentId }: { agentId: string }) {
 
       {/* File editor */}
       {selectedFile && (
-        <div className="rounded-lg border border-border overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 bg-muted/20 border-b border-border">
+        <div className="rounded-lg border border-[#e0dbd0] overflow-hidden">
+          <div className="flex items-center justify-between px-3 py-2 bg-[#f3efe6]/50 border-b border-[#e0dbd0]">
             <span className="text-xs font-medium">{selectedFile}</span>
             <div className="flex items-center gap-2">
               {dirty && <span className="text-[10px] text-yellow-500">unsaved</span>}
@@ -619,19 +619,19 @@ function AgentFilesTab({ agentId }: { agentId: string }) {
           </div>
 
           {saveError && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-destructive/5 border-b border-destructive/20">
-              <AlertCircle className="h-3 w-3 text-destructive flex-shrink-0" />
-              <span className="text-xs text-destructive">{saveError}</span>
+            <div className="flex items-center gap-2 px-3 py-2 bg-[#fce4ec] border-b border-[#dc2626]/20">
+              <AlertCircle className="h-3 w-3 text-[#dc2626] flex-shrink-0" />
+              <span className="text-xs text-[#dc2626]">{saveError}</span>
             </div>
           )}
 
           {loadingFile ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <Loader2 className="h-4 w-4 animate-spin text-[#8a8578]" />
             </div>
           ) : (
             <textarea
-              className="w-full min-h-[300px] p-3 text-xs font-mono bg-background resize-y focus:outline-none"
+              className="w-full min-h-[300px] p-3 text-xs font-mono bg-white text-[#1a1a1a] resize-y focus:outline-none"
               value={fileContent}
               onChange={(e) => {
                 setFileContent(e.target.value);
@@ -849,13 +849,13 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
   }, [callRpc, agentId, localProfile, localAlsoAllow, localDeny, mutateConfig]);
 
   if (catalogLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-muted-foreground mt-4" />;
+    return <Loader2 className="h-4 w-4 animate-spin text-[#8a8578] mt-4" />;
   }
 
   if (catalogError) {
     return (
       <div className="mt-4 space-y-2">
-        <p className="text-sm text-destructive">{catalogError.message}</p>
+        <p className="text-sm text-[#dc2626]">{catalogError.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutateCatalog()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
         </Button>
@@ -876,7 +876,7 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-medium">Tool Access</h3>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-xs text-[#8a8578]">
             {enabledCount}/{totalTools} enabled
           </p>
         </div>
@@ -907,29 +907,29 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
       </div>
 
       {saveError && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-destructive/5 border border-destructive/20">
-          <AlertCircle className="h-3 w-3 text-destructive flex-shrink-0" />
-          <span className="text-xs text-destructive">{saveError}</span>
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[#fce4ec] border border-[#dc2626]/20">
+          <AlertCircle className="h-3 w-3 text-[#dc2626] flex-shrink-0" />
+          <span className="text-xs text-[#dc2626]">{saveError}</span>
         </div>
       )}
 
       {/* Global allow warning */}
       {globalToolsConfig?.allow && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-500/5 border border-yellow-500/20">
+        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-50 border border-yellow-300/40">
           <AlertCircle className="h-3 w-3 text-yellow-600 flex-shrink-0" />
           <span className="text-xs text-yellow-700">
-            Global <code className="text-[10px] bg-muted/50 px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
+            Global <code className="text-[10px] bg-[#f3efe6] px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
           </span>
         </div>
       )}
 
       {/* Profile info */}
-      <div className="flex items-center gap-3 text-xs text-muted-foreground">
+      <div className="flex items-center gap-3 text-xs text-[#8a8578]">
         <span>
-          Profile: <span className="font-medium text-foreground">{effectiveProfile}</span>
+          Profile: <span className="font-medium text-[#1a1a1a]">{effectiveProfile}</span>
         </span>
         <span>
-          Source: <span className="font-medium text-foreground">{profileSource}</span>
+          Source: <span className="font-medium text-[#1a1a1a]">{profileSource}</span>
         </span>
         {dirty && (
           <span className="text-yellow-500 font-medium">unsaved</span>
@@ -938,7 +938,7 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
 
       {/* Quick presets */}
       <div className="flex items-center gap-1 flex-wrap">
-        <span className="text-xs text-muted-foreground mr-1">Quick Presets:</span>
+        <span className="text-xs text-[#8a8578] mr-1">Quick Presets:</span>
         {presets.map((preset) => (
           <Button
             key={preset.id}
@@ -963,7 +963,7 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
       {/* Tool sections with toggles */}
       {sections.map((section) => (
         <div key={section.id} className="space-y-1">
-          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
+          <h4 className="text-xs font-semibold text-[#8a8578] uppercase tracking-wide">
             {section.label}
           </h4>
           <div className="space-y-0.5">
@@ -972,7 +972,7 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
               return (
                 <div
                   key={tool.id}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-accent/50 group"
+                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[#f3efe6] group"
                 >
                   <button
                     className="flex-shrink-0 focus:outline-none"
@@ -980,26 +980,26 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
                     aria-label={`Toggle ${tool.label}`}
                   >
                     {allowed ? (
-                      <ToggleRight className="h-4 w-4 text-primary" />
+                      <ToggleRight className="h-4 w-4 text-[#2d8a4e]" />
                     ) : (
-                      <ToggleLeft className="h-4 w-4 text-muted-foreground/40" />
+                      <ToggleLeft className="h-4 w-4 text-[#8a8578]/40" />
                     )}
                   </button>
                   <div className="min-w-0 flex-1">
                     <div className={cn(
                       "text-sm font-medium truncate",
-                      !allowed && "text-muted-foreground/50",
+                      !allowed && "text-[#8a8578]/50",
                     )}>
                       {tool.label}
                     </div>
                     {tool.description && (
-                      <div className="text-xs text-muted-foreground/70 line-clamp-1">
+                      <div className="text-xs text-[#8a8578]/70 line-clamp-1">
                         {tool.description}
                       </div>
                     )}
                   </div>
                   {tool.source && (
-                    <span className="text-[10px] text-muted-foreground/40 flex-shrink-0">
+                    <span className="text-[10px] text-[#8a8578]/40 flex-shrink-0">
                       {String(tool.source)}
                     </span>
                   )}
@@ -1012,10 +1012,10 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
 
       {/* Raw data */}
       <details className="group">
-        <summary className="text-xs text-muted-foreground/60 cursor-pointer hover:text-muted-foreground">
+        <summary className="text-xs text-[#8a8578]/60 cursor-pointer hover:text-[#8a8578]">
           Raw catalog data
         </summary>
-        <pre className="mt-2 text-xs bg-muted/30 rounded-lg p-3 overflow-auto max-h-48">
+        <pre className="mt-2 text-xs bg-[#f3efe6] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
           {JSON.stringify(catalogData, null, 2)}
         </pre>
       </details>
@@ -1030,8 +1030,8 @@ function AgentToolsTab({ agentId }: { agentId: string }) {
 function InfoRow({ label, value }: { label: string; value: string }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground/60">{label}</div>
-      <div className="text-sm font-medium truncate">{value}</div>
+      <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">{label}</div>
+      <div className="text-sm font-medium truncate text-[#1a1a1a]">{value}</div>
     </div>
   );
 }
