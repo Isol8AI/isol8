@@ -111,12 +111,16 @@ app = FastAPI(
     openapi_url=f"{settings.API_V1_STR}/openapi.json",
     docs_url=None if settings.ENVIRONMENT == "prod" else "/docs",
     redoc_url=None if settings.ENVIRONMENT == "prod" else "/redoc",
-    servers=[
-        {"url": "http://localhost:8000", "description": "Local development"},
-        {"url": "https://api-dev.isol8.co", "description": "Development"},
-        {"url": "https://api-staging.isol8.co", "description": "Staging"},
-        {"url": "https://api.isol8.co", "description": "Production"},
-    ],
+    servers=(
+        [{"url": "https://api-dev.isol8.co", "description": "Development"}]
+        if settings.ENVIRONMENT == "dev"
+        else [{"url": "https://api.isol8.co", "description": "Production"}]
+        if settings.ENVIRONMENT == "prod"
+        else [
+            {"url": "http://localhost:8000", "description": "Local development"},
+            {"url": "https://api-dev.isol8.co", "description": "Development"},
+        ]
+    ),
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
