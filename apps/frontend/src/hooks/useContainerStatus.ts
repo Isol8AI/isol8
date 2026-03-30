@@ -5,13 +5,15 @@ import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { BACKEND_URL } from "@/lib/api";
 
-interface ContainerStatus {
+export interface ContainerStatus {
   service_name: string;
   status: string;
   substatus: string | null;
   created_at: string | null;
   updated_at: string | null;
   region: string;
+  last_error: string | null;
+  last_error_at: string | null;
 }
 
 interface UseContainerStatusOptions {

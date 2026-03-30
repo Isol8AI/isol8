@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ChatInput } from "./ChatInput";
-import { ConnectionStatusBar } from "./ConnectionStatusBar";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
@@ -527,7 +526,6 @@ export function AgentChatWindow({
   if (chatError) {
     return (
       <div className="flex flex-col h-full bg-[#faf7f2]">
-        <ConnectionStatusBar />
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
             <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
@@ -545,7 +543,6 @@ export function AgentChatWindow({
   if (isLoadingHistory) {
     return (
       <div className="flex flex-col h-full bg-[#faf7f2]">
-        <ConnectionStatusBar />
         <div className="flex-1 flex items-center justify-center">
           <Loader2 className="h-6 w-6 animate-spin text-[#8a8578]" />
         </div>
@@ -556,7 +553,6 @@ export function AgentChatWindow({
   if (isInitialState) {
     return (
       <div className="flex flex-col h-full bg-[#faf7f2]">
-        <ConnectionStatusBar />
         <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
@@ -595,7 +591,6 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-      <ConnectionStatusBar />
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
       <UpdateBanner />
       <DowngradeBanner />

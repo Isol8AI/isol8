@@ -51,6 +51,28 @@ class GatewayConnection:
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
 
+    def _emit_status_change(self, state: str, reason: str) -> None:
+        """Push a status_change event to all connected frontend WebSockets."""
+        from datetime import datetime, timezone
+
+        # Wrap as {type: "event"} so the frontend WS router in useGateway
+        # delivers it to onEvent subscribers (unrecognized types are dropped).
+        message = {
+            "type": "event",
+            "event": "status_change",
+            "payload": {
+                "state": state,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        payload = json.dumps(message)
+        for conn_id in list(self._frontend_connections):
+            try:
+                self._management_api.send_message(conn_id, payload)
+            except Exception:
+                logger.debug("Failed to push status_change to %s", conn_id)
+
     @property
     def is_connected(self) -> bool:
         if self._ws is None:
@@ -78,6 +100,7 @@ class GatewayConnection:
         await self._handshake()
         await self._verify_health()
         self._reader_task = asyncio.create_task(self._reader_loop())
+        self._emit_status_change("HEALTHY", "Gateway connected")
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
@@ -454,6 +477,7 @@ class GatewayConnection:
             if self._closed:
                 return
             logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
+            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
             # Reject all pending RPCs
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
@@ -477,6 +501,7 @@ class GatewayConnection:
 
     async def close(self) -> None:
         """Shut down: cancel reader, close WebSocket."""
+        self._emit_status_change("GATEWAY_DOWN", "Gateway connection closed")
         self._closed = True
         if self._grace_task and not self._grace_task.done():
             self._grace_task.cancel()

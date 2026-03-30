@@ -74,6 +74,66 @@ class TestContainerStatus:
 
     @pytest.mark.asyncio
     @patch("routers.container.get_ecs_manager")
+    async def test_returns_last_error_fields(self, mock_get_ecs, async_client):
+        """Should include last_error and last_error_at when present on the container."""
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "owner_id": "user_test_123",
+                    "service_name": "openclaw-abc123",
+                    "gateway_token": "secret-token-value",
+                    "status": "running",
+                    "substatus": None,
+                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                    "access_point_id": "fsap-test123",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T14:00:00+00:00",
+                    "last_error": "OutOfMemoryError",
+                    "last_error_at": "2026-01-15T13:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+
+        response = await async_client.get("/api/v1/container/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["last_error"] == "OutOfMemoryError"
+        assert data["last_error_at"] == "2026-01-15T13:00:00+00:00"
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_returns_null_last_error_when_absent(self, mock_get_ecs, async_client):
+        """Should return null for last_error and last_error_at when not set on the container."""
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "owner_id": "user_test_123",
+                    "service_name": "openclaw-abc123",
+                    "gateway_token": "secret-token-value",
+                    "status": "running",
+                    "substatus": None,
+                    "task_arn": "arn:aws:ecs:us-east-1:123456789:task/test-task",
+                    "access_point_id": "fsap-test123",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T14:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+
+        response = await async_client.get("/api/v1/container/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["last_error"] is None
+        assert data["last_error_at"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
     async def test_returns_404_without_container(self, mock_get_ecs, async_client):
         """Should return 404 when user has no container."""
         mock_ecs = AsyncMock()

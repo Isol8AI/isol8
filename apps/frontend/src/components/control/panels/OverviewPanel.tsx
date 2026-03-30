@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useCallback } from "react";
 import {
   Loader2,
   RefreshCw,
@@ -14,13 +13,9 @@ import {
   MapPin,
   CreditCard,
   Activity,
-  RotateCcw,
-  Download,
-  Radio,
-  AlertCircle,
-  CheckCircle2,
 } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
@@ -116,6 +111,8 @@ export function OverviewPanel() {
   const { planTier } = useBilling();
 
   const { data: cronData } = useGatewayRpc<CronJob[]>("cron.list");
+
+  const { state: healthState, reason: healthReason, canRecover, actionLabel, recover, isRecovering } = useSystemHealth();
 
   const isLoading = healthLoading && statusLoading;
   const error = healthError || statusError;
@@ -265,8 +262,43 @@ export function OverviewPanel() {
         />
       </div>
 
-      {/* Gateway Actions */}
-      <GatewayActions onRefresh={handleRefresh} />
+      {/* Health Summary */}
+      <div className="rounded-lg border border-[#d5d0c7] bg-[#f3efe6] p-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "h-2.5 w-2.5 rounded-full",
+                healthState === "HEALTHY" ? "bg-[#2d8a4e]" :
+                healthState === "STARTING" || healthState === "RECOVERING" ? "bg-yellow-500 animate-pulse" :
+                "bg-red-500"
+              )}
+            />
+            <span className="text-sm font-medium text-[#1a1a1a]">
+              {healthState === "HEALTHY" ? "System Healthy" :
+               healthState === "STARTING" ? "Starting..." :
+               healthState === "RECOVERING" ? "Recovering..." :
+               healthState === "GATEWAY_DOWN" ? "Gateway Down" :
+               "Container Down"}
+            </span>
+          </div>
+          {canRecover && actionLabel && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={recover}
+              disabled={isRecovering}
+              className="text-xs"
+            >
+              {isRecovering ? (
+                <Loader2 className="h-3 w-3 animate-spin mr-1" />
+              ) : null}
+              {actionLabel}
+            </Button>
+          )}
+        </div>
+        <p className="text-xs text-[#8a8578] mt-1">{healthReason}</p>
+      </div>
     </div>
   );
 }
@@ -334,143 +366,3 @@ function SummaryCard({
   );
 }
 
-// ---------------------------------------------------------------------------
-// Gateway Actions
-// ---------------------------------------------------------------------------
-
-function GatewayActions({ onRefresh }: { onRefresh: () => void }) {
-  const callRpc = useGatewayRpcMutation();
-  const [busy, setBusy] = useState<string | null>(null);
-  const [feedback, setFeedback] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
-
-  const runAction = useCallback(
-    async (
-      label: string,
-      method: string,
-      params?: Record<string, unknown>,
-      postAction?: () => void,
-    ) => {
-      setBusy(label);
-      setFeedback(null);
-      try {
-        await callRpc(method, params);
-        setFeedback({ type: "success", message: `${label}: success` });
-        postAction?.();
-      } catch (err) {
-        setFeedback({
-          type: "error",
-          message: `${label}: ${err instanceof Error ? err.message : String(err)}`,
-        });
-      } finally {
-        setBusy(null);
-      }
-    },
-    [callRpc],
-  );
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-xs font-semibold uppercase tracking-wider text-[#8a8578]">
-        Quick Actions
-      </h3>
-
-      {feedback && (
-        <div
-          className={cn(
-            "flex items-center gap-2 rounded-md border p-2.5 text-xs",
-            feedback.type === "success"
-              ? "border-[#2d8a4e]/30 bg-[#e8f5e9] text-[#2d8a4e]"
-              : "border-destructive/30 bg-destructive/5 text-destructive",
-          )}
-        >
-          {feedback.type === "success" ? (
-            <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-          ) : (
-            <AlertCircle className="h-3.5 w-3.5 shrink-0" />
-          )}
-          <span className="flex-1">{feedback.message}</span>
-          <button
-            className="text-[#8a8578] hover:text-[#1a1a1a]"
-            onClick={() => setFeedback(null)}
-          >
-            dismiss
-          </button>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        <ActionButton
-          icon={RotateCcw}
-          label="Reload Config"
-          busy={busy}
-          busyKey="Reload Config"
-          onClick={() => runAction("Reload Config", "config.apply", {}, onRefresh)}
-        />
-        <ActionButton
-          icon={Download}
-          label="Update Gateway"
-          busy={busy}
-          busyKey="Update Gateway"
-          onClick={() => {
-            if (!window.confirm("Update gateway? This will restart the service.")) return;
-            runAction("Update Gateway", "update.run", {}, () =>
-              setTimeout(onRefresh, 5000),
-            );
-          }}
-        />
-        <ActionButton
-          icon={Radio}
-          label="Probe Channels"
-          busy={busy}
-          busyKey="Probe Channels"
-          onClick={() =>
-            runAction("Probe Channels", "channels.status", {
-              probe: true,
-              timeoutMs: 8000,
-            })
-          }
-        />
-        <ActionButton
-          icon={Activity}
-          label="Health Check"
-          busy={busy}
-          busyKey="Health Check"
-          onClick={() => runAction("Health Check", "health", {}, onRefresh)}
-        />
-      </div>
-    </div>
-  );
-}
-
-function ActionButton({
-  icon: Icon,
-  label,
-  busy,
-  busyKey,
-  onClick,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  busy: string | null;
-  busyKey: string;
-  onClick: () => void;
-}) {
-  const isBusy = busy === busyKey;
-  return (
-    <button
-      className="flex items-center gap-2 rounded-lg border border-[#e0dbd0] bg-white p-2.5 text-left transition-colors hover:bg-[#f3efe6] disabled:opacity-50 disabled:cursor-not-allowed"
-      disabled={busy !== null}
-      onClick={onClick}
-    >
-      {isBusy ? (
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578] shrink-0" />
-      ) : (
-        <Icon className="h-3.5 w-3.5 text-[#8a8578] shrink-0" />
-      )}
-      <span className="text-xs font-medium">{label}</span>
-    </button>
-  );
-}

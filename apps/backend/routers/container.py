@@ -77,6 +77,8 @@ async def container_status(
         "created_at": container.get("created_at"),
         "updated_at": container.get("updated_at"),
         "region": settings.AWS_REGION,
+        "last_error": container.get("last_error"),
+        "last_error_at": container.get("last_error_at"),
     }
 
 

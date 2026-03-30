@@ -36,8 +36,12 @@ const TIMEOUT_MS = 180_000;
 
 export function ProvisioningStepper({
   children,
+  trigger = "onboarding",
 }: {
   children: React.ReactNode;
+  /** "onboarding" = full flow (billing → container → gateway → channels → ready).
+   *  "recovery" = skip billing, start from container provisioning. */
+  trigger?: "onboarding" | "recovery";
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
@@ -96,8 +100,9 @@ export function ProvisioningStepper({
 
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
-    // Free tier auto-provisions; paid tiers need subscription first
-    if (!isSubscribed && !isFree) return "payment";
+    // Free tier auto-provisions; paid tiers need subscription first.
+    // Recovery flow skips billing — the user already has a plan.
+    if (trigger !== "recovery" && !isSubscribed && !isFree) return "payment";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
     if (!containerReady || !gatewayHealth) return "gateway";
@@ -119,7 +124,7 @@ export function ProvisioningStepper({
 
     // No channels connected — show onboarding
     return "channels";
-  }, [isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
+  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
