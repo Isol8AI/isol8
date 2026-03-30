@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Plus, MessageSquare, Loader2, Trash2, Bot, Settings } from "lucide-react";
+import { HealthIndicator } from "@/components/chat/HealthIndicator";
 
 interface Session {
   id: string;
@@ -34,6 +35,7 @@ interface SidebarProps extends React.HTMLAttributes<HTMLDivElement> {
   onSelectAgent?: (name: string) => void;
   onDeleteAgent?: (name: string) => void;
   onOpenAgentSettings?: (name: string) => void;
+  onRecoveryReprovision?: () => void;
 }
 
 export function Sidebar({
@@ -53,10 +55,14 @@ export function Sidebar({
   onSelectAgent,
   onDeleteAgent,
   onOpenAgentSettings,
+  onRecoveryReprovision,
   ...props
 }: SidebarProps) {
   return (
     <div className={cn("flex flex-col h-full", className)} {...props}>
+      {/* Health Indicator */}
+      <HealthIndicator onRecoveryReprovision={onRecoveryReprovision} />
+
       {/* Tab Switcher */}
       {onTabChange && (
         <div className="px-3 pt-2 pb-1">
