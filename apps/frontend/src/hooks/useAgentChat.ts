@@ -283,6 +283,19 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
         return;
       }
 
+      if (msg.type === "thinking") {
+        if (currentAssistantIdRef.current) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === currentAssistantIdRef.current
+                ? { ...m, thinking: (m.thinking ? m.thinking + "\n\n" : "") + msg.content }
+                : m,
+            ),
+          );
+        }
+        return;
+      }
+
       if (msg.type === "tool_start") {
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>

@@ -54,6 +54,7 @@ export interface BudgetExceededPayload {
 
 export type ChatIncomingMessage =
   | { type: "chunk"; content: string }
+  | { type: "thinking"; content: string }
   | { type: "done" }
   | { type: "error"; message: string; code?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }

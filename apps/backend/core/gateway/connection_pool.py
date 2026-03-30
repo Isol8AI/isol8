@@ -66,10 +66,9 @@ class GatewayConnection:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         }
-        payload = json.dumps(message)
         for conn_id in list(self._frontend_connections):
             try:
-                self._management_api.send_message(conn_id, payload)
+                self._management_api.send_message(conn_id, message)
             except Exception:
                 logger.debug("Failed to push status_change to %s", conn_id)
 
@@ -233,10 +232,32 @@ class GatewayConnection:
             return None
         content = msg.get("content", [])
         if isinstance(content, list) and content:
+            # Find the last text block (skip thinking blocks)
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") in ("text", "output_text"):
+                    return block.get("text") or None
+            # Fallback: last block regardless of type
             block = content[-1]
             if isinstance(block, dict):
                 return block.get("text") or None
         return None
+
+    @staticmethod
+    def _extract_thinking_text(payload: dict) -> str | None:
+        """Extract thinking/reasoning text from a chat event's message.content field."""
+        msg = payload.get("message")
+        if not isinstance(msg, dict):
+            return None
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return None
+        thinking_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                text = block.get("thinking") or block.get("text") or ""
+                if text:
+                    thinking_parts.append(text)
+        return "\n\n".join(thinking_parts) if thinking_parts else None
 
     def _forward_to_frontends(self, message: dict) -> None:
         """Send a message to all registered frontend connections."""
@@ -439,6 +460,10 @@ class GatewayConnection:
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
                 if state == "final":
+                    # Send thinking content if present (before visible text)
+                    thinking_text = self._extract_thinking_text(payload)
+                    if thinking_text:
+                        self._forward_to_frontends({"type": "thinking", "content": thinking_text})
                     # Send complete text as safety net before done signal
                     final_text = self._extract_chat_text(payload)
                     if final_text:
