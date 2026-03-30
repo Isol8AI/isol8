@@ -226,24 +226,32 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
             <div
               key={msg.id}
               className={cn(
-                "flex w-full flex-col group relative",
-                msg.role === "user" ? "items-end" : "items-start"
+                "flex w-full group relative",
+                msg.role === "user" ? "justify-end" : "justify-start gap-3"
               )}
             >
+              {/* Assistant avatar */}
               {msg.role === "assistant" && (
-                msg.content.startsWith("Error: ")
-                  ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
-                  : <MessageToolbar modelName={msg.model} />
+                <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
+                  <Bot className="h-4 w-4 text-white" />
+                </div>
               )}
 
-              <div
-                className={cn(
-                  "relative text-sm leading-7",
-                  msg.role === "user"
-                    ? "text-[#1a1a1a] max-w-[85%] text-right"
-                    : "text-[#302d28] w-full pl-0"
+              <div className="flex flex-col min-w-0 max-w-[85%]">
+                {msg.role === "assistant" && (
+                  msg.content.startsWith("Error: ")
+                    ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
+                    : <MessageToolbar modelName={msg.model} />
                 )}
-              >
+
+                <div
+                  className={cn(
+                    "relative text-sm leading-7",
+                    msg.role === "user"
+                      ? "bg-[#f0ebe2] text-[#1a1a1a] rounded-2xl rounded-br-md px-4 py-2.5"
+                      : "text-[#302d28] w-full"
+                  )}
+                >
                 {msg.role === "assistant" && msg.thinking && (
                    <ThinkingBlock content={msg.thinking} />
                 )}
@@ -280,6 +288,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                     <span>Agent is working</span>
                   </div>
                 )}
+                </div>
               </div>
             </div>
           );
