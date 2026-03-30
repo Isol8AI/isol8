@@ -76,6 +76,17 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     return existing
 
 
+async def update_error(owner_id: str, error: str) -> dict | None:
+    """Record the last error for a container."""
+    return await update_fields(
+        owner_id,
+        {
+            "last_error": error,
+            "last_error_at": utc_now_iso(),
+        },
+    )
+
+
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
