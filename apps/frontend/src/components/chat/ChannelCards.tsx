@@ -451,8 +451,8 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
       }`}
     >
       <div className="text-center mb-8">
-        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-white/5 mb-4">
-          <MessageCircle className="h-6 w-6 text-white/60" />
+        <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-[#f0ebe2] mb-4">
+          <MessageCircle className="h-6 w-6 text-[#8a8578]" />
         </div>
         <h2 className="text-xl font-semibold text-foreground mb-1">Connect a channel</h2>
         <p className="text-sm text-muted-foreground">
@@ -520,8 +520,8 @@ export function ChannelCards({ onDismiss }: ChannelCardsProps) {
               <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">Steps</p>
               <ol className="space-y-2">
                 {expandedDef.instructions.map((step, i) => (
-                  <li key={i} className="flex gap-2.5 text-sm text-white/80">
-                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-white/10 text-white/50 text-xs flex items-center justify-center font-medium">
+                  <li key={i} className="flex gap-2.5 text-sm text-[#1a1a1a]">
+                    <span className="flex-shrink-0 w-5 h-5 rounded-full bg-[#f0ebe2] text-[#8a8578] text-xs flex items-center justify-center font-medium">
                       {i + 1}
                     </span>
                     <span>{step}</span>
