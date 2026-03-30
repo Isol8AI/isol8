@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, Trash2, CheckCircle, CreditCard } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -278,29 +278,6 @@ export function ChatLayout({
           background: #2d8a4e;
           flex-shrink: 0;
         }
-        .agent-delete-btn {
-          position: absolute;
-          right: 4px;
-          top: 50%;
-          transform: translateY(-50%);
-          opacity: 0;
-          background: none;
-          border: none;
-          padding: 4px;
-          cursor: pointer;
-          color: #8a8578;
-          border-radius: 4px;
-          display: flex;
-          align-items: center;
-          transition: all 0.15s;
-        }
-        .agent-item:hover .agent-delete-btn {
-          opacity: 1;
-        }
-        .agent-delete-btn:hover {
-          color: #dc2626;
-          background: rgba(220,38,38,0.08);
-        }
         .sidebar-footer {
           border-top: 1px solid #e0dbd0;
           padding: 12px 16px;
@@ -475,15 +452,6 @@ export function ChatLayout({
                       )}
                     </div>
                     <div className="agent-status-dot" />
-                    <button
-                      className="agent-delete-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteAgent(agent.id);
-                      }}
-                    >
-                      <Trash2 size={14} />
-                    </button>
                   </div>
                 ))}
               </div>

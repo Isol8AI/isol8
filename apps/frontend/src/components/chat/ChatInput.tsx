@@ -172,7 +172,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
           ) : (
             <Button
               size="icon"
-              className="shrink-0 h-8 w-8 rounded-full"
+              className="shrink-0 h-8 w-8 rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white disabled:bg-[#e0dbd0] disabled:text-[#b5ae9e]"
               onClick={handleSend}
               disabled={(!input.trim() && pendingFiles.length === 0) || isDisabled}
               data-testid="send-button"

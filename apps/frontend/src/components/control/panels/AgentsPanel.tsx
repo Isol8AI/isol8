@@ -14,6 +14,7 @@ import {
   FileWarning,
   ToggleLeft,
   ToggleRight,
+  Trash2,
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
@@ -195,9 +196,12 @@ const FALLBACK_SECTIONS: { id: string; label: string; tools: { id: string; label
 
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
+  const callRpc = useGatewayRpcMutation();
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   if (isLoading) {
     return (
@@ -264,25 +268,53 @@ export function AgentsPanel() {
         />
       )}
 
-      {/* Agent selector */}
-      <div className="flex gap-1 flex-wrap">
+      {/* Agent cards */}
+      <div className="grid gap-2 sm:grid-cols-2">
         {agents.map((a) => (
-          <Button
+          <button
             key={a.id}
-            variant={current === a.id ? "default" : "outline"}
-            size="sm"
+            className={cn(
+              "bg-white border rounded-xl p-4 text-left transition-colors",
+              current === a.id
+                ? "border-[#2d8a4e] ring-1 ring-[#2d8a4e]/20"
+                : "border-[#e0dbd0] hover:border-[#c5c0b6]"
+            )}
             onClick={() => setSelectedAgent(a.id)}
           >
-            {a.identity?.emoji ? (
-              <span className="mr-1">{a.identity.emoji}</span>
-            ) : (
-              <Bot className="h-3.5 w-3.5 mr-1" />
-            )}
-            {a.identity?.name || a.name || a.id}
-            {a.id === defaultId && (
-              <span className="ml-1.5 text-[10px] opacity-60">default</span>
-            )}
-          </Button>
+            <div className="flex items-start justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                {a.identity?.emoji ? (
+                  <span className="text-lg flex-shrink-0">{a.identity.emoji}</span>
+                ) : (
+                  <Bot className="h-4 w-4 flex-shrink-0 text-[#8a8578]" />
+                )}
+                <div className="min-w-0">
+                  <div className="font-semibold text-sm text-[#1a1a1a] truncate">
+                    {a.identity?.name || a.name || a.id}
+                    {a.id === defaultId && (
+                      <span className="ml-1.5 text-[10px] font-normal text-[#8a8578]">default</span>
+                    )}
+                  </div>
+                  <div className="text-xs text-[#8a8578] truncate">
+                    {a.model ? a.model.split("/").pop() : "default model"}
+                  </div>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                <span className="h-2 w-2 rounded-full bg-green-500" title="Online" />
+                <button
+                  className="text-[#8a8578] hover:text-red-600 transition-colors p-1 rounded-md hover:bg-red-50"
+                  title="Delete Agent"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setDeleteTarget(a.id);
+                  }}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          </button>
         ))}
       </div>
 
@@ -310,6 +342,67 @@ export function AgentsPanel() {
           {/* Tab content */}
           <AgentTabContent agentId={current} agent={agents.find(a => a.id === current)} tab={activeTab} onAgentUpdated={() => mutate()} />
         </>
+      )}
+
+      {/* Delete confirmation modal */}
+      {deleteTarget && (
+        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-white rounded-xl border border-[#e0dbd0] p-6 max-w-md w-full mx-4 shadow-lg">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="flex-shrink-0 h-10 w-10 rounded-full bg-red-100 flex items-center justify-center">
+                <AlertCircle className="h-5 w-5 text-red-600" />
+              </div>
+              <h3 className="text-lg font-semibold text-[#1a1a1a]">Delete Agent</h3>
+            </div>
+            <p className="text-sm text-[#5a5549] mb-3">
+              This will permanently destroy:
+            </p>
+            <ul className="text-sm text-[#5a5549] space-y-1.5 mb-6 ml-1">
+              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> All conversations and history</li>
+              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Agent memory and files</li>
+              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Channel connections (Telegram, Discord, WhatsApp)</li>
+              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> GooseTown residency</li>
+              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Workspace data</li>
+            </ul>
+            <div className="flex items-center justify-end gap-3">
+              <button
+                className="px-4 py-2 text-sm font-medium text-[#5a5549] border border-[#e0dbd0] rounded-full hover:bg-[#f3efe6] transition-colors"
+                onClick={() => setDeleteTarget(null)}
+                disabled={deleting}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-full hover:bg-red-700 transition-colors disabled:opacity-50"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  try {
+                    await callRpc("agents.delete", { agentId: deleteTarget, deleteFiles: true });
+                    if (selectedAgent === deleteTarget) {
+                      setSelectedAgent(null);
+                    }
+                    mutate();
+                  } catch (err) {
+                    console.error("Failed to delete agent:", err);
+                  } finally {
+                    setDeleting(false);
+                    setDeleteTarget(null);
+                  }
+                }}
+              >
+                {deleting ? (
+                  <span className="flex items-center gap-1.5">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Deleting...
+                  </span>
+                ) : (
+                  "Yes, delete forever"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
