@@ -275,6 +275,12 @@ async def ws_message(
             )
             return Response(status_code=200)
 
+        # Track chat activity for idle detection (scale-to-zero)
+        try:
+            get_gateway_pool().touch_activity(owner_id)
+        except Exception:
+            pass  # Pool may not be initialized in tests
+
         # Budget check before forwarding to gateway
         from core.services.usage_service import check_budget
 
