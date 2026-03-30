@@ -61,14 +61,20 @@ export function ProvisioningStepper({
   });
 
   // When container status returns null (404), trigger provisioning once
+  // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
+  const needsProvision = container === null || container?.status === "stopped";
   useEffect(() => {
-    if (container === null && shouldPollContainer && !provisionRequestedRef.current) {
+    if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
       provisionRequestedRef.current = true;
       api.post("/container/provision", {}).catch((err: unknown) => {
         console.error("Container provision failed:", err);
       });
     }
-  }, [container, shouldPollContainer, api]);
+    // Reset the ref when container comes back so it can re-provision on next stop
+    if (container && container.status !== "stopped") {
+      provisionRequestedRef.current = false;
+    }
+  }, [needsProvision, container, shouldPollContainer, api]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
