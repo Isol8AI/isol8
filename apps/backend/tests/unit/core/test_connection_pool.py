@@ -525,3 +525,83 @@ class TestReaderLoopCrash:
 
         # Future should not have been resolved/rejected by the reader
         assert not future.done()
+
+
+class TestStatusChangeEvents:
+    """Test that gateway connect/disconnect emits status_change events."""
+
+    @pytest.mark.asyncio
+    async def test_emits_connected_event_on_gateway_connect(self):
+        """Should push status_change with state=HEALTHY when gateway connects."""
+        mock_mgmt = MagicMock()
+        mock_mgmt.send_message = MagicMock(return_value=True)
+
+        conn = GatewayConnection(
+            user_id="user_123",
+            ip="10.0.1.5",
+            token="test-token",
+            management_api=mock_mgmt,
+        )
+        conn._frontend_connections = {"conn_abc"}
+
+        conn._emit_status_change("HEALTHY", "Gateway connected")
+
+        mock_mgmt.send_message.assert_called_once()
+        call_args = mock_mgmt.send_message.call_args
+        assert call_args[0][0] == "conn_abc"
+        msg = json.loads(call_args[0][1]) if isinstance(call_args[0][1], str) else call_args[0][1]
+        assert msg["type"] == "event"
+        assert msg["event"] == "status_change"
+        assert msg["payload"]["state"] == "HEALTHY"
+        assert msg["payload"]["reason"] == "Gateway connected"
+
+    @pytest.mark.asyncio
+    async def test_emits_down_event_on_gateway_disconnect(self):
+        """Should push status_change with state=GATEWAY_DOWN when gateway disconnects."""
+        mock_mgmt = MagicMock()
+        mock_mgmt.send_message = MagicMock(return_value=True)
+
+        conn = GatewayConnection(
+            user_id="user_123",
+            ip="10.0.1.5",
+            token="test-token",
+            management_api=mock_mgmt,
+        )
+        conn._frontend_connections = {"conn_abc", "conn_def"}
+
+        conn._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
+
+        assert mock_mgmt.send_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_emit_status_change_handles_send_failure(self):
+        """Should not raise if send_message fails for a connection."""
+        mock_mgmt = MagicMock()
+        mock_mgmt.send_message = MagicMock(side_effect=Exception("gone"))
+
+        conn = GatewayConnection(
+            user_id="user_123",
+            ip="10.0.1.5",
+            token="test-token",
+            management_api=mock_mgmt,
+        )
+        conn._frontend_connections = {"conn_abc"}
+
+        # Should not raise
+        conn._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
+
+    @pytest.mark.asyncio
+    async def test_emit_status_change_no_frontends(self):
+        """Should be a no-op when no frontend connections exist."""
+        mock_mgmt = MagicMock()
+
+        conn = GatewayConnection(
+            user_id="user_123",
+            ip="10.0.1.5",
+            token="test-token",
+            management_api=mock_mgmt,
+        )
+
+        conn._emit_status_change("HEALTHY", "Gateway connected")
+
+        mock_mgmt.send_message.assert_not_called()
