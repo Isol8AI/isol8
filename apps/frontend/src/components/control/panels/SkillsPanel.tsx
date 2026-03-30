@@ -175,17 +175,13 @@ type SkillState = "installed" | "available" | "unsupported";
 function getSkillState(skill: SkillStatusEntry): SkillState {
   const hasMissingBins = (skill.missing?.bins?.length ?? 0) > 0;
 
-  // Enabled and no missing binaries = fully working
-  if (!skill.disabled && !hasMissingBins) return "installed";
+  // No missing binaries: installed if enabled, available if disabled
+  if (!hasMissingBins) return skill.disabled ? "available" : "installed";
 
-  // Enabled but has missing bins — check if fixable
-  if (!skill.disabled && hasMissingBins) {
-    return hasViableInstallSpec(skill) ? "installed" : "unsupported";
-  }
-
-  // Disabled — check if it could work
-  if (!hasMissingBins) return "available";
-  return hasViableInstallSpec(skill) ? "available" : "unsupported";
+  // Has missing bins — not functional regardless of enabled state
+  // Check if there's a viable (non-brew) install path
+  if (hasViableInstallSpec(skill)) return "available";
+  return "unsupported";
 }
 
 function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
