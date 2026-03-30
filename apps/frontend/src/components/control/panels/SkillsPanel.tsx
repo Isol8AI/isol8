@@ -12,6 +12,8 @@ import {
   ExternalLink,
   Wrench,
   Server,
+  ChevronDown,
+  Monitor,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useApi } from "@/lib/api";
@@ -166,6 +168,38 @@ function getFriendlyDescription(skill: SkillStatusEntry): string {
   return FRIENDLY_DESCRIPTIONS[key] || skill.description || "Extend your agent's capabilities";
 }
 
+// --- Dependency viability check ---
+
+type SkillState = "installed" | "available" | "unsupported";
+
+function getSkillState(skill: SkillStatusEntry): SkillState {
+  const hasMissingBins = (skill.missing?.bins?.length ?? 0) > 0;
+
+  // Enabled and no missing binaries = fully working
+  if (!skill.disabled && !hasMissingBins) return "installed";
+
+  // Enabled but has missing bins — check if fixable
+  if (!skill.disabled && hasMissingBins) {
+    return hasViableInstallSpec(skill) ? "installed" : "unsupported";
+  }
+
+  // Disabled — check if it could work
+  if (!hasMissingBins) return "available";
+  return hasViableInstallSpec(skill) ? "available" : "unsupported";
+}
+
+function hasViableInstallSpec(skill: SkillStatusEntry): boolean {
+  if ((skill.missing?.bins?.length ?? 0) === 0) return true;
+  if (!skill.install || skill.install.length === 0) return false;
+
+  const missingSet = new Set(skill.missing.bins);
+  for (const spec of skill.install) {
+    if (spec.kind === "brew") continue; // brew not available on Alpine containers
+    if (spec.bins.some((b) => missingSet.has(b))) return true;
+  }
+  return false;
+}
+
 // --- Tab definitions ---
 
 const TABS: { id: SkillsPanelTab; label: string; icon: typeof Wrench }[] = [
@@ -223,6 +257,7 @@ function SkillsTab({ agentId }: { agentId?: string }) {
   const api = useApi();
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<Category>("All");
+  const [unsupportedCollapsed, setUnsupportedCollapsed] = useState(true);
 
   // Normalize response: could be SkillStatusReport or raw array
   const skills: SkillStatusEntry[] = Array.isArray(raw) ? raw : raw?.skills ?? [];
@@ -239,12 +274,13 @@ function SkillsTab({ agentId }: { agentId?: string }) {
   // Apply category filter
   const filtered = searchFiltered.filter((s) => {
     if (activeCategory === "All") return true;
-    if (activeCategory === "Installed") return !s.disabled;
+    if (activeCategory === "Installed") return getSkillState(s) === "installed";
     return getSkillCategory(s) === activeCategory;
   });
 
-  const installedSkills = filtered.filter((s) => !s.disabled);
-  const availableSkills = filtered.filter((s) => s.disabled);
+  const installedSkills = filtered.filter((s) => getSkillState(s) === "installed");
+  const availableSkills = filtered.filter((s) => getSkillState(s) === "available");
+  const unsupportedSkills = filtered.filter((s) => getSkillState(s) === "unsupported");
 
   if (isLoading) {
     return (
@@ -310,7 +346,7 @@ function SkillsTab({ agentId }: { agentId?: string }) {
               style={{ fontFamily: "'DM Sans', sans-serif" }}
             >
               {cat}
-              {cat === "Installed" && ` (${skills.filter((s) => !s.disabled).length})`}
+              {cat === "Installed" && ` (${skills.filter((s) => getSkillState(s) === "installed").length})`}
             </button>
           ))}
         </div>
@@ -383,6 +419,70 @@ function SkillsTab({ agentId }: { agentId?: string }) {
                 />
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Not supported in cloud section */}
+        {unsupportedSkills.length > 0 && activeCategory !== "Installed" && (
+          <div className="space-y-3">
+            <button
+              onClick={() => setUnsupportedCollapsed(!unsupportedCollapsed)}
+              className="flex items-center gap-2 text-sm font-semibold text-[#b5ae9e] hover:text-[#8a8578] transition-colors w-full text-left"
+              style={{ fontFamily: "'Lora', serif" }}
+            >
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 transition-transform",
+                  unsupportedCollapsed && "-rotate-90",
+                )}
+              />
+              Not supported in cloud ({unsupportedSkills.length})
+            </button>
+            {!unsupportedCollapsed && (
+              <>
+                <p
+                  className="text-xs text-[#b5ae9e] pl-5"
+                  style={{ fontFamily: "'DM Sans', sans-serif" }}
+                >
+                  These skills require tools that aren&apos;t available in cloud
+                  containers. They work when running OpenClaw locally on your Mac
+                  or PC.
+                </p>
+                <div className="grid gap-2 pl-5">
+                  {unsupportedSkills.map((skill) => (
+                    <div
+                      key={skill.skillKey || skill.name}
+                      className="rounded-xl border border-[#e0dbd0] bg-white/60 p-3 opacity-60"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg flex-shrink-0 grayscale">
+                          {skill.emoji || "🧩"}
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <h3
+                              className="text-xs font-semibold text-[#8a8578] truncate"
+                              style={{ fontFamily: "'DM Sans', sans-serif" }}
+                            >
+                              {skill.name}
+                            </h3>
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-[#f0ebe2] text-[#8a8578] flex-shrink-0">
+                              <Monitor className="h-2.5 w-2.5" />
+                              Desktop Only
+                            </span>
+                          </div>
+                          {(skill.missing?.bins?.length ?? 0) > 0 && (
+                            <p className="text-[11px] text-[#b5ae9e] mt-0.5">
+                              Requires: {skill.missing.bins.join(", ")}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
         )}
 
@@ -581,23 +681,25 @@ function SkillCard({
         {/* Install buttons for missing bins */}
         {skill.install?.length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
           <div className="flex flex-wrap gap-2">
-            {skill.install.map((spec) => (
-              <Button
-                key={spec.id}
-                variant="outline"
-                size="sm"
-                className="text-xs gap-1.5 rounded-lg"
-                onClick={() => handleInstall(spec)}
-                disabled={installLoading !== null}
-              >
-                {installLoading === spec.id ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Download className="h-3 w-3" />
-                )}
-                {spec.label || `Install via ${spec.kind}`}
-              </Button>
-            ))}
+            {skill.install
+              .filter((spec) => spec.kind !== "brew")
+              .map((spec) => (
+                <Button
+                  key={spec.id}
+                  variant="outline"
+                  size="sm"
+                  className="text-xs gap-1.5 rounded-lg"
+                  onClick={() => handleInstall(spec)}
+                  disabled={installLoading !== null}
+                >
+                  {installLoading === spec.id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Download className="h-3 w-3" />
+                  )}
+                  {spec.label || `Install via ${spec.kind}`}
+                </Button>
+              ))}
           </div>
         )}
 
@@ -699,23 +801,25 @@ function SkillCard({
 
         <div className="flex items-center gap-2 flex-shrink-0">
           {/* Install dependency buttons */}
-          {skill.install?.length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
+          {skill.install?.filter((s) => s.kind !== "brew").length > 0 && (skill.missing?.bins?.length ?? 0) > 0 && (
             <>
-              {skill.install.map((spec) => (
-                <button
-                  key={spec.id}
-                  onClick={() => handleInstall(spec)}
-                  disabled={installLoading !== null}
-                  className="px-3 py-1.5 rounded-full text-xs font-medium border border-[#e0dbd0] text-[#5a5549] hover:border-[#c5c0b6] transition-colors"
-                  style={{ fontFamily: "'DM Sans', sans-serif" }}
-                >
-                  {installLoading === spec.id ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <>{spec.label || `Install ${spec.kind}`}</>
-                  )}
-                </button>
-              ))}
+              {skill.install
+                .filter((spec) => spec.kind !== "brew")
+                .map((spec) => (
+                  <button
+                    key={spec.id}
+                    onClick={() => handleInstall(spec)}
+                    disabled={installLoading !== null}
+                    className="px-3 py-1.5 rounded-full text-xs font-medium border border-[#ffe0b2] text-[#8a6a22] bg-[#fff8e1] hover:bg-[#fff3cc] transition-colors"
+                    style={{ fontFamily: "'DM Sans', sans-serif" }}
+                  >
+                    {installLoading === spec.id ? (
+                      <Loader2 className="h-3 w-3 animate-spin" />
+                    ) : (
+                      <>{spec.label || `Install ${spec.kind}`}</>
+                    )}
+                  </button>
+                ))}
             </>
           )}
 
