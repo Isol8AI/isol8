@@ -55,7 +55,7 @@ export function useSystemHealth(): SystemHealth {
   const [isRecovering, setIsRecovering] = useState(false);
   const isRecoveringRef = useRef(false);
   const [pushState, setPushState] = useState<{ state: string; reason: string } | null>(null);
-  const pushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const pushTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const api = useApi();
 
   // Listen for push status_change events via WS
