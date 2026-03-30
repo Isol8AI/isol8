@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
@@ -53,7 +53,9 @@ export function useSystemHealth(): SystemHealth {
   );
 
   const [isRecovering, setIsRecovering] = useState(false);
+  const isRecoveringRef = useRef(false);
   const [pushState, setPushState] = useState<{ state: string; reason: string } | null>(null);
+  const pushTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const api = useApi();
 
   // Listen for push status_change events via WS
@@ -67,11 +69,14 @@ export function useSystemHealth(): SystemHealth {
           reason: payload.reason ?? "",
         });
         // Clear push state after 15s (let polling take over)
-        const timer = setTimeout(() => setPushState(null), 15_000);
-        return () => clearTimeout(timer);
+        if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
+        pushTimerRef.current = setTimeout(() => setPushState(null), 15_000);
       }
     });
-    return unsub;
+    return () => {
+      unsub();
+      if (pushTimerRef.current) clearTimeout(pushTimerRef.current);
+    };
   }, [onEvent]);
 
   // Derive state (first match wins)
@@ -118,7 +123,8 @@ export function useSystemHealth(): SystemHealth {
         : null;
 
   const recover = useCallback(async (): Promise<RecoverResponse | null> => {
-    if (isRecovering) return null;
+    if (isRecoveringRef.current) return null;
+    isRecoveringRef.current = true;
     setIsRecovering(true);
     try {
       const resp = await api.post("/container/recover", {});
@@ -127,9 +133,12 @@ export function useSystemHealth(): SystemHealth {
       return null;
     } finally {
       // Keep recovering state for 5s to debounce spam clicks
-      setTimeout(() => setIsRecovering(false), 5_000);
+      setTimeout(() => {
+        isRecoveringRef.current = false;
+        setIsRecovering(false);
+      }, 5_000);
     }
-  }, [api, isRecovering]);
+  }, [api]);
 
   return {
     state,

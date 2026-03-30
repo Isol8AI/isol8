@@ -7,6 +7,7 @@ import { Settings, Plus, Bot, CheckCircle, CreditCard } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
+import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -50,6 +51,7 @@ export function ChatLayout({
   const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
     () => searchParams.get("subscription") === "success",
   );
+  const [recoveryTriggered, setRecoveryTriggered] = useState(false);
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -408,6 +410,9 @@ export function ChatLayout({
             </Link>
           </div>
 
+          {/* Health Indicator */}
+          <HealthIndicator onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+
           {/* Tab Switcher */}
           <div className="tab-switcher">
             <button
@@ -495,7 +500,11 @@ export function ChatLayout({
                 <p>Subscription confirmed! Your agent is being upgraded.</p>
               </div>
             )}
-            <ProvisioningStepper>{children}</ProvisioningStepper>
+            {recoveryTriggered ? (
+              <ProvisioningStepper trigger="recovery">{children}</ProvisioningStepper>
+            ) : (
+              <ProvisioningStepper>{children}</ProvisioningStepper>
+            )}
           </div>
         </div>
       </div>
