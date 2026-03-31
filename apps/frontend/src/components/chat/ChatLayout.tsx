@@ -43,7 +43,7 @@ export function ChatLayout({
   const { organization } = useOrganization();
   const router = useRouter();
   const api = useApi();
-  const { agents, defaultId, deleteAgent, createAgent } = useAgents();
+  const { agents, defaultId, createAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const searchParams = useSearchParams();
 
@@ -103,18 +103,6 @@ export function ChatLayout({
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
-  }
-
-  async function handleDeleteAgent(agentId: string): Promise<void> {
-    await deleteAgent(agentId);
-    if (currentAgentId === agentId) {
-      const remaining = agents.filter((a) => a.id !== agentId);
-      if (remaining.length > 0) {
-        handleSelectAgent(remaining[0].id);
-      } else {
-        setUserSelectedId(null);
-      }
-    }
   }
 
   async function handleCreateAgent(): Promise<void> {
@@ -501,9 +489,9 @@ export function ChatLayout({
               </div>
             )}
             {recoveryTriggered ? (
-              <ProvisioningStepper trigger="recovery">{children}</ProvisioningStepper>
-            ) : (
               <ProvisioningStepper>{children}</ProvisioningStepper>
+            ) : (
+              children
             )}
           </div>
         </div>
