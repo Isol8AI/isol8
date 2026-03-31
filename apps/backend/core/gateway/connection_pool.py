@@ -66,11 +66,16 @@ class GatewayConnection:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             },
         }
+        gone: list[str] = []
         for conn_id in list(self._frontend_connections):
             try:
-                self._management_api.send_message(conn_id, message)
+                if not self._management_api.send_message(conn_id, message):
+                    gone.append(conn_id)
             except Exception:
-                logger.debug("Failed to push status_change to %s", conn_id)
+                gone.append(conn_id)
+        for conn_id in gone:
+            self._frontend_connections.discard(conn_id)
+            logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
 
     @property
     def is_connected(self) -> bool:
@@ -264,11 +269,17 @@ class GatewayConnection:
         # Don't update activity here — passive gateway events (tick, health)
         # would prevent idle detection. Activity is tracked only on user-initiated
         # actions (RPC sends, frontend connection registration).
+        gone: list[str] = []
         for conn_id in list(self._frontend_connections):
             try:
-                self._management_api.send_message(conn_id, message)
+                if not self._management_api.send_message(conn_id, message):
+                    gone.append(conn_id)
             except Exception:
                 logger.warning("Failed to forward message to %s", conn_id)
+                gone.append(conn_id)
+        for conn_id in gone:
+            self._frontend_connections.discard(conn_id)
+            logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
 
     def _record_usage_from_session(self, payload: dict) -> None:
         """Record usage after chat.final by querying the session for token counts.
