@@ -10,6 +10,7 @@ import {
   BarChart3,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
+import { useBilling } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
@@ -29,17 +30,23 @@ const NAV_ITEMS = [
   { key: "usage", label: "Usage", icon: BarChart3 },
 ];
 
+// Panels hidden from non-admin org members
 const ADMIN_ONLY_PANELS = new Set(["channels", "usage"]);
+// Panels hidden from free tier (cron + channels disabled for free)
+const PAID_ONLY_PANELS = new Set(["channels", "cron"]);
 
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
   const { membership } = useOrganization();
+  const { planTier } = useBilling();
   const isOrgAdmin = !membership || membership.role === "org:admin";
+  const isFree = planTier === "free";
 
   return (
     <ScrollArea className="flex-1 px-3 py-2">
       <div className="space-y-1">
         {NAV_ITEMS.map(({ key, label, icon: Icon }) => {
           if (ADMIN_ONLY_PANELS.has(key) && !isOrgAdmin) return null;
+          if (PAID_ONLY_PANELS.has(key) && isFree) return null;
           return (
             <Button
               key={key}

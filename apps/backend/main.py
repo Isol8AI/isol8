@@ -21,6 +21,7 @@ from routers import (
     billing,
     channels,
     container,
+    container_recover,
     container_rpc,
     control_ui_proxy,
     debug,
@@ -196,6 +197,9 @@ app.include_router(container.router, prefix="/api/v1/container", tags=["containe
 
 # Container RPC proxy & file uploads (POST /rpc, POST /gateway/restart, POST /files)
 app.include_router(container_rpc.router, prefix="/api/v1/container", tags=["container"])
+
+# Container recovery (state-aware recover endpoint)
+app.include_router(container_recover.router, prefix="/api/v1/container", tags=["container"])
 
 # Container updates (pending updates, apply/schedule)
 app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", tags=["container"])

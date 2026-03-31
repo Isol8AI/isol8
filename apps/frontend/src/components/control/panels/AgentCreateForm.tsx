@@ -65,7 +65,7 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-white/5 transition-colors"
+          className="rounded-md p-1 text-muted-foreground hover:text-foreground hover:bg-[#f0ebe2] transition-colors"
         >
           <X className="h-4 w-4" />
         </button>

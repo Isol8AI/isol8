@@ -199,7 +199,7 @@ export function ModelSelector({
         <Button
           variant="outline"
           size="sm"
-          className="gap-2 h-9 px-3 bg-white/5 border-white/10 text-white hover:bg-white/10 hover:text-white transition-all"
+          className="gap-2 h-9 px-3 bg-white border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] hover:border-[#c5bfb6] transition-all"
         >
           <span className="flex items-center gap-2">
             <ProviderIcon config={selectedProviderConfig || getProviderConfig("unknown")} size={16} />
@@ -213,7 +213,7 @@ export function ModelSelector({
         side="bottom"
         sideOffset={8}
         collisionPadding={16}
-        className="!w-[320px] !p-0 border-white/10 text-white shadow-2xl"
+        className="!w-[320px] !p-0 border-[#333] text-white shadow-2xl"
         style={{ background: "#111111", maxHeight: 320 }}
       >
         {/* Search header */}

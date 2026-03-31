@@ -54,6 +54,7 @@ export interface BudgetExceededPayload {
 
 export type ChatIncomingMessage =
   | { type: "chunk"; content: string }
+  | { type: "thinking"; content: string }
   | { type: "done" }
   | { type: "error"; message: string; code?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
@@ -178,6 +179,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     // Chat messages — dispatch to subscribers
     if (
       msgType === "chunk" ||
+      msgType === "thinking" ||
       msgType === "done" ||
       msgType === "error" ||
       msgType === "heartbeat" ||

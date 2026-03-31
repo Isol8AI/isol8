@@ -51,6 +51,27 @@ class GatewayConnection:
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
 
+    def _emit_status_change(self, state: str, reason: str) -> None:
+        """Push a status_change event to all connected frontend WebSockets."""
+        from datetime import datetime, timezone
+
+        # Wrap as {type: "event"} so the frontend WS router in useGateway
+        # delivers it to onEvent subscribers (unrecognized types are dropped).
+        message = {
+            "type": "event",
+            "event": "status_change",
+            "payload": {
+                "state": state,
+                "reason": reason,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        for conn_id in list(self._frontend_connections):
+            try:
+                self._management_api.send_message(conn_id, message)
+            except Exception:
+                logger.debug("Failed to push status_change to %s", conn_id)
+
     @property
     def is_connected(self) -> bool:
         if self._ws is None:
@@ -78,6 +99,7 @@ class GatewayConnection:
         await self._handshake()
         await self._verify_health()
         self._reader_task = asyncio.create_task(self._reader_loop())
+        self._emit_status_change("HEALTHY", "Gateway connected")
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
@@ -210,10 +232,32 @@ class GatewayConnection:
             return None
         content = msg.get("content", [])
         if isinstance(content, list) and content:
+            # Find the last text block (skip thinking blocks)
+            for block in reversed(content):
+                if isinstance(block, dict) and block.get("type") in ("text", "output_text"):
+                    return block.get("text") or None
+            # Fallback: last block regardless of type
             block = content[-1]
             if isinstance(block, dict):
                 return block.get("text") or None
         return None
+
+    @staticmethod
+    def _extract_thinking_text(payload: dict) -> str | None:
+        """Extract thinking/reasoning text from a chat event's message.content field."""
+        msg = payload.get("message")
+        if not isinstance(msg, dict):
+            return None
+        content = msg.get("content", [])
+        if not isinstance(content, list):
+            return None
+        thinking_parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "thinking":
+                text = block.get("thinking") or block.get("text") or ""
+                if text:
+                    thinking_parts.append(text)
+        return "\n\n".join(thinking_parts) if thinking_parts else None
 
     def _forward_to_frontends(self, message: dict) -> None:
         """Send a message to all registered frontend connections."""
@@ -416,6 +460,10 @@ class GatewayConnection:
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
                 if state == "final":
+                    # Send thinking content if present (before visible text)
+                    thinking_text = self._extract_thinking_text(payload)
+                    if thinking_text:
+                        self._forward_to_frontends({"type": "thinking", "content": thinking_text})
                     # Send complete text as safety net before done signal
                     final_text = self._extract_chat_text(payload)
                     if final_text:
@@ -454,6 +502,7 @@ class GatewayConnection:
             if self._closed:
                 return
             logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
+            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
             # Reject all pending RPCs
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
@@ -477,6 +526,7 @@ class GatewayConnection:
 
     async def close(self) -> None:
         """Shut down: cancel reader, close WebSocket."""
+        self._emit_status_change("GATEWAY_DOWN", "Gateway connection closed")
         self._closed = True
         if self._grace_task and not self._grace_task.done():
             self._grace_task.cancel()
@@ -509,8 +559,8 @@ class GatewayConnectionPool:
         self._grace_tasks: Dict[str, asyncio.Task] = {}
         self._last_activity: Dict[str, float] = {}  # user_id -> last activity timestamp
 
-    def _touch_activity(self, user_id: str) -> None:
-        """Update last activity timestamp for a user."""
+    def touch_activity(self, user_id: str) -> None:
+        """Update last activity timestamp for a user. Called on agent_chat."""
         self._last_activity[user_id] = time.time()
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
@@ -520,7 +570,6 @@ class GatewayConnectionPool:
             ip=ip,
             token=token,
             management_api=self._management_api,
-            on_activity=self._touch_activity,
         )
         # Transfer any already-registered frontend connections
         for fc in self._frontend_connections.get(user_id, set()):
@@ -539,7 +588,6 @@ class GatewayConnectionPool:
         token: str,
     ) -> Any:
         """Send RPC via persistent connection (create if needed)."""
-        self._last_activity[user_id] = time.time()
         async with self._lock:
             conn = self._connections.get(user_id)
             if conn is not None and not conn.is_connected:
@@ -553,7 +601,6 @@ class GatewayConnectionPool:
 
     def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
         """Register a frontend WS connection for event forwarding."""
-        self._last_activity[user_id] = time.time()
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
@@ -607,15 +654,15 @@ class GatewayConnectionPool:
             await self.close_user(user_id)
 
     async def run_idle_checker(self) -> None:
-        """Background task: stop free-tier containers after 5 minutes of inactivity.
+        """Background task: stop free-tier containers after 5 minutes of no chat activity.
 
         Runs every 60 seconds. For each user in the pool, checks:
-        1. No frontend connections (no active WebSocket clients)
-        2. No activity for 5 minutes
-        3. User is on free tier (billing_repo.get_by_owner_id)
+        1. No chat activity for 5 minutes (only agent_chat updates the timer)
+        2. User is on free tier (billing_repo.get_by_owner_id)
 
         If all conditions are met, stops the container via ECS and closes
-        the gateway connection.
+        the gateway connection. The browser may still be open — that's fine,
+        the stepper will restart the container when the user sends a message.
         """
         from core.containers.ecs_manager import EcsManagerError
 
@@ -628,12 +675,7 @@ class GatewayConnectionPool:
                 # Snapshot user_ids with active connections
                 user_ids = list(self._connections.keys())
                 for user_id in user_ids:
-                    # Skip if user has active frontend connections
-                    fcs = self._frontend_connections.get(user_id, set())
-                    if fcs:
-                        continue
-
-                    # Skip if recent activity
+                    # Skip if recent chat activity
                     last = self._last_activity.get(user_id, now)
                     if now - last < _IDLE_TIMEOUT:
                         continue
