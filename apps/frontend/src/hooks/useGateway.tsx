@@ -179,6 +179,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     // Chat messages — dispatch to subscribers
     if (
       msgType === "chunk" ||
+      msgType === "thinking" ||
       msgType === "done" ||
       msgType === "error" ||
       msgType === "heartbeat" ||
