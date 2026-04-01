@@ -34,6 +34,8 @@ export async function waitForRunning(
       if (data.status === 'error') {
         throw new Error(`Container entered error state: ${data.last_error}`);
       }
+    } else if (res.status !== 503) {
+      throw new Error(`Unexpected poll response: ${res.status}`);
     }
     await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
   }

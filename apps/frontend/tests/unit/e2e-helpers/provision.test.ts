@@ -34,34 +34,58 @@ describe('deprovisionIfExists', () => {
 
 describe('waitForRunning', () => {
   it('resolves when status is running', async () => {
-    vi.useFakeTimers();
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'running', substatus: 'gateway_healthy' }),
     });
     const { waitForRunning } = await import('../../e2e/helpers/provision');
     await expect(waitForRunning('http://api', 'token', 5000)).resolves.toBeUndefined();
-    vi.useRealTimers();
   });
 
   it('throws when status is error', async () => {
-    vi.useFakeTimers();
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'error', substatus: null, last_error: 'task failed' }),
     });
     const { waitForRunning } = await import('../../e2e/helpers/provision');
     await expect(waitForRunning('http://api', 'token', 5000)).rejects.toThrow('Container entered error state');
-    vi.useRealTimers();
   });
 
   it('throws when timeout exceeded before running', async () => {
-    // Use real timers — deadline of 1ms will expire immediately
+    vi.useFakeTimers();
+    // fetch always returns "provisioning" so the loop never exits early
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'provisioning', substatus: 'starting' }),
     });
     const { waitForRunning } = await import('../../e2e/helpers/provision');
-    await expect(waitForRunning('http://api', 'token', 1)).rejects.toThrow('timeout');
+    // Advance time past the deadline and assert the rejection concurrently
+    // so the promise is never left unhandled between awaits
+    await expect(
+      Promise.all([
+        waitForRunning('http://api', 'token', 100),
+        vi.runAllTimersAsync(),
+      ]),
+    ).rejects.toThrow('timeout');
+    vi.useRealTimers();
+  });
+
+  it('throws immediately on non-ok, non-503 response', async () => {
+    global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    const { waitForRunning } = await import('../../e2e/helpers/provision');
+    await expect(waitForRunning('http://api', 'token', 5000)).rejects.toThrow('Unexpected poll response: 401');
+  });
+
+  it('continues polling on 503 (transient unavailable)', async () => {
+    // First call returns 503, second returns running
+    global.fetch = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ status: 'running', substatus: 'gateway_healthy' }),
+      });
+    const { waitForRunning } = await import('../../e2e/helpers/provision');
+    await expect(waitForRunning('http://api', 'token', 10000)).resolves.toBeUndefined();
   });
 });
