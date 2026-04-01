@@ -1,0 +1,85 @@
+import Stripe from 'stripe';
+
+const POLL_INTERVAL_MS = 5000;
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? '', {
+  apiVersion: '2025-01-27.acacia' as Parameters<typeof Stripe>[1]['apiVersion'],
+});
+
+/**
+ * Cancel any active/trialing/incomplete subscriptions for a given email.
+ * Safe to call when no subscription exists (no-op).
+ */
+export async function cancelSubscriptionIfExists(email: string): Promise<void> {
+  const customers = await stripe.customers.list({ email, limit: 100 });
+  for (const customer of customers.data) {
+    const subs = await stripe.subscriptions.list({ customer: customer.id });
+    for (const sub of subs.data) {
+      if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'incomplete') {
+        await stripe.subscriptions.cancel(sub.id);
+      }
+    }
+  }
+}
+
+/**
+ * Look up or create a Stripe customer for the email, attach the built-in
+ * test card pm_card_visa, and create a subscription for the given price.
+ * The metadata.plan_tier field is required by the backend webhook handler.
+ */
+export async function createSubscription(
+  email: string,
+  priceId: string,
+): Promise<Stripe.Subscription> {
+  // Look up or create customer
+  const existing = await stripe.customers.list({ email, limit: 1 });
+  let customerId: string;
+  if (existing.data.length > 0) {
+    customerId = existing.data[0].id;
+  } else {
+    const customer = await stripe.customers.create({ email });
+    customerId = customer.id;
+  }
+
+  // Attach the built-in test payment method
+  await stripe.paymentMethods.attach('pm_card_visa', { customer: customerId });
+  await stripe.customers.update(customerId, {
+    invoice_settings: { default_payment_method: 'pm_card_visa' },
+  });
+
+  // Create subscription
+  const subscription = await stripe.subscriptions.create({
+    customer: customerId,
+    items: [{ price: priceId }],
+    default_payment_method: 'pm_card_visa',
+    metadata: { plan_tier: 'starter' },
+  });
+
+  return subscription;
+}
+
+/**
+ * Poll GET ${apiUrl}/billing/account until is_subscribed === true.
+ * Throws on non-ok responses (except 503 which is swallowed).
+ * Throws with descriptive error if timeout is exceeded.
+ */
+export async function waitForSubscriptionActive(
+  apiUrl: string,
+  authToken: string,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await fetch(`${apiUrl}/billing/account`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.is_subscribed === true) return;
+    } else if (res.status !== 503) {
+      throw new Error(`waitForSubscriptionActive: unexpected response ${res.status}`);
+    }
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+  }
+  throw new Error(`waitForSubscriptionActive: timeout after ${timeoutMs}ms`);
+}
