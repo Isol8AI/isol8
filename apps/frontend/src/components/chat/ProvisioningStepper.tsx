@@ -398,8 +398,8 @@ export function ProvisioningStepper({
             </div>
 
             {/* Step: channels — gate opening */}
-            <div className={`provision-anim ${phase === "channels" ? "active" : ""}`}>
-              <div className={`anim-gate ${phase === "channels" ? "gate-opening" : ""}`}>
+            <div className={`provision-anim ${(phase as string) === "channels" ? "active" : ""}`}>
+              <div className={`anim-gate ${(phase as string) === "channels" ? "gate-opening" : ""}`}>
                 <div className="gate-frame">
                   <div className="gate-glow" />
                   <div className="gate-door-l" /><div className="gate-door-r" />
@@ -414,7 +414,7 @@ export function ProvisioningStepper({
             </div>
 
             {/* Step: ready — checkmark */}
-            <div className={`provision-anim ${phase === "ready" ? "active" : ""}`}>
+            <div className={`provision-anim ${(phase as string) === "ready" ? "active" : ""}`}>
               <div className="anim-done">
                 <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#06402B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" className="check-path" />
