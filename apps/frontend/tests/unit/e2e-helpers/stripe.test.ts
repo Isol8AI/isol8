@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock the stripe module so we control the instance returned by `new Stripe(...)`
 vi.mock('stripe', () => {
@@ -45,7 +45,13 @@ vi.mock('stripe', () => {
 
 // Reset module cache and mocks before each test
 beforeEach(() => {
+  vi.resetModules();
   vi.clearAllMocks();
+  process.env.STRIPE_SECRET_KEY = 'sk_test_unit_test_placeholder';
+});
+
+afterEach(() => {
+  delete process.env.STRIPE_SECRET_KEY;
 });
 
 async function getMocks() {
@@ -211,6 +217,7 @@ describe('waitForSubscriptionActive', () => {
         vi.runAllTimersAsync(),
       ]),
     ).resolves.toBeDefined();
+    expect(global.fetch).toHaveBeenCalledTimes(2); // 503 then success
   });
 
   it('throws immediately on non-ok, non-503 response', async () => {
