@@ -54,3 +54,4 @@ localstack_data/
 .localstack/
 .worktrees/
 apps/frontend/package-lock.json
+.worktrees/
