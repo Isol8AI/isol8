@@ -30,7 +30,7 @@ def mock_ecs_client():
             "taskRoleArn": "arn:aws:iam::123456789:role/task-role",
             "executionRoleArn": "arn:aws:iam::123456789:role/exec-role",
             "networkMode": "awsvpc",
-            "containerDefinitions": [{"name": "openclaw", "image": "ghcr.io/openclaw:latest"}],
+            "containerDefinitions": [{"name": "openclaw", "image": "alpine/openclaw:2026.3.24"}],
             "volumes": [
                 {
                     "name": "openclaw-workspace",

@@ -191,7 +191,7 @@ else
     --container-definitions "[
       {
         \"name\": \"openclaw\",
-        \"image\": \"ghcr.io/openclaw/openclaw:latest\",
+        \"image\": \"alpine/openclaw:2026.3.24\",
         \"portMappings\": [{\"containerPort\": 18789, \"protocol\": \"tcp\"}],
         \"mountPoints\": [{\"sourceVolume\": \"openclaw-efs\", \"containerPath\": \"/home/openclaw/.openclaw\"}],
         \"essential\": true
@@ -340,7 +340,7 @@ WS_URL="ws://localhost:4510/${WS_API_ID}/local"
 
 # ── 11. Pull OpenClaw Docker image ───────────────────────────────────────────
 log "11/12 Pulling OpenClaw Docker image"
-docker pull ghcr.io/openclaw/openclaw:latest 2>/dev/null || log "       ↳ docker pull failed (non-fatal)"
+docker pull alpine/openclaw:2026.3.24 2>/dev/null || log "       ↳ docker pull failed (non-fatal)"
 
 # ── 12. Write generated.env ──────────────────────────────────────────────────
 log "12/12 Writing generated.env"

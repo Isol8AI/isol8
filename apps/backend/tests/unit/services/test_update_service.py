@@ -162,12 +162,12 @@ async def test_queue_image_update(dynamodb_table):
     """queue_image_update creates a pending update with the correct details."""
     from core.services.update_service import queue_image_update
 
-    result = await queue_image_update("user_1", "ghcr.io/openclaw/openclaw:v2026.4.1")
+    result = await queue_image_update("user_1", "alpine/openclaw:2026.4.1")
 
     assert result["owner_id"] == "user_1"
     assert result["update_type"] == "image_update"
     assert result["status"] == "pending"
-    assert result["changes"]["new_image"] == "ghcr.io/openclaw/openclaw:v2026.4.1"
+    assert result["changes"]["new_image"] == "alpine/openclaw:2026.4.1"
 
 
 @pytest.mark.asyncio

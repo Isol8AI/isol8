@@ -496,7 +496,6 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | `EFS_MOUNT_PATH` | EFS mount root | `/mnt/efs/users` |
 | `EFS_FILE_SYSTEM_ID` | EFS filesystem | Required |
 | `S3_CONFIG_BUCKET` | Config bucket | Required |
-| `OPENCLAW_IMAGE` | Container image | `alpine/openclaw:2026.3.24` |
 | `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by Terraform |
 | `WS_CONNECTIONS_TABLE` | DynamoDB table | `isol8-websocket-connections` |
 | `STRIPE_SECRET_KEY` | Stripe API key | Empty |
