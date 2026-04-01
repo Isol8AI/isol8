@@ -61,9 +61,7 @@ const e2eGate = new GitHubActionStep("E2EGate", {
         // Confirm isol8-e2e-testing@mailsac.com exists in this Clerk dev instance
         STRIPE_SECRET_KEY: "${{ secrets.STRIPE_SECRET_KEY }}",
         // STRIPE_SECRET_KEY must be a test mode key (sk_test_...) — never a live key
-        E2E_STRIPE_PRICE_ID: "${{ secrets.E2E_STRIPE_PRICE_ID }}",
-        // The Stripe test-mode price ID for the Starter plan (price_test_...)
-        // Get from Stripe Dashboard → Products → Starter → Pricing → copy test mode price ID
+        // Dev Starter price ID is hardcoded in service-stack.ts (price_1TF5MDI54BysGS3rlT80MMI8) — no secret needed
         E2E_CLERK_USER_USERNAME: "${{ secrets.E2E_CLERK_USER_USERNAME }}",
         E2E_CLERK_USER_PASSWORD: "${{ secrets.E2E_CLERK_USER_PASSWORD }}",
         // Required by @clerk/testing/playwright's clerk.signIn()
@@ -129,7 +127,7 @@ Stripe's hosted Checkout page uses iframe card fields, dynamic selectors, and bo
 
 1. Look up or create the Stripe customer for `isol8-e2e-testing@mailsac.com`
 2. Attach `pm_card_visa` (Stripe's built-in test payment method) to the customer
-3. Create a subscription for price ID `process.env.E2E_STRIPE_PRICE_ID`
+3. Create a subscription using the dev Starter price ID `price_1TF5MDI54BysGS3rlT80MMI8` (hardcoded in `apps/infra/lib/stacks/service-stack.ts`)
 4. After `createSubscription()` returns, poll `GET /api/v1/billing/account` until `is_subscribed === true` — required because Stripe fires a webhook asynchronously, and the backend updates `plan_tier` only after receiving `customer.subscription.created`. Poll with ~5s interval, 60s max timeout.
 
 This tests that the subscription state flows correctly through the app (webhook → backend → database → UI) without depending on Stripe's hosted UI.
@@ -210,7 +208,6 @@ Three changes:
 |--------|-------|-------|
 | `E2E_CLERK_USER_USERNAME` | `isol8-e2e-testing@mailsac.com` | Required by `clerk.signIn()` |
 | `E2E_CLERK_USER_PASSWORD` | _(test account password)_ | Required by `clerk.signIn()` |
-| `E2E_STRIPE_PRICE_ID` | _(Stripe test-mode price ID for Starter plan)_ | Get from Stripe Dashboard → Products → Starter → copy test mode price ID (`price_test_...`) |
 
 ### Already present (no action needed)
 
