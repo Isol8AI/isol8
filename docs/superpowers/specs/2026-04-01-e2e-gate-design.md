@@ -174,12 +174,12 @@ Three changes:
 
 3. `webServer` — suppress when `BASE_URL` is set. Remove the broken backend entry (the path `../backend/env/bin/uvicorn` is a local virtualenv path that does not exist in CI). Frontend-only for local dev:
    ```typescript
-   webServer: (process.env.CI && !process.env.BASE_URL)
+   webServer: !process.env.BASE_URL
      ? [{
          command: 'pnpm run dev',
          // cwd defaults to apps/frontend/ (the config file's directory) — correct
          url: 'http://localhost:3000',
-         reuseExistingServer: false,
+         reuseExistingServer: !process.env.CI,
          timeout: 120000,
        }]
      : undefined,
@@ -251,6 +251,7 @@ Three changes:
 | `apps/frontend/tests/e2e/journey.spec.ts` | New — full e2e suite |
 | `apps/frontend/tests/e2e/helpers/stripe.ts` | New — Stripe API helpers |
 | `apps/frontend/tests/e2e/helpers/provision.ts` | New — provision/deprovision helpers |
+| `apps/frontend/src/components/chat/MessageList.tsx` | Add `data-role={msg.role}` to message wrapper div for e2e selector |
 
 ---
 
