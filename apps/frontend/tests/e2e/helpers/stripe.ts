@@ -13,11 +13,14 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY ?? '', {
 export async function cancelSubscriptionIfExists(email: string): Promise<void> {
   const customers = await stripe.customers.list({ email, limit: 100 });
   for (const customer of customers.data) {
-    const subs = await stripe.subscriptions.list({ customer: customer.id });
-    for (const sub of subs.data) {
-      if (sub.status === 'active' || sub.status === 'trialing' || sub.status === 'incomplete') {
-        await stripe.subscriptions.cancel(sub.id);
-      }
+    const [active, trialing, incomplete] = await Promise.all([
+      stripe.subscriptions.list({ customer: customer.id, status: 'active' }),
+      stripe.subscriptions.list({ customer: customer.id, status: 'trialing' }),
+      stripe.subscriptions.list({ customer: customer.id, status: 'incomplete' }),
+    ]);
+    const allSubs = [...active.data, ...trialing.data, ...incomplete.data];
+    for (const sub of allSubs) {
+      await stripe.subscriptions.cancel(sub.id);
     }
   }
 }
