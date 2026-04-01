@@ -225,6 +225,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
             return (
             <div
               key={msg.id}
+              data-role={msg.role}
               className={cn(
                 "flex w-full group relative",
                 msg.role === "user" ? "justify-end" : "justify-start gap-3"

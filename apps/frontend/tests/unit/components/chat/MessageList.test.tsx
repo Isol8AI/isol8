@@ -45,15 +45,15 @@ describe('MessageList', () => {
     it('aligns user messages to the right', () => {
       render(<MessageList messages={[{ id: '1', role: 'user', content: 'User message' }]} />);
 
-      const messageWrapper = screen.getByText('User message').closest('.flex');
-      expect(messageWrapper).toHaveClass('items-end');
+      const messageWrapper = screen.getByText('User message').closest('[data-role="user"]');
+      expect(messageWrapper).toHaveClass('justify-end');
     });
 
     it('aligns assistant messages to the left', () => {
       render(<MessageList messages={[{ id: '1', role: 'assistant', content: 'Assistant message' }]} />);
 
-      const messageWrapper = screen.getByText('Assistant message').closest('.flex');
-      expect(messageWrapper).toHaveClass('items-start');
+      const messageWrapper = screen.getByText('Assistant message').closest('[data-role="assistant"]');
+      expect(messageWrapper).toHaveClass('justify-start');
     });
   });
 
@@ -62,7 +62,7 @@ describe('MessageList', () => {
       render(<MessageList messages={[{ id: '1', role: 'user', content: 'User message' }]} />);
 
       const messageText = screen.getByText('User message').closest('.text-sm');
-      expect(messageText).toHaveClass('text-white');
+      expect(messageText).toHaveClass('bg-[#f0ebe2]');
     });
 
     it('applies correct text style to assistant messages', () => {
