@@ -1,10 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
+  const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
     const linksEl = linksRef.current;
@@ -12,18 +13,17 @@ export function Navbar() {
 
     const links = linksEl.querySelectorAll<HTMLAnchorElement>("a[data-section]");
 
-    // Click: set active immediately
     const clickHandlers: Array<() => void> = [];
     links.forEach((link) => {
       const handler = () => {
         links.forEach((l) => l.classList.remove("active"));
         link.classList.add("active");
+        setMobileOpen(false);
       };
       link.addEventListener("click", handler);
       clickHandlers.push(handler);
     });
 
-    // Scroll: highlight whichever section is most in view
     const sections = [
       { id: "home", el: document.querySelector(".landing-hero") },
       { id: "features", el: document.getElementById("features") },
@@ -38,10 +38,7 @@ export function Navbar() {
           if (entry.isIntersecting) {
             const id = entry.target.id || "home";
             links.forEach((l) => {
-              l.classList.toggle(
-                "active",
-                l.dataset.section === id
-              );
+              l.classList.toggle("active", l.dataset.section === id);
             });
           }
         });
@@ -59,12 +56,20 @@ export function Navbar() {
     };
   }, []);
 
+  // Close mobile menu on resize to desktop
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 769px)");
+    const handler = () => { if (mq.matches) setMobileOpen(false); };
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
   return (
     <nav className="landing-nav" aria-label="Main navigation">
       <Link href="/" className="nav-logo">
         8
       </Link>
-      <div className="nav-links" ref={linksRef}>
+      <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
         <Link href="/" data-section="home" className="active">
           Home
         </Link>
@@ -80,6 +85,9 @@ export function Navbar() {
         <Link href="#goosetown" data-section="goosetown">
           GooseTown<span className="nav-alpha">alpha</span>
         </Link>
+        <Link href="/sign-in" className="nav-mobile-login">
+          Log in
+        </Link>
       </div>
       <div className="nav-right">
         <Link href="/sign-in" className="nav-login">
@@ -88,7 +96,18 @@ export function Navbar() {
         <Link href="/sign-up" className="btn-primary">
           Sign up
         </Link>
+        <button
+          className="nav-hamburger"
+          onClick={() => setMobileOpen((v) => !v)}
+          aria-label={mobileOpen ? "Close menu" : "Open menu"}
+          aria-expanded={mobileOpen}
+        >
+          <span className={`hamburger-line${mobileOpen ? " open" : ""}`} />
+          <span className={`hamburger-line${mobileOpen ? " open" : ""}`} />
+          <span className={`hamburger-line${mobileOpen ? " open" : ""}`} />
+        </button>
       </div>
+      {mobileOpen && <div className="nav-mobile-backdrop" onClick={() => setMobileOpen(false)} />}
     </nav>
   );
 }
