@@ -1118,41 +1118,36 @@ const settingsStyles = `
 
   /* Mobile */
   @media (max-width: 768px) {
+    .settings-topbar { padding: 12px 16px; }
+    .settings-btn-back-chat span { display: none; }
     .settings-layout {
       grid-template-columns: 1fr;
+      min-height: auto;
     }
     .settings-nav {
-      position: relative;
-      top: 0;
+      position: static;
+      padding: 16px 16px 0;
       border-right: none;
       border-bottom: 1px solid #e0dbd0;
-      padding: 12px 16px;
-      overflow-x: auto;
     }
     .settings-nav-items {
       flex-direction: row;
       gap: 4px;
     }
     .settings-nav-item {
-      white-space: nowrap;
-      padding: 10px 16px;
+      padding: 8px 14px;
+      min-height: 36px;
+      font-size: 13px;
     }
-    .settings-nav-section-label { display: none; }
-    .settings-main { padding: 24px 16px; }
-    .settings-topbar { padding: 12px 16px; }
-    .settings-plan-row {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 12px;
+    .settings-main {
+      padding: 24px 16px;
     }
-    .settings-card-header {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 12px;
-    }
-    .settings-tier-grid {
-      grid-template-columns: 1fr;
-    }
+    .settings-page-title { font-size: 22px; }
+    .settings-card { padding: 20px 16px; }
+    .settings-card-header { flex-direction: column; align-items: flex-start; gap: 12px; }
+    .settings-tier-grid { grid-template-columns: 1fr; }
+    .settings-profile-row { flex-direction: column; text-align: center; }
+    .settings-profile-avatar-lg { margin: 0 auto; }
   }
 
   @media (prefers-reduced-motion: reduce) {
