@@ -25,15 +25,25 @@ test.describe('E2E Gate: Full User Journey', () => {
     });
     sharedPage = await ctx.newPage();
     // Sign in via the Clerk UI form — avoids CLERK_SECRET_KEY instance mismatch issues
-    // Pass redirect_url so Clerk sends us straight to /chat after sign-in
-    await sharedPage.goto(`${BASE_URL}/sign-in?redirect_url=${encodeURIComponent(`${BASE_URL}/chat`)}`);
-    await sharedPage.locator('input[name="identifier"]').fill(E2E_EMAIL);
-    await sharedPage.getByRole('button', { name: /continue/i }).click();
-    await sharedPage.locator('input[name="password"]').waitFor({ timeout: 30_000 });
-    await sharedPage.locator('input[name="password"]').fill(E2E_PASSWORD);
-    await sharedPage.getByRole('button', { name: /continue|sign in/i }).click();
-    // Wait for Clerk to complete sign-in and redirect to /chat
-    await sharedPage.waitForURL(/\/chat/, { timeout: 60_000 });
+    await sharedPage.goto(`${BASE_URL}/sign-in`, { waitUntil: 'domcontentloaded' });
+    // Wait for Clerk's sign-in form; try multiple selectors across Clerk versions
+    const emailInput = sharedPage.locator(
+      'input[name="identifier"], input[type="email"], input[autocomplete*="email"]'
+    ).first();
+    await emailInput.waitFor({ state: 'visible', timeout: 60_000 });
+    await emailInput.fill(E2E_EMAIL);
+    await sharedPage.locator('button[type="submit"]').first().click();
+    const passwordInput = sharedPage.locator('input[type="password"]');
+    await passwordInput.waitFor({ state: 'visible', timeout: 30_000 });
+    await passwordInput.fill(E2E_PASSWORD);
+    await sharedPage.locator('button[type="submit"]').last().click();
+    // Wait for sign-in to complete (navigates away from /sign-in)
+    await sharedPage.waitForURL(url => !url.includes('/sign-in'), { timeout: 60_000 });
+    // Navigate to /chat if not already there
+    if (!sharedPage.url().includes('/chat')) {
+      await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+    }
+    await sharedPage.waitForURL(/\/chat/, { timeout: 30_000 });
     // Retrieve auth token
     authToken = await sharedPage.waitForFunction(async () => {
       const win = window as Window & { Clerk?: { loaded?: boolean; session?: { getToken: () => Promise<string> } } };
