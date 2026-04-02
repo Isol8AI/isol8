@@ -27,6 +27,10 @@ test.describe('E2E Gate: Full User Journey', () => {
         password: E2E_PASSWORD,
       },
     });
+    // clerk.signIn() may trigger a navigation — re-navigate to a stable page
+    // so the page context is settled before we try to read the Clerk session
+    await sharedPage.goto(`${BASE_URL}/chat`);
+    await sharedPage.waitForLoadState('domcontentloaded');
     // Wait for Clerk session to be fully initialized
     await sharedPage.waitForFunction(() => {
       const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
