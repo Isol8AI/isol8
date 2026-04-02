@@ -6,7 +6,6 @@ import {
   GitHubWorkflow,
   GitHubActionStep,
   StackCapabilities,
-  JobPermission,
 } from "cdk-pipelines-github";
 import { Isol8Stage } from "./isol8-stage";
 
@@ -86,25 +85,49 @@ pipeline.addStageWithGitHubOptions(devStage, {
 });
 
 // ---------------------------------------------------------------------------
-// Manual approval gate between dev and prod
+// Automated e2e gate between dev and prod
 // ---------------------------------------------------------------------------
-const approvalStep = new GitHubActionStep("ApproveProduction", {
+const e2eGate = new GitHubActionStep("E2EGate", {
   jobSteps: [
+    { name: "Checkout", uses: "actions/checkout@v4" },
+    { name: "Setup pnpm", uses: "pnpm/action-setup@v4" },
     {
-      name: "Approval Required",
-      uses: "trstringer/manual-approval@v1",
-      with: { 
-        secret: "${{ github.TOKEN }}",
-        approvers: "prez2307",
-        "issue-title": "Approve production deployment",
-        "issue-body": "A new deployment is ready for production. Review the dev deployment at https://dev.isol8.co and approve or deny.",
-        "minimum-approvals": "1",
+      name: "Setup Node.js",
+      uses: "actions/setup-node@v4",
+      with: { "node-version": "20", cache: "pnpm" },
+    },
+    {
+      name: "Install dependencies",
+      run: "pnpm install --frozen-lockfile",
+    },
+    {
+      name: "Install Playwright browsers",
+      run: "cd apps/frontend && npx playwright install chromium --with-deps",
+    },
+    {
+      name: "Run E2E gate tests",
+      run: "cd apps/frontend && npx playwright test --project=chromium",
+      env: {
+        BASE_URL: "https://dev.isol8.co",
+        NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_DEV }}",
+        CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
+        CLERK_SECRET_KEY: "${{ secrets.CLERK_SECRET_KEY }}",
+        STRIPE_SECRET_KEY: "${{ secrets.STRIPE_SECRET_KEY }}",
+        E2E_CLERK_USER_USERNAME: "${{ secrets.E2E_CLERK_USER_USERNAME }}",
+        E2E_CLERK_USER_PASSWORD: "${{ secrets.E2E_CLERK_USER_PASSWORD }}",
+      },
+    },
+    {
+      name: "Upload Playwright report",
+      uses: "actions/upload-artifact@v4",
+      if: "always()",
+      with: {
+        name: "playwright-report",
+        path: "apps/frontend/playwright-report/",
+        "retention-days": "7",
       },
     },
   ],
-  permissions: {
-    issues: JobPermission.WRITE,
-  },
 });
 
 // ---------------------------------------------------------------------------
@@ -120,7 +143,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
     StackCapabilities.NAMED_IAM,
     StackCapabilities.AUTO_EXPAND,
   ],
-  pre: [approvalStep],
+  pre: [e2eGate],
   post: [
     // Deploy frontend to Vercel (production) and alias to app.isol8.co
     new GitHubActionStep("DeployVercelProd", {
