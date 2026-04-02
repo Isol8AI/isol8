@@ -13,7 +13,7 @@ test.describe('E2E Gate: Full User Journey', () => {
   test.use({ retries: 0 }); // Destructive side effects — no retries
 
   let sharedPage: Page;
-  let authToken: string;
+  let authToken = '';
 
   test.beforeAll(async ({ browser }) => {
     sharedPage = await browser.newPage();
@@ -26,15 +26,22 @@ test.describe('E2E Gate: Full User Journey', () => {
         password: process.env.E2E_CLERK_USER_PASSWORD ?? '',
       },
     });
+    // Wait for Clerk session to be fully initialized
+    await sharedPage.waitForFunction(() => {
+      const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
+      return !!win.Clerk?.session?.getToken;
+    }, { timeout: 15_000 });
     authToken = await sharedPage.evaluate(async () => {
       const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-      return await win.Clerk?.session?.getToken() ?? '';
+      return (await win.Clerk?.session?.getToken()) ?? '';
     });
   });
 
   test.afterAll(async () => {
     try { await cancelSubscriptionIfExists(E2E_EMAIL); } catch { /* ignore */ }
-    try { await deprovisionIfExists(API_URL, authToken); } catch { /* ignore */ }
+    try {
+      if (authToken) await deprovisionIfExists(API_URL, authToken);
+    } catch { /* ignore */ }
     await sharedPage?.close();
   });
 
