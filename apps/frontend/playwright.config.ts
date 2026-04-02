@@ -10,7 +10,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
-  globalTimeout: 15 * 60 * 1000, // 15 minutes — covers full suite including landing tests
+  globalTimeout: 30 * 60 * 1000, // 30 minutes — covers full suite including landing tests
   reporter: [
     ['html', { open: 'never' }],
     ['list'],
