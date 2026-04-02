@@ -383,7 +383,7 @@ function UpdateBanner() {
           <X className="h-4 w-4" />
         </button>
       </div>
-      <div className="flex items-center gap-2 mt-2 ml-7">
+      <div className="flex items-center gap-2 mt-2 ml-7 flex-wrap">
         <Button
           size="sm"
           variant="outline"
