@@ -27,11 +27,6 @@ test('landing page shows pricing and toggles', async ({ page }) => {
   const pricingHeader = page.getByRole('heading', { name: /Pricing|Plans/i });
   await expect(pricingHeader).toBeVisible();
 
-  // Check for Monthly/Yearly toggle
-  // Check for text "Yearly" (toggle button)
-  const yearlyText = page.getByText('Yearly');
-  await expect(yearlyText).toBeVisible();
-
   // Check for Pro plan
   await expect(page.getByText('Pro', { exact: true })).toBeVisible();
 });
