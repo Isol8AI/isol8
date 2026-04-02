@@ -4,7 +4,8 @@ import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActi
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
-const E2E_EMAIL = process.env.E2E_CLERK_USER_USERNAME ?? 'isol8-e2e-testing@mailsac.com';
+const E2E_EMAIL = 'isol9-e2e-testing@mailsac.com';
+const E2E_PASSWORD = 'password';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 
@@ -23,7 +24,7 @@ test.describe('E2E Gate: Full User Journey', () => {
       signInParams: {
         strategy: 'password',
         identifier: E2E_EMAIL,
-        password: process.env.E2E_CLERK_USER_PASSWORD ?? '',
+        password: E2E_PASSWORD,
       },
     });
     // Wait for Clerk session to be fully initialized
