@@ -110,7 +110,7 @@ const e2eGate = new GitHubActionStep("E2EGate", {
       env: {
         BASE_URL: "https://dev.isol8.co",
         NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_DEV }}",
-        CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
+        NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
         CLERK_SECRET_KEY: "${{ secrets.CLERK_SECRET_KEY }}",
         STRIPE_SECRET_KEY: "${{ secrets.STRIPE_SECRET_KEY }}",
       },
