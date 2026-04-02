@@ -28,14 +28,13 @@ test.describe('E2E Gate: Full User Journey', () => {
         password: E2E_PASSWORD,
       },
     });
-    // Navigate to /chat and wait for all JS-triggered redirects to settle
-    await sharedPage.goto(`${BASE_URL}/chat`);
-    await sharedPage.waitForLoadState('networkidle', { timeout: 20_000 });
-    // Wait for Clerk to finish initializing the session (safe now — page is stable)
+    // Navigate to /chat — use domcontentloaded (not networkidle: WS + SWR polling prevent it)
+    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+    // Wait for Clerk to finish initializing the session
     await sharedPage.waitForFunction(() => {
       const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
       return !!win.Clerk?.session?.getToken;
-    }, { timeout: 15_000 });
+    }, { timeout: 60_000 });
     authToken = await sharedPage.evaluate(async () => {
       const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
       return (await win.Clerk?.session?.getToken()) ?? '';
