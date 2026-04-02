@@ -7,12 +7,12 @@ test('landing page loads and redirects to chat', async ({ page }) => {
 
   // 2. Check for key landing page elements
   await expect(page).toHaveTitle(/isol8/); 
-  await expect(page.locator('h1')).toContainText('Intelligence');
+  await expect(page.locator('h1')).toContainText('lives with you');
 
-  // Check for the "Start Encrypted Session" button
-  const getStartedBtn = page.getByRole('link', { name: /Start Encrypted Session/i });
+  // Check for the "Start your pod" CTA
+  const getStartedBtn = page.getByRole('link', { name: /Start your pod/i });
   await expect(getStartedBtn).toBeVisible();
-  
+
   // Wait for animations to settle or use force click
   await getStartedBtn.click({ force: true });
 
