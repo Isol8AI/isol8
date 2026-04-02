@@ -1,5 +1,4 @@
 import { test, expect, type Page } from '@playwright/test';
-import { clerk } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -19,29 +18,22 @@ test.describe('E2E Gate: Full User Journey', () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
     sharedPage = await browser.newPage();
-    // Sign in on the sign-in page (lighter than landing; clerk.signIn works on any Clerk page)
-    await sharedPage.goto(`${BASE_URL}/sign-in`);
-    await clerk.signIn({
-      page: sharedPage,
-      signInParams: {
-        strategy: 'password',
-        identifier: E2E_EMAIL,
-        password: E2E_PASSWORD,
-      },
-    });
-    // After sign-in Clerk navigates away; wait for it to settle then go to /chat
-    await sharedPage.waitForURL(/\/(chat|sign-in)/, { timeout: 30_000 });
-    if (!sharedPage.url().includes('/chat')) {
-      await sharedPage.goto(`${BASE_URL}/chat`);
-    }
-    // Confirm we are on /chat (not redirected back to /sign-in — that would mean auth failed)
-    await expect(sharedPage).toHaveURL(/\/chat/, { timeout: 30_000 });
-    // Retrieve token — combine wait + fetch into one waitForFunction call so we get the value directly
+    // Sign in via the Clerk UI form — avoids CLERK_SECRET_KEY instance mismatch issues
+    // Pass redirect_url so Clerk sends us straight to /chat after sign-in
+    await sharedPage.goto(`${BASE_URL}/sign-in?redirect_url=${encodeURIComponent(`${BASE_URL}/chat`)}`);
+    await sharedPage.locator('input[name="identifier"]').fill(E2E_EMAIL);
+    await sharedPage.getByRole('button', { name: /continue/i }).click();
+    await sharedPage.locator('input[name="password"]').waitFor({ timeout: 30_000 });
+    await sharedPage.locator('input[name="password"]').fill(E2E_PASSWORD);
+    await sharedPage.getByRole('button', { name: /continue|sign in/i }).click();
+    // Wait for Clerk to complete sign-in and redirect to /chat
+    await sharedPage.waitForURL(/\/chat/, { timeout: 60_000 });
+    // Retrieve auth token
     authToken = await sharedPage.waitForFunction(async () => {
       const win = window as Window & { Clerk?: { loaded?: boolean; session?: { getToken: () => Promise<string> } } };
       if (!win.Clerk?.loaded || !win.Clerk?.session?.getToken) return null;
       return (await win.Clerk.session.getToken()) || null;
-    }, { timeout: 120_000 }).then(h => h.jsonValue()) as string;
+    }, { timeout: 60_000 }).then(h => h.jsonValue()) as string;
   });
 
   test.afterAll(async () => {
