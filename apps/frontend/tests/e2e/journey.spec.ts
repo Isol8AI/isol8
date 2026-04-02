@@ -26,17 +26,16 @@ test.describe('E2E Gate: Full User Journey', () => {
     sharedPage = await ctx.newPage();
     // Sign in via the Clerk UI form — avoids CLERK_SECRET_KEY instance mismatch issues
     await sharedPage.goto(`${BASE_URL}/sign-in`, { waitUntil: 'domcontentloaded' });
-    // Wait for Clerk's sign-in form; try multiple selectors across Clerk versions
-    const emailInput = sharedPage.locator(
-      'input[name="identifier"], input[type="email"], input[autocomplete*="email"]'
-    ).first();
+    // Clerk v5/v6 renders <SignIn /> inside a cross-origin iframe — use frameLocator
+    const clerkFrame = sharedPage.frameLocator('iframe[src*="clerk"]');
+    const emailInput = clerkFrame.locator('input[name="identifier"]').first();
     await emailInput.waitFor({ state: 'visible', timeout: 60_000 });
     await emailInput.fill(E2E_EMAIL);
-    await sharedPage.locator('button[type="submit"]').first().click();
-    const passwordInput = sharedPage.locator('input[type="password"]');
+    await clerkFrame.locator('button[type="submit"]').first().click();
+    const passwordInput = clerkFrame.locator('input[type="password"]');
     await passwordInput.waitFor({ state: 'visible', timeout: 30_000 });
     await passwordInput.fill(E2E_PASSWORD);
-    await sharedPage.locator('button[type="submit"]').last().click();
+    await clerkFrame.locator('button[type="submit"]').last().click();
     // Wait for sign-in to complete (navigates away from /sign-in)
     await sharedPage.waitForURL(url => !url.includes('/sign-in'), { timeout: 60_000 });
     // Navigate to /chat if not already there
