@@ -19,7 +19,8 @@ test.describe('E2E Gate: Full User Journey', () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
     sharedPage = await browser.newPage();
-    await sharedPage.goto(BASE_URL);
+    // Sign in on the sign-in page (lighter than landing; clerk.signIn works on any Clerk page)
+    await sharedPage.goto(`${BASE_URL}/sign-in`);
     await clerk.signIn({
       page: sharedPage,
       signInParams: {
@@ -28,17 +29,19 @@ test.describe('E2E Gate: Full User Journey', () => {
         password: E2E_PASSWORD,
       },
     });
-    // Navigate to /chat — use domcontentloaded (not networkidle: WS + SWR polling prevent it)
-    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-    // Wait for Clerk to finish initializing the session
-    await sharedPage.waitForFunction(() => {
-      const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-      return !!win.Clerk?.session?.getToken;
-    }, { timeout: 120_000 });
-    authToken = await sharedPage.evaluate(async () => {
-      const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-      return (await win.Clerk?.session?.getToken()) ?? '';
-    });
+    // After sign-in Clerk navigates away; wait for it to settle then go to /chat
+    await sharedPage.waitForURL(/\/(chat|sign-in)/, { timeout: 30_000 });
+    if (!sharedPage.url().includes('/chat')) {
+      await sharedPage.goto(`${BASE_URL}/chat`);
+    }
+    // Confirm we are on /chat (not redirected back to /sign-in — that would mean auth failed)
+    await expect(sharedPage).toHaveURL(/\/chat/, { timeout: 30_000 });
+    // Retrieve token — combine wait + fetch into one waitForFunction call so we get the value directly
+    authToken = await sharedPage.waitForFunction(async () => {
+      const win = window as Window & { Clerk?: { loaded?: boolean; session?: { getToken: () => Promise<string> } } };
+      if (!win.Clerk?.loaded || !win.Clerk?.session?.getToken) return null;
+      return (await win.Clerk.session.getToken()) || null;
+    }, { timeout: 120_000 }).then(h => h.jsonValue()) as string;
   });
 
   test.afterAll(async () => {
