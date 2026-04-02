@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -52,6 +52,7 @@ export function ChatLayout({
     () => searchParams.get("subscription") === "success",
   );
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -103,6 +104,7 @@ export function ChatLayout({
   function handleSelectAgent(agentId: string): void {
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
+    setSidebarOpen(false);
   }
 
   async function handleDeleteAgent(agentId: string): Promise<void> {
@@ -362,6 +364,23 @@ export function ChatLayout({
           flex-direction: column;
           overflow-y: auto;
         }
+        .mobile-hamburger {
+          display: none;
+          align-items: center;
+          justify-content: center;
+          background: none;
+          border: none;
+          cursor: pointer;
+          padding: 4px;
+          color: #8a8578;
+          transition: color 0.15s;
+        }
+        .mobile-hamburger:hover {
+          color: #1a1a1a;
+        }
+        .sidebar-backdrop {
+          display: none;
+        }
         .subscription-banner {
           margin: 8px 16px;
           padding: 12px;
@@ -388,11 +407,35 @@ export function ChatLayout({
           .cream-sidebar {
             display: none;
           }
+          .cream-sidebar.mobile-open {
+            display: flex;
+            position: fixed;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            width: 280px;
+            z-index: 50;
+            box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+          }
+          .sidebar-backdrop {
+            display: none;
+          }
+          .sidebar-backdrop.visible {
+            display: block;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.3);
+            z-index: 49;
+          }
+          .mobile-hamburger {
+            display: flex;
+          }
         }
       `}</style>
 
       <div className="app-shell">
-        <div className="cream-sidebar">
+        <div className={`sidebar-backdrop${sidebarOpen ? " visible" : ""}`} onClick={() => setSidebarOpen(false)} />
+        <div className={`cream-sidebar${sidebarOpen ? " mobile-open" : ""}`}>
           {/* Header */}
           <div className="sidebar-header">
             <div className="sidebar-logo">
@@ -405,9 +448,14 @@ export function ChatLayout({
               </svg>
               <span>isol8</span>
             </div>
-            <Link href="/settings" className="sidebar-settings-link">
-              <Settings size={18} />
-            </Link>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <Link href="/settings" className="sidebar-settings-link">
+                <Settings size={18} />
+              </Link>
+              <button className="mobile-hamburger" onClick={() => setSidebarOpen(false)} aria-label="Close menu" style={{ display: sidebarOpen ? "flex" : undefined }}>
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           {/* Health Indicator */}
@@ -417,13 +465,13 @@ export function ChatLayout({
           <div className="tab-switcher">
             <button
               className={`tab-btn${activeView === "chat" ? " active" : ""}`}
-              onClick={() => onViewChange("chat")}
+              onClick={() => { onViewChange("chat"); setSidebarOpen(false); }}
             >
               Chat
             </button>
             <button
               className={`tab-btn${activeView === "control" ? " active" : ""}`}
-              onClick={() => onViewChange("control")}
+              onClick={() => { onViewChange("control"); setSidebarOpen(false); }}
             >
               Control
             </button>
@@ -480,6 +528,10 @@ export function ChatLayout({
 
         <div className="main-area">
           <div className="main-header">
+            <button className="mobile-hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
+              <Menu size={22} />
+            </button>
+            <div style={{ flex: 1 }} />
             <UserButton
               appearance={{
                 elements: {
