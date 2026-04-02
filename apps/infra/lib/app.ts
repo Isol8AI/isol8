@@ -113,6 +113,7 @@ const e2eGate = new GitHubActionStep("E2EGate", {
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
         CLERK_SECRET_KEY: "${{ secrets.CLERK_SECRET_KEY }}",
         STRIPE_SECRET_KEY: "${{ secrets.STRIPE_SECRET_KEY }}",
+        VERCEL_AUTOMATION_BYPASS_SECRET: "${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}",
       },
     },
     {
