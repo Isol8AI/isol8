@@ -315,6 +315,20 @@ button:focus-visible { border-radius: 999px; }
   content: ''; position: absolute; top: 0; right: 0; width: 256px; height: 256px;
   background: rgba(6,64,43,.05); border-radius: 50%; filter: blur(64px);
 }
+@media (max-width: 768px) {
+  .landing-hero {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+  .hero-left {
+    padding: 48px 24px;
+    border-right: none;
+    border-bottom: 1px solid #e0dbd0;
+  }
+  .hero-h1 { font-size: 36px; }
+  .hero-sub { font-size: 15px; margin-bottom: 32px; }
+  .hero-right { padding: 24px 16px; }
+}
 
 /* ── WORKFLOW ── */
 .wf-step-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
@@ -397,6 +411,12 @@ button:focus-visible { border-radius: 999px; }
 .feat-card:hover .feat-icon { transform: rotateY(180deg); box-shadow: 0 4px 16px rgba(6,64,43,.2); }
 .feat-title { font-family: var(--font-lora); font-size: 21px; font-weight: 400; color: #1a1a1a; margin-bottom: 12px; }
 .feat-desc { font-size: 14px; color: #888; line-height: 1.7; }
+@media (max-width: 768px) {
+  .landing-features { padding: 64px 20px; }
+  .feat-grid { grid-template-columns: 1fr; gap: 0; }
+  .feat-card { padding: 32px 24px; }
+  .section-h2 { margin-bottom: 40px; }
+}
 
 /* ── SKILLS ── */
 .landing-skills { background: #0f2d1e; padding: 96px 48px; }
@@ -417,6 +437,15 @@ button:focus-visible { border-radius: 999px; }
 .skill-card-label { font-size: 13px; color: rgba(255,255,255,.7); font-weight: 500; text-align: center; }
 .skill-card.highlight-card { background: rgba(74,158,116,.15); border-color: rgba(74,158,116,.3); }
 .skill-card.highlight-card .skill-card-label { color: #4a9e74; }
+@media (max-width: 768px) {
+  .landing-skills { padding: 64px 20px; }
+  .skills-inner { grid-template-columns: 1fr; gap: 40px; }
+  .skill-grid { grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .skill-card { padding: 20px 12px; }
+}
+@media (max-width: 480px) {
+  .skill-grid { grid-template-columns: repeat(2, 1fr); }
+}
 
 /* ── PRICING ── */
 .landing-pricing { background: #f3efe6; padding: 96px 48px; border-top: 1px solid #e0dbd0; }
@@ -442,6 +471,10 @@ button:focus-visible { border-radius: 999px; }
 .plan-cta.featured { background: #06402B; color: white; }
 .plan-cta.featured:hover { background: #054d33; }
 .plan-cta.featured:active { background: #043d28; }
+@media (max-width: 768px) {
+  .landing-pricing { padding: 64px 20px; }
+  .price-grid { grid-template-columns: 1fr; max-width: 100%; }
+}
 
 /* ── FAQ ── */
 .landing-faq { background: #faf7f2; padding: 96px 48px; border-top: 1px solid #e0dbd0; }
@@ -465,6 +498,10 @@ button:focus-visible { border-radius: 999px; }
   margin-top: 0;
 }
 .faq-item.open .faq-a { max-height: 300px; opacity: 1; margin-top: 12px; }
+@media (max-width: 768px) {
+  .landing-faq { padding: 64px 20px; }
+  .faq-q { font-size: 16px; }
+}
 
 /* ── GOOSETOWN TRANSITION ── */
 .gt-warp {
@@ -611,6 +648,15 @@ button:focus-visible { border-radius: 999px; }
     8px 56px 0 #2a3c8c, 16px 56px 0 #2a3c8c, 24px 56px 0 #222c7a, 32px 56px 0 #222c7a,
     0 64px 0 #e0e0f0, 8px 64px 0 #e0e0f0, 16px 64px 0 #e0e0f0, 24px 64px 0 #28283a, 32px 64px 0 #28283a;
 }
+@media (max-width: 768px) {
+  .landing-goosetown { padding: 64px 20px; }
+  .gt-inner { grid-template-columns: 1fr; gap: 40px; }
+  .gt-game-wrap { max-width: 100%; overflow-x: hidden; }
+  .gt-game-body { flex-direction: column; }
+  .gt-sidebar { width: 100%; border-right: none; border-bottom: 2px solid #18283a; }
+  .gt-viewport { min-height: 200px; }
+  .gt-warp-title { font-size: 18px; letter-spacing: 2px; }
+}
 
 /* ── SCROLL PROGRESS ── */
 .scroll-progress { position: fixed; top: 0; left: 0; height: 2px; z-index: 100; background: linear-gradient(90deg, #06402B, #4a9e74); width: 0%; transition: width .05s linear; box-shadow: 0 0 8px rgba(74,158,116,.4); }
@@ -625,6 +671,11 @@ button:focus-visible { border-radius: 999px; }
 .footer-links a:hover { color: white; }
 .footer-links a:hover::after { width: 100%; }
 .footer-copy { font-size: 12px; color: rgba(255,255,255,.4); }
+@media (max-width: 768px) {
+  .landing-footer { padding: 32px 20px; }
+  .footer-inner { flex-direction: column; text-align: center; gap: 16px; }
+  .footer-links { justify-content: center; gap: 20px; flex-wrap: wrap; }
+}
 
 /* ── SCROLL REVEAL ── */
 .reveal { opacity: 0; transform: translateY(24px); transition: opacity .7s cubic-bezier(.16,1,.3,1), transform .7s cubic-bezier(.16,1,.3,1); }
