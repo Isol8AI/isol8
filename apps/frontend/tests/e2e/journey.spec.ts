@@ -17,6 +17,7 @@ test.describe('E2E Gate: Full User Journey', () => {
   let authToken = '';
 
   test.beforeAll(async ({ browser }) => {
+    test.setTimeout(60_000); // sign-in + navigation can take 20-30s on CI
     sharedPage = await browser.newPage();
     await sharedPage.goto(BASE_URL);
     await clerk.signIn({
@@ -27,15 +28,9 @@ test.describe('E2E Gate: Full User Journey', () => {
         password: E2E_PASSWORD,
       },
     });
-    // clerk.signIn() may trigger a navigation — re-navigate to a stable page
-    // so the page context is settled before we try to read the Clerk session
+    // Navigate to /chat and wait for all JS-triggered redirects to settle
     await sharedPage.goto(`${BASE_URL}/chat`);
-    await sharedPage.waitForLoadState('domcontentloaded');
-    // Wait for Clerk session to be fully initialized
-    await sharedPage.waitForFunction(() => {
-      const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-      return !!win.Clerk?.session?.getToken;
-    }, { timeout: 15_000 });
+    await sharedPage.waitForLoadState('networkidle', { timeout: 20_000 });
     authToken = await sharedPage.evaluate(async () => {
       const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
       return (await win.Clerk?.session?.getToken()) ?? '';
