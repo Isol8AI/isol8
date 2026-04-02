@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { clerk } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -24,24 +25,16 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // Sign in via the Clerk UI form — avoids CLERK_SECRET_KEY instance mismatch issues
-    await sharedPage.goto(`${BASE_URL}/sign-in`, { waitUntil: 'domcontentloaded' });
-    // Clerk v5/v6 renders <SignIn /> inside a cross-origin iframe — use frameLocator
-    const clerkFrame = sharedPage.frameLocator('iframe[src*="clerk"]');
-    const emailInput = clerkFrame.locator('input[name="identifier"]').first();
-    await emailInput.waitFor({ state: 'visible', timeout: 60_000 });
-    await emailInput.fill(E2E_EMAIL);
-    await clerkFrame.locator('button[type="submit"]').first().click();
-    const passwordInput = clerkFrame.locator('input[type="password"]');
-    await passwordInput.waitFor({ state: 'visible', timeout: 30_000 });
-    await passwordInput.fill(E2E_PASSWORD);
-    await clerkFrame.locator('button[type="submit"]').last().click();
-    // Wait for sign-in to complete (navigates away from /sign-in)
-    await sharedPage.waitForURL(url => !url.includes('/sign-in'), { timeout: 60_000 });
-    // Navigate to /chat if not already there
-    if (!sharedPage.url().includes('/chat')) {
-      await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-    }
+    // clerk.signIn() uses Clerk's testing token internally (setupClerkTestingToken) which
+    // bypasses the dev-browser handshake that fails in fresh CI contexts. Requires a prior
+    // page.goto() to a non-protected page so Clerk JS is loaded first.
+    await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await clerk.signIn({
+      page: sharedPage,
+      signInParams: { strategy: 'password', identifier: E2E_EMAIL, password: E2E_PASSWORD },
+    });
+    // Navigate to /chat
+    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
     await sharedPage.waitForURL(/\/chat/, { timeout: 30_000 });
     // Retrieve auth token
     authToken = await sharedPage.waitForFunction(async () => {
