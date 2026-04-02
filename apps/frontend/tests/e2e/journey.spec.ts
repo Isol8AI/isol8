@@ -17,7 +17,7 @@ test.describe('E2E Gate: Full User Journey', () => {
   let authToken = '';
 
   test.beforeAll(async ({ browser }) => {
-    test.setTimeout(60_000); // sign-in + navigation can take 20-30s on CI
+    test.setTimeout(120_000); // sign-in + navigation + networkidle can take 60s+ on CI
     sharedPage = await browser.newPage();
     await sharedPage.goto(BASE_URL);
     await clerk.signIn({
