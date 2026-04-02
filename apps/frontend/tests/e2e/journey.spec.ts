@@ -17,7 +17,13 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
-    sharedPage = await browser.newPage();
+    // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
+    const ctx = await browser.newContext({
+      extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+        ? { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }
+        : {},
+    });
+    sharedPage = await ctx.newPage();
     // Sign in via the Clerk UI form — avoids CLERK_SECRET_KEY instance mismatch issues
     // Pass redirect_url so Clerk sends us straight to /chat after sign-in
     await sharedPage.goto(`${BASE_URL}/sign-in?redirect_url=${encodeURIComponent(`${BASE_URL}/chat`)}`);
@@ -41,7 +47,7 @@ test.describe('E2E Gate: Full User Journey', () => {
     try {
       if (authToken) await deprovisionIfExists(API_URL, authToken);
     } catch { /* ignore */ }
-    await sharedPage?.close();
+    await sharedPage?.context().close();
   });
 
   test('Step 1: Idempotent cleanup', async () => {
