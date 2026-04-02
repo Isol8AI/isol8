@@ -1,0 +1,47 @@
+name: Desktop App Build
+
+on:
+  push:
+    tags:
+      - 'desktop-v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Build desktop app
+        working-directory: apps/desktop
+        run: pnpm run build
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dmg
+          path: apps/desktop/out/make/**/*.dmg
+
+      - name: Publish to GitHub Releases
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: apps/desktop
+        run: pnpm run publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
