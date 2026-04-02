@@ -124,7 +124,7 @@ const e2eGate = new GitHubActionStep("E2EGate", {
       with: {
         name: "playwright-report",
         path: "apps/frontend/playwright-report/",
-        "retention-days": "7",
+        "retention-days": 7,
       },
     },
   ],
