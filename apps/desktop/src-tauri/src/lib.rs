@@ -118,8 +118,9 @@ fn get_node_status(state: State<'_, NodeState>) -> String {
 /// OAuth domains that must open in the system browser.
 const OAUTH_DOMAINS: &[&str] = &["accounts.google.com", "appleid.apple.com"];
 
-/// Sign-in URL for desktop OAuth callback.
-const DESKTOP_SIGNIN_URL: &str = "https://dev.isol8.co/sign-in?redirect_url=%2Fauth%2Fdesktop-callback&x-vercel-protection-bypass=BWitr6v05GtUmGWJsjlfkqrOGyb68tR8&x-vercel-set-bypass-cookie=samesitenone";
+/// Desktop callback URL — the page creates a sign-in token and deep links back.
+/// Not middleware-protected, so it works whether or not the user is signed in yet.
+const DESKTOP_CALLBACK_URL: &str = "https://dev.isol8.co/auth/desktop-callback?x-vercel-protection-bypass=BWitr6v05GtUmGWJsjlfkqrOGyb68tR8&x-vercel-set-bypass-cookie=samesitenone";
 
 fn is_oauth_url(url: &Url) -> bool {
     let host = url.host_str().unwrap_or("");
@@ -137,7 +138,7 @@ pub fn run() {
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
                     if is_oauth_url(url) {
-                        let _ = open::that(DESKTOP_SIGNIN_URL);
+                        let _ = open::that(DESKTOP_CALLBACK_URL);
                         return false;
                     }
                     true
@@ -158,6 +159,28 @@ pub fn run() {
         ])
         .setup(|app| {
             tray::create_tray(app.handle())?;
+
+            // Override window.open in the WebView so OAuth popups open
+            // in the system browser. WKWebView silently blocks popups,
+            // so Clerk's Google OAuth popup never opens without this.
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.eval(&format!(
+                    r#"
+                    (function() {{
+                        const originalOpen = window.open;
+                        window.open = function(url, target, features) {{
+                            if (url && (url.includes('accounts.google.com') || url.includes('clerk'))) {{
+                                // Redirect to desktop sign-in flow instead
+                                window.location.href = '{}';
+                                return null;
+                            }}
+                            return originalOpen.call(window, url, target, features);
+                        }};
+                    }})();
+                    "#,
+                    DESKTOP_CALLBACK_URL
+                ));
+            }
 
             // Handle deep links (isol8:// protocol)
             let app_handle = app.handle().clone();
