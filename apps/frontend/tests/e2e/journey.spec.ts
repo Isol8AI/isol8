@@ -1,5 +1,4 @@
 import { test, expect, type Page } from '@playwright/test';
-import { clerk, clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -18,11 +17,6 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
-    // clerkSetup() sets process.env.CLERK_FAPI and CLERK_TESTING_TOKEN in THIS worker.
-    // global.setup.ts calls clerkSetup() in the setup project worker, but Playwright workers
-    // are separate processes — env vars don't cross process boundaries. Calling it here
-    // ensures the token is always available regardless of worker reuse.
-    await clerkSetup();
     // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
@@ -30,28 +24,22 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // MUST call setupClerkTestingToken BEFORE the first goto — the route interceptor must
-    // be active when Clerk JS makes its very first GET /v1/client request, otherwise Clerk
-    // gets a dev-browser-missing response and sets client=null. clerk.signIn() then hits
-    // the `if (!Clerk.client) return` guard and silently no-ops.
-    await setupClerkTestingToken({ page: sharedPage });
-    await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-    await clerk.signIn({
-      page: sharedPage,
-      signInParams: { strategy: 'password', identifier: E2E_EMAIL, password: E2E_PASSWORD },
-    });
 
-    // Verify session is active before navigating — Clerk.session null means signIn silently no-op'd
-    const sessionId = await sharedPage.evaluate(() => {
-      const w = window as Window & { Clerk?: { session?: { id?: string } } };
-      return w.Clerk?.session?.id ?? null;
-    });
-    console.log('[e2e] Session ID after signIn:', sessionId);
-    if (!sessionId) throw new Error('[e2e] No session after clerk.signIn() — Clerk.client may be null (testing token issue) or credentials wrong');
-
-    // Navigate to /chat
+    // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
+    // cookie, and redirects to /sign-in?redirect_url=%2Fchat. The <SignIn /> component renders
+    // with Clerk.client properly initialized (no window.Clerk.client null issue).
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-    await sharedPage.waitForURL(/\/chat/, { timeout: 30_000 });
+
+    // Wait for sign-in form to appear after redirect
+    const emailInput = sharedPage.getByPlaceholder('Enter your email address');
+    await emailInput.waitFor({ timeout: 30_000 });
+    await emailInput.fill(E2E_EMAIL);
+    await sharedPage.getByPlaceholder('Enter your password').fill(E2E_PASSWORD);
+    await sharedPage.getByRole('button', { name: /Continue/i }).click();
+
+    // redirect_url was set to /chat by middleware — after sign-in we land back on /chat
+    await sharedPage.waitForURL(/\/chat/, { timeout: 60_000 });
+
     // Retrieve auth token
     authToken = await sharedPage.waitForFunction(async () => {
       const win = window as Window & { Clerk?: { loaded?: boolean; session?: { getToken: () => Promise<string> } } };
