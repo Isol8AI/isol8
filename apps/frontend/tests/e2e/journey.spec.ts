@@ -5,20 +5,55 @@ import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
 const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
-const E2E_PASSWORD = 'InvincibleS4E5';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 
+/**
+ * Create a one-time sign-in token via the Clerk Backend API.
+ * Uses strategy:'ticket' on the frontend — bypasses password, MFA, and device verification.
+ */
+async function createSignInToken(): Promise<string> {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set');
+
+  // Find user by email
+  const usersRes = await fetch(
+    `https://api.clerk.com/v1/users?email_address[]=${encodeURIComponent(E2E_EMAIL)}`,
+    { headers: { Authorization: `Bearer ${secretKey}` } },
+  );
+  if (!usersRes.ok) throw new Error(`[e2e] Users API ${usersRes.status}: ${await usersRes.text()}`);
+  const users = await usersRes.json() as Array<{ id: string }>;
+  if (!users.length) throw new Error(`[e2e] No user found for ${E2E_EMAIL}`);
+  console.log(`[e2e] Found user: ${users[0].id}`);
+
+  // Create sign-in token
+  const tokenRes = await fetch('https://api.clerk.com/v1/sign_in_tokens', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${secretKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: users[0].id }),
+  });
+  if (!tokenRes.ok) throw new Error(`[e2e] Sign-in token API ${tokenRes.status}: ${await tokenRes.text()}`);
+  const { token } = await tokenRes.json() as { token: string };
+  console.log('[e2e] Sign-in token created');
+  return token;
+}
+
 test.describe('E2E Gate: Full User Journey', () => {
   test.describe.configure({ mode: 'serial' });
-  test.use({ retries: 0 }); // Destructive side effects — no retries
+  test.use({ retries: 0 });
 
   let sharedPage: Page;
-  let authToken = '';
+
+  /** Get a fresh Clerk JWT from the browser (tokens expire after 60s). */
+  async function getToken(): Promise<string> {
+    return sharedPage.evaluate(async () => {
+      const w = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
+      return (await w.Clerk?.session?.getToken()) ?? '';
+    });
+  }
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
-    // clerkSetup() sets CLERK_FAPI + CLERK_TESTING_TOKEN in THIS worker process.
     await clerkSetup();
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
@@ -26,36 +61,48 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // Intercept Clerk FAPI requests so Clerk.client initializes (non-null).
     await setupClerkTestingToken({ page: sharedPage });
 
-    // Navigate to /chat — middleware redirects to /sign-in?redirect_url=%2Fchat
+    // Navigate to homepage so Clerk JS loads
+    await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    await sharedPage.waitForFunction(() => {
+      const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown } };
+      return w.Clerk?.loaded === true && w.Clerk?.client != null;
+    }, { timeout: 30_000 });
+
+    // Create a backend-issued sign-in token — bypasses password + MFA entirely
+    const ticket = await createSignInToken();
+
+    // Use the ticket to create an authenticated session
+    await sharedPage.evaluate(async (t: string) => {
+      const w = window as unknown as { Clerk: { client: { signIn: { create: (opts: Record<string, string>) => Promise<{ createdSessionId: string }> } }; setActive: (opts: { session: string }) => Promise<void> } };
+      const si = await w.Clerk.client.signIn.create({ strategy: 'ticket', ticket: t });
+      await w.Clerk.setActive({ session: si.createdSessionId });
+    }, ticket);
+
+    // Verify session
+    const sid = await sharedPage.evaluate(() => {
+      const w = window as unknown as { Clerk?: { session?: { id?: string } } };
+      return w.Clerk?.session?.id ?? null;
+    });
+    console.log('[e2e] Session ID:', sid);
+    if (!sid) throw new Error('[e2e] No session after sign-in token');
+
+    // Quick backend auth test with the token we'll get
+    console.log('[e2e] CLERK_FAPI:', process.env.CLERK_FAPI);
+
+    // Verify we can get a token (session is active)
+    const initialToken = await getToken();
+    console.log('[e2e] authToken starts with:', initialToken?.substring(0, 20));
+    if (!initialToken) throw new Error('[e2e] No auth token — session may not be active');
+
+    // Navigate to /chat (may redirect to /onboarding if no subscription yet — that's fine)
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-    await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
-
-    // Fill the Clerk sign-in form
-    const emailInput = sharedPage.getByPlaceholder('Enter your email address');
-    await emailInput.waitFor({ timeout: 60_000 });
-    await emailInput.fill(E2E_EMAIL);
-    await sharedPage.getByPlaceholder('Enter your password').fill(E2E_PASSWORD);
-    await sharedPage.getByRole('button', { name: /Continue/i }).click();
-
-    // After sign-in, redirect_url sends us back to /chat
-    await sharedPage.waitForURL(/\/chat/, { timeout: 60_000 });
-
-    // Retrieve auth token
-    authToken = await sharedPage.waitForFunction(async () => {
-      const win = window as Window & { Clerk?: { loaded?: boolean; session?: { getToken: () => Promise<string> } } };
-      if (!win.Clerk?.loaded || !win.Clerk?.session?.getToken) return null;
-      return (await win.Clerk.session.getToken()) || null;
-    }, { timeout: 60_000 }).then(h => h.jsonValue()) as string;
   });
 
   test.afterAll(async () => {
     try { await cancelSubscriptionIfExists(E2E_EMAIL); } catch { /* ignore */ }
-    try {
-      if (authToken) await deprovisionIfExists(API_URL, authToken);
-    } catch { /* ignore */ }
+    try { await deprovisionIfExists(API_URL, getToken); } catch { /* ignore */ }
     await sharedPage?.context().close();
   });
 
@@ -65,25 +112,37 @@ test.describe('E2E Gate: Full User Journey', () => {
       await cancelSubscriptionIfExists(E2E_EMAIL);
     }, { timeout: 60_000 });
     await test.step('Deprovision container if running', async () => {
-      await deprovisionIfExists(API_URL, authToken);
+      await deprovisionIfExists(API_URL, getToken);
     }, { timeout: 60_000 });
   });
 
   test('Step 2: Auth', async () => {
     test.setTimeout(60_000);
-    await test.step('Navigate to /chat and verify authenticated', async () => {
-      await sharedPage.goto(`${BASE_URL}/chat`);
-      await expect(sharedPage).toHaveURL(/\/chat/);
+    await test.step('Verify authenticated (not redirected to sign-in)', async () => {
+      // After cleanup, page may be on /chat or /onboarding — just confirm session is active
+      const url = sharedPage.url();
+      console.log('[e2e] Step 2 URL:', url);
+      expect(url).not.toContain('/sign-in');
     }, { timeout: 60_000 });
   });
 
   test('Step 3: Subscribe', async () => {
     test.setTimeout(4 * 60_000);
+    await test.step('Sync user with backend', async () => {
+      // The backend must know about the user before it can match Stripe events.
+      // POST /users/sync is idempotent — creates the user record if it doesn't exist.
+      const token = await getToken();
+      const res = await fetch(`${API_URL}/users/sync`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      console.log('[e2e] User sync:', res.status);
+    }, { timeout: 30_000 });
     await test.step('Create Stripe subscription via API', async () => {
       await createSubscription(E2E_EMAIL, DEV_STARTER_PRICE_ID);
     }, { timeout: 60_000 });
     await test.step('Wait for subscription to propagate to backend', async () => {
-      await waitForSubscriptionActive(API_URL, authToken, 120_000);
+      await waitForSubscriptionActive(API_URL, getToken, 120_000);
     }, { timeout: 130_000 });
   });
 
@@ -102,7 +161,7 @@ test.describe('E2E Gate: Full User Journey', () => {
       expect(res).toBe(200);
     }, { timeout: 60_000 });
     await test.step('Wait for container to reach running state', async () => {
-      await waitForRunning(API_URL, authToken, 10 * 60_000);
+      await waitForRunning(API_URL, getToken, 10 * 60_000);
     }, { timeout: 12 * 60_000 });
   });
 

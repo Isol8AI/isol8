@@ -1,32 +1,37 @@
 const POLL_INTERVAL_MS = 3000;
 
+/** Function that returns a fresh Clerk JWT (tokens expire after 60s). */
+export type TokenGetter = () => Promise<string>;
+
 /**
  * DELETE /api/v1/debug/provision — safe to call when no container exists.
- * Treats 404 (no container) and 503 (ECS error on nonexistent service) as "not running".
+ * Treats 401/404/503 as non-fatal (no container or expired token during cleanup).
  */
-export async function deprovisionIfExists(apiUrl: string, authToken: string): Promise<void> {
+export async function deprovisionIfExists(apiUrl: string, getToken: TokenGetter): Promise<void> {
+  const token = await getToken();
   const res = await fetch(`${apiUrl}/debug/provision`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${authToken}` },
+    headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok && res.status !== 404 && res.status !== 503) {
+  if (!res.ok && res.status !== 401 && res.status !== 404 && res.status !== 503) {
     throw new Error(`Unexpected deprovision response: ${res.status}`);
   }
 }
 
 /**
  * Poll GET /api/v1/container/status until status === "running".
- * Throws on status === "error" or timeout.
+ * Refreshes the auth token on each poll (Clerk JWTs expire after 60s).
  */
 export async function waitForRunning(
   apiUrl: string,
-  authToken: string,
+  getToken: TokenGetter,
   timeoutMs: number,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
+    const token = await getToken();
     const res = await fetch(`${apiUrl}/container/status`, {
-      headers: { Authorization: `Bearer ${authToken}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
       const data = await res.json();

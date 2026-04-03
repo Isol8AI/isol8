@@ -131,7 +131,7 @@ describe('createSubscription', () => {
   it('reuses existing customer without creating a new one', async () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_existing' }] });
-    mocks.paymentMethodsAttach.mockResolvedValue({});
+    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
     mocks.customersUpdate.mockResolvedValue({});
     const fakeSub = { id: 'sub_new', status: 'active' };
     mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
@@ -150,7 +150,7 @@ describe('createSubscription', () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [] });
     mocks.customersCreate.mockResolvedValue({ id: 'cus_new' });
-    mocks.paymentMethodsAttach.mockResolvedValue({});
+    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
     mocks.customersUpdate.mockResolvedValue({});
     const fakeSub = { id: 'sub_new', status: 'active' };
     mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
@@ -168,7 +168,7 @@ describe('createSubscription', () => {
   it('returns the created subscription', async () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_abc' }] });
-    mocks.paymentMethodsAttach.mockResolvedValue({});
+    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
     mocks.customersUpdate.mockResolvedValue({});
     const fakeSub = { id: 'sub_xyz', status: 'trialing' };
     mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
@@ -197,7 +197,7 @@ describe('waitForSubscriptionActive', () => {
 
     const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
     await expect(
-      waitForSubscriptionActive('http://api', 'token', 10000),
+      waitForSubscriptionActive('http://api', async () => 'token', 10000),
     ).resolves.toBeUndefined();
   });
 
@@ -213,7 +213,7 @@ describe('waitForSubscriptionActive', () => {
     const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
     await expect(
       Promise.all([
-        waitForSubscriptionActive('http://api', 'token', 30000),
+        waitForSubscriptionActive('http://api', async () => 'token', 30000),
         vi.runAllTimersAsync(),
       ]),
     ).resolves.toBeDefined();
@@ -224,7 +224,7 @@ describe('waitForSubscriptionActive', () => {
     global.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401 });
 
     const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
-    await expect(waitForSubscriptionActive('http://api', 'token', 10000)).rejects.toThrow('401');
+    await expect(waitForSubscriptionActive('http://api', async () => 'token', 10000)).rejects.toThrow('401');
   });
 
   it('throws descriptive timeout error when deadline exceeded', async () => {
@@ -236,7 +236,7 @@ describe('waitForSubscriptionActive', () => {
     const { waitForSubscriptionActive } = await import('../../e2e/helpers/stripe');
     await expect(
       Promise.all([
-        waitForSubscriptionActive('http://api', 'token', 100),
+        waitForSubscriptionActive('http://api', async () => 'token', 100),
         vi.runAllTimersAsync(),
       ]),
     ).rejects.toThrow('timeout');

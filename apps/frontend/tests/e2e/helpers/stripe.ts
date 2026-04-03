@@ -54,17 +54,17 @@ export async function createSubscription(
     customerId = customer.id;
   }
 
-  // Attach the built-in test payment method
-  await stripe().paymentMethods.attach('pm_card_visa', { customer: customerId });
+  // Attach a fresh test payment method and use the returned ID
+  const pm = await stripe().paymentMethods.attach('pm_card_visa', { customer: customerId });
   await stripe().customers.update(customerId, {
-    invoice_settings: { default_payment_method: 'pm_card_visa' },
+    invoice_settings: { default_payment_method: pm.id },
   });
 
   // Create subscription
   const subscription = await stripe().subscriptions.create({
     customer: customerId,
     items: [{ price: priceId }],
-    default_payment_method: 'pm_card_visa',
+    default_payment_method: pm.id,
     metadata: { plan_tier: 'starter' },
   });
 
@@ -78,14 +78,15 @@ export async function createSubscription(
  */
 export async function waitForSubscriptionActive(
   apiUrl: string,
-  authToken: string,
+  getToken: () => Promise<string>,
   timeoutMs: number,
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastIsSubscribed: unknown = undefined;
   while (Date.now() < deadline) {
+    const token = await getToken();
     const res = await fetch(`${apiUrl}/billing/account`, {
-      headers: { Authorization: `Bearer ${authToken}` },
+      headers: { Authorization: `Bearer ${token}` },
     });
     if (res.ok) {
       const data = await res.json();
