@@ -5,9 +5,39 @@ import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
 const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
-const E2E_PASSWORD = 'InvincibleS4E5';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+
+/**
+ * Creates a one-time Clerk sign-in token for E2E_EMAIL via the Clerk Backend API.
+ * This token can be used with strategy:'ticket' to sign in without password or 2FA,
+ * bypassing both the password step AND Clerk's "new device" email verification.
+ */
+async function createClerkSignInToken(): Promise<string> {
+  const secretKey = process.env.CLERK_SECRET_KEY;
+  if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set — cannot create sign-in token');
+
+  // Look up the user by email address
+  const usersRes = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(E2E_EMAIL)}`, {
+    headers: { Authorization: `Bearer ${secretKey}` },
+  });
+  if (!usersRes.ok) throw new Error(`[e2e] Failed to fetch users: ${usersRes.status} ${await usersRes.text()}`);
+  const users = await usersRes.json() as Array<{ id: string }>;
+  if (!users.length) throw new Error(`[e2e] No Clerk user found with email ${E2E_EMAIL}`);
+
+  // Create a sign-in token for the user
+  const tokenRes = await fetch('https://api.clerk.com/v1/sign_in_tokens', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ user_id: users[0].id }),
+  });
+  if (!tokenRes.ok) throw new Error(`[e2e] Failed to create sign-in token: ${tokenRes.status} ${await tokenRes.text()}`);
+  const tokenData = await tokenRes.json() as { token: string };
+  return tokenData.token;
+}
 
 test.describe('E2E Gate: Full User Journey', () => {
   test.describe.configure({ mode: 'serial' });
@@ -20,8 +50,7 @@ test.describe('E2E Gate: Full User Journey', () => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
     // clerkSetup() sets process.env.CLERK_FAPI and CLERK_TESTING_TOKEN in THIS worker.
     // global.setup.ts calls clerkSetup() in the setup project worker, but Playwright workers
-    // are separate processes — env vars don't cross process boundaries. Calling it here
-    // ensures the token is available for setupClerkTestingToken below.
+    // are separate processes — env vars don't cross process boundaries.
     await clerkSetup();
     // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
     const ctx = await browser.newContext({
@@ -30,29 +59,34 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // setupClerkTestingToken intercepts Clerk FAPI requests (GET /v1/client etc.) and appends
-    // the testing token. Without this, Clerk's JS client hangs on the dev-browser-missing
-    // handshake in CI and the <SignIn /> component never renders. This is NOT about clerk.signIn()
-    // — it's purely about making Clerk's client-side SDK initialize so the form appears.
+    // setupClerkTestingToken intercepts Clerk FAPI requests and appends the testing token,
+    // allowing Clerk's client-side SDK to initialize (Clerk.client becomes non-null).
     await setupClerkTestingToken({ page: sharedPage });
 
-    // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
-    // cookie, and redirects to /sign-in?redirect_url=%2Fchat.
+    // Navigate to homepage so Clerk.js loads and Clerk.client initializes.
+    // The homepage is unprotected — no sign-in redirect, just Clerk SDK initialization.
+    await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+
+    // Wait for Clerk.client to be non-null (testing token allows FAPI /v1/client to succeed).
+    await sharedPage.waitForFunction(() => {
+      const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown } };
+      return w.Clerk?.loaded === true && w.Clerk?.client != null;
+    }, { timeout: 60_000 });
+
+    // Create a one-time sign-in token via Clerk Backend API. This bypasses both the password
+    // step AND Clerk's "new device" email verification (strategy:'ticket' is backend-trusted).
+    const signInToken = await createClerkSignInToken();
+
+    // Use the sign-in token to create a session in the browser (no password, no 2FA required).
+    await sharedPage.evaluate(async (token) => {
+      const w = window as Window & { Clerk?: { client?: { signIn: { create: (p: unknown) => Promise<{ createdSessionId: string }> } }; setActive: (p: unknown) => Promise<void> } };
+      const signIn = await w.Clerk!.client!.signIn.create({ strategy: 'ticket', ticket: token });
+      await w.Clerk!.setActive({ session: signIn.createdSessionId });
+    }, signInToken);
+
+    // Navigate to /chat now that we have an active session
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-
-    // Confirm we landed on the sign-in page (middleware redirect happened)
-    await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
-
-    // Wait for Clerk's <SignIn /> component to mount and render the email input.
-    // Requires the testing token interceptor above to be active so Clerk.client initializes.
-    const emailInput = sharedPage.getByPlaceholder('Enter your email address');
-    await emailInput.waitFor({ timeout: 60_000 });
-    await emailInput.fill(E2E_EMAIL);
-    await sharedPage.getByPlaceholder('Enter your password').fill(E2E_PASSWORD);
-    await sharedPage.getByRole('button', { name: /Continue/i }).click();
-
-    // redirect_url was set to /chat by middleware — after sign-in we land back on /chat
-    await sharedPage.waitForURL(/\/chat/, { timeout: 60_000 });
+    await sharedPage.waitForURL(/\/chat/, { timeout: 30_000 });
 
     // Retrieve auth token
     authToken = await sharedPage.waitForFunction(async () => {
