@@ -19,7 +19,6 @@ export function useDesktopAuth() {
 
   useEffect(() => {
     // Only run in Tauri desktop app
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const tauri = (window as any).__TAURI__;
     if (!tauri?.event?.listen) return;
     if (isSignedIn) return; // Already signed in, no need
