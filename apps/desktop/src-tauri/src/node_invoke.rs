@@ -4,6 +4,7 @@
 //! - src/node-host/invoke.ts (dispatch + result building)
 //! - src/node-host/invoke-system-run.ts (process spawning)
 
+use crate::exec_approvals::{self, ApprovalDecision, ExecSecurity};
 use crate::node_client::{InvokeError, NodeClient, NodeInvokeRequest, NodeInvokeResult};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -42,7 +43,7 @@ pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
             id,
             node_id,
             ok: true,
-            payload_json: Some(r#"{"approvals":{},"hash":""}"#.into()),
+            payload_json: Some(exec_approvals::get_snapshot()),
             error: None,
         }),
         "system.execApprovals.set" => Ok(NodeInvokeResult {
@@ -94,6 +95,36 @@ async fn handle_system_run(
 
     if params.argv.is_empty() {
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
+    }
+
+    // Check exec approval before running
+    let security = ExecSecurity::Allowlist; // Default security level
+    match exec_approvals::check_approval(&params.argv, &security) {
+        Ok(()) => {} // Approved — continue
+        Err(reason) if reason.starts_with("APPROVAL_REQUIRED:") => {
+            // Need user approval — show a native dialog
+            let cmd_preview = params.argv.join(" ");
+            let decision = prompt_exec_approval(&cmd_preview).await;
+            match decision {
+                ApprovalDecision::AllowOnce => {
+                    // Continue execution this time only
+                }
+                ApprovalDecision::AllowAlways => {
+                    exec_approvals::record_decision(&params.argv, ApprovalDecision::AllowAlways);
+                }
+                ApprovalDecision::Deny => {
+                    exec_approvals::record_decision(&params.argv, ApprovalDecision::Deny);
+                    return Ok(error_result(
+                        request,
+                        "EXEC_DENIED",
+                        &format!("User denied execution of: {}", cmd_preview),
+                    ));
+                }
+            }
+        }
+        Err(reason) => {
+            return Ok(error_result(request, "EXEC_DENIED", &reason));
+        }
     }
 
     let (cmd, args) = params.argv.split_first().unwrap();
@@ -219,6 +250,42 @@ async fn handle_system_which(
         payload_json: Some(serde_json::to_string(&results)?),
         error: None,
     })
+}
+
+// --- Exec approval prompt ---
+
+/// Show a native macOS dialog asking the user to approve command execution.
+/// Returns the user's decision.
+async fn prompt_exec_approval(command_preview: &str) -> ApprovalDecision {
+    // Use osascript to show a native dialog with three buttons.
+    // This runs on the main thread and blocks until the user responds.
+    let script = format!(
+        r#"display dialog "Isol8 agent wants to run:\n\n{}" with title "Isol8 - Command Approval" buttons {{"Deny", "Allow Once", "Allow Always"}} default button "Allow Once" with icon caution"#,
+        command_preview.replace('"', r#"\""#).replace('\n', r#"\n"#)
+    );
+
+    let output = tokio::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&script)
+        .output()
+        .await;
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            if stdout.contains("Allow Always") {
+                ApprovalDecision::AllowAlways
+            } else if stdout.contains("Allow Once") {
+                ApprovalDecision::AllowOnce
+            } else {
+                ApprovalDecision::Deny
+            }
+        }
+        Err(_) => {
+            // Dialog failed to show — deny by default
+            ApprovalDecision::Deny
+        }
+    }
 }
 
 // --- Helpers ---
