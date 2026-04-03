@@ -28,11 +28,17 @@ test.describe('E2E Gate: Full User Journey', () => {
     // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
     // cookie, and redirects to /sign-in?redirect_url=%2Fchat. The <SignIn /> component renders
     // with Clerk.client properly initialized (no window.Clerk.client null issue).
-    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+    // Use waitUntil:'load' so all scripts (including Clerk JS) are fetched before we poll for
+    // the form — 'domcontentloaded' returns before Clerk's React bundle finishes executing.
+    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'load' });
 
-    // Wait for sign-in form to appear after redirect
+    // Confirm we landed on the sign-in page (middleware redirect happened)
+    await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
+
+    // Wait for Clerk's <SignIn /> component to mount and render the email input.
+    // CI can be slow; give 90s for Clerk JS to download from CDN and execute.
     const emailInput = sharedPage.getByPlaceholder('Enter your email address');
-    await emailInput.waitFor({ timeout: 30_000 });
+    await emailInput.waitFor({ timeout: 90_000 });
     await emailInput.fill(E2E_EMAIL);
     await sharedPage.getByPlaceholder('Enter your password').fill(E2E_PASSWORD);
     await sharedPage.getByRole('button', { name: /Continue/i }).click();
