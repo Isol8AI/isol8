@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { clerk } from '@clerk/testing/playwright';
+import { clerk, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -25,9 +25,11 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // clerk.signIn() uses Clerk's testing token internally (setupClerkTestingToken) which
-    // bypasses the dev-browser handshake that fails in fresh CI contexts. Requires a prior
-    // page.goto() to a non-protected page so Clerk JS is loaded first.
+    // MUST call setupClerkTestingToken BEFORE the first goto — the route interceptor must
+    // be active when Clerk JS makes its very first GET /v1/client request, otherwise Clerk
+    // gets a dev-browser-missing response and sets client=null. clerk.signIn() then hits
+    // the `if (!Clerk.client) return` guard and silently no-ops.
+    await setupClerkTestingToken({ page: sharedPage });
     await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
     await clerk.signIn({
       page: sharedPage,
