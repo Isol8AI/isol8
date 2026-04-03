@@ -34,15 +34,26 @@ test.describe('E2E Gate: Full User Journey', () => {
     // be active when Clerk JS makes its very first GET /v1/client request, otherwise Clerk
     // gets a dev-browser-missing response and sets client=null. clerk.signIn() then hits
     // the `if (!Clerk.client) return` guard and silently no-ops.
+    // Log the first 10 Clerk FAPI requests to verify what URLs it uses and whether token is appended
+    const clerkRequests: string[] = [];
+    sharedPage.on('request', req => {
+      const url = req.url();
+      if (url.includes('.clerk.') || url.includes('/__clerk') || (url.includes('/v1/') && url.includes('clerk'))) {
+        clerkRequests.push(url);
+        if (clerkRequests.length <= 10) console.log('[e2e] Clerk request:', url.substring(0, 200));
+      }
+    });
+
     await setupClerkTestingToken({ page: sharedPage });
     await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
 
-    // Debug: verify Clerk initialized (client must be non-null for signIn to work)
-    const clerkState = await sharedPage.evaluate(() => {
+    // Wait for Clerk to fully load before checking state
+    const clerkState = await sharedPage.waitForFunction(() => {
       const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown; session?: unknown } };
-      return { loaded: w.Clerk?.loaded, clientExists: !!w.Clerk?.client, sessionExists: !!w.Clerk?.session };
-    });
-    console.log('[e2e] Clerk state after goto:', JSON.stringify(clerkState));
+      if (w.Clerk?.loaded === undefined) return null; // not yet loaded
+      return { loaded: !!w.Clerk?.loaded, clientExists: !!w.Clerk?.client, sessionExists: !!w.Clerk?.session };
+    }, { timeout: 30_000 }).then(h => h.jsonValue()) as { loaded: boolean; clientExists: boolean; sessionExists: boolean };
+    console.log('[e2e] Clerk state after load:', JSON.stringify(clerkState));
     if (!clerkState.clientExists) throw new Error(`[e2e] Clerk.client is null — testing token not working. CLERK_FAPI=${process.env.CLERK_FAPI}, token set=${!!process.env.CLERK_TESTING_TOKEN}`);
 
     await clerk.signIn({
