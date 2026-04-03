@@ -1,48 +1,13 @@
 import { test, expect, type Page } from '@playwright/test';
-import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
+import { clerk, clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
 const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
+const E2E_PASSWORD = 'InvincibleS4E5';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
-
-/**
- * Creates a one-time Clerk sign-in token for E2E_EMAIL via the Clerk Backend API.
- * This token can be used with strategy:'ticket' to sign in without password or 2FA,
- * bypassing both the password step AND Clerk's "new device" email verification.
- */
-async function createClerkSignInToken(): Promise<string> {
-  const secretKey = process.env.CLERK_SECRET_KEY;
-  if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set — cannot create sign-in token');
-
-  // Look up the user by email address (Clerk uses array bracket notation for filters)
-  const usersUrl = `https://api.clerk.com/v1/users?email_address[]=${encodeURIComponent(E2E_EMAIL)}`;
-  console.log(`[e2e] Fetching users from: ${usersUrl}`);
-  const usersRes = await fetch(usersUrl, {
-    headers: { Authorization: `Bearer ${secretKey}` },
-  });
-  if (!usersRes.ok) throw new Error(`[e2e] Failed to fetch users: ${usersRes.status} ${await usersRes.text()}`);
-  const usersBody = await usersRes.text();
-  console.log(`[e2e] Users response (${usersRes.status}): ${usersBody.slice(0, 500)}`);
-  const users = JSON.parse(usersBody) as Array<{ id: string }> | { data?: Array<{ id: string }>; total_count?: number };
-  const userList = Array.isArray(users) ? users : (users.data ?? []);
-  if (!userList.length) throw new Error(`[e2e] No Clerk user found with email ${E2E_EMAIL}`);
-
-  // Create a sign-in token for the user
-  const tokenRes = await fetch('https://api.clerk.com/v1/sign_in_tokens', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${secretKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ user_id: userList[0].id }),
-  });
-  if (!tokenRes.ok) throw new Error(`[e2e] Failed to create sign-in token: ${tokenRes.status} ${await tokenRes.text()}`);
-  const tokenData = await tokenRes.json() as { token: string };
-  return tokenData.token;
-}
 
 test.describe('E2E Gate: Full User Journey', () => {
   test.describe.configure({ mode: 'serial' });
@@ -64,30 +29,36 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
-    // setupClerkTestingToken intercepts Clerk FAPI requests and appends the testing token,
-    // allowing Clerk's client-side SDK to initialize (Clerk.client becomes non-null).
+    // setupClerkTestingToken intercepts Clerk FAPI requests and appends the testing token.
+    // This is needed for Clerk.client to initialize (non-null) in the browser — without it,
+    // Clerk hangs on the dev-browser-missing handshake.
     await setupClerkTestingToken({ page: sharedPage });
 
-    // Navigate to homepage so Clerk.js loads and Clerk.client initializes.
-    // The homepage is unprotected — no sign-in redirect, just Clerk SDK initialization.
-    await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+    // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
+    // cookie, and redirects to /sign-in?redirect_url=%2Fchat.
+    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
 
-    // Wait for Clerk.client to be non-null (testing token allows FAPI /v1/client to succeed).
-    await sharedPage.waitForFunction(() => {
-      const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown } };
-      return w.Clerk?.loaded === true && w.Clerk?.client != null;
-    }, { timeout: 60_000 });
+    // Wait for sign-in page and for Clerk's <SignIn /> component to render.
+    // The email input being visible confirms Clerk.client is properly initialized.
+    await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
+    await sharedPage.getByPlaceholder('Enter your email address').waitFor({ timeout: 60_000 });
 
-    // Create a one-time sign-in token via Clerk Backend API. This bypasses both the password
-    // step AND Clerk's "new device" email verification (strategy:'ticket' is backend-trusted).
-    const signInToken = await createClerkSignInToken();
+    // Use clerk.signIn() programmatic API — the testing token (appended to all FAPI requests
+    // via setupClerkTestingToken) tells Clerk's backend to bypass new-device email verification.
+    // This is different from UI form fill which goes through Clerk's multi-step flow and still
+    // triggers the new-device check even with testing tokens.
+    await clerk.signIn({
+      page: sharedPage,
+      signInParams: { strategy: 'password', identifier: E2E_EMAIL, password: E2E_PASSWORD },
+    });
 
-    // Use the sign-in token to create a session in the browser (no password, no 2FA required).
-    await sharedPage.evaluate(async (token) => {
-      const w = window as Window & { Clerk?: { client?: { signIn: { create: (p: unknown) => Promise<{ createdSessionId: string }> } }; setActive: (p: unknown) => Promise<void> } };
-      const signIn = await w.Clerk!.client!.signIn.create({ strategy: 'ticket', ticket: token });
-      await w.Clerk!.setActive({ session: signIn.createdSessionId });
-    }, signInToken);
+    // Verify session was established
+    const sessionId = await sharedPage.evaluate(() => {
+      const w = window as Window & { Clerk?: { session?: { id?: string } } };
+      return w.Clerk?.session?.id ?? null;
+    });
+    console.log('[e2e] Session ID after signIn:', sessionId);
+    if (!sessionId) throw new Error('[e2e] No session after clerk.signIn() — testing token may not be bypassing new-device verification');
 
     // Navigate to /chat now that we have an active session
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
