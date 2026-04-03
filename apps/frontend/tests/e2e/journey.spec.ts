@@ -17,8 +17,8 @@ async function createClerkSignInToken(): Promise<string> {
   const secretKey = process.env.CLERK_SECRET_KEY;
   if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set — cannot create sign-in token');
 
-  // Look up the user by email address
-  const usersRes = await fetch(`https://api.clerk.com/v1/users?email_address=${encodeURIComponent(E2E_EMAIL)}`, {
+  // Look up the user by email address (Clerk uses array bracket notation for filters)
+  const usersRes = await fetch(`https://api.clerk.com/v1/users?email_address[]=${encodeURIComponent(E2E_EMAIL)}`, {
     headers: { Authorization: `Bearer ${secretKey}` },
   });
   if (!usersRes.ok) throw new Error(`[e2e] Failed to fetch users: ${usersRes.status} ${await usersRes.text()}`);
