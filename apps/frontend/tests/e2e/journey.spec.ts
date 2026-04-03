@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
-import { clerk, setupClerkTestingToken } from '@clerk/testing/playwright';
+import { clerk, clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -18,6 +18,11 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
+    // clerkSetup() sets process.env.CLERK_FAPI and CLERK_TESTING_TOKEN in THIS worker.
+    // global.setup.ts calls clerkSetup() in the setup project worker, but Playwright workers
+    // are separate processes — env vars don't cross process boundaries. Calling it here
+    // ensures the token is always available regardless of worker reuse.
+    await clerkSetup();
     // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
