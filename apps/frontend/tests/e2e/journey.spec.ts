@@ -18,12 +18,17 @@ async function createClerkSignInToken(): Promise<string> {
   if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set — cannot create sign-in token');
 
   // Look up the user by email address (Clerk uses array bracket notation for filters)
-  const usersRes = await fetch(`https://api.clerk.com/v1/users?email_address[]=${encodeURIComponent(E2E_EMAIL)}`, {
+  const usersUrl = `https://api.clerk.com/v1/users?email_address[]=${encodeURIComponent(E2E_EMAIL)}`;
+  console.log(`[e2e] Fetching users from: ${usersUrl}`);
+  const usersRes = await fetch(usersUrl, {
     headers: { Authorization: `Bearer ${secretKey}` },
   });
   if (!usersRes.ok) throw new Error(`[e2e] Failed to fetch users: ${usersRes.status} ${await usersRes.text()}`);
-  const users = await usersRes.json() as Array<{ id: string }>;
-  if (!users.length) throw new Error(`[e2e] No Clerk user found with email ${E2E_EMAIL}`);
+  const usersBody = await usersRes.text();
+  console.log(`[e2e] Users response (${usersRes.status}): ${usersBody.slice(0, 500)}`);
+  const users = JSON.parse(usersBody) as Array<{ id: string }> | { data?: Array<{ id: string }>; total_count?: number };
+  const userList = Array.isArray(users) ? users : (users.data ?? []);
+  if (!userList.length) throw new Error(`[e2e] No Clerk user found with email ${E2E_EMAIL}`);
 
   // Create a sign-in token for the user
   const tokenRes = await fetch('https://api.clerk.com/v1/sign_in_tokens', {
@@ -32,7 +37,7 @@ async function createClerkSignInToken(): Promise<string> {
       Authorization: `Bearer ${secretKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ user_id: users[0].id }),
+    body: JSON.stringify({ user_id: userList[0].id }),
   });
   if (!tokenRes.ok) throw new Error(`[e2e] Failed to create sign-in token: ${tokenRes.status} ${await tokenRes.text()}`);
   const tokenData = await tokenRes.json() as { token: string };
