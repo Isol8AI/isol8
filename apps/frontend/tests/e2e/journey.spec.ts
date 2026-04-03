@@ -34,40 +34,20 @@ test.describe('E2E Gate: Full User Journey', () => {
     // be active when Clerk JS makes its very first GET /v1/client request, otherwise Clerk
     // gets a dev-browser-missing response and sets client=null. clerk.signIn() then hits
     // the `if (!Clerk.client) return` guard and silently no-ops.
-    // Log the first 10 Clerk FAPI requests to verify what URLs it uses and whether token is appended
-    const clerkRequests: string[] = [];
-    sharedPage.on('request', req => {
-      const url = req.url();
-      if (url.includes('.clerk.') || url.includes('/__clerk') || (url.includes('/v1/') && url.includes('clerk'))) {
-        clerkRequests.push(url);
-        if (clerkRequests.length <= 10) console.log('[e2e] Clerk request:', url.substring(0, 200));
-      }
-    });
-
     await setupClerkTestingToken({ page: sharedPage });
     await sharedPage.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
-
-    // Wait for Clerk to fully load before checking state
-    const clerkState = await sharedPage.waitForFunction(() => {
-      const w = window as Window & { Clerk?: { loaded?: boolean; client?: unknown; session?: unknown } };
-      if (w.Clerk?.loaded === undefined) return null; // not yet loaded
-      return { loaded: !!w.Clerk?.loaded, clientExists: !!w.Clerk?.client, sessionExists: !!w.Clerk?.session };
-    }, { timeout: 30_000 }).then(h => h.jsonValue()) as { loaded: boolean; clientExists: boolean; sessionExists: boolean };
-    console.log('[e2e] Clerk state after load:', JSON.stringify(clerkState));
-    if (!clerkState.clientExists) throw new Error(`[e2e] Clerk.client is null — testing token not working. CLERK_FAPI=${process.env.CLERK_FAPI}, token set=${!!process.env.CLERK_TESTING_TOKEN}`);
-
     await clerk.signIn({
       page: sharedPage,
       signInParams: { strategy: 'password', identifier: E2E_EMAIL, password: E2E_PASSWORD },
     });
 
-    // Debug: verify session is active after signIn
-    const sessionAfterSignIn = await sharedPage.evaluate(() => {
+    // Verify session is active before navigating — Clerk.session null means signIn silently no-op'd
+    const sessionId = await sharedPage.evaluate(() => {
       const w = window as Window & { Clerk?: { session?: { id?: string } } };
       return w.Clerk?.session?.id ?? null;
     });
-    console.log('[e2e] Session ID after signIn:', sessionAfterSignIn);
-    if (!sessionAfterSignIn) throw new Error('[e2e] No session after clerk.signIn() — sign-in silently failed');
+    console.log('[e2e] Session ID after signIn:', sessionId);
+    if (!sessionId) throw new Error('[e2e] No session after clerk.signIn() — Clerk.client may be null (testing token issue) or credentials wrong');
 
     // Navigate to /chat
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
