@@ -6,8 +6,6 @@ import {
   Zap,
   Crown,
   XCircle,
-  CheckCircle,
-  Circle,
   AlertTriangle,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
@@ -36,12 +34,8 @@ const TIMEOUT_MS = 180_000;
 
 export function ProvisioningStepper({
   children,
-  trigger = "onboarding",
 }: {
   children: React.ReactNode;
-  /** "onboarding" = full flow (billing → container → gateway → channels → ready).
-   *  "recovery" = skip billing, start from container provisioning. */
-  trigger?: "onboarding" | "recovery";
 }) {
   const { organization } = useOrganization();
   const isOrg = !!organization;
@@ -65,20 +59,14 @@ export function ProvisioningStepper({
   });
 
   // When container status returns null (404), trigger provisioning once
-  // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
-  const needsProvision = container === null || container?.status === "stopped";
   useEffect(() => {
-    if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
+    if (container === null && shouldPollContainer && !provisionRequestedRef.current) {
       provisionRequestedRef.current = true;
       api.post("/container/provision", {}).catch((err: unknown) => {
         console.error("Container provision failed:", err);
       });
     }
-    // Reset the ref when container comes back so it can re-provision on next stop
-    if (container && container.status !== "stopped") {
-      provisionRequestedRef.current = false;
-    }
-  }, [needsProvision, container, shouldPollContainer, api]);
+  }, [container, shouldPollContainer, api]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
@@ -100,9 +88,8 @@ export function ProvisioningStepper({
 
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
-    // Free tier auto-provisions; paid tiers need subscription first.
-    // Recovery flow skips billing — the user already has a plan.
-    if (trigger !== "recovery" && !isSubscribed && !isFree) return "payment";
+    // Free tier auto-provisions; paid tiers need subscription first
+    if (!isSubscribed && !isFree) return "payment";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
     if (!containerReady || !gatewayHealth) return "gateway";
@@ -124,7 +111,7 @@ export function ProvisioningStepper({
 
     // No channels connected — show onboarding
     return "channels";
-  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
+  }, [isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
@@ -178,7 +165,6 @@ export function ProvisioningStepper({
     return (
       <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
         <div className="text-center space-y-6 max-w-sm">
-          <StepperDisplay currentPhase={phase} steps={isFree ? STEPS_FREE : STEPS_PAID} error />
           <div className="space-y-2">
             <XCircle className="h-8 w-8 text-[#dc2626] mx-auto" />
             <h2 className="text-lg font-medium text-[#1a1a1a]">Setup failed</h2>
@@ -485,55 +471,6 @@ export function ProvisioningStepper({
   );
 }
 
-
-function StepperDisplay({
-  currentPhase,
-  steps,
-  error = false,
-}: {
-  currentPhase: Phase;
-  steps: { phase: Phase; label: string; activeLabel: string }[];
-  error?: boolean;
-}) {
-  const currentIdx = steps.findIndex((s) => s.phase === currentPhase);
-
-  return (
-    <div className="space-y-3 text-left mx-auto w-fit">
-      {steps.map((step, idx) => {
-        const isComplete = idx < currentIdx;
-        const isCurrent = idx === currentIdx;
-        const isErrorStep = error && isCurrent;
-
-        return (
-          <div key={step.phase} className="flex items-center gap-3">
-            {isErrorStep ? (
-              <XCircle className="h-5 w-5 text-[#dc2626] flex-shrink-0" />
-            ) : isComplete ? (
-              <CheckCircle className="h-5 w-5 text-[#2d8a4e] flex-shrink-0" />
-            ) : isCurrent ? (
-              <Loader2 className="h-5 w-5 animate-spin text-[#06402B] flex-shrink-0" />
-            ) : (
-              <Circle className="h-5 w-5 text-[#d4cfc5] flex-shrink-0" />
-            )}
-            <span
-              className={
-                isErrorStep
-                  ? "text-sm text-[#dc2626]"
-                  : isComplete
-                    ? "text-sm text-[#1a1a1a]"
-                    : isCurrent
-                      ? "text-sm text-[#1a1a1a] font-medium"
-                      : "text-sm text-[#c5bfb6]"
-              }
-            >
-              {isCurrent && !error ? step.activeLabel : step.label}
-            </span>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
 
 function PricingCards({
   checkoutLoading,
