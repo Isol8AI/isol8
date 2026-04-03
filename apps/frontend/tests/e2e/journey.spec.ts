@@ -1,5 +1,5 @@
-import { test, expect, type Page } from '@playwright/test';
-import { clerk, clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
+import { test, expect, type Page, type BrowserContext } from '@playwright/test';
+import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -8,6 +8,32 @@ const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
 const E2E_PASSWORD = 'InvincibleS4E5';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
+
+/**
+ * Reads the latest Clerk verification code from the mailsac public inbox.
+ * Opens the mailsac web UI, finds the most recent email, and extracts the 6-digit code.
+ */
+async function readOtpFromMailsac(ctx: BrowserContext): Promise<string> {
+  const mailPage = await ctx.newPage();
+  try {
+    // Navigate to mailsac inbox for the test account
+    await mailPage.goto(`https://mailsac.com/inbox/isol8-e2e-testing@mailsac.com`, { waitUntil: 'domcontentloaded' });
+    // Wait for the inbox table to load and click the latest email
+    const firstRow = mailPage.locator('table tbody tr').first();
+    await firstRow.waitFor({ timeout: 30_000 });
+    await firstRow.click();
+    // Wait for email body to load — the Clerk OTP is a 6-digit number in the email content
+    await mailPage.waitForURL(/\/inbox\//, { timeout: 10_000 });
+    const bodyText = await mailPage.locator('body').innerText({ timeout: 30_000 });
+    // Extract the 6-digit verification code from the email body
+    const match = bodyText.match(/\b(\d{6})\b/);
+    if (!match) throw new Error(`[e2e] Could not find 6-digit OTP in mailsac email body: ${bodyText.slice(0, 200)}`);
+    console.log(`[e2e] Extracted OTP from mailsac: ${match[1]}`);
+    return match[1];
+  } finally {
+    await mailPage.close();
+  }
+}
 
 test.describe('E2E Gate: Full User Journey', () => {
   test.describe.configure({ mode: 'serial' });
@@ -19,51 +45,63 @@ test.describe('E2E Gate: Full User Journey', () => {
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
     // clerkSetup() sets process.env.CLERK_FAPI and CLERK_TESTING_TOKEN in THIS worker.
-    // global.setup.ts calls clerkSetup() in the setup project worker, but Playwright workers
-    // are separate processes — env vars don't cross process boundaries.
     await clerkSetup();
-    // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
+    // Create context with Vercel bypass header
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
         ? { 'x-vercel-protection-bypass': process.env.VERCEL_AUTOMATION_BYPASS_SECRET }
         : {},
     });
     sharedPage = await ctx.newPage();
-    // setupClerkTestingToken intercepts Clerk FAPI requests and appends the testing token.
-    // This is needed for Clerk.client to initialize (non-null) in the browser — without it,
-    // Clerk hangs on the dev-browser-missing handshake.
+    // setupClerkTestingToken allows Clerk.client to initialize (non-null).
     await setupClerkTestingToken({ page: sharedPage });
 
-    // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
-    // cookie, and redirects to /sign-in?redirect_url=%2Fchat.
+    // Navigate to /chat — middleware triggers handshake, redirects to /sign-in
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
-
-    // Wait for sign-in page and for Clerk's <SignIn /> component to render.
-    // The email input being visible confirms Clerk.client is properly initialized.
     await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
+    // Wait for Clerk's <SignIn /> form to render
     await sharedPage.getByPlaceholder('Enter your email address').waitFor({ timeout: 60_000 });
 
-    // signIn.create() with testing token returns needs_second_factor (device verification).
-    // Bypass entirely with a backend-issued sign-in token (strategy:ticket).
-    const secretKey = process.env.CLERK_SECRET_KEY;
-    if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set');
+    // Sign in with password — Clerk returns needs_second_factor (new-device email verification).
+    // Testing tokens do NOT bypass this. We complete it by reading the OTP from mailsac.
+    const signInResult = await sharedPage.evaluate(async ({ email, password }) => {
+      const w = window as Window & { Clerk?: { client?: { signIn: { create: (p: Record<string, string>) => Promise<{ status: string; createdSessionId: string | null; prepareSecondFactor: (p: Record<string, string>) => Promise<unknown> }> } }; setActive: (p: { session: string | null }) => Promise<void> } };
+      const signIn = await w.Clerk!.client!.signIn.create({
+        strategy: 'password', identifier: email, password: password,
+      });
+      if (signIn.status === 'needs_second_factor') {
+        // Trigger Clerk to send the email OTP
+        await signIn.prepareSecondFactor({ strategy: 'email_code' });
+        return { status: 'needs_second_factor' };
+      }
+      if (signIn.createdSessionId) {
+        await w.Clerk!.setActive({ session: signIn.createdSessionId });
+        return { status: 'complete' };
+      }
+      return { status: signIn.status };
+    }, { email: E2E_EMAIL, password: E2E_PASSWORD });
+    console.log('[e2e] signIn result:', JSON.stringify(signInResult));
 
-    // Debug: list users (no filter) to verify the secret key is for the right Clerk instance.
-    // Also try both email_address query formats since Clerk API docs are inconsistent.
-    const debugAllRes = await fetch('https://api.clerk.com/v1/users?limit=3', {
-      headers: { Authorization: `Bearer ${secretKey}` },
-    });
-    const debugAllBody = await debugAllRes.text();
-    console.log(`[e2e] All users (limit=3, ${debugAllRes.status}):`, debugAllBody.slice(0, 500));
+    if (signInResult.status === 'needs_second_factor') {
+      // Read the OTP from the mailsac inbox
+      const otp = await readOtpFromMailsac(ctx);
 
-    // Try query search (full text) instead of exact email filter
-    const debugQueryRes = await fetch(`https://api.clerk.com/v1/users?query=${encodeURIComponent(E2E_EMAIL)}&limit=3`, {
-      headers: { Authorization: `Bearer ${secretKey}` },
-    });
-    const debugQueryBody = await debugQueryRes.text();
-    console.log(`[e2e] Users by query (${debugQueryRes.status}):`, debugQueryBody.slice(0, 500));
-
-    throw new Error('[e2e] Debug stop — check user lookup logs');
+      // Complete the second factor
+      const secondResult = await sharedPage.evaluate(async (code) => {
+        const w = window as Window & { Clerk?: { client?: { signIn: { attemptSecondFactor: (p: Record<string, string>) => Promise<{ status: string; createdSessionId: string | null }> } }; setActive: (p: { session: string | null }) => Promise<void> } };
+        const result = await w.Clerk!.client!.signIn.attemptSecondFactor({
+          strategy: 'email_code', code,
+        });
+        if (result.createdSessionId) {
+          await w.Clerk!.setActive({ session: result.createdSessionId });
+        }
+        return { status: result.status, hasSession: !!result.createdSessionId };
+      }, otp);
+      console.log('[e2e] secondFactor result:', JSON.stringify(secondResult));
+      if (secondResult.status !== 'complete') {
+        throw new Error(`[e2e] Second factor failed: ${JSON.stringify(secondResult)}`);
+      }
+    }
 
     // Navigate to /chat now that we have an active session
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
@@ -138,7 +176,6 @@ test.describe('E2E Gate: Full User Journey', () => {
       await sharedPage.goto(`${BASE_URL}/chat`);
     }, { timeout: 60_000 });
     await test.step('Select first agent', async () => {
-      // Selector from ChatLayout.tsx — agent list items use the .agent-item CSS class
       const agentItem = sharedPage.locator('.agent-item').first();
       await agentItem.waitFor({ timeout: 60_000 });
       await agentItem.click();
