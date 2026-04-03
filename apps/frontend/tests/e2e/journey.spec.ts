@@ -43,14 +43,30 @@ test.describe('E2E Gate: Full User Journey', () => {
     await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
     await sharedPage.getByPlaceholder('Enter your email address').waitFor({ timeout: 60_000 });
 
-    // Use clerk.signIn() programmatic API — the testing token (appended to all FAPI requests
-    // via setupClerkTestingToken) tells Clerk's backend to bypass new-device email verification.
-    // This is different from UI form fill which goes through Clerk's multi-step flow and still
-    // triggers the new-device check even with testing tokens.
-    await clerk.signIn({
-      page: sharedPage,
-      signInParams: { strategy: 'password', identifier: E2E_EMAIL, password: E2E_PASSWORD },
+    // Diagnostic: check Clerk state before attempting sign-in
+    const preState = await sharedPage.evaluate(() => {
+      const w = window as Window & { Clerk?: { loaded?: boolean; client?: { signIn?: unknown } } };
+      return { loaded: w.Clerk?.loaded, clientExists: w.Clerk?.client != null };
     });
+    console.log('[e2e] Clerk state before signIn:', JSON.stringify(preState));
+
+    // Try signIn.create() directly to see the sign-in status (complete vs needs_second_factor)
+    const signInResult = await sharedPage.evaluate(async ({ email, password }) => {
+      const w = window as Window & { Clerk?: { client?: { signIn: { create: (p: Record<string, string>) => Promise<{ id: string; status: string; createdSessionId: string | null }> } }; setActive: (p: { session: string | null }) => Promise<void> } };
+      if (!w.Clerk?.client) return { error: 'Clerk.client is null' };
+      try {
+        const signIn = await w.Clerk.client.signIn.create({
+          strategy: 'password', identifier: email, password: password,
+        });
+        if (signIn.createdSessionId) {
+          await w.Clerk.setActive({ session: signIn.createdSessionId });
+        }
+        return { status: signIn.status, createdSessionId: signIn.createdSessionId };
+      } catch (e: unknown) {
+        return { error: String(e) };
+      }
+    }, { email: E2E_EMAIL, password: E2E_PASSWORD });
+    console.log('[e2e] signIn.create() result:', JSON.stringify(signInResult));
 
     // Verify session was established
     const sessionId = await sharedPage.evaluate(() => {
@@ -58,7 +74,7 @@ test.describe('E2E Gate: Full User Journey', () => {
       return w.Clerk?.session?.id ?? null;
     });
     console.log('[e2e] Session ID after signIn:', sessionId);
-    if (!sessionId) throw new Error('[e2e] No session after clerk.signIn() — testing token may not be bypassing new-device verification');
+    if (!sessionId) throw new Error(`[e2e] No session — signIn result: ${JSON.stringify(signInResult)}`);
 
     // Navigate to /chat now that we have an active session
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
