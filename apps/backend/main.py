@@ -25,6 +25,7 @@ from routers import (
     container_rpc,
     control_ui_proxy,
     debug,
+    desktop_auth,
     integrations,
     proxy,
     settings_keys,
@@ -220,6 +221,8 @@ app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
+
+app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
 
 @app.get(

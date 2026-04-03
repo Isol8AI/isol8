@@ -8,6 +8,7 @@ import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
+import { useGateway } from "@/hooks/useGateway";
 import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -45,6 +46,7 @@ export function ChatLayout({
   const api = useApi();
   const { agents, defaultId, deleteAgent, createAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
+  const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
@@ -460,6 +462,27 @@ export function ChatLayout({
 
           {/* Health Indicator */}
           <HealthIndicator onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+
+          {/* Node Status */}
+          {nodeConnected && (
+            <div style={{
+              padding: '4px 12px',
+              fontSize: '12px',
+              color: '#16a34a',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '6px',
+            }}>
+              <span style={{
+                width: '6px',
+                height: '6px',
+                borderRadius: '50%',
+                backgroundColor: '#16a34a',
+                display: 'inline-block',
+              }} />
+              Local tools available
+            </div>
+          )}
 
           {/* Tab Switcher */}
           <div className="tab-switcher">

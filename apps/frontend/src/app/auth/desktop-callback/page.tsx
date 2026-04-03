@@ -3,6 +3,8 @@
 import { useAuth } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api-dev.isol8.co/api/v1";
+
 export default function DesktopCallback() {
   const { isSignedIn, getToken } = useAuth();
   const [status, setStatus] = useState("Signing in...");
@@ -10,12 +12,40 @@ export default function DesktopCallback() {
   useEffect(() => {
     if (!isSignedIn) return;
 
-    getToken().then((token) => {
-      if (token) {
+    async function getSignInToken() {
+      try {
+        // Get a Clerk JWT for authenticating with our backend
+        const jwt = await getToken();
+        if (!jwt) return;
+
+        setStatus("Preparing desktop sign-in...");
+
+        // Ask our backend to create a one-time Clerk sign-in token
+        const resp = await fetch(`${API_URL}/auth/desktop/sign-in-token`, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${jwt}`,
+            "Content-Type": "application/json",
+          },
+        });
+
+        if (!resp.ok) {
+          setStatus("Failed to create sign-in token. Please try again.");
+          return;
+        }
+
+        const data = await resp.json();
+
+        // Redirect to the desktop app with the sign-in token
         setStatus("Opening Isol8 desktop app...");
-        window.location.href = `isol8://auth?token=${encodeURIComponent(token)}`;
+        window.location.href = `isol8://auth?ticket=${encodeURIComponent(data.token)}`;
+      } catch (err) {
+        console.error("Desktop callback error:", err);
+        setStatus("Something went wrong. Please try again.");
       }
-    });
+    }
+
+    getSignInToken();
   }, [isSignedIn, getToken]);
 
   return (

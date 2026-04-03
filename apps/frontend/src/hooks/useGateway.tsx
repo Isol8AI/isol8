@@ -77,6 +77,7 @@ interface PendingRpc {
 
 interface GatewayContextValue {
   isConnected: boolean;
+  nodeConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
@@ -95,6 +96,7 @@ const GatewayContext = createContext<GatewayContextValue | null>(null);
 export function GatewayProvider({ children }: { children: ReactNode }) {
   const { getToken } = useAuth();
   const [isConnected, setIsConnected] = useState(false);
+  const [nodeConnected, setNodeConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
 
@@ -176,6 +178,12 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       return;
     }
 
+    // Node status — update desktop node connection state
+    if (msgType === "node_status") {
+      setNodeConnected(data.status === "connected");
+      return;
+    }
+
     // Chat messages — dispatch to subscribers
     if (
       msgType === "chunk" ||
@@ -214,6 +222,11 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     try {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
+
+      // Post token to Electron main process for node-host auth
+      if (typeof window !== "undefined" && window.isol8?.isDesktop && token) {
+        window.isol8.sendAuthToken(token);
+      }
 
       const wsUrl = getWebSocketUrl();
       const ws = new WebSocket(`${wsUrl}?token=${token}`);
@@ -298,6 +311,17 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       }
     };
   }, [connect, clearReconnectTimeout, clearPingInterval]);
+
+  // ---- Electron IPC: listen for node status from desktop app ----
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.isol8?.onNodeStatus) {
+      const unsubscribe = window.isol8.onNodeStatus((status) => {
+        setNodeConnected(status === "connected");
+      });
+      return unsubscribe;
+    }
+  }, []);
 
   // ---- sendReq ----
 
@@ -387,8 +411,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ isConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
-    [isConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
+    () => ({ isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
+    [isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
   );
 
   return (
