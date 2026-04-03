@@ -1,4 +1,4 @@
-import { test, expect, type Page, type BrowserContext } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
@@ -10,29 +10,42 @@ const BASE_URL = process.env.BASE_URL ?? 'http://localhost:3000';
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000/api/v1';
 
 /**
- * Reads the latest Clerk verification code from the mailsac public inbox.
- * Opens the mailsac web UI, finds the most recent email, and extracts the 6-digit code.
+ * Reads the latest Clerk verification code from the mailsac public inbox via REST API.
+ * Polls until a recent email from Clerk arrives with a 6-digit verification code.
  */
-async function readOtpFromMailsac(ctx: BrowserContext): Promise<string> {
-  const mailPage = await ctx.newPage();
-  try {
-    // Navigate to mailsac inbox for the test account
-    await mailPage.goto(`https://mailsac.com/inbox/isol8-e2e-testing@mailsac.com`, { waitUntil: 'domcontentloaded' });
-    // Wait for the inbox table to load and click the latest email
-    const firstRow = mailPage.locator('table tbody tr').first();
-    await firstRow.waitFor({ timeout: 30_000 });
-    await firstRow.click();
-    // Wait for email body to load — the Clerk OTP is a 6-digit number in the email content
-    await mailPage.waitForURL(/\/inbox\//, { timeout: 10_000 });
-    const bodyText = await mailPage.locator('body').innerText({ timeout: 30_000 });
-    // Extract the 6-digit verification code from the email body
-    const match = bodyText.match(/\b(\d{6})\b/);
-    if (!match) throw new Error(`[e2e] Could not find 6-digit OTP in mailsac email body: ${bodyText.slice(0, 200)}`);
-    console.log(`[e2e] Extracted OTP from mailsac: ${match[1]}`);
-    return match[1];
-  } finally {
-    await mailPage.close();
+async function readOtpFromMailsac(): Promise<string> {
+  const address = 'isol8-e2e-testing@mailsac.com';
+  const apiKey = process.env.MAILSAC_API_KEY ?? '';
+  const headers: Record<string, string> = apiKey ? { 'Mailsac-Key': apiKey } : {};
+  const startTime = Date.now();
+  const timeout = 60_000;
+
+  while (Date.now() - startTime < timeout) {
+    const res = await fetch(`https://mailsac.com/api/addresses/${address}/messages`, { headers });
+    if (res.ok) {
+      const messages = await res.json() as Array<{ _id: string; subject?: string; receivedAt?: string }>;
+      // Find latest email with a Clerk-like subject (e.g., "Your verification code")
+      if (messages.length > 0) {
+        const latest = messages[0]; // mailsac returns newest first
+        // Fetch the text body of the latest message
+        const bodyRes = await fetch(`https://mailsac.com/api/text/${address}/${latest._id}`, { headers });
+        if (bodyRes.ok) {
+          const bodyText = await bodyRes.text();
+          const match = bodyText.match(/\b(\d{6})\b/);
+          if (match) {
+            console.log(`[e2e] Extracted OTP from mailsac: ${match[1]} (subject: ${latest.subject})`);
+            return match[1];
+          }
+          console.log(`[e2e] No 6-digit code in latest email (subject: ${latest.subject}), retrying...`);
+        }
+      }
+    } else {
+      console.log(`[e2e] Mailsac API ${res.status}: ${await res.text().catch(() => 'no body')}`);
+    }
+    // Wait 3 seconds before polling again
+    await new Promise(r => setTimeout(r, 3_000));
   }
+  throw new Error('[e2e] Timed out waiting for OTP email from mailsac');
 }
 
 test.describe('E2E Gate: Full User Journey', () => {
@@ -84,7 +97,7 @@ test.describe('E2E Gate: Full User Journey', () => {
 
     if (signInResult.status === 'needs_second_factor') {
       // Read the OTP from the mailsac inbox
-      const otp = await readOtpFromMailsac(ctx);
+      const otp = await readOtpFromMailsac();
 
       // Complete the second factor
       const secondResult = await sharedPage.evaluate(async (code) => {
