@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
@@ -17,6 +18,11 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000); // sign-in + navigation can take 120s+ on CI
+    // clerkSetup() sets process.env.CLERK_FAPI and CLERK_TESTING_TOKEN in THIS worker.
+    // global.setup.ts calls clerkSetup() in the setup project worker, but Playwright workers
+    // are separate processes — env vars don't cross process boundaries. Calling it here
+    // ensures the token is available for setupClerkTestingToken below.
+    await clerkSetup();
     // Create context with Vercel bypass header — browser.newPage() doesn't inherit extraHTTPHeaders
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
@@ -24,21 +30,23 @@ test.describe('E2E Gate: Full User Journey', () => {
         : {},
     });
     sharedPage = await ctx.newPage();
+    // setupClerkTestingToken intercepts Clerk FAPI requests (GET /v1/client etc.) and appends
+    // the testing token. Without this, Clerk's JS client hangs on the dev-browser-missing
+    // handshake in CI and the <SignIn /> component never renders. This is NOT about clerk.signIn()
+    // — it's purely about making Clerk's client-side SDK initialize so the form appears.
+    await setupClerkTestingToken({ page: sharedPage });
 
     // Navigate to /chat — Clerk middleware triggers server-side handshake, sets __clerk_db_jwt
-    // cookie, and redirects to /sign-in?redirect_url=%2Fchat. The <SignIn /> component renders
-    // with Clerk.client properly initialized (no window.Clerk.client null issue).
-    // Use waitUntil:'load' so all scripts (including Clerk JS) are fetched before we poll for
-    // the form — 'domcontentloaded' returns before Clerk's React bundle finishes executing.
-    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'load' });
+    // cookie, and redirects to /sign-in?redirect_url=%2Fchat.
+    await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
 
     // Confirm we landed on the sign-in page (middleware redirect happened)
     await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
 
     // Wait for Clerk's <SignIn /> component to mount and render the email input.
-    // CI can be slow; give 90s for Clerk JS to download from CDN and execute.
+    // Requires the testing token interceptor above to be active so Clerk.client initializes.
     const emailInput = sharedPage.getByPlaceholder('Enter your email address');
-    await emailInput.waitFor({ timeout: 90_000 });
+    await emailInput.waitFor({ timeout: 60_000 });
     await emailInput.fill(E2E_EMAIL);
     await sharedPage.getByPlaceholder('Enter your password').fill(E2E_PASSWORD);
     await sharedPage.getByRole('button', { name: /Continue/i }).click();
