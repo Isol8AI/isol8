@@ -43,38 +43,27 @@ test.describe('E2E Gate: Full User Journey', () => {
     await sharedPage.waitForURL(/\/sign-in/, { timeout: 30_000 });
     await sharedPage.getByPlaceholder('Enter your email address').waitFor({ timeout: 60_000 });
 
-    // Diagnostic: check Clerk state before attempting sign-in
-    const preState = await sharedPage.evaluate(() => {
-      const w = window as Window & { Clerk?: { loaded?: boolean; client?: { signIn?: unknown } } };
-      return { loaded: w.Clerk?.loaded, clientExists: w.Clerk?.client != null };
-    });
-    console.log('[e2e] Clerk state before signIn:', JSON.stringify(preState));
+    // signIn.create() with testing token returns needs_second_factor (device verification).
+    // Bypass entirely with a backend-issued sign-in token (strategy:ticket).
+    const secretKey = process.env.CLERK_SECRET_KEY;
+    if (!secretKey) throw new Error('[e2e] CLERK_SECRET_KEY not set');
 
-    // Try signIn.create() directly to see the sign-in status (complete vs needs_second_factor)
-    const signInResult = await sharedPage.evaluate(async ({ email, password }) => {
-      const w = window as Window & { Clerk?: { client?: { signIn: { create: (p: Record<string, string>) => Promise<{ id: string; status: string; createdSessionId: string | null }> } }; setActive: (p: { session: string | null }) => Promise<void> } };
-      if (!w.Clerk?.client) return { error: 'Clerk.client is null' };
-      try {
-        const signIn = await w.Clerk.client.signIn.create({
-          strategy: 'password', identifier: email, password: password,
-        });
-        if (signIn.createdSessionId) {
-          await w.Clerk.setActive({ session: signIn.createdSessionId });
-        }
-        return { status: signIn.status, createdSessionId: signIn.createdSessionId };
-      } catch (e: unknown) {
-        return { error: String(e) };
-      }
-    }, { email: E2E_EMAIL, password: E2E_PASSWORD });
-    console.log('[e2e] signIn.create() result:', JSON.stringify(signInResult));
-
-    // Verify session was established
-    const sessionId = await sharedPage.evaluate(() => {
-      const w = window as Window & { Clerk?: { session?: { id?: string } } };
-      return w.Clerk?.session?.id ?? null;
+    // Debug: list users (no filter) to verify the secret key is for the right Clerk instance.
+    // Also try both email_address query formats since Clerk API docs are inconsistent.
+    const debugAllRes = await fetch('https://api.clerk.com/v1/users?limit=3', {
+      headers: { Authorization: `Bearer ${secretKey}` },
     });
-    console.log('[e2e] Session ID after signIn:', sessionId);
-    if (!sessionId) throw new Error(`[e2e] No session — signIn result: ${JSON.stringify(signInResult)}`);
+    const debugAllBody = await debugAllRes.text();
+    console.log(`[e2e] All users (limit=3, ${debugAllRes.status}):`, debugAllBody.slice(0, 500));
+
+    // Try query search (full text) instead of exact email filter
+    const debugQueryRes = await fetch(`https://api.clerk.com/v1/users?query=${encodeURIComponent(E2E_EMAIL)}&limit=3`, {
+      headers: { Authorization: `Bearer ${secretKey}` },
+    });
+    const debugQueryBody = await debugQueryRes.text();
+    console.log(`[e2e] Users by query (${debugQueryRes.status}):`, debugQueryBody.slice(0, 500));
+
+    throw new Error('[e2e] Debug stop — check user lookup logs');
 
     // Navigate to /chat now that we have an active session
     await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
