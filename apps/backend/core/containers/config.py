@@ -240,6 +240,7 @@ def write_openclaw_config(
         "mode": "trusted-proxy",
         "trustedProxy": {
             "userHeader": "x-forwarded-user",
+            "skipDevicePairingForTrustedProxy": True,
         },
     }
 
