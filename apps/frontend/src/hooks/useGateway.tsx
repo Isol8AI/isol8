@@ -223,9 +223,12 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
 
-      // Post token to Electron main process for node-host auth
-      if (typeof window !== "undefined" && window.isol8?.isDesktop && token) {
-        window.isol8.sendAuthToken(token);
+      // Post token to Tauri desktop app for node-host auth
+      if (typeof window !== "undefined" && token) {
+        const tauri = (window as any).__TAURI__;
+        if (tauri?.core?.invoke) {
+          tauri.core.invoke("send_auth_token", { token }).catch(() => {});
+        }
       }
 
       const wsUrl = getWebSocketUrl();
@@ -315,12 +318,15 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   // ---- Electron IPC: listen for node status from desktop app ----
 
   useEffect(() => {
-    if (typeof window !== "undefined" && window.isol8?.onNodeStatus) {
-      const unsubscribe = window.isol8.onNodeStatus((status) => {
-        setNodeConnected(status === "connected");
-      });
-      return unsubscribe;
-    }
+    if (typeof window === "undefined") return;
+    const tauri = (window as any).__TAURI__;
+    if (!tauri?.event?.listen) return;
+
+    let unlisten: (() => void) | null = null;
+    tauri.event.listen("node:status", (event: { payload: string }) => {
+      setNodeConnected(event.payload === "connected");
+    }).then((fn: () => void) => { unlisten = fn; });
+    return () => { unlisten?.(); };
   }, []);
 
   // ---- sendReq ----
