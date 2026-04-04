@@ -21,9 +21,9 @@ export interface FileInfo {
   mime_type: string;
 }
 
-export function useWorkspaceTree(agentId: string | null, subPath: string = "") {
+export function useWorkspaceTree(agentId: string | null) {
   const api = useApi();
-  const key = agentId ? `/container/workspace/${agentId}/tree${subPath ? `?path=${encodeURIComponent(subPath)}` : ""}` : null;
+  const key = agentId ? `/container/workspace/${agentId}/tree?recursive=true` : null;
 
   const { data, error, isLoading, mutate } = useSWR<{ files: FileEntry[] }>(
     key,

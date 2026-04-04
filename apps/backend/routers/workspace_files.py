@@ -20,10 +20,25 @@ def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     return f"agents/{agent_id}"
 
 
+def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):
+    """Recursively collect file entries up to max_depth."""
+    if max_depth <= 0:
+        return
+    try:
+        items = workspace.list_directory(owner_id, path)
+    except WorkspaceError:
+        return
+    for item in items:
+        entries.append(item)
+        if item["type"] == "dir":
+            _collect_recursive(workspace, owner_id, item["path"], entries, max_depth - 1)
+
+
 @router.get("/workspace/{agent_id}/tree")
 async def list_workspace_tree(
     agent_id: str,
     path: str = Query("", description="Subdirectory path relative to agent workspace"),
+    recursive: bool = Query(False, description="List all files recursively"),
     auth: AuthContext = Depends(get_current_user),
 ):
     """List files and directories in an agent's workspace."""
@@ -33,16 +48,21 @@ async def list_workspace_tree(
     agent_base = _agent_workspace_path(owner_id, agent_id)
     full_path = f"{agent_base}/{path}" if path else agent_base
 
-    try:
-        entries = workspace.list_directory(owner_id, full_path)
-    except WorkspaceError as exc:
-        if "not found" in str(exc).lower():
-            raise HTTPException(status_code=404, detail=str(exc))
-        if "traversal" in str(exc).lower():
-            raise HTTPException(status_code=403, detail="Access denied")
-        raise HTTPException(status_code=500, detail=str(exc))
+    if recursive:
+        all_entries: list = []
+        _collect_recursive(workspace, owner_id, full_path, all_entries)
+        return {"files": all_entries}
+    else:
+        try:
+            entries = workspace.list_directory(owner_id, full_path)
+        except WorkspaceError as exc:
+            if "not found" in str(exc).lower():
+                raise HTTPException(status_code=404, detail=str(exc))
+            if "traversal" in str(exc).lower():
+                raise HTTPException(status_code=403, detail="Access denied")
+            raise HTTPException(status_code=500, detail=str(exc))
 
-    return {"files": entries}
+        return {"files": entries}
 
 
 @router.get("/workspace/{agent_id}/file")
