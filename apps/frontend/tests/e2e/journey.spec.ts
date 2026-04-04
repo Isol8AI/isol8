@@ -194,6 +194,15 @@ test.describe('E2E Gate: Full User Journey', () => {
       await sharedPage.waitForTimeout(3_000);
       const url = sharedPage.url();
       console.log('[e2e] Step 5 URL:', url);
+
+      // Debug: check if Clerk session is still active
+      const sessionCheck = await sharedPage.evaluate(async () => {
+        const w = window as unknown as { Clerk?: { session?: { id?: string; getToken?: () => Promise<string> } } };
+        const sid = w.Clerk?.session?.id ?? null;
+        const token = sid ? await w.Clerk?.session?.getToken?.() : null;
+        return { sessionId: sid, hasToken: !!token, tokenPrefix: token?.substring(0, 20) ?? null };
+      });
+      console.log('[e2e] Clerk session on /chat:', JSON.stringify(sessionCheck));
       if (url.includes('/onboarding')) {
         console.log('[e2e] Onboarding detected — clicking Personal');
         const personalBtn = sharedPage.locator('button', { hasText: 'Personal' }).first();
@@ -203,15 +212,29 @@ test.describe('E2E Gate: Full User Journey', () => {
       }
     }, { timeout: 60_000 });
     await test.step('Wait for chat UI ready', async () => {
+      // Capture browser console + WebSocket errors for debugging
+      sharedPage.on('console', (msg) => {
+        if (msg.type() === 'error' || msg.text().includes('WebSocket') || msg.text().includes('gateway') || msg.text().includes('ws-dev'))
+          console.log(`[browser] ${msg.type()}: ${msg.text()}`);
+      });
+      sharedPage.on('pageerror', (err) => console.log(`[browser] PAGE ERROR: ${err.message}`));
+
       // The WebSocket gateway connection may fail if the page loaded before the
       // container was fully ready. Reload to trigger a fresh connection attempt.
-      // Try up to 3 times with 30s between reloads.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           await sharedPage.locator('text=Connected').waitFor({ timeout: 60_000 });
           break;
         } catch {
-          console.log(`[e2e] Gateway not connected after 60s (attempt ${attempt + 1}/3), reloading...`);
+          // Dump WebSocket state from the browser
+          const wsInfo = await sharedPage.evaluate(() => {
+            const w = window as unknown as { __GATEWAY_DEBUG__?: string };
+            return w.__GATEWAY_DEBUG__ ?? 'no debug info';
+          });
+          console.log(`[e2e] Gateway not connected after 60s (attempt ${attempt + 1}/3). WS info: ${wsInfo}`);
+          // Check what status text the sidebar shows
+          const statusText = await sharedPage.locator('.text-red-500, .text-green-500, [class*="Connected"], [class*="Gateway"]').first().textContent().catch(() => 'N/A');
+          console.log(`[e2e] Status indicator: "${statusText}"`);
           await sharedPage.reload({ waitUntil: 'domcontentloaded' });
         }
       }
