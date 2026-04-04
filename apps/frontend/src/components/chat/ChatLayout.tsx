@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -12,6 +12,7 @@ import { useApi } from "@/lib/api";
 import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
+import { FileViewer } from "@/components/chat/FileViewer";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -19,6 +20,10 @@ interface ChatLayoutProps {
   onViewChange: (view: "chat" | "control") => void;
   activePanel?: string;
   onPanelChange?: (panel: string) => void;
+  fileViewerOpen?: boolean;
+  activeFilePath?: string | null;
+  onOpenFile?: (path: string) => void;
+  onCloseFileViewer?: () => void;
 }
 
 function dispatchSelectAgentEvent(agentId: string): void {
@@ -37,6 +42,10 @@ export function ChatLayout({
   onViewChange,
   activePanel,
   onPanelChange,
+  fileViewerOpen,
+  activeFilePath,
+  onOpenFile,
+  onCloseFileViewer,
 }: ChatLayoutProps): React.ReactElement {
   const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
@@ -132,6 +141,9 @@ export function ChatLayout({
           grid-template-columns: 260px 1fr;
           height: 100vh;
           overflow: hidden;
+        }
+        .app-shell.with-file-viewer {
+          grid-template-columns: 260px 1fr 1fr;
         }
         .cream-sidebar {
           background: #f3efe6;
@@ -404,6 +416,9 @@ export function ChatLayout({
           .app-shell {
             grid-template-columns: 1fr;
           }
+          .app-shell.with-file-viewer {
+            grid-template-columns: 1fr;
+          }
           .cream-sidebar {
             display: none;
           }
@@ -433,7 +448,7 @@ export function ChatLayout({
         }
       `}</style>
 
-      <div className="app-shell">
+      <div className={`app-shell${fileViewerOpen ? " with-file-viewer" : ""}`}>
         <div className={`sidebar-backdrop${sidebarOpen ? " visible" : ""}`} onClick={() => setSidebarOpen(false)} />
         <div className={`cream-sidebar${sidebarOpen ? " mobile-open" : ""}`}>
           {/* Header */}
@@ -531,6 +546,15 @@ export function ChatLayout({
             <button className="mobile-hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
               <Menu size={22} />
             </button>
+            {onOpenFile && (
+              <button
+                onClick={() => onOpenFile?.("")}
+                className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1"
+                title="Browse workspace files"
+              >
+                <FolderOpen size={18} />
+              </button>
+            )}
             <div style={{ flex: 1 }} />
             <UserButton
               appearance={{
@@ -559,6 +583,14 @@ export function ChatLayout({
             )}
           </div>
         </div>
+
+        {fileViewerOpen && (
+          <FileViewer
+            agentId={currentAgentId}
+            initialFilePath={activeFilePath}
+            onClose={() => onCloseFileViewer?.()}
+          />
+        )}
       </div>
     </>
   );

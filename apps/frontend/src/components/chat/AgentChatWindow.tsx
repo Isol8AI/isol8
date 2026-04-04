@@ -26,6 +26,7 @@ interface Message {
 
 interface AgentChatWindowProps {
   agentId: string | null;
+  onOpenFile?: (path: string) => void;
 }
 
 function BudgetExceededBanner({
@@ -443,6 +444,7 @@ function DowngradeBanner() {
 
 export function AgentChatWindow({
   agentId,
+  onOpenFile,
 }: AgentChatWindowProps): React.ReactElement {
   const {
     messages: chatMessages,
@@ -528,7 +530,7 @@ export function AgentChatWindow({
       <div className="flex flex-col h-full bg-[#faf7f2]">
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
-            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
+            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} onOpenFile={onOpenFile} />
           )}
           <div className="p-4 m-4 bg-[#fce4ec] border border-[#f8bbd0] text-[#a5311f] rounded-lg">
             <p className="font-medium">Error</p>
@@ -591,7 +593,7 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} />
+      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} onOpenFile={onOpenFile} />
       <UpdateBanner />
       <DowngradeBanner />
       <ApproachLimitBanner />
