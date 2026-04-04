@@ -63,7 +63,30 @@ async fn handle_connection(
     upstream_url: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let client_ws = accept_async(stream).await?;
-    let (upstream_ws, _) = connect_async(upstream_url).await?;
+    let truncated_url = &upstream_url[..upstream_url.find('?').unwrap_or(upstream_url.len())];
+    println!("[node-proxy] Connecting to upstream: {}", truncated_url);
+
+    // Use a custom request with additional headers that API Gateway may require
+    let uri: tokio_tungstenite::tungstenite::http::Uri = upstream_url.parse()?;
+    let host = uri.host().unwrap_or("ws-dev.isol8.co");
+    let request = tokio_tungstenite::tungstenite::http::Request::builder()
+        .uri(upstream_url)
+        .header("Host", host)
+        .header("Origin", format!("https://{}", host))
+        .header("Connection", "Upgrade")
+        .header("Upgrade", "websocket")
+        .header("Sec-WebSocket-Version", "13")
+        .header("Sec-WebSocket-Key", tokio_tungstenite::tungstenite::handshake::client::generate_key())
+        .body(())?;
+
+    let (upstream_ws, response) = match connect_async(request).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("[node-proxy] Upstream connection failed: {:?}", e);
+            return Err(Box::new(e));
+        }
+    };
+    println!("[node-proxy] Upstream connected (status: {})", response.status());
 
     let (mut client_write, mut client_read) = client_ws.split();
     let (mut upstream_write, mut upstream_read) = upstream_ws.split();
