@@ -8,7 +8,7 @@ export default defineConfig({
   testDir: './tests/e2e',
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: process.env.CI ? 2 : 0,
+  retries: 0, // journey tests have destructive side effects — no retries
   workers: 1,
   globalTimeout: 30 * 60 * 1000, // 30 minutes — covers full suite including landing tests
   reporter: [

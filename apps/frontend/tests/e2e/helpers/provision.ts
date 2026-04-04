@@ -35,7 +35,7 @@ export async function waitForRunning(
     });
     if (res.ok) {
       const data = await res.json();
-      if (data.status === 'running' || data.substatus === 'gateway_healthy') return;
+      if (data.substatus === 'gateway_healthy') return;
       if (data.status === 'error') {
         throw new Error(`Container entered error state: ${data.last_error}`);
       }

@@ -39,13 +39,29 @@ describe('deprovisionIfExists', () => {
 });
 
 describe('waitForRunning', () => {
-  it('resolves when status is running', async () => {
+  it('resolves when substatus is gateway_healthy', async () => {
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ status: 'running', substatus: 'gateway_healthy' }),
     });
     const { waitForRunning } = await import('../../e2e/helpers/provision');
     await expect(waitForRunning('http://api', async () => 'token', 5000)).resolves.toBeUndefined();
+  });
+
+  it('keeps polling when status is running but gateway not healthy', async () => {
+    let callCount = 0;
+    global.fetch = vi.fn().mockImplementation(async () => ({
+      ok: true,
+      json: async () => {
+        callCount++;
+        return callCount >= 2
+          ? { status: 'running', substatus: 'gateway_healthy' }
+          : { status: 'running', substatus: 'starting' };
+      },
+    }));
+    const { waitForRunning } = await import('../../e2e/helpers/provision');
+    await expect(waitForRunning('http://api', async () => 'token', 30000)).resolves.toBeUndefined();
+    expect(callCount).toBeGreaterThanOrEqual(2);
   });
 
   it('throws when status is error', async () => {

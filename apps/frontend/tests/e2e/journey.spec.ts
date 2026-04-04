@@ -40,7 +40,6 @@ async function createSignInToken(): Promise<{ ticket: string; userId: string }> 
 
 test.describe('E2E Gate: Full User Journey', () => {
   test.describe.configure({ mode: 'serial' });
-  test.use({ retries: 0 });
 
   let sharedPage: Page;
   let clerkUserId: string;
