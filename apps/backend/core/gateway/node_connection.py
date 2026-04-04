@@ -29,25 +29,32 @@ def _base64url_encode(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _build_device_identity(nonce: str) -> dict:
+def _build_device_identity(nonce: str, connect_params: dict) -> dict:
     """Generate an Ed25519 device identity block for the connect handshake.
 
-    Returns a dict with id, publicKey, signature, signedAt, and nonce fields.
+    OpenClaw v2 signing format (pipe-delimited):
+      v2|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}
+
     The keypair is ephemeral — trusted-proxy auth handles user identity, this
     just needs to be cryptographically consistent.
     """
     private_key = Ed25519PrivateKey.generate()
     public_key = private_key.public_key()
-
-    # Raw 32-byte public key
     raw_pub = public_key.public_bytes_raw()
 
     device_id = hashlib.sha256(raw_pub).hexdigest()
     signed_at = int(time.time() * 1000)
 
-    # Sign "nonce:signedAt:deviceId"
-    message = f"{nonce}:{signed_at}:{device_id}".encode("utf-8")
-    signature = private_key.sign(message)
+    client = connect_params.get("client", {})
+    client_id = client.get("id", "gateway-client")
+    client_mode = client.get("mode", "node")
+    role = connect_params.get("role", "node")
+    scopes = ",".join(sorted(connect_params.get("scopes", [])))
+    token = connect_params.get("auth", {}).get("token", "")
+
+    # v2 pipe-delimited signing payload
+    payload = f"v2|{device_id}|{client_id}|{client_mode}|{role}|{scopes}|{signed_at}|{token}|{nonce}"
+    signature = private_key.sign(payload.encode("utf-8"))
 
     return {
         "id": device_id,
@@ -95,7 +102,7 @@ class NodeUpstreamConnection:
         # Nonce may be at top level or inside payload
         payload = challenge.get("payload", challenge)
         nonce = payload.get("nonce", challenge.get("nonce", ""))
-        device = _build_device_identity(nonce)
+        device = _build_device_identity(nonce, self.node_connect_params)
 
         # Step 3: send connect with role:node + device identity
         req_id = str(uuid.uuid4())
