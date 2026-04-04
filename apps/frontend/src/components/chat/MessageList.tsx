@@ -1,5 +1,6 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
+import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
 import { Copy, RefreshCw, Share2, Bot, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
@@ -26,6 +27,7 @@ interface MessageListProps {
   messages: Message[];
   isTyping?: boolean;
   onRetry?: (assistantMsgId: string) => void;
+  onOpenFile?: (path: string) => void;
 }
 
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
@@ -66,7 +68,14 @@ function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLE
   );
 }
 
-const MarkdownContent = React.memo(function MarkdownContent({ content }: { content: string }) {
+const MarkdownContent = React.memo(function MarkdownContent({
+  content,
+  onOpenFile,
+}: {
+  content: string;
+  onOpenFile?: (path: string) => void;
+}) {
+  const processedContent = React.useMemo(() => linkifyFilePaths(content), [content]);
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -78,6 +87,17 @@ const MarkdownContent = React.memo(function MarkdownContent({ content }: { conte
         h4: ({ children }) => <h4 className="text-sm font-medium mt-2 mb-1">{children}</h4>,
         p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
         a: ({ href, children }) => {
+          if (href && isWorkspaceFileLink(href) && onOpenFile) {
+            const filePath = extractFilePath(href);
+            return (
+              <button
+                onClick={() => onOpenFile(filePath)}
+                className="text-[#06402B] hover:underline cursor-pointer bg-transparent border-none p-0 font-inherit text-inherit inline"
+              >
+                {children}
+              </button>
+            );
+          }
           const isSafe = !href?.match(/^(javascript|data|vbscript):/i);
           return (
             <a href={isSafe ? href : '#'} target="_blank" rel="noopener noreferrer" className="text-[#06402B] hover:underline">
@@ -104,7 +124,7 @@ const MarkdownContent = React.memo(function MarkdownContent({ content }: { conte
         pre: ({ children }) => <>{children}</>,
       }}
     >
-      {content}
+      {processedContent}
     </ReactMarkdown>
   );
 });
@@ -203,7 +223,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, onRetry }, ref) {
+  function MessageList({ messages, isTyping, onRetry, onOpenFile }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
@@ -268,7 +288,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                   {msg.role === "assistant" && msg.content.startsWith("Error: ")
                     ? msg.content.slice(7)
                     : msg.role === "assistant" && msg.content
-                      ? <MarkdownContent content={msg.content} />
+                      ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
                       : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
                           <span className="inline-flex gap-1 items-center h-5">
                             <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />

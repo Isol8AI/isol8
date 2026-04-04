@@ -32,6 +32,7 @@ from routers import (
     updates,
     users,
     websocket_chat,
+    workspace_files,
 )
 
 logger = logging.getLogger(__name__)
@@ -218,6 +219,9 @@ app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["
 
 # Integrations (MCP servers, ClawHub)
 app.include_router(integrations.router, prefix="/api/v1", tags=["integrations"])
+
+# Workspace file browser (EFS agent workspace)
+app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["container"])
 
 # Debug routes (dev-only container provisioning)
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])

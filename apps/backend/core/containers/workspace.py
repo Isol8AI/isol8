@@ -10,7 +10,9 @@ This module handles filesystem CRUD for agent workspaces on EFS.
 No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
+import base64
 import logging
+import mimetypes
 import os
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,56 @@ from typing import Optional
 from core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# System files/dirs to hide from directory listings.
+_EXCLUDED_NAMES: set[str] = {
+    "openclaw.json",
+    ".openclaw",
+    "node_modules",
+    "__pycache__",
+    ".mcporter",
+    ".git",
+}
+
+# File extensions treated as plain text (returned as UTF-8 strings).
+_TEXT_EXTENSIONS: set[str] = {
+    ".md",
+    ".txt",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".sh",
+    ".bash",
+    ".css",
+    ".html",
+    ".xml",
+    ".csv",
+    ".sql",
+    ".rs",
+    ".go",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".r",
+    ".lua",
+    ".env",
+    ".cfg",
+    ".ini",
+    ".conf",
+    ".log",
+}
 
 # POSIX UID/GID for per-user EFS access points.
 # OpenClaw containers run as node (uid 1000) via the access point.
@@ -123,6 +175,172 @@ class Workspace:
         if not agents_dir.exists():
             return []
         return sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
+
+    def list_directory(self, user_id: str, path: str) -> list[dict]:
+        """List the contents of a directory in a user's workspace.
+
+        Hidden entries (starting with '.') and system files/dirs defined in
+        ``_EXCLUDED_NAMES`` are omitted from the results.
+
+        Args:
+            user_id: The user whose workspace to inspect.
+            path: Relative path within the user's workspace directory.
+
+        Returns:
+            List of entry dicts sorted dirs-first then alphabetically::
+
+                {
+                    "name": str,
+                    "path": str,        # relative to user root
+                    "type": "file"|"dir",
+                    "size": int|None,   # None for directories
+                    "modified_at": float,
+                }
+
+        Raises:
+            WorkspaceError: If the path escapes the user directory, does not
+                exist, or is not a directory.
+        """
+        resolved = self._resolve_user_file(user_id, path)
+        if not resolved.exists() or not resolved.is_dir():
+            raise WorkspaceError(
+                f"Directory not found: {path!r}",
+                user_id=user_id,
+            )
+
+        user_root = self.user_path(user_id).resolve()
+        entries: list[dict] = []
+
+        try:
+            for entry in resolved.iterdir():
+                name = entry.name
+                # Skip hidden entries and excluded system names.
+                if name.startswith(".") or name in _EXCLUDED_NAMES:
+                    continue
+
+                stat = entry.stat()
+                is_dir = entry.is_dir()
+                rel_path = str(entry.resolve().relative_to(user_root))
+
+                entries.append(
+                    {
+                        "name": name,
+                        "path": rel_path,
+                        "type": "dir" if is_dir else "file",
+                        "size": None if is_dir else stat.st_size,
+                        "modified_at": stat.st_mtime,
+                    }
+                )
+        except OSError as exc:
+            logger.error("Failed to list directory %r for %s: %s", path, user_id, exc)
+            raise WorkspaceError(
+                f"Failed to list directory {path!r} for {user_id}: {exc}",
+                user_id=user_id,
+            ) from exc
+
+        # Dirs first, then alphabetically by name (case-insensitive).
+        entries.sort(key=lambda e: (0 if e["type"] == "dir" else 1, e["name"].lower()))
+        return entries
+
+    def read_file_info(self, user_id: str, path: str) -> dict:
+        """Return metadata and optionally content for a file.
+
+        Text files are returned as a UTF-8 string. Images are returned as a
+        base64-encoded string. All other binary files have ``content=None``.
+
+        Args:
+            user_id: The user whose workspace to read from.
+            path: Relative path within the user's workspace directory.
+
+        Returns:
+            Dict with the following fields::
+
+                {
+                    "name": str,
+                    "path": str,          # relative to user root
+                    "size": int,
+                    "modified_at": float,
+                    "mime_type": str|None,
+                    "binary": bool,
+                    "content": str|None,  # text, base64, or None
+                }
+
+        Raises:
+            WorkspaceError: If the path escapes the user directory, does not
+                exist, or is not a file.
+        """
+        resolved = self._resolve_user_file(user_id, path)
+        if not resolved.exists() or not resolved.is_file():
+            raise WorkspaceError(
+                f"File not found: {path!r}",
+                user_id=user_id,
+            )
+
+        user_root = self.user_path(user_id).resolve()
+        stat = resolved.stat()
+        rel_path = str(resolved.resolve().relative_to(user_root))
+        mime_type, _ = mimetypes.guess_type(resolved.name)
+        mime_type = mime_type or "application/octet-stream"
+        suffix = resolved.suffix.lower()
+
+        if suffix in _TEXT_EXTENSIONS:
+            try:
+                content = resolved.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # File has a text extension but contains non-UTF-8 bytes —
+                # treat it as an opaque binary file.
+                logger.warning(
+                    "File %r for %s has text extension but is not valid UTF-8",
+                    path,
+                    user_id,
+                )
+            except OSError as exc:
+                logger.error("Failed to read text file %r for %s: %s", path, user_id, exc)
+                raise WorkspaceError(
+                    f"Failed to read {path!r} for {user_id}: {exc}",
+                    user_id=user_id,
+                ) from exc
+            else:
+                return {
+                    "name": resolved.name,
+                    "path": rel_path,
+                    "size": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                    "mime_type": mime_type,
+                    "binary": False,
+                    "content": content,
+                }
+
+        if mime_type.startswith("image/"):
+            try:
+                raw = resolved.read_bytes()
+                content = base64.b64encode(raw).decode("ascii")
+            except OSError as exc:
+                logger.error("Failed to read image %r for %s: %s", path, user_id, exc)
+                raise WorkspaceError(
+                    f"Failed to read {path!r} for {user_id}: {exc}",
+                    user_id=user_id,
+                ) from exc
+            return {
+                "name": resolved.name,
+                "path": rel_path,
+                "size": stat.st_size,
+                "modified_at": stat.st_mtime,
+                "mime_type": mime_type,
+                "binary": True,
+                "content": content,
+            }
+
+        # Other binary file — return metadata only.
+        return {
+            "name": resolved.name,
+            "path": rel_path,
+            "size": stat.st_size,
+            "modified_at": stat.st_mtime,
+            "mime_type": mime_type,
+            "binary": True,
+            "content": None,
+        }
 
     # ------------------------------------------------------------------
     # File operations
