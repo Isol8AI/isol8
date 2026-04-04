@@ -17,9 +17,10 @@ const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
   svg: FileImage, webp: FileImage,
 };
 
-function getFileIcon(name: string): React.ComponentType<{ className?: string }> {
+function renderFileIcon(name: string, className: string): React.ReactElement {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  return ICON_MAP[ext] ?? File;
+  const Icon = ICON_MAP[ext] ?? File;
+  return <Icon className={className} />;
 }
 
 interface FileTreeNodeProps {
@@ -65,7 +66,6 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
     );
   }
 
-  const Icon = getFileIcon(entry.name);
   const isSelected = selectedPath === entry.path;
 
   return (
@@ -78,7 +78,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       }`}
     >
       <span className="w-3.5 flex-shrink-0" />
-      <Icon className="h-4 w-4 text-[#8a8578] flex-shrink-0" />
+      {renderFileIcon(entry.name, "h-4 w-4 text-[#8a8578] flex-shrink-0")}
       <span className="truncate">{entry.name}</span>
     </button>
   );
