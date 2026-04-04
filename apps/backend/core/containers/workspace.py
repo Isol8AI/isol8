@@ -211,25 +211,32 @@ class Workspace:
         user_root = self.user_path(user_id).resolve()
         entries: list[dict] = []
 
-        for entry in resolved.iterdir():
-            name = entry.name
-            # Skip hidden entries and excluded system names.
-            if name.startswith(".") or name in _EXCLUDED_NAMES:
-                continue
+        try:
+            for entry in resolved.iterdir():
+                name = entry.name
+                # Skip hidden entries and excluded system names.
+                if name.startswith(".") or name in _EXCLUDED_NAMES:
+                    continue
 
-            stat = entry.stat()
-            is_dir = entry.is_dir()
-            rel_path = str(entry.resolve().relative_to(user_root))
+                stat = entry.stat()
+                is_dir = entry.is_dir()
+                rel_path = str(entry.resolve().relative_to(user_root))
 
-            entries.append(
-                {
-                    "name": name,
-                    "path": rel_path,
-                    "type": "dir" if is_dir else "file",
-                    "size": None if is_dir else stat.st_size,
-                    "modified_at": stat.st_mtime,
-                }
-            )
+                entries.append(
+                    {
+                        "name": name,
+                        "path": rel_path,
+                        "type": "dir" if is_dir else "file",
+                        "size": None if is_dir else stat.st_size,
+                        "modified_at": stat.st_mtime,
+                    }
+                )
+        except OSError as exc:
+            logger.error("Failed to list directory %r for %s: %s", path, user_id, exc)
+            raise WorkspaceError(
+                f"Failed to list directory {path!r} for {user_id}: {exc}",
+                user_id=user_id,
+            ) from exc
 
         # Dirs first, then alphabetically by name (case-insensitive).
         entries.sort(key=lambda e: (0 if e["type"] == "dir" else 1, e["name"].lower()))
@@ -273,28 +280,38 @@ class Workspace:
         stat = resolved.stat()
         rel_path = str(resolved.resolve().relative_to(user_root))
         mime_type, _ = mimetypes.guess_type(resolved.name)
+        mime_type = mime_type or "application/octet-stream"
         suffix = resolved.suffix.lower()
 
         if suffix in _TEXT_EXTENSIONS:
             try:
                 content = resolved.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                # File has a text extension but contains non-UTF-8 bytes —
+                # treat it as an opaque binary file.
+                logger.warning(
+                    "File %r for %s has text extension but is not valid UTF-8",
+                    path,
+                    user_id,
+                )
             except OSError as exc:
                 logger.error("Failed to read text file %r for %s: %s", path, user_id, exc)
                 raise WorkspaceError(
                     f"Failed to read {path!r} for {user_id}: {exc}",
                     user_id=user_id,
                 ) from exc
-            return {
-                "name": resolved.name,
-                "path": rel_path,
-                "size": stat.st_size,
-                "modified_at": stat.st_mtime,
-                "mime_type": mime_type,
-                "binary": False,
-                "content": content,
-            }
+            else:
+                return {
+                    "name": resolved.name,
+                    "path": rel_path,
+                    "size": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                    "mime_type": mime_type,
+                    "binary": False,
+                    "content": content,
+                }
 
-        if mime_type and mime_type.startswith("image/"):
+        if mime_type.startswith("image/"):
             try:
                 raw = resolved.read_bytes()
                 content = base64.b64encode(raw).decode("ascii")

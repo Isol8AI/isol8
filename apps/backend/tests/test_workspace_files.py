@@ -4,6 +4,7 @@ import base64
 import struct
 import zlib
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -198,6 +199,13 @@ class TestListDirectory:
             assert not entry["path"].startswith("/"), "path must be relative"
             assert entry["path"].startswith("agents/my-agent/")
 
+    def test_iterdir_oserror_raises_workspace_error(self, populated_workspace):
+        """OSError during iterdir() is wrapped in WorkspaceError."""
+        ws, _ = populated_workspace
+        with patch.object(Path, "iterdir", side_effect=OSError("NFS stale handle")):
+            with pytest.raises(WorkspaceError, match="Failed to list directory"):
+                ws.list_directory(USER_ID, "")
+
 
 # ===========================================================================
 # TestReadFileInfo
@@ -274,3 +282,26 @@ class TestReadFileInfo:
         info = ws.read_file_info(USER_ID, "script.py")
         assert not info["path"].startswith("/")
         assert info["path"] == "script.py"
+
+    def test_non_utf8_text_extension_falls_back_to_binary(self, tmp_path):
+        """A .py file with non-UTF-8 bytes falls through to binary result."""
+        ws = _make_workspace(tmp_path)
+        root = tmp_path / USER_ID
+        root.mkdir(parents=True)
+        # Write raw bytes that are not valid UTF-8.
+        (root / "bad.py").write_bytes(b"\x80\x81\x82\xff")
+        info = ws.read_file_info(USER_ID, "bad.py")
+        assert info["binary"] is True
+        assert info["content"] is None
+
+    def test_mime_type_fallback(self, populated_workspace):
+        """Unknown extension gets application/octet-stream instead of None."""
+        ws, root = populated_workspace
+        info = ws.read_file_info(USER_ID, "agents/my-agent/data.bin")
+        assert info["mime_type"] == "application/octet-stream"
+
+    def test_known_mime_type_preserved(self, populated_workspace):
+        """Known extension retains its real mime_type."""
+        ws, _ = populated_workspace
+        info = ws.read_file_info(USER_ID, "image.png")
+        assert info["mime_type"] == "image/png"
