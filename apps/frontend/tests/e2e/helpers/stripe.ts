@@ -36,23 +36,46 @@ export async function cancelSubscriptionIfExists(email: string): Promise<void> {
 }
 
 /**
- * Look up or create a Stripe customer for the email, attach the built-in
- * test card pm_card_visa, and create a subscription for the given price.
+ * Retrieve the backend's Stripe customer ID.
+ *
+ * The backend creates Stripe customers with metadata.owner_id but NO email,
+ * so we can't find them via customers.list({ email }). Instead, we use
+ * Stripe's Search API to find customers by owner_id metadata.
+ *
+ * Calls GET /billing/account first to ensure the billing account + Stripe
+ * customer exist.
+ */
+export async function getBackendStripeCustomerId(
+  clerkUserId: string,
+  apiUrl: string,
+  getToken: () => Promise<string>,
+): Promise<string> {
+  // Ensure the billing account exists (creates Stripe customer if needed)
+  const token = await getToken();
+  const res = await fetch(`${apiUrl}/billing/account`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`GET /billing/account failed: ${res.status}`);
+
+  // Search for the backend-created customer by owner_id metadata
+  const result = await stripe().customers.search({
+    query: `metadata["owner_id"]:"${clerkUserId}"`,
+  });
+  if (result.data.length === 0) {
+    throw new Error(`No Stripe customer found with owner_id=${clerkUserId}`);
+  }
+  // Use the most recently created one
+  return result.data[0].id;
+}
+
+/**
+ * Create a Stripe subscription on a specific customer.
  * The metadata.plan_tier field is required by the backend webhook handler.
  */
 export async function createSubscription(
-  email: string,
+  customerId: string,
   priceId: string,
 ): Promise<Stripe.Subscription> {
-  // Look up or create customer
-  const existing = await stripe().customers.list({ email, limit: 1 });
-  let customerId: string;
-  if (existing.data.length > 0) {
-    customerId = existing.data[0].id;
-  } else {
-    const customer = await stripe().customers.create({ email });
-    customerId = customer.id;
-  }
 
   // Attach a fresh test payment method and use the returned ID
   const pm = await stripe().paymentMethods.attach('pm_card_visa', { customer: customerId });

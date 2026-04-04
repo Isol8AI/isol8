@@ -128,53 +128,33 @@ describe('cancelSubscriptionIfExists', () => {
 });
 
 describe('createSubscription', () => {
-  it('reuses existing customer without creating a new one', async () => {
+  it('creates subscription on the given customer ID', async () => {
     const mocks = await getMocks();
-    mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_existing' }] });
     mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
     mocks.customersUpdate.mockResolvedValue({});
     const fakeSub = { id: 'sub_new', status: 'active' };
     mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
 
     const { createSubscription } = await import('../../e2e/helpers/stripe');
-    const result = await createSubscription('existing@example.com', 'price_starter');
+    const result = await createSubscription('cus_existing', 'price_starter');
 
     expect(mocks.customersCreate).not.toHaveBeenCalled();
+    expect(mocks.customersList).not.toHaveBeenCalled();
     expect(mocks.subscriptionsCreate).toHaveBeenCalledWith(
       expect.objectContaining({ customer: 'cus_existing' }),
     );
     expect(result).toEqual(fakeSub);
   });
 
-  it('creates a new customer when none exists', async () => {
-    const mocks = await getMocks();
-    mocks.customersList.mockResolvedValue({ data: [] });
-    mocks.customersCreate.mockResolvedValue({ id: 'cus_new' });
-    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
-    mocks.customersUpdate.mockResolvedValue({});
-    const fakeSub = { id: 'sub_new', status: 'active' };
-    mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
-
-    const { createSubscription } = await import('../../e2e/helpers/stripe');
-    const result = await createSubscription('new@example.com', 'price_starter');
-
-    expect(mocks.customersCreate).toHaveBeenCalledWith({ email: 'new@example.com' });
-    expect(mocks.subscriptionsCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ customer: 'cus_new' }),
-    );
-    expect(result).toEqual(fakeSub);
-  });
-
   it('returns the created subscription', async () => {
     const mocks = await getMocks();
-    mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_abc' }] });
     mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
     mocks.customersUpdate.mockResolvedValue({});
     const fakeSub = { id: 'sub_xyz', status: 'trialing' };
     mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
 
     const { createSubscription } = await import('../../e2e/helpers/stripe');
-    const result = await createSubscription('user@example.com', 'price_pro');
+    const result = await createSubscription('cus_abc', 'price_pro');
 
     expect(result).toEqual(fakeSub);
   });
