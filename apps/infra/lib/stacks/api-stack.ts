@@ -205,13 +205,13 @@ export class ApiStack extends cdk.Stack {
 
     const authorizerFn = new lambda.Function(this, "WsAuthorizer", {
       functionName: `isol8-${env}-ws-authorizer`,
-      runtime: lambda.Runtime.PYTHON_3_11,
+      runtime: lambda.Runtime.PYTHON_3_12,
       handler: "index.handler",
       code: lambda.Code.fromAsset(
         path.join(__dirname, "..", "..", "lambda", "websocket-authorizer"),
         {
           bundling: {
-            image: lambda.Runtime.PYTHON_3_11.bundlingImage,
+            image: lambda.Runtime.PYTHON_3_12.bundlingImage,
             command: [
               "bash",
               "-c",
