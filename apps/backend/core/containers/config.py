@@ -240,8 +240,8 @@ def write_openclaw_config(
         "mode": "trusted-proxy",
         "trustedProxy": {
             "userHeader": "x-forwarded-user",
-            "skipDevicePairingForTrustedProxy": True,
         },
+        "skipDevicePairingForTrustedProxy": True,
     }
 
     # Build search plugin config — Perplexity via our proxy (v2026.3.22+ format)
