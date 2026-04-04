@@ -203,11 +203,26 @@ test.describe('E2E Gate: Full User Journey', () => {
       }
     }, { timeout: 60_000 });
     await test.step('Wait for chat UI ready', async () => {
-      // Wait for agent list (gateway connected)
+      // The WebSocket gateway connection may fail if the page loaded before the
+      // container was fully ready. Reload to trigger a fresh connection attempt.
+      // Try up to 3 times with 30s between reloads.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          await sharedPage.locator('text=Connected').waitFor({ timeout: 60_000 });
+          break;
+        } catch {
+          console.log(`[e2e] Gateway not connected after 60s (attempt ${attempt + 1}/3), reloading...`);
+          await sharedPage.reload({ waitUntil: 'domcontentloaded' });
+        }
+      }
+      // Final wait — if still not connected, fail with a clear error
+      await sharedPage.locator('text=Connected').waitFor({ timeout: 60_000 });
+
+      // Wait for agent list to appear
       const agentItem = sharedPage.locator('.agent-item').first();
-      await agentItem.waitFor({ timeout: 120_000 });
+      await agentItem.waitFor({ timeout: 30_000 });
       await agentItem.click();
-    }, { timeout: 140_000 });
+    }, { timeout: 5 * 60_000 });
     await test.step('Send ping message', async () => {
       const textarea = sharedPage.locator('textarea').first();
       await textarea.waitFor({ timeout: 30_000 });
