@@ -659,6 +659,12 @@ class GatewayConnectionPool:
         self._grace_tasks.pop(user_id, None)
         self._last_activity.pop(user_id, None)
 
+    async def broadcast_to_user(self, user_id: str, message: dict) -> None:
+        """Send a message to all frontend connections for a user."""
+        conn = self._connections.get(user_id)
+        if conn:
+            await conn._forward_to_frontends(message)
+
     async def close_all(self) -> None:
         """Shutdown: close all connections."""
         for user_id in list(self._connections.keys()):

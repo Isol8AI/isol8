@@ -21,6 +21,12 @@ from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
+from routers.node_proxy import (
+    handle_node_connect,
+    handle_node_message,
+    handle_node_disconnect,
+    is_node_connection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,9 +155,14 @@ async def ws_disconnect(
         connection_service = await get_connection_service()
         connection = connection_service.get_connection(x_connection_id)
         if connection:
-            pool = get_gateway_pool()
             owner_id = connection.get("org_id") or connection["user_id"]
-            pool.remove_frontend_connection(owner_id, x_connection_id)
+
+            # Clean up node upstream if this was a node connection
+            if is_node_connection(x_connection_id):
+                await handle_node_disconnect(x_connection_id, owner_id)
+            else:
+                pool = get_gateway_pool()
+                pool.remove_frontend_connection(owner_id, x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)
 
@@ -221,11 +232,40 @@ async def ws_message(
             )
             return Response(status_code=200)
 
-        # OpenClaw connect handshake — respond with hello-ok locally.
-        # The control UI SPA sends this after receiving connect.challenge.
-        # Auth is already handled by the Lambda authorizer, so we accept
-        # any token and respond immediately.
+        # OpenClaw connect handshake.
         if method == "connect":
+            connect_params = params or {}
+            role = connect_params.get("role", "operator")
+
+            # Node connection: open dedicated upstream with role:"node"
+            if role == "node":
+                conn_svc = await get_connection_service()
+                conn_svc.store_connection(x_connection_id, user_id, connection.get("org_id"), connection_type="node")
+                management_api = await get_management_api_client()
+                try:
+                    hello = await handle_node_connect(
+                        owner_id=owner_id,
+                        connection_id=x_connection_id,
+                        connect_params=connect_params,
+                        management_api=management_api,
+                    )
+                    if hello:
+                        management_api.send_message(x_connection_id, hello)
+                except Exception as e:
+                    logger.error("Node connect failed: %s", e)
+                    management_api.send_message(
+                        x_connection_id,
+                        {
+                            "type": "res",
+                            "id": req_id,
+                            "ok": False,
+                            "error": {"message": str(e)},
+                        },
+                    )
+                return Response(status_code=200)
+
+            # Operator connect — respond with hello-ok locally.
+            # Auth is already handled by the Lambda authorizer.
             management_api = await get_management_api_client()
             management_api.send_message(
                 x_connection_id,
@@ -236,6 +276,11 @@ async def ws_message(
                     "payload": {"protocol": 3},
                 },
             )
+            return Response(status_code=200)
+
+        # Node connections: relay all non-connect messages to upstream
+        if is_node_connection(x_connection_id):
+            await handle_node_message(x_connection_id, body)
             return Response(status_code=200)
 
         background_tasks.add_task(

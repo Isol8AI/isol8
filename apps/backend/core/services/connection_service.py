@@ -62,6 +62,7 @@ class ConnectionService:
         connection_id: str,
         user_id: str,
         org_id: Optional[str],
+        connection_type: str = "chat",
     ) -> None:
         """
         Store a new WebSocket connection mapping.
@@ -72,6 +73,7 @@ class ConnectionService:
             connection_id: API Gateway WebSocket connection ID
             user_id: Authenticated user's ID from Clerk JWT
             org_id: Organization ID from Clerk JWT (None for personal context)
+            connection_type: "chat" (default) or "node" for desktop node-host connections
 
         Raises:
             ConnectionServiceError: If DynamoDB operation fails
@@ -83,6 +85,7 @@ class ConnectionService:
             "userId": {"S": user_id},
             "orgId": {"S": org_id or ""},  # Empty string for None
             "connectedAt": {"S": connected_at},
+            "connectionType": {"S": connection_type},
         }
 
         try:
@@ -145,6 +148,7 @@ class ConnectionService:
         return {
             "user_id": item["userId"]["S"],
             "org_id": org_id_value if org_id_value else None,  # Convert empty string to None
+            "connection_type": item.get("connectionType", {}).get("S", "chat"),
         }
 
     def delete_connection(self, connection_id: str) -> None:
