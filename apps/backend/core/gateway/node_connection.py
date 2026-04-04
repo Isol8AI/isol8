@@ -16,7 +16,6 @@ import logging
 import time
 import uuid
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from websockets import connect as ws_connect
 
 logger = logging.getLogger(__name__)
@@ -30,6 +29,8 @@ def _base64url_encode(data: bytes) -> str:
 
 
 def _build_device_identity(nonce: str, connect_params: dict) -> dict:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
     """Generate an Ed25519 device identity block for the connect handshake.
 
     OpenClaw v2 signing format (pipe-delimited):
