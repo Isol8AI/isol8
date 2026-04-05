@@ -26,14 +26,14 @@ describe('ChatInput', () => {
       expect(getSendButton()).toBeInTheDocument();
     });
 
-    it('applies backdrop-blur class when not centered', () => {
+    it('applies border and background when not centered', () => {
       const { container } = render(<ChatInput onSend={mockOnSend} />);
-      expect(container.firstChild).toHaveClass('backdrop-blur-md');
+      expect(container.firstChild).toHaveClass('bg-[#f3efe6]');
     });
 
-    it('omits backdrop-blur class when centered', () => {
+    it('omits border and background when centered', () => {
       const { container } = render(<ChatInput onSend={mockOnSend} centered />);
-      expect(container.firstChild).not.toHaveClass('backdrop-blur-md');
+      expect(container.firstChild).not.toHaveClass('bg-[#f3efe6]');
     });
   });
 

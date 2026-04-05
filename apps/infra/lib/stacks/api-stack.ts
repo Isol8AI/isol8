@@ -1,4 +1,6 @@
 import * as path from "path";
+import * as fs from "fs";
+import { execSync } from "child_process";
 import * as cdk from "aws-cdk-lib";
 import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
@@ -217,6 +219,20 @@ export class ApiStack extends cdk.Stack {
               "-c",
               "pip install -r requirements.txt -t /asset-output && cp -au . /asset-output",
             ],
+            local: {
+              tryBundle(outputDir: string): boolean {
+                try {
+                  const srcDir = path.join(__dirname, "..", "..", "lambda", "websocket-authorizer");
+                  execSync(`pip3 install -r ${srcDir}/requirements.txt -t ${outputDir} -q`, { stdio: "inherit" });
+                  for (const f of fs.readdirSync(srcDir)) {
+                    fs.copyFileSync(path.join(srcDir, f), path.join(outputDir, f));
+                  }
+                  return true;
+                } catch {
+                  return false;
+                }
+              },
+            },
           },
         },
       ),
