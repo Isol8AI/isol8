@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_PORT = 18789
 
-NODE_KEY_PATH = "nodes/.node-device-key.pem"
+NODE_KEY_PATH = "devices/.node-device-key.pem"
 
 
 def _base64url_encode(data: bytes) -> str:

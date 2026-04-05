@@ -13,7 +13,7 @@ from core.auth import AuthContext, get_current_user, get_owner_type, require_org
 from core.config import settings, TIER_CONFIG
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.config import (
-    build_node_paired_json,
+    build_device_paired_json,
     generate_node_device_identity,
     load_node_device_identity,
     write_mcporter_config,
@@ -31,16 +31,16 @@ def _write_node_device_files(owner_id: str) -> None:
     """Generate (or reuse) Ed25519 node device identity on EFS."""
     workspace = get_workspace()
     try:
-        existing_pem = workspace.read_file(owner_id, "nodes/.node-device-key.pem")
+        existing_pem = workspace.read_file(owner_id, "devices/.node-device-key.pem")
         identity = load_node_device_identity(existing_pem)
         logger.info("Reusing existing node device key for user %s", owner_id)
     except Exception:
         identity = generate_node_device_identity()
-        workspace.write_file(owner_id, "nodes/.node-device-key.pem", identity["private_key_pem"])
+        workspace.write_file(owner_id, "devices/.node-device-key.pem", identity["private_key_pem"])
         logger.info("Generated new node device key for user %s", owner_id)
 
-    paired_json = build_node_paired_json(identity["device_id"], identity["public_key_b64"])
-    workspace.write_file(owner_id, "nodes/paired.json", paired_json)
+    paired_json = build_device_paired_json(identity["device_id"], identity["public_key_b64"])
+    workspace.write_file(owner_id, "devices/paired.json", paired_json)
 
 
 async def require_non_production() -> None:

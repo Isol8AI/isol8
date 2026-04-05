@@ -72,8 +72,8 @@ def load_node_device_identity(private_key_pem: str) -> dict:
     }
 
 
-def build_node_paired_json(device_id: str, public_key_b64: str) -> str:
-    """Build the nodes/paired.json content for a pre-paired device."""
+def build_device_paired_json(device_id: str, public_key_b64: str) -> str:
+    """Build the devices/paired.json content for a pre-paired node device."""
     now_ms = int(time.time() * 1000)
     paired = {
         device_id: {
