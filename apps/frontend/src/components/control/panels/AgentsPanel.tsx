@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState } from "react";
 import {
   Loader2,
   RefreshCw,
@@ -8,191 +8,18 @@ import {
   FileText,
   Wrench,
   Plus,
-  User,
-  Save,
-  AlertCircle,
-  FileWarning,
-  ToggleLeft,
-  ToggleRight,
   Trash2,
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
+import { AgentOverviewTab } from "./AgentOverviewTab";
+import { AgentFilesTab } from "./AgentFilesTab";
+import { AgentToolsTab } from "./AgentToolsTab";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
-import { useBilling } from "@/hooks/useBilling";
-import { ModelSelector } from "@/components/chat/ModelSelector";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import type { AgentEntry, AgentsListResponse } from "./agents-types";
+
 type AgentTab = "overview" | "files" | "tools";
-
-interface AgentIdentity {
-  name?: string;
-  theme?: string;
-  emoji?: string;
-  avatar?: string;
-}
-
-interface AgentEntry {
-  id: string;
-  name?: string;
-  identity?: AgentIdentity;
-  model?: string;
-}
-
-interface ModelCatalogEntry {
-  alias?: string;
-}
-
-interface ConfigSnapshot {
-  path: string;
-  exists: boolean;
-  raw: string | null;
-  config: ConfigInner;
-  hash?: string;
-  valid: boolean;
-}
-
-interface AgentConfigEntry {
-  id: string;
-  model?: string | { primary?: string; fallbacks?: string[] };
-  [key: string]: unknown;
-}
-
-interface ConfigInner {
-  agents?: {
-    defaults?: {
-      models?: Record<string, ModelCatalogEntry>;
-      model?: string | { primary?: string };
-    };
-    list?: AgentConfigEntry[];
-  };
-  [key: string]: unknown;
-}
-
-interface AgentsListResponse {
-  defaultId?: string;
-  mainKey?: string;
-  scope?: string;
-  agents?: AgentEntry[];
-}
-
-// --- File browser types ---
-
-interface AgentFileEntry {
-  name: string;
-  path: string;
-  missing: boolean;
-  size?: number;
-  updatedAtMs?: number;
-}
-
-interface AgentFilesResponse {
-  agentId: string;
-  workspace: string;
-  files: AgentFileEntry[];
-}
-
-interface AgentFileContent {
-  agentId: string;
-  file: AgentFileEntry & { content?: string };
-}
-
-// --- Tools catalog types ---
-
-interface ToolEntry {
-  name: string;
-  id?: string;
-  label?: string;
-  description?: string;
-  profile?: string;
-  category?: string;
-  source?: "core" | "plugin";
-  pluginId?: string;
-  optional?: boolean;
-  defaultProfiles?: string[];
-  [key: string]: unknown;
-}
-
-interface ToolCatalogProfile { id: string; label: string }
-interface ToolCatalogGroup { id: string; label: string; source?: "core" | "plugin"; tools: ToolEntry[] }
-
-interface ToolsCatalogResponse {
-  agentId?: string;
-  profiles?: ToolCatalogProfile[] | Record<string, unknown>;
-  groups?: ToolCatalogGroup[];
-  tools?: ToolEntry[];
-  [key: string]: unknown;
-}
-
-// --- Profile policies (determines base tool set per profile) ---
-
-const PROFILE_POLICIES: Record<string, string[]> = {
-  minimal: ["session_status"],
-  coding: [
-    "read", "write", "edit", "apply_patch", "exec", "process",
-    "memory_search", "memory_get", "sessions_list", "sessions_history",
-    "sessions_send", "sessions_spawn", "subagents", "session_status",
-    "cron", "image",
-  ],
-  messaging: ["sessions_list", "sessions_history", "sessions_send", "session_status", "message"],
-  full: [], // empty = all allowed
-};
-
-// Tool aliases for normalizing IDs
-const TOOL_ALIASES: Record<string, string> = {
-  bash: "exec",
-  "apply-patch": "apply_patch",
-};
-
-// Fallback tool sections if tools.catalog RPC doesn't return groups
-const FALLBACK_SECTIONS: { id: string; label: string; tools: { id: string; label: string; description: string; source?: string }[] }[] = [
-  { id: "files", label: "Files", tools: [
-    { id: "read", label: "read", description: "Read file contents" },
-    { id: "write", label: "write", description: "Create or overwrite files" },
-    { id: "edit", label: "edit", description: "Edit files with search/replace" },
-    { id: "apply_patch", label: "apply_patch", description: "Apply unified diffs" },
-  ]},
-  { id: "runtime", label: "Runtime", tools: [
-    { id: "exec", label: "exec", description: "Run shell commands" },
-    { id: "process", label: "process", description: "Manage background processes" },
-  ]},
-  { id: "web", label: "Web", tools: [
-    { id: "web_search", label: "web_search", description: "Search the web" },
-    { id: "web_fetch", label: "web_fetch", description: "Fetch web page content" },
-  ]},
-  { id: "memory", label: "Memory", tools: [
-    { id: "memory_search", label: "memory_search", description: "Search agent memory" },
-    { id: "memory_get", label: "memory_get", description: "Get memory entries" },
-  ]},
-  { id: "sessions", label: "Sessions", tools: [
-    { id: "sessions_list", label: "sessions_list", description: "List active sessions" },
-    { id: "sessions_history", label: "sessions_history", description: "View session history" },
-    { id: "sessions_send", label: "sessions_send", description: "Send message to session" },
-    { id: "sessions_spawn", label: "sessions_spawn", description: "Spawn new session" },
-    { id: "session_status", label: "session_status", description: "Check session status" },
-  ]},
-  { id: "ui", label: "UI", tools: [
-    { id: "image", label: "image", description: "Generate or process images" },
-  ]},
-  { id: "messaging", label: "Messaging", tools: [
-    { id: "message", label: "message", description: "Send messages to channels" },
-  ]},
-  { id: "automation", label: "Automation", tools: [
-    { id: "cron", label: "cron", description: "Schedule recurring tasks" },
-  ]},
-  { id: "nodes", label: "Nodes", tools: [
-    { id: "nodes_list", label: "nodes_list", description: "List compute nodes" },
-    { id: "nodes_exec", label: "nodes_exec", description: "Execute on remote nodes" },
-  ]},
-  { id: "agents", label: "Agents", tools: [
-    { id: "subagents", label: "subagents", description: "Spawn and manage sub-agents" },
-  ]},
-  { id: "media", label: "Media", tools: [
-    { id: "audio", label: "audio", description: "Audio processing" },
-    { id: "video", label: "video", description: "Video processing" },
-  ]},
-];
-
-// ---------------------------------------------------------------------------
 
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
@@ -200,12 +27,33 @@ export function AgentsPanel() {
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
-  const [deleting, setDeleting] = useState(false);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const agents: AgentEntry[] = rawData?.agents ?? [];
+  const defaultId = rawData?.defaultId;
+
+  const handleAgentCreated = () => {
+    mutate();
+    setShowCreateForm(false);
+  };
+
+  const handleDelete = async (agentId: string) => {
+    if (!confirm("Delete this agent?")) return;
+    setDeleting(agentId);
+    try {
+      await callRpc("agents.delete", { agentId });
+      if (selectedAgent === agentId) setSelectedAgent(null);
+      mutate();
+    } catch (err) {
+      console.error("Failed to delete agent:", err);
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   if (isLoading) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="flex items-center justify-center py-12">
         <Loader2 className="h-5 w-5 animate-spin text-[#8a8578]" />
       </div>
     );
@@ -213,7 +61,7 @@ export function AgentsPanel() {
 
   if (error) {
     return (
-      <div className="p-6 space-y-3">
+      <div className="p-4 space-y-3">
         <p className="text-sm text-[#dc2626]">{error.message}</p>
         <Button variant="outline" size="sm" onClick={() => mutate()}>
           <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
@@ -222,909 +70,119 @@ export function AgentsPanel() {
     );
   }
 
-  // Handle both array and object response formats
-  const data = rawData as AgentsListResponse | AgentEntry[] | undefined;
-  const agents: AgentEntry[] = Array.isArray(data)
-    ? data
-    : (data as AgentsListResponse)?.agents ?? [];
-  const defaultId = !Array.isArray(data) ? (data as AgentsListResponse)?.defaultId : undefined;
-
-  const current = selectedAgent || agents[0]?.id;
-
-  const TABS: { id: AgentTab; label: string; icon: typeof Bot }[] = [
-    { id: "overview", label: "Overview", icon: User },
-    { id: "files", label: "Files", icon: FileText },
-    { id: "tools", label: "Tools", icon: Wrench },
-
-  ];
+  const selected = agents.find((a) => a.id === selectedAgent);
 
   return (
-    <div className="p-6 space-y-4 bg-[#faf7f2]">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="text-lg font-semibold text-[#1a1a1a]">Agents</h2>
-          <p className="text-xs text-[#8a8578]">{agents.length} configured.</p>
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#e0dbd0]">
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">Agents</h2>
+          <span className="text-xs text-[#8a8578]">{agents.length}</span>
         </div>
         <div className="flex items-center gap-1">
+          <Button variant="outline" size="sm" onClick={() => setShowCreateForm(true)}>
+            <Plus className="h-3.5 w-3.5 mr-1" /> New
+          </Button>
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowCreateForm(true)} disabled={showCreateForm}>
-            <Plus className="h-3.5 w-3.5 mr-1" />
-            Create Agent
-          </Button>
         </div>
       </div>
 
-      {/* Create agent form */}
       {showCreateForm && (
-        <AgentCreateForm
-          existingIds={agents.map((a) => a.id)}
-          onCreated={() => {
-            setShowCreateForm(false);
-            mutate();
-          }}
-          onCancel={() => setShowCreateForm(false)}
-        />
-      )}
-
-      {/* Agent cards */}
-      <div className="grid gap-2 sm:grid-cols-2">
-        {agents.map((a) => (
-          <button
-            key={a.id}
-            className={cn(
-              "bg-white border rounded-xl p-4 text-left transition-colors",
-              current === a.id
-                ? "border-[#2d8a4e] ring-1 ring-[#2d8a4e]/20"
-                : "border-[#e0dbd0] hover:border-[#c5c0b6]"
-            )}
-            onClick={() => setSelectedAgent(a.id)}
-          >
-            <div className="flex items-start justify-between">
-              <div className="flex items-center gap-2 min-w-0">
-                {a.identity?.emoji ? (
-                  <span className="text-lg flex-shrink-0">{a.identity.emoji}</span>
-                ) : (
-                  <Bot className="h-4 w-4 flex-shrink-0 text-[#8a8578]" />
-                )}
-                <div className="min-w-0">
-                  <div className="font-semibold text-sm text-[#1a1a1a] truncate">
-                    {a.identity?.name || a.name || a.id}
-                    {a.id === defaultId && (
-                      <span className="ml-1.5 text-[10px] font-normal text-[#8a8578]">default</span>
-                    )}
-                  </div>
-                  <div className="text-xs text-[#8a8578] truncate">
-                    {a.model ? a.model.split("/").pop() : "default model"}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-                <span className="h-2 w-2 rounded-full bg-green-500" title="Online" />
-                <button
-                  className="text-[#8a8578] hover:text-red-600 transition-colors p-1 rounded-md hover:bg-red-50"
-                  title="Delete Agent"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setDeleteTarget(a.id);
-                  }}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
-            </div>
-          </button>
-        ))}
-      </div>
-
-      {current && (
-        <>
-          {/* Sub-tabs */}
-          <div className="flex gap-1 border-b border-[#e0dbd0]">
-            {TABS.map((tab) => (
-              <button
-                key={tab.id}
-                className={cn(
-                  "flex items-center gap-1 px-3 py-1.5 text-xs font-medium transition-colors",
-                  activeTab === tab.id
-                    ? "text-[#1a1a1a] border-b-2 border-[#2d8a4e]"
-                    : "text-[#8a8578] hover:text-[#1a1a1a]"
-                )}
-                onClick={() => setActiveTab(tab.id)}
-              >
-                <tab.icon className="h-3 w-3" />
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tab content */}
-          <AgentTabContent agentId={current} agent={agents.find(a => a.id === current)} tab={activeTab} onAgentUpdated={() => mutate()} />
-        </>
-      )}
-
-      {/* Delete confirmation modal */}
-      {deleteTarget && (
-        <div className="fixed inset-0 bg-black/30 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-white rounded-xl border border-[#e0dbd0] p-6 max-w-md w-full mx-4 shadow-lg">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="flex-shrink-0 h-10 w-10 rounded-full bg-red-100 flex items-center justify-center">
-                <AlertCircle className="h-5 w-5 text-red-600" />
-              </div>
-              <h3 className="text-lg font-semibold text-[#1a1a1a]">Delete Agent</h3>
-            </div>
-            <p className="text-sm text-[#5a5549] mb-3">
-              This will permanently destroy:
-            </p>
-            <ul className="text-sm text-[#5a5549] space-y-1.5 mb-6 ml-1">
-              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> All conversations and history</li>
-              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Agent memory and files</li>
-              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Channel connections (Telegram, Discord, WhatsApp)</li>
-              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> GooseTown residency</li>
-              <li className="flex items-center gap-2"><span className="h-1 w-1 rounded-full bg-[#8a8578] flex-shrink-0" /> Workspace data</li>
-            </ul>
-            <div className="flex items-center justify-end gap-3">
-              <button
-                className="px-4 py-2 text-sm font-medium text-[#5a5549] border border-[#e0dbd0] rounded-full hover:bg-[#f3efe6] transition-colors"
-                onClick={() => setDeleteTarget(null)}
-                disabled={deleting}
-              >
-                Cancel
-              </button>
-              <button
-                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-full hover:bg-red-700 transition-colors disabled:opacity-50"
-                disabled={deleting}
-                onClick={async () => {
-                  setDeleting(true);
-                  try {
-                    await callRpc("agents.delete", { agentId: deleteTarget, deleteFiles: true });
-                    if (selectedAgent === deleteTarget) {
-                      setSelectedAgent(null);
-                    }
-                    mutate();
-                  } catch (err) {
-                    console.error("Failed to delete agent:", err);
-                  } finally {
-                    setDeleting(false);
-                    setDeleteTarget(null);
-                  }
-                }}
-              >
-                {deleting ? (
-                  <span className="flex items-center gap-1.5">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Deleting...
-                  </span>
-                ) : (
-                  "Yes, delete forever"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tab router
-// ---------------------------------------------------------------------------
-
-function AgentTabContent({ agentId, agent, tab, onAgentUpdated }: { agentId: string; agent?: AgentEntry; tab: AgentTab; onAgentUpdated?: () => void }) {
-  if (tab === "overview") {
-    return <AgentOverviewTab agentId={agentId} agent={agent} onAgentUpdated={onAgentUpdated} />;
-  }
-  if (tab === "files") {
-    return <AgentFilesTab agentId={agentId} />;
-  }
-  if (tab === "tools") {
-    return <AgentToolsTab agentId={agentId} />;
-  }
-  return null;
-}
-
-// ---------------------------------------------------------------------------
-// Overview tab — reads model from config (matching OpenClaw reference pattern)
-// ---------------------------------------------------------------------------
-
-/** Resolve the primary model string from a model value (string or {primary, fallbacks}). */
-function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: string[] }): string | undefined {
-  if (typeof model === "string") return model.trim() || undefined;
-  if (typeof model === "object" && model) return model.primary?.trim() || undefined;
-  return undefined;
-}
-
-function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: string; agent?: AgentEntry; onAgentUpdated?: () => void }) {
-  const { data } = useGatewayRpc<Record<string, unknown>>(
-    "agent.identity.get",
-    { agentId },
-  );
-  const { data: configSnapshot, mutate: mutateConfig } = useGatewayRpc<ConfigSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
-  const [updatingModel, setUpdatingModel] = useState(false);
-  const [modelError, setModelError] = useState<string | null>(null);
-
-  // Fetch tier model from billing pricing API for the "Included" badge
-  const { fetchPricing } = useBilling();
-  const [tierModel, setTierModel] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    fetchPricing().then((pricing) => {
-      if (!cancelled && pricing?.tier_model) {
-        setTierModel(pricing.tier_model);
-      }
-    }).catch(() => { /* non-critical */ });
-    return () => { cancelled = true; };
-  }, [fetchPricing]);
-
-  const identity = data || agent?.identity;
-
-  // config.get returns a ConfigSnapshot wrapper; actual config is under .config
-  const configInner = configSnapshot?.config;
-
-  // Model catalog: agents.defaults.models (dict of modelId -> { alias? })
-  const modelsCatalog = useMemo(
-    () => configInner?.agents?.defaults?.models ?? {},
-    [configInner?.agents?.defaults?.models],
-  );
-
-  // Default model: agents.defaults.model (string or { primary })
-  const defaultModelPrimary = resolveModelPrimary(configInner?.agents?.defaults?.model);
-
-  // Per-agent model: agents.list[].model where id matches (reference pattern)
-  const agentConfigEntry = configInner?.agents?.list?.find(a => a?.id === agentId);
-  const agentModelPrimary = resolveModelPrimary(agentConfigEntry?.model);
-
-  // Effective model: per-agent overrides default
-  const currentModel = agentModelPrimary || defaultModelPrimary || "";
-
-  // Save model via agents.update RPC (purpose-built for updating agent properties).
-  // We avoid config.set because config.get redacts sensitive values (channel tokens etc.)
-  // — sending redacted config back would corrupt the config file.
-  const handleModelChange = useCallback(async (newModel: string) => {
-    setUpdatingModel(true);
-    setModelError(null);
-    try {
-      // Empty string = clear per-agent override → inherit default
-      await callRpc("agents.update", {
-        agentId,
-        ...(newModel ? { model: newModel } : { model: null }),
-      });
-
-      // Refresh config and agent list after save
-      mutateConfig();
-      onAgentUpdated?.();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error("Failed to update model:", msg);
-      setModelError(msg);
-    } finally {
-      setUpdatingModel(false);
-    }
-  }, [callRpc, agentId, onAgentUpdated, mutateConfig]);
-
-  // Build model list for the ModelSelector from the tier-filtered catalog
-  const selectorModels = useMemo(() => {
-    const models: { id: string; name: string }[] = Object.entries(modelsCatalog).map(
-      ([id, entry]) => ({ id, name: entry.alias || id.split("/").pop() || id })
-    );
-    if (currentModel && !modelsCatalog[currentModel]) {
-      models.unshift({ id: currentModel, name: currentModel.split("/").pop() || currentModel });
-    }
-    return models;
-  }, [modelsCatalog, currentModel]);
-
-  return (
-    <div className="space-y-4 mt-2">
-      <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
-        <h3 className="text-sm font-medium text-[#1a1a1a]">Identity</h3>
-        <div className="grid grid-cols-2 gap-3">
-          <InfoRow label="Agent ID" value={agentId} />
-          <InfoRow label="Name" value={(identity as Record<string, unknown>)?.name as string || agent?.name || "\u2014"} />
-          <InfoRow label="Emoji" value={(identity as Record<string, unknown>)?.emoji as string || "\u2014"} />
-          <InfoRow label="Theme" value={(identity as Record<string, unknown>)?.theme as string || "\u2014"} />
-        </div>
-      </div>
-
-      {/* Model selector */}
-      <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3 bg-white">
-        <h3 className="text-sm font-medium text-[#1a1a1a]">Model</h3>
-        {selectorModels.length > 0 ? (
-          <ModelSelector
-            models={selectorModels}
-            selectedModel={currentModel}
-            onModelChange={handleModelChange}
-            disabled={updatingModel || !configSnapshot?.hash}
-            tierModel={tierModel}
+        <div className="px-4 py-3 border-b border-[#e0dbd0]">
+          <AgentCreateForm
+            onCreated={handleAgentCreated}
+            onCancel={() => setShowCreateForm(false)}
           />
-        ) : (
-          <p className="text-xs text-[#8a8578]">
-            {currentModel ? currentModel.split("/").pop() : "No models configured in gateway"}
-          </p>
-        )}
-        {updatingModel && <Loader2 className="h-3.5 w-3.5 animate-spin text-[#8a8578]" />}
-        {modelError && (
-          <p className="text-xs text-[#dc2626] flex items-center gap-1">
-            <AlertCircle className="h-3 w-3" /> {modelError}
-          </p>
-        )}
-      </div>
-
-      {/* Raw data */}
-      {data && (
-        <details className="group">
-          <summary className="text-xs text-[#8a8578]/60 cursor-pointer hover:text-[#8a8578]">
-            Raw identity data
-          </summary>
-          <pre className="mt-2 text-xs bg-[#f3efe6] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
-            {JSON.stringify(data, null, 2)}
-          </pre>
-        </details>
+        </div>
       )}
-    </div>
-  );
-}
 
-// ---------------------------------------------------------------------------
-// Files tab — agents.files.list / get / set
-// ---------------------------------------------------------------------------
-
-const KNOWN_FILES = [
-  "SOUL.md", "MEMORY.md", "TOOLS.md", "IDENTITY.md",
-  "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "AGENTS.md",
-];
-
-function AgentFilesTab({ agentId }: { agentId: string }) {
-  const { data, error, isLoading, mutate } = useGatewayRpc<AgentFilesResponse>(
-    "agents.files.list",
-    { agentId },
-  );
-  const callRpc = useGatewayRpcMutation();
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [fileContent, setFileContent] = useState<string>("");
-  const [loadingFile, setLoadingFile] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [dirty, setDirty] = useState(false);
-
-  const files = data?.files ?? [];
-
-  const handleFileClick = useCallback(async (name: string) => {
-    setSelectedFile(name);
-    setLoadingFile(true);
-    setSaveError(null);
-    setDirty(false);
-    try {
-      const res = await callRpc<AgentFileContent>("agents.files.get", { agentId, name });
-      setFileContent(res.file?.content ?? "");
-    } catch (err) {
-      setFileContent("");
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoadingFile(false);
-    }
-  }, [callRpc, agentId]);
-
-  const handleSave = useCallback(async () => {
-    if (!selectedFile) return;
-    setSaving(true);
-    setSaveError(null);
-    try {
-      await callRpc("agents.files.set", { agentId, name: selectedFile, content: fileContent });
-      setDirty(false);
-      mutate();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [callRpc, agentId, selectedFile, fileContent, mutate]);
-
-  if (isLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-[#8a8578] mt-4" />;
-  }
-
-  if (error) {
-    return (
-      <div className="mt-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">{error.message}</p>
-        <Button variant="outline" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
-        </Button>
-      </div>
-    );
-  }
-
-  // Merge gateway response with known files list
-  const fileMap = new Map(files.map((f) => [f.name, f]));
-  const allFiles: AgentFileEntry[] = KNOWN_FILES.map((name) => {
-    const existing = fileMap.get(name);
-    return existing ?? { name, path: name, missing: true };
-  });
-  // Add any extra files from gateway not in our known list
-  for (const f of files) {
-    if (!KNOWN_FILES.includes(f.name)) {
-      allFiles.push(f);
-    }
-  }
-
-  return (
-    <div className="mt-2 space-y-3">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-[#8a8578]">{allFiles.length} files</p>
-        <Button variant="ghost" size="sm" onClick={() => mutate()}>
-          <RefreshCw className="h-3.5 w-3.5" />
-        </Button>
-      </div>
-
-      {/* File list */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1">
-        {allFiles.map((f) => (
-          <button
-            key={f.name}
-            className={cn(
-              "flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs text-left transition-colors",
-              selectedFile === f.name
-                ? "bg-[#e8f5e9] text-[#2d8a4e] border border-[#2d8a4e]/30"
-                : "hover:bg-[#f3efe6]",
-              f.missing && "opacity-50",
-            )}
-            onClick={() => handleFileClick(f.name)}
-          >
-            {f.missing ? (
-              <FileWarning className="h-3 w-3 flex-shrink-0 text-[#8a8578]" />
-            ) : (
-              <FileText className="h-3 w-3 flex-shrink-0" />
-            )}
-            <span className="truncate">{f.name}</span>
-            {f.size != null && !f.missing && (
-              <span className="text-[10px] text-[#8a8578]/50 ml-auto flex-shrink-0">
-                {f.size > 1024 ? `${(f.size / 1024).toFixed(1)}k` : `${f.size}b`}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
-
-      {/* File editor */}
-      {selectedFile && (
-        <div className="rounded-lg border border-[#e0dbd0] overflow-hidden">
-          <div className="flex items-center justify-between px-3 py-2 bg-[#f3efe6]/50 border-b border-[#e0dbd0]">
-            <span className="text-xs font-medium">{selectedFile}</span>
-            <div className="flex items-center gap-2">
-              {dirty && <span className="text-[10px] text-yellow-500">unsaved</span>}
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleSave}
-                disabled={saving || !dirty}
-              >
-                {saving ? (
-                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
-                ) : (
-                  <Save className="h-3 w-3 mr-1" />
-                )}
-                Save
-              </Button>
-            </div>
-          </div>
-
-          {saveError && (
-            <div className="flex items-center gap-2 px-3 py-2 bg-[#fce4ec] border-b border-[#dc2626]/20">
-              <AlertCircle className="h-3 w-3 text-[#dc2626] flex-shrink-0" />
-              <span className="text-xs text-[#dc2626]">{saveError}</span>
-            </div>
-          )}
-
-          {loadingFile ? (
-            <div className="flex items-center justify-center py-8">
-              <Loader2 className="h-4 w-4 animate-spin text-[#8a8578]" />
-            </div>
-          ) : (
-            <textarea
-              className="w-full min-h-[300px] p-3 text-xs font-mono bg-white text-[#1a1a1a] resize-y focus:outline-none"
-              value={fileContent}
-              onChange={(e) => {
-                setFileContent(e.target.value);
-                setDirty(true);
+      <div className="flex flex-1 min-h-0">
+        {/* Agent list */}
+        <div className="w-48 border-r border-[#e0dbd0] overflow-y-auto">
+          {agents.map((agent) => (
+            <button
+              key={agent.id}
+              className={cn(
+                "w-full flex items-center gap-2 px-3 py-2 text-left text-sm transition-colors group",
+                selectedAgent === agent.id
+                  ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                  : "hover:bg-[#f3efe6]",
+              )}
+              onClick={() => {
+                setSelectedAgent(agent.id);
+                setActiveTab("overview");
               }}
-              spellCheck={false}
-            />
+            >
+              <Bot className="h-3.5 w-3.5 flex-shrink-0" />
+              <span className="truncate flex-1">
+                {agent.name || agent.id}
+                {agent.id === defaultId && (
+                  <span className="text-[10px] text-[#8a8578] ml-1">(default)</span>
+                )}
+              </span>
+              <button
+                className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-[#dc2626]"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleDelete(agent.id);
+                }}
+                disabled={deleting === agent.id}
+              >
+                {deleting === agent.id ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Trash2 className="h-3 w-3" />
+                )}
+              </button>
+            </button>
+          ))}
+        </div>
+
+        {/* Agent detail */}
+        <div className="flex-1 overflow-y-auto px-4">
+          {selected ? (
+            <>
+              <div className="flex items-center gap-1 border-b border-[#e0dbd0] py-2">
+                {([
+                  { id: "overview", icon: Bot, label: "Overview" },
+                  { id: "files", icon: FileText, label: "Files" },
+                  { id: "tools", icon: Wrench, label: "Tools" },
+                ] as const).map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={cn(
+                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                      activeTab === tab.id
+                        ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                        : "text-[#8a8578] hover:text-[#1a1a1a]",
+                    )}
+                    onClick={() => setActiveTab(tab.id)}
+                  >
+                    <tab.icon className="h-3.5 w-3.5" />
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              {activeTab === "overview" && (
+                <AgentOverviewTab agentId={selected.id} agent={selected} onAgentUpdated={() => mutate()} />
+              )}
+              {activeTab === "files" && (
+                <AgentFilesTab agentId={selected.id} />
+              )}
+              {activeTab === "tools" && (
+                <AgentToolsTab agentId={selected.id} />
+              )}
+            </>
+          ) : (
+            <div className="flex items-center justify-center py-12 text-sm text-[#8a8578]">
+              Select an agent to view details
+            </div>
           )}
         </div>
-      )}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Tools tab — tools.catalog
-// ---------------------------------------------------------------------------
-
-/** Normalize a tool ID through aliases */
-function normalizeToolId(id: string): string {
-  return TOOL_ALIASES[id] ?? id;
-}
-
-/** Check if a tool is allowed given profile policy + alsoAllow/deny */
-function isToolAllowed(
-  toolId: string,
-  profileId: string,
-  alsoAllow: string[],
-  deny: string[],
-): boolean {
-  const normalized = normalizeToolId(toolId);
-  if (deny.includes(normalized)) return false;
-  const basePolicy = PROFILE_POLICIES[profileId];
-  if (!basePolicy) return true; // unknown profile → allow all
-  // "full" profile has empty policy → all allowed
-  if (basePolicy.length === 0) return true;
-  return basePolicy.includes(normalized) || alsoAllow.includes(normalized);
-}
-
-function AgentToolsTab({ agentId }: { agentId: string }) {
-  const { data: catalogData, error: catalogError, isLoading: catalogLoading, mutate: mutateCatalog } =
-    useGatewayRpc<ToolsCatalogResponse>("tools.catalog", { agentId, includePlugins: true });
-  const { data: configSnapshot, mutate: mutateConfig } =
-    useGatewayRpc<ConfigSnapshot>("config.get");
-  const callRpc = useGatewayRpcMutation();
-
-  // Local state for editing
-  const [localProfile, setLocalProfile] = useState<string | null>(null);
-  const [localAlsoAllow, setLocalAlsoAllow] = useState<string[]>([]);
-  const [localDeny, setLocalDeny] = useState<string[]>([]);
-  const [dirty, setDirty] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  // Extract agent tools config from config.get
-  const configInner = configSnapshot?.config;
-  const agentConfigEntry = configInner?.agents?.list?.find(
-    (a: AgentConfigEntry) => a?.id === agentId,
-  );
-  const agentToolsConfig = agentConfigEntry?.tools as
-    | { profile?: string; alsoAllow?: string[]; deny?: string[] }
-    | undefined;
-  const globalToolsConfig = configInner?.tools as
-    | { profile?: string; allow?: string[] }
-    | undefined;
-
-  // Resolve effective profile: agent override > global > "full"
-  const serverAlsoAllow = agentToolsConfig?.alsoAllow ?? [];
-  const serverDeny = agentToolsConfig?.deny ?? [];
-
-  // Initialize local state from server on first load / after save
-  useEffect(() => {
-    if (!dirty) {
-      setLocalProfile(agentToolsConfig?.profile ?? null);
-      setLocalAlsoAllow([...serverAlsoAllow]);
-      setLocalDeny([...serverDeny]);
-    }
-  }, [agentToolsConfig?.profile, dirty]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Effective profile for display
-  const effectiveProfile = localProfile ?? globalToolsConfig?.profile ?? "full";
-  const profileSource = localProfile ? "agent" : globalToolsConfig?.profile ? "global" : "default";
-
-  // Build sections from catalog or fallback
-  const sections = useMemo(() => {
-    if (catalogData?.groups && catalogData.groups.length > 0) {
-      return catalogData.groups.map((g) => ({
-        id: g.id,
-        label: g.label,
-        source: g.source,
-        tools: g.tools.map((t) => ({
-          id: normalizeToolId(t.id ?? t.name),
-          label: t.label ?? t.name,
-          description: t.description ?? "",
-          source: t.source,
-        })),
-      }));
-    }
-    // Fallback: use catalogData.tools grouped, or hardcoded sections
-    if (catalogData?.tools && catalogData.tools.length > 0) {
-      const grouped = new Map<string, { id: string; label: string; description: string; source?: string }[]>();
-      for (const tool of catalogData.tools) {
-        const group = tool.profile || tool.category || "default";
-        const list = grouped.get(group) ?? [];
-        list.push({
-          id: normalizeToolId(tool.id ?? tool.name),
-          label: tool.label ?? tool.name,
-          description: tool.description ?? "",
-          source: tool.source,
-        });
-        grouped.set(group, list);
-      }
-      return Array.from(grouped.entries()).map(([key, tools]) => ({
-        id: key,
-        label: key.charAt(0).toUpperCase() + key.slice(1),
-        tools,
-      }));
-    }
-    return FALLBACK_SECTIONS;
-  }, [catalogData]);
-
-  // All tool IDs for counting
-  const allToolIds = useMemo(
-    () => sections.flatMap((s) => s.tools.map((t) => t.id)),
-    [sections],
-  );
-  const totalTools = allToolIds.length;
-  const enabledCount = allToolIds.filter((id) =>
-    isToolAllowed(id, effectiveProfile, localAlsoAllow, localDeny),
-  ).length;
-
-  // Toggle a single tool
-  const toggleTool = useCallback(
-    (toolId: string) => {
-      const normalized = normalizeToolId(toolId);
-      const currentlyAllowed = isToolAllowed(normalized, effectiveProfile, localAlsoAllow, localDeny);
-
-      if (currentlyAllowed) {
-        // Disable: remove from alsoAllow, add to deny
-        setLocalAlsoAllow((prev) => prev.filter((id) => id !== normalized));
-        setLocalDeny((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-      } else {
-        // Enable: remove from deny; if not in base profile, add to alsoAllow
-        setLocalDeny((prev) => prev.filter((id) => id !== normalized));
-        const basePolicy = PROFILE_POLICIES[effectiveProfile] ?? [];
-        if (basePolicy.length > 0 && !basePolicy.includes(normalized)) {
-          setLocalAlsoAllow((prev) => (prev.includes(normalized) ? prev : [...prev, normalized]));
-        }
-      }
-      setDirty(true);
-    },
-    [effectiveProfile, localAlsoAllow, localDeny],
-  );
-
-  // Enable / Disable all
-  const enableAll = useCallback(() => {
-    setLocalAlsoAllow([...allToolIds]);
-    setLocalDeny([]);
-    setDirty(true);
-  }, [allToolIds]);
-
-  const disableAll = useCallback(() => {
-    setLocalAlsoAllow([]);
-    setLocalDeny([...allToolIds]);
-    setDirty(true);
-  }, [allToolIds]);
-
-  // Profile preset
-  const applyPreset = useCallback(
-    (preset: string | null) => {
-      if (preset === null) {
-        // Inherit: clear agent override
-        setLocalProfile(null);
-      } else {
-        setLocalProfile(preset);
-      }
-      setLocalAlsoAllow([]);
-      setLocalDeny([]);
-      setDirty(true);
-    },
-    [],
-  );
-
-  // Reload from server
-  const handleReload = useCallback(() => {
-    setDirty(false);
-    setSaveError(null);
-    mutateCatalog();
-    mutateConfig();
-  }, [mutateCatalog, mutateConfig]);
-
-  // Save via agents.update
-  const handleSave = useCallback(async () => {
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const toolsPayload: Record<string, unknown> = {};
-      if (localProfile !== null) {
-        toolsPayload.profile = localProfile;
-      }
-      if (localAlsoAllow.length > 0) {
-        toolsPayload.alsoAllow = localAlsoAllow;
-      }
-      if (localDeny.length > 0) {
-        toolsPayload.deny = localDeny;
-      }
-      await callRpc("agents.update", { agentId, tools: toolsPayload });
-      setDirty(false);
-      mutateConfig();
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }, [callRpc, agentId, localProfile, localAlsoAllow, localDeny, mutateConfig]);
-
-  if (catalogLoading) {
-    return <Loader2 className="h-4 w-4 animate-spin text-[#8a8578] mt-4" />;
-  }
-
-  if (catalogError) {
-    return (
-      <div className="mt-4 space-y-2">
-        <p className="text-sm text-[#dc2626]">{catalogError.message}</p>
-        <Button variant="outline" size="sm" onClick={() => mutateCatalog()}>
-          <RefreshCw className="h-3.5 w-3.5 mr-1.5" /> Retry
-        </Button>
       </div>
-    );
-  }
-
-  const presets = [
-    { id: "minimal", label: "Minimal" },
-    { id: "coding", label: "Coding" },
-    { id: "messaging", label: "Messaging" },
-    { id: "full", label: "Full" },
-  ];
-
-  return (
-    <div className="mt-2 space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-sm font-medium">Tool Access</h3>
-          <p className="text-xs text-[#8a8578]">
-            {enabledCount}/{totalTools} enabled
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={enableAll}>
-            Enable All
-          </Button>
-          <Button variant="outline" size="sm" onClick={disableAll}>
-            Disable All
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleReload}>
-            <RefreshCw className="h-3.5 w-3.5" />
-          </Button>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleSave}
-            disabled={saving || !dirty}
-          >
-            {saving ? (
-              <Loader2 className="h-3 w-3 animate-spin mr-1" />
-            ) : (
-              <Save className="h-3 w-3 mr-1" />
-            )}
-            Save
-          </Button>
-        </div>
-      </div>
-
-      {saveError && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-[#fce4ec] border border-[#dc2626]/20">
-          <AlertCircle className="h-3 w-3 text-[#dc2626] flex-shrink-0" />
-          <span className="text-xs text-[#dc2626]">{saveError}</span>
-        </div>
-      )}
-
-      {/* Global allow warning */}
-      {globalToolsConfig?.allow && (
-        <div className="flex items-center gap-2 px-3 py-2 rounded-md bg-yellow-50 border border-yellow-300/40">
-          <AlertCircle className="h-3 w-3 text-yellow-600 flex-shrink-0" />
-          <span className="text-xs text-yellow-700">
-            Global <code className="text-[10px] bg-[#f3efe6] px-1 rounded">tools.allow</code> is set — this may restrict available tools regardless of agent config.
-          </span>
-        </div>
-      )}
-
-      {/* Profile info */}
-      <div className="flex items-center gap-3 text-xs text-[#8a8578]">
-        <span>
-          Profile: <span className="font-medium text-[#1a1a1a]">{effectiveProfile}</span>
-        </span>
-        <span>
-          Source: <span className="font-medium text-[#1a1a1a]">{profileSource}</span>
-        </span>
-        {dirty && (
-          <span className="text-yellow-500 font-medium">unsaved</span>
-        )}
-      </div>
-
-      {/* Quick presets */}
-      <div className="flex items-center gap-1 flex-wrap">
-        <span className="text-xs text-[#8a8578] mr-1">Quick Presets:</span>
-        {presets.map((preset) => (
-          <Button
-            key={preset.id}
-            variant={effectiveProfile === preset.id && localProfile === preset.id ? "default" : "outline"}
-            size="sm"
-            className="h-6 text-xs px-2"
-            onClick={() => applyPreset(preset.id)}
-          >
-            {preset.label}
-          </Button>
-        ))}
-        <Button
-          variant={localProfile === null ? "default" : "outline"}
-          size="sm"
-          className="h-6 text-xs px-2"
-          onClick={() => applyPreset(null)}
-        >
-          Inherit
-        </Button>
-      </div>
-
-      {/* Tool sections with toggles */}
-      {sections.map((section) => (
-        <div key={section.id} className="space-y-1">
-          <h4 className="text-xs font-semibold text-[#8a8578] uppercase tracking-wide">
-            {section.label}
-          </h4>
-          <div className="space-y-0.5">
-            {section.tools.map((tool) => {
-              const allowed = isToolAllowed(tool.id, effectiveProfile, localAlsoAllow, localDeny);
-              return (
-                <div
-                  key={tool.id}
-                  className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[#f3efe6] group"
-                >
-                  <button
-                    className="flex-shrink-0 focus:outline-none"
-                    onClick={() => toggleTool(tool.id)}
-                    aria-label={`Toggle ${tool.label}`}
-                  >
-                    {allowed ? (
-                      <ToggleRight className="h-4 w-4 text-[#2d8a4e]" />
-                    ) : (
-                      <ToggleLeft className="h-4 w-4 text-[#8a8578]/40" />
-                    )}
-                  </button>
-                  <div className="min-w-0 flex-1">
-                    <div className={cn(
-                      "text-sm font-medium truncate",
-                      !allowed && "text-[#8a8578]/50",
-                    )}>
-                      {tool.label}
-                    </div>
-                    {tool.description && (
-                      <div className="text-xs text-[#8a8578]/70 line-clamp-1">
-                        {tool.description}
-                      </div>
-                    )}
-                  </div>
-                  {tool.source && (
-                    <span className="text-[10px] text-[#8a8578]/40 flex-shrink-0">
-                      {String(tool.source)}
-                    </span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-
-      {/* Raw data */}
-      <details className="group">
-        <summary className="text-xs text-[#8a8578]/60 cursor-pointer hover:text-[#8a8578]">
-          Raw catalog data
-        </summary>
-        <pre className="mt-2 text-xs bg-[#f3efe6] rounded-lg p-3 overflow-auto max-h-48 text-[#5a5549]">
-          {JSON.stringify(catalogData, null, 2)}
-        </pre>
-      </details>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Shared components
-// ---------------------------------------------------------------------------
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] uppercase tracking-wider text-[#8a8578]/60">{label}</div>
-      <div className="text-sm font-medium truncate text-[#1a1a1a]">{value}</div>
     </div>
   );
 }
