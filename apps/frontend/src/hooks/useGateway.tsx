@@ -225,7 +225,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
       // Post token to Tauri desktop app for node-host auth
       if (typeof window !== "undefined" && token) {
-        const tauri = (window as any).__TAURI__;
+        const tauri = (window as unknown as Record<string, unknown>).__TAURI__;
         if (tauri?.core?.invoke) {
           tauri.core.invoke("send_auth_token", { token }).catch(() => {});
         }
@@ -319,7 +319,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const tauri = (window as any).__TAURI__;
+    const tauri = (window as unknown as Record<string, unknown>).__TAURI__;
     if (!tauri?.event?.listen) return;
 
     let unlisten: (() => void) | null = null;

@@ -60,7 +60,6 @@ export function useNodeBridge(onStatusChange?: (status: string) => void) {
   const reconnectRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const statusRef = useRef<(s: string) => void>(onStatusChange || (() => {}));
-  statusRef.current = onStatusChange || (() => {});
 
   const cleanup = useCallback(() => {
     if (reconnectTimerRef.current) {
@@ -75,7 +74,7 @@ export function useNodeBridge(onStatusChange?: (status: string) => void) {
 
   useEffect(() => {
     // Only run inside Tauri desktop app
-    const tauri = (window as any).__TAURI__;
+    const tauri = (window as unknown as Record<string, { core?: { invoke?: (...args: unknown[]) => Promise<unknown> } }>).__TAURI__;
     if (!tauri?.core?.invoke) return;
 
     let stopped = false;
@@ -102,9 +101,9 @@ export function useNodeBridge(onStatusChange?: (status: string) => void) {
 
         ws.onmessage = async (event) => {
           if (!event.data || typeof event.data !== "string") return;
-          let data: any;
+          let data: Record<string, unknown>;
           try {
-            data = JSON.parse(event.data);
+            data = JSON.parse(event.data) as Record<string, unknown>;
           } catch {
             return;
           }

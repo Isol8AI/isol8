@@ -31,9 +31,6 @@ SUPPORTED_TOOLS = {
 class KeyService:
     """Manages user-provided API keys."""
 
-    def __init__(self):
-        pass
-
     async def set_key(self, user_id: str, tool_id: str, api_key: str) -> dict:
         if tool_id not in SUPPORTED_TOOLS:
             raise ValueError(f"Unsupported tool: {tool_id}")

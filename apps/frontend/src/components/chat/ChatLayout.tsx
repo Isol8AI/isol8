@@ -54,15 +54,13 @@ export function ChatLayout({
   const { organization } = useOrganization();
   const router = useRouter();
   const api = useApi();
-  const { agents, defaultId, deleteAgent, createAgent } = useAgents();
+  const { agents, defaultId, createAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
 
   // Desktop app: bridge node commands via browser WebSocket + Tauri IPC
-  useNodeBridge((status) => {
-    // nodeConnected state is already managed by useGateway's node_status listener
-  });
+  useNodeBridge();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
@@ -122,18 +120,6 @@ export function ChatLayout({
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
     setSidebarOpen(false);
-  }
-
-  async function handleDeleteAgent(agentId: string): Promise<void> {
-    await deleteAgent(agentId);
-    if (currentAgentId === agentId) {
-      const remaining = agents.filter((a) => a.id !== agentId);
-      if (remaining.length > 0) {
-        handleSelectAgent(remaining[0].id);
-      } else {
-        setUserSelectedId(null);
-      }
-    }
   }
 
   async function handleCreateAgent(): Promise<void> {

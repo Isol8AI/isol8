@@ -19,7 +19,7 @@ export function useDesktopAuth() {
 
   useEffect(() => {
     // Only run in Tauri desktop app
-    const tauri = (window as any).__TAURI__;
+    const tauri = (window as unknown as Record<string, { event?: { listen?: (name: string, cb: (e: { payload: string }) => void) => Promise<() => void> } }>).__TAURI__;
     if (!tauri?.event?.listen) return;
     if (isSignedIn) return; // Already signed in, no need
 
