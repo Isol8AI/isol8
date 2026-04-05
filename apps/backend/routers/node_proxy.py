@@ -12,6 +12,7 @@ import logging
 
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.config import settings
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,7 @@ async def handle_node_connect(
         user_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
+        efs_mount_path=settings.EFS_MOUNT_PATH,
     )
 
     async def on_upstream_message(data: dict):

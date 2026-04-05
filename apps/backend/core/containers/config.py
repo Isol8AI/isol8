@@ -6,9 +6,89 @@ Each container gets a gateway auth token so it can bind to LAN
 (required for Docker port mapping).
 """
 
+import base64
+import hashlib
 import json
+import time
 
 from core.config import TIER_CONFIG
+
+
+# =============================================================================
+# Node device identity helpers
+# =============================================================================
+
+
+def _base64url_encode(data: bytes) -> str:
+    """RFC 7515 base64url encoding (no padding)."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def generate_node_device_identity() -> dict:
+    """Generate a new Ed25519 keypair for node device identity.
+
+    Returns dict with: device_id, public_key_b64, private_key_pem.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        NoEncryption,
+        PrivateFormat,
+        PublicFormat,
+    )
+
+    private_key = Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    raw_pub = public_key.public_bytes(Encoding.Raw, PublicFormat.Raw)
+
+    device_id = hashlib.sha256(raw_pub).hexdigest()
+    public_key_b64 = _base64url_encode(raw_pub)
+    private_key_pem = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode("ascii")
+
+    return {
+        "device_id": device_id,
+        "public_key_b64": public_key_b64,
+        "private_key_pem": private_key_pem,
+    }
+
+
+def load_node_device_identity(private_key_pem: str) -> dict:
+    """Reconstruct device identity from a stored PEM private key."""
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding,
+        PublicFormat,
+        load_pem_private_key,
+    )
+
+    private_key = load_pem_private_key(private_key_pem.encode("ascii"), password=None)
+    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    device_id = hashlib.sha256(raw_pub).hexdigest()
+    public_key_b64 = _base64url_encode(raw_pub)
+
+    return {
+        "device_id": device_id,
+        "public_key_b64": public_key_b64,
+        "private_key_pem": private_key_pem,
+    }
+
+
+def build_node_paired_json(device_id: str, public_key_b64: str) -> str:
+    """Build the nodes/paired.json content for a pre-paired device."""
+    now_ms = int(time.time() * 1000)
+    paired = {
+        device_id: {
+            "deviceId": device_id,
+            "publicKey": public_key_b64,
+            "role": "node",
+            "roles": ["node"],
+            "scopes": [],
+            "approvedScopes": [],
+            "createdAtMs": now_ms,
+            "approvedAtMs": now_ms,
+        }
+    }
+    return json.dumps(paired, indent=2)
+
 
 # Complete catalog of all Bedrock models available on the platform.
 # Each entry is a provider model spec used in openclaw.json.
@@ -241,7 +321,6 @@ def write_openclaw_config(
         "trustedProxy": {
             "userHeader": "x-forwarded-user",
         },
-        "skipDevicePairingForTrustedProxy": True,
     }
 
     # Build search plugin config — Perplexity via our proxy (v2026.3.22+ format)

@@ -22,27 +22,30 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_PORT = 18789
 
+NODE_KEY_PATH = "nodes/.node-device-key.pem"
+
 
 def _base64url_encode(data: bytes) -> str:
     """RFC 7515 base64url encoding (no padding)."""
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
 
 
-def _build_device_identity(nonce: str, connect_params: dict) -> dict:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+def _load_private_key(pem: str):
+    """Load an Ed25519 private key from PEM string."""
+    from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
-    """Generate an Ed25519 device identity block for the connect handshake.
+    return load_pem_private_key(pem.encode("ascii"), password=None)
 
-    OpenClaw v2 signing format (pipe-delimited):
+
+def _build_device_identity(private_key, nonce: str, connect_params: dict) -> dict:
+    """Build a signed device identity block for the connect handshake.
+
+    Uses the v2 pipe-delimited signing format:
       v2|{deviceId}|{clientId}|{clientMode}|{role}|{scopes}|{signedAtMs}|{token}|{nonce}
-
-    The keypair is ephemeral — trusted-proxy auth handles user identity, this
-    just needs to be cryptographically consistent.
     """
-    private_key = Ed25519PrivateKey.generate()
-    public_key = private_key.public_key()
-    raw_pub = public_key.public_bytes_raw()
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+    raw_pub = private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
     device_id = hashlib.sha256(raw_pub).hexdigest()
     signed_at = int(time.time() * 1000)
 
@@ -53,7 +56,6 @@ def _build_device_identity(nonce: str, connect_params: dict) -> dict:
     scopes = ",".join(sorted(connect_params.get("scopes", [])))
     token = connect_params.get("auth", {}).get("token", "")
 
-    # v2 pipe-delimited signing payload
     payload = f"v2|{device_id}|{client_id}|{client_mode}|{role}|{scopes}|{signed_at}|{token}|{nonce}"
     signature = private_key.sign(payload.encode("utf-8"))
 
@@ -74,17 +76,33 @@ class NodeUpstreamConnection:
         user_id: str,
         container_ip: str,
         node_connect_params: dict,
+        efs_mount_path: str,
     ):
         self.user_id = user_id
         self.container_ip = container_ip
         self.node_connect_params = node_connect_params
+        self.efs_mount_path = efs_mount_path
         self._ws = None
         self._connected = False
         self._reader_task: asyncio.Task | None = None
         self._on_message = None
 
+    def _load_node_key(self):
+        """Read the persistent Ed25519 private key from EFS."""
+        import pathlib
+
+        key_path = pathlib.Path(self.efs_mount_path) / self.user_id / NODE_KEY_PATH
+        if not key_path.exists():
+            raise RuntimeError(f"Node device key not found at {key_path}. Re-provision the container to generate it.")
+        pem = key_path.read_text(encoding="ascii")
+        return _load_private_key(pem)
+
     async def connect(self) -> dict:
         """Open upstream WS, complete handshake with role:node. Returns hello-ok."""
+        # Load persistent device key
+        private_key = self._load_node_key()
+        logger.info("Loaded node device key for user %s", self.user_id)
+
         uri = f"ws://{self.container_ip}:{GATEWAY_PORT}"
         self._ws = await ws_connect(
             uri,
@@ -99,11 +117,10 @@ class NodeUpstreamConnection:
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got {challenge}")
 
-        # Step 2: build device identity from challenge nonce
-        # Nonce may be at top level or inside payload
+        # Step 2: extract nonce and sign with persistent device key
         payload = challenge.get("payload", challenge)
         nonce = payload.get("nonce", challenge.get("nonce", ""))
-        device = _build_device_identity(nonce, self.node_connect_params)
+        device = _build_device_identity(private_key, nonce, self.node_connect_params)
 
         # Step 3: send connect with role:node + device identity
         req_id = str(uuid.uuid4())

@@ -18,6 +18,9 @@ import boto3
 
 from core.config import settings
 from core.containers.config import (
+    build_node_paired_json,
+    generate_node_device_identity,
+    load_node_device_identity,
     write_mcporter_config,
     write_openclaw_config,
 )
@@ -819,3 +822,16 @@ class EcsManager:
         workspace = get_workspace()
         workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+        # Node device identity — reuse existing key if present, generate otherwise
+        try:
+            existing_pem = workspace.read_file(user_id, "nodes/.node-device-key.pem")
+            identity = load_node_device_identity(existing_pem)
+            logger.info("Reusing existing node device key for user %s", user_id)
+        except Exception:
+            identity = generate_node_device_identity()
+            workspace.write_file(user_id, "nodes/.node-device-key.pem", identity["private_key_pem"])
+            logger.info("Generated new node device key for user %s", user_id)
+
+        paired_json = build_node_paired_json(identity["device_id"], identity["public_key_b64"])
+        workspace.write_file(user_id, "nodes/paired.json", paired_json)
