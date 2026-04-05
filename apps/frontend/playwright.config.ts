@@ -10,7 +10,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0, // journey tests have destructive side effects — no retries
   workers: 1,
-  globalTimeout: 30 * 60 * 1000, // 30 minutes — covers full suite including landing tests
+  globalTimeout: 18 * 60 * 1000, // 18 minutes — Steps 1-4 (~10 min) + landing (~30s) + buffer
   reporter: [
     ['html', { open: 'never' }],
     ['list'],
