@@ -74,7 +74,8 @@ export function useNodeBridge(onStatusChange?: (status: string) => void) {
 
   useEffect(() => {
     // Only run inside Tauri desktop app
-    const tauri = (window as unknown as Record<string, { core?: { invoke?: (...args: unknown[]) => Promise<unknown> } }>).__TAURI__;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tauri = (window as any).__TAURI__;
     if (!tauri?.core?.invoke) return;
 
     let stopped = false;
@@ -101,9 +102,10 @@ export function useNodeBridge(onStatusChange?: (status: string) => void) {
 
         ws.onmessage = async (event) => {
           if (!event.data || typeof event.data !== "string") return;
-          let data: Record<string, unknown>;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          let data: any;
           try {
-            data = JSON.parse(event.data) as Record<string, unknown>;
+            data = JSON.parse(event.data);
           } catch {
             return;
           }
