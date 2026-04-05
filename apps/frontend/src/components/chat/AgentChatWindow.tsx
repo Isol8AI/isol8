@@ -104,32 +104,12 @@ function BudgetExceededBanner({
 // Approach-Limit Banner
 // =============================================================================
 
-const SNOOZE_DURATION_MS = 24 * 60 * 60 * 1000; // 24 hours
-
-function getBudgetSnooze(threshold: number): boolean {
-  try {
-    const raw = localStorage.getItem(`isol8_budget_snooze_${threshold}`);
-    if (!raw) return false;
-    const snoozedUntil = JSON.parse(raw) as number;
-    if (Date.now() < snoozedUntil) return true;
-    localStorage.removeItem(`isol8_budget_snooze_${threshold}`);
-    return false;
-  } catch {
-    return false;
-  }
-}
-
-function setBudgetSnooze(threshold: number): void {
-  localStorage.setItem(
-    `isol8_budget_snooze_${threshold}`,
-    JSON.stringify(Date.now() + SNOOZE_DURATION_MS),
-  );
-}
+import { isSnoozed, setSnoozed, budgetSnoozeKey, updateSnoozeKey } from "@/lib/snooze";
 
 function ApproachLimitBanner() {
   const { account, isSubscribed, toggleOverage } = useBilling();
-  const [dismissed75, setDismissed75] = useState(() => getBudgetSnooze(75));
-  const [dismissed90, setDismissed90] = useState(() => getBudgetSnooze(90));
+  const [dismissed75, setDismissed75] = useState(() => isSnoozed(budgetSnoozeKey(75)));
+  const [dismissed90, setDismissed90] = useState(() => isSnoozed(budgetSnoozeKey(90)));
   const [loading, setLoading] = useState(false);
 
   if (!account || !isSubscribed) return null;
@@ -170,7 +150,7 @@ function ApproachLimitBanner() {
         )}
         <button
           onClick={() => {
-            setBudgetSnooze(90);
+            setSnoozed(budgetSnoozeKey(90));
             setDismissed90(true);
           }}
           className="text-[#e65100] hover:text-[#e65100] shrink-0"
@@ -191,7 +171,7 @@ function ApproachLimitBanner() {
         </p>
         <button
           onClick={() => {
-            setBudgetSnooze(75);
+            setSnoozed(budgetSnoozeKey(75));
             setDismissed75(true);
           }}
           className="text-[#f9a825] hover:text-[#f9a825] shrink-0"
@@ -219,32 +199,6 @@ interface PendingUpdate {
   scheduled_at?: string;
 }
 
-interface SnoozeEntry {
-  update_id: string;
-  snoozed_until: number;
-}
-
-function getSnooze(updateId: string): SnoozeEntry | null {
-  try {
-    const raw = localStorage.getItem(`isol8_update_snooze_${updateId}`);
-    if (!raw) return null;
-    const entry: SnoozeEntry = JSON.parse(raw);
-    if (Date.now() < entry.snoozed_until) return entry;
-    // Expired -- clean up
-    localStorage.removeItem(`isol8_update_snooze_${updateId}`);
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function setSnooze(updateId: string, durationMs: number): void {
-  const entry: SnoozeEntry = {
-    update_id: updateId,
-    snoozed_until: Date.now() + durationMs,
-  };
-  localStorage.setItem(`isol8_update_snooze_${updateId}`, JSON.stringify(entry));
-}
 
 function UpdateBanner() {
   const api = useApi();
@@ -262,7 +216,7 @@ function UpdateBanner() {
     try {
       const data = (await api.get("/container/updates")) as { updates: PendingUpdate[] };
       const pending = (data.updates || []).filter(
-        (u) => u.status === "pending" && !getSnooze(u.update_id),
+        (u) => u.status === "pending" && !isSnoozed(updateSnoozeKey(u.update_id)),
       );
       setUpdates(pending);
       setDismissed(false);
@@ -321,7 +275,7 @@ function UpdateBanner() {
         // best-effort
       }
       // Snooze for 4 hours
-      setSnooze(updateId, 4 * 60 * 60 * 1000);
+      setSnoozed(updateSnoozeKey(updateId), 4 * 60 * 60 * 1000);
       setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
     },
     [api],
