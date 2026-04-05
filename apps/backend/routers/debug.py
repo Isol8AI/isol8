@@ -12,13 +12,35 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
 from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import write_mcporter_config, write_openclaw_config
+from core.containers.config import (
+    build_node_paired_json,
+    generate_node_device_identity,
+    load_node_device_identity,
+    write_mcporter_config,
+    write_openclaw_config,
+)
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _write_node_device_files(owner_id: str) -> None:
+    """Generate (or reuse) Ed25519 node device identity on EFS."""
+    workspace = get_workspace()
+    try:
+        existing_pem = workspace.read_file(owner_id, "nodes/.node-device-key.pem")
+        identity = load_node_device_identity(existing_pem)
+        logger.info("Reusing existing node device key for user %s", owner_id)
+    except Exception:
+        identity = generate_node_device_identity()
+        workspace.write_file(owner_id, "nodes/.node-device-key.pem", identity["private_key_pem"])
+        logger.info("Generated new node device key for user %s", owner_id)
+
+    paired_json = build_node_paired_json(identity["device_id"], identity["public_key_b64"])
+    workspace.write_file(owner_id, "nodes/paired.json", paired_json)
 
 
 async def require_non_production() -> None:
@@ -74,6 +96,7 @@ async def provision_container(
         )
         get_workspace().write_file(owner_id, "openclaw.json", config_json)
         get_workspace().write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
+        _write_node_device_files(owner_id)
 
         # Step 3: Now start the container — configs are on EFS.
         await get_ecs_manager().start_user_service(owner_id)
@@ -156,6 +179,8 @@ async def redeploy_container(
                 tier=tier,
             )
             get_workspace().write_file(owner_id, "openclaw.json", config_json)
+
+        _write_node_device_files(owner_id)
 
         await get_ecs_manager().start_user_service(owner_id)
 
