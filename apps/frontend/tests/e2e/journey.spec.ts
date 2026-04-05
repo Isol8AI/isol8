@@ -103,18 +103,20 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.afterAll(async () => {
     try { await cancelSubscriptionIfExists(E2E_EMAIL); } catch { /* ignore */ }
-    try { await deprovisionIfExists(API_URL, getToken); } catch { /* ignore */ }
+    // Don't deprovision — leave the container running for the next run.
+    // This avoids triggering ECS drain cycles that cause long timeouts.
     await sharedPage?.context().close();
   });
 
   test('Step 1: Idempotent cleanup', async () => {
-    test.setTimeout(4 * 60_000);
+    test.setTimeout(2 * 60_000);
     await test.step('Cancel existing subscription if any', async () => {
       await cancelSubscriptionIfExists(E2E_EMAIL);
     }, { timeout: 60_000 });
-    await test.step('Deprovision container if running', async () => {
-      await deprovisionIfExists(API_URL, getToken);
-    }, { timeout: 60_000 });
+    // Note: we intentionally do NOT deprovision the container here.
+    // The CDK pipeline deploys the ECS service before E2EGate runs,
+    // which already triggers a rolling update. Deprovisioning would
+    // start a second drain cycle, causing long timeouts.
   });
 
   test('Step 2: Auth', async () => {
@@ -150,50 +152,30 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test('Step 4: Provision container', async () => {
     test.setTimeout(14 * 60_000);
-    await test.step('Trigger provisioning (retry on ECS draining)', async () => {
-      // Check if container is already running with healthy gateway.
-      // If so, skip deprovision+provision to avoid triggering a long ECS drain cycle.
-      const token = await getToken();
-      const statusRes = await fetch(`${API_URL}/container/status`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (statusRes.ok) {
-        const data = await statusRes.json();
-        if (data.substatus === 'gateway_healthy') {
-          console.log('[e2e] Container already running with healthy gateway — skipping provision');
-          return;
-        }
-      }
-
-      // DELETE first to clean up any leftover container from a prior run
-      await deprovisionIfExists(API_URL, getToken);
-
-      // POST /debug/provision — retry on 503 (ECS service still draining after DELETE)
+    await test.step('Ensure container exists', async () => {
+      // POST /debug/provision is idempotent — returns 200 if already provisioned.
+      // Retry on 503 (ECS service still rolling from CDK deploy).
       const deadline = Date.now() + 3 * 60_000;
       let lastStatus = 0;
       while (Date.now() < deadline) {
-        const res = await sharedPage.evaluate(async (apiUrl) => {
-          const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-          const tkn = await win.Clerk?.session?.getToken();
-          const r = await fetch(`${apiUrl}/debug/provision`, {
-            method: 'POST',
-            headers: { Authorization: `Bearer ${tkn}` },
-          });
-          return r.status;
-        }, API_URL);
-        lastStatus = res;
-        if (res === 200) break;
-        if (res !== 503) {
-          throw new Error(`Unexpected provision response: ${res}`);
+        const token = await getToken();
+        const res = await fetch(`${API_URL}/debug/provision`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        lastStatus = res.status;
+        if (res.status === 200) break;
+        if (res.status !== 503) {
+          throw new Error(`Unexpected provision response: ${res.status}`);
         }
-        console.log('[e2e] Provision 503 (ECS draining), retrying in 10s...');
+        console.log('[e2e] Provision 503 (ECS rolling), retrying in 10s...');
         await new Promise((r) => setTimeout(r, 10_000));
       }
       if (lastStatus !== 200) {
         throw new Error(`Provision failed: last status ${lastStatus} after 3 min of retries`);
       }
     }, { timeout: 4 * 60_000 });
-    await test.step('Wait for container to reach running state', async () => {
+    await test.step('Wait for gateway healthy', async () => {
       await waitForRunning(API_URL, getToken, 10 * 60_000);
     }, { timeout: 12 * 60_000 });
   });
