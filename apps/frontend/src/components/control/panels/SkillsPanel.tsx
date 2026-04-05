@@ -65,37 +65,6 @@ interface SkillStatusReport {
   skills: SkillStatusEntry[];
 }
 
-// --- Grouping (kept for internal use) ---
-
-const SOURCE_ORDER = ["openclaw-bundled", "openclaw-workspace", "openclaw-managed", "openclaw-extra"];
-const SOURCE_LABELS: Record<string, string> = {
-  "openclaw-bundled": "Built-in",
-  "openclaw-workspace": "Workspace",
-  "openclaw-managed": "Installed",
-  "openclaw-extra": "Extra",
-};
-
-function groupBySource(skills: SkillStatusEntry[]): { source: string; label: string; skills: SkillStatusEntry[] }[] {
-  const groups = new Map<string, SkillStatusEntry[]>();
-  for (const skill of skills) {
-    const src = skill.source || "other";
-    if (!groups.has(src)) groups.set(src, []);
-    groups.get(src)!.push(skill);
-  }
-  const ordered: { source: string; label: string; skills: SkillStatusEntry[] }[] = [];
-  for (const src of SOURCE_ORDER) {
-    const g = groups.get(src);
-    if (g?.length) {
-      ordered.push({ source: src, label: SOURCE_LABELS[src] || src, skills: g });
-      groups.delete(src);
-    }
-  }
-  for (const [src, g] of groups) {
-    if (g.length) ordered.push({ source: src, label: SOURCE_LABELS[src] || src, skills: g });
-  }
-  return ordered;
-}
-
 // --- Category mapping ---
 
 type Category = "All" | "Installed" | "Communication" | "Productivity" | "Research" | "Developer";
