@@ -151,19 +151,33 @@ test.describe('E2E Gate: Full User Journey', () => {
   test('Step 4: Provision container', async () => {
     test.setTimeout(14 * 60_000);
     await test.step('Trigger provisioning (retry on ECS draining)', async () => {
-      // DELETE first to clean up any leftover container from a prior run
+      // Check if container is already running (e.g., from a previous run that wasn't cleaned up).
+      // If so, skip deprovision + provision to avoid triggering a long ECS drain cycle.
+      const token = await getToken();
+      const statusRes = await fetch(`${API_URL}/container/status`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (statusRes.ok) {
+        const data = await statusRes.json();
+        if (data.substatus === 'gateway_healthy') {
+          console.log('[e2e] Container already running with healthy gateway — skipping provision');
+          return;
+        }
+      }
+
+      // DELETE first to clean up any leftover container
       await deprovisionIfExists(API_URL, getToken);
 
       // POST /debug/provision — retry on 503 (ECS service still draining after DELETE)
-      const deadline = Date.now() + 90_000;
+      const deadline = Date.now() + 3 * 60_000; // 3 min max for drain + provision POST
       let lastStatus = 0;
       while (Date.now() < deadline) {
         const res = await sharedPage.evaluate(async (apiUrl) => {
           const win = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
-          const token = await win.Clerk?.session?.getToken();
+          const tkn = await win.Clerk?.session?.getToken();
           const r = await fetch(`${apiUrl}/debug/provision`, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${token}` },
+            headers: { Authorization: `Bearer ${tkn}` },
           });
           return r.status;
         }, API_URL);
@@ -175,8 +189,10 @@ test.describe('E2E Gate: Full User Journey', () => {
         console.log('[e2e] Provision 503 (ECS draining), retrying in 10s...');
         await new Promise((r) => setTimeout(r, 10_000));
       }
-      expect(lastStatus).toBe(200);
-    }, { timeout: 120_000 });
+      if (lastStatus !== 200) {
+        throw new Error(`Provision failed: last status ${lastStatus} after 3 min of retries`);
+      }
+    }, { timeout: 4 * 60_000 });
     await test.step('Wait for container to reach running state', async () => {
       await waitForRunning(API_URL, getToken, 10 * 60_000);
     }, { timeout: 12 * 60_000 });

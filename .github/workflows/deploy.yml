@@ -982,7 +982,8 @@ jobs:
       - name: Install Playwright browsers
         run: cd apps/frontend && npx playwright install chromium --with-deps
       - name: Run E2E gate tests
-        run: cd apps/frontend && npx playwright test --project=chromium
+        run: cd apps/frontend && timeout 1200 npx playwright test --project=chromium ||
+          (echo 'E2E tests failed or timed out after 20 min' && exit 1)
         env:
           BASE_URL: https://dev.isol8.co
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}
