@@ -45,7 +45,7 @@ Injected into every user's `openclaw.json` via `config.py` at provision time:
   "skills": ["prd-generate", "prd-audit", "prd-template"],
   "tools": {
     "profile": "full",
-    "exec": { "ask": "auto" },
+    "exec": { "ask": "on-miss" },
     "fs": { "enabled": true },
     "web": {
       "search": { "enabled": true },
@@ -58,7 +58,7 @@ Injected into every user's `openclaw.json` via `config.py` at provision time:
 ```
 
 **Key decisions:**
-- `tools.exec.ask: "auto"` — agent can run git, grep, gh CLI without asking every time. Required for codebase analysis and git commits.
+- `tools.exec.ask: "on-miss"` — agent auto-approves safe commands (git, grep, gh) and asks for anything unusual. Required for codebase analysis and git commits.
 - `thinkingDefault: "high"` — PRD work benefits from deeper reasoning (research, gap analysis, dependency mapping).
 - `memorySearch: enabled` — agent remembers previous PRD conversations for cross-reference.
 - Model not hardcoded — inherits from `agents.defaults.model`, user switches at runtime via model selector.
