@@ -4,7 +4,7 @@ export function isSnoozed(key: string): boolean {
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return false;
-    const snoozedUntil = JSON.parse(raw) as number;
+    const snoozedUntil = Number(raw);
     if (Date.now() < snoozedUntil) return true;
     localStorage.removeItem(key);
     return false;
@@ -14,7 +14,7 @@ export function isSnoozed(key: string): boolean {
 }
 
 export function setSnoozed(key: string, durationMs = DEFAULT_DURATION_MS): void {
-  localStorage.setItem(key, JSON.stringify(Date.now() + durationMs));
+  localStorage.setItem(key, String(Date.now() + durationMs));
 }
 
 export function budgetSnoozeKey(threshold: number): string {
