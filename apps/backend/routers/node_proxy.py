@@ -42,7 +42,7 @@ async def handle_node_connect(
     )
 
     async def on_upstream_message(data: dict):
-        await management_api.send_message(connection_id, data)
+        management_api.send_message(connection_id, data)
 
     upstream.set_message_callback(on_upstream_message)
 
