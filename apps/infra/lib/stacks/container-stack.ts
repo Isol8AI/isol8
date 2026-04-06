@@ -1,3 +1,5 @@
+import * as path from "path";
+import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -6,6 +8,12 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
+
+// Single source of truth for the pinned OpenClaw container image.
+// Bump openclaw-version.json at the repo root to upgrade.
+const OPENCLAW_VERSION: { full: string; image: string; tag: string } = JSON.parse(
+  fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"), "utf8"),
+);
 
 export interface ContainerStackProps extends cdk.StackProps {
   environment: string;
@@ -204,7 +212,7 @@ export class ContainerStack extends cdk.Stack {
     ].join("; ");
 
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: ecs.ContainerImage.fromRegistry("alpine/openclaw:2026.3.24"),
+      image: ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full),
       essential: true,
       command: ["sh", "-c", startupCommand],
       user: "0:0",

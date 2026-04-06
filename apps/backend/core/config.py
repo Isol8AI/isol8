@@ -61,7 +61,9 @@ class Settings(BaseSettings):
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
 
     # --- OpenClaw ---
-    OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:v2026.3.24")
+    # The container image is pinned in openclaw-version.json at the repo root
+    # and imported directly by the CDK container stack. No env var override
+    # in production — bump the JSON file to upgrade.
 
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")

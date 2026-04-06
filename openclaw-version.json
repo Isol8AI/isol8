@@ -1,0 +1,7 @@
+{
+  "$schema": "./openclaw-version.schema.json",
+  "image": "alpine/openclaw",
+  "tag": "2026.4.5",
+  "full": "alpine/openclaw:2026.4.5",
+  "notes": "Single source of truth for the pinned OpenClaw container image. Bump this when you want to upgrade the image used by provisioning. CDK container stack imports this file directly; no env var override in production."
+}
