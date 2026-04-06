@@ -14,6 +14,7 @@ import {
   CreditCard,
   Activity,
 } from "lucide-react";
+import Link from "next/link";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { useSystemHealth } from "@/hooks/useSystemHealth";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
@@ -261,6 +262,21 @@ export function OverviewPanel() {
           value={cronEnabled ? "Enabled" : "Disabled"}
         />
       </div>
+
+      {/* Teams Card (pro/enterprise only) */}
+      {(planTier === "pro" || planTier === "enterprise") && (
+        <Link href="/teams">
+          <div className="rounded-lg border border-[#e5e0d5] bg-white p-4 hover:shadow-sm transition-shadow cursor-pointer">
+            <div className="flex items-center gap-3">
+              <Users className="h-5 w-5 text-[#8a8578]" />
+              <div>
+                <div className="text-sm font-medium text-[#1a1a1a]">Teams</div>
+                <div className="text-xs text-[#8a8578]">Manage AI agent teams with Paperclip</div>
+              </div>
+            </div>
+          </div>
+        </Link>
+      )}
 
       {/* Health Summary */}
       <div className="rounded-lg border border-[#d5d0c7] bg-[#f3efe6] p-4">

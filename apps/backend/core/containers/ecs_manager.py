@@ -187,6 +187,219 @@ class EcsManager:
                 user_id="",
             )
 
+    def _register_pro_task_definition(self, access_point_id: str) -> str:
+        """Clone the pro (sidecar) base task definition with a per-user EFS access point.
+
+        Same as _register_task_definition but uses the pro task definition family
+        which includes the Paperclip sidecar container.
+        """
+        pro_task_def = settings.ECS_PRO_TASK_DEFINITION
+        if not pro_task_def:
+            raise EcsManagerError("ECS_PRO_TASK_DEFINITION not configured", user_id="")
+        try:
+            desc_resp = self._ecs.describe_task_definition(taskDefinition=pro_task_def)
+            base = desc_resp["taskDefinition"]
+
+            volumes = []
+            for vol in base.get("volumes", []):
+                vol_copy = dict(vol)
+                efs_config = vol_copy.get("efsVolumeConfiguration")
+                if efs_config:
+                    efs_copy = dict(efs_config)
+                    auth_config = dict(efs_copy.get("authorizationConfig", {}))
+                    auth_config["accessPointId"] = access_point_id
+                    efs_copy["authorizationConfig"] = auth_config
+                    vol_copy["efsVolumeConfiguration"] = efs_copy
+                volumes.append(vol_copy)
+
+            reg_kwargs = dict(
+                family=base["family"],
+                taskRoleArn=base.get("taskRoleArn", ""),
+                executionRoleArn=base.get("executionRoleArn", ""),
+                networkMode=base.get("networkMode", "awsvpc"),
+                containerDefinitions=base["containerDefinitions"],
+                volumes=volumes,
+                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
+                cpu=base.get("cpu", "1536"),
+                memory=base.get("memory", "3072"),
+            )
+            if base.get("runtimePlatform"):
+                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
+
+            reg_resp = self._ecs.register_task_definition(**reg_kwargs)
+            task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            logger.info("Registered pro (sidecar) task definition %s", task_def_arn)
+            return task_def_arn
+        except Exception as e:
+            raise EcsManagerError(
+                f"Failed to register pro task definition: {e}",
+                user_id="",
+            )
+
+    # ------------------------------------------------------------------
+    # Paperclip sidecar enable / disable
+    # ------------------------------------------------------------------
+
+    async def enable_paperclip(self, owner_id: str) -> dict:
+        """Enable Paperclip sidecar by swapping to the pro task definition."""
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container:
+            raise EcsManagerError("No container found", user_id=owner_id)
+
+        access_point_id = container.get("access_point_id")
+        if not access_point_id:
+            raise EcsManagerError("No access point found", user_id=owner_id)
+
+        task_def_arn = self._register_pro_task_definition(access_point_id)
+
+        self._ecs.update_service(
+            cluster=self._cluster,
+            service=container["service_name"],
+            taskDefinition=task_def_arn,
+            forceNewDeployment=True,
+        )
+
+        await container_repo.update_fields(
+            owner_id,
+            {
+                "task_definition_arn": task_def_arn,
+                "paperclip_enabled": True,
+            },
+        )
+
+        # Provision board key in the background — sidecar needs time to start
+        asyncio.create_task(self._wait_and_provision_board_key(owner_id))
+
+        return {"status": "enabling", "task_definition_arn": task_def_arn}
+
+    async def _wait_and_provision_board_key(self, owner_id: str) -> None:
+        """Wait for Paperclip sidecar to be healthy, then provision board key."""
+        import httpx
+
+        for attempt in range(30):  # ~5 minutes max
+            await asyncio.sleep(10)
+            try:
+                ip = await self.discover_ip(owner_id)
+                if not ip:
+                    continue
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"http://{ip}:{settings.PAPERCLIP_PORT}/api/health")
+                    if resp.status_code == 200:
+                        await self.provision_paperclip_board_key(owner_id)
+                        return
+            except Exception:
+                continue
+        logger.error("Timed out waiting for Paperclip sidecar for %s", owner_id)
+
+    async def disable_paperclip(self, owner_id: str) -> dict:
+        """Disable Paperclip by swapping back to the standard task definition."""
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container:
+            raise EcsManagerError("No container found", user_id=owner_id)
+
+        access_point_id = container.get("access_point_id")
+        if not access_point_id:
+            raise EcsManagerError("No access point found", user_id=owner_id)
+
+        task_def_arn = self._register_task_definition(access_point_id)
+
+        self._ecs.update_service(
+            cluster=self._cluster,
+            service=container["service_name"],
+            taskDefinition=task_def_arn,
+            forceNewDeployment=True,
+        )
+
+        await container_repo.update_fields(
+            owner_id,
+            {
+                "task_definition_arn": task_def_arn,
+                "paperclip_enabled": False,
+                "paperclip_board_key": None,
+            },
+        )
+
+        return {"status": "disabling", "task_definition_arn": task_def_arn}
+
+    async def provision_paperclip_board_key(self, owner_id: str) -> str:
+        """Create a board API key in Paperclip and store it.
+
+        Called after Paperclip sidecar is healthy. Signs up the board user,
+        creates a CLI auth challenge, approves it, and stores the resulting key.
+        """
+        import httpx
+
+        container = await container_repo.get_by_owner_id(owner_id)
+        if not container:
+            raise EcsManagerError("No container found", user_id=owner_id)
+
+        ip = await self.discover_ip(owner_id)
+        if not ip:
+            raise EcsManagerError("Cannot resolve container IP", user_id=owner_id)
+
+        paperclip_url = f"http://{ip}:{settings.PAPERCLIP_PORT}"
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # Check health
+            health_resp = await client.get(f"{paperclip_url}/api/health")
+            health_resp.raise_for_status()
+
+            # Sign up board user (first user becomes admin)
+            signup_resp = await client.post(
+                f"{paperclip_url}/api/auth/sign-up/email",
+                json={
+                    "name": "Isol8 Board",
+                    "email": f"{owner_id}@isol8.local",
+                    "password": settings.BETTER_AUTH_SECRET,
+                },
+            )
+            signup_resp.raise_for_status()
+
+            # Sign in to get session cookie
+            signin_resp = await client.post(
+                f"{paperclip_url}/api/auth/sign-in/email",
+                json={
+                    "email": f"{owner_id}@isol8.local",
+                    "password": settings.BETTER_AUTH_SECRET,
+                },
+            )
+            signin_resp.raise_for_status()
+
+            # Create CLI auth challenge to get a board API key
+            challenge_resp = await client.post(
+                f"{paperclip_url}/api/auth/cli/challenge",
+                cookies=signin_resp.cookies,
+            )
+            challenge_resp.raise_for_status()
+            challenge = challenge_resp.json()
+
+            # Approve the challenge
+            approve_resp = await client.post(
+                f"{paperclip_url}/api/auth/cli/approve/{challenge['id']}",
+                cookies=signin_resp.cookies,
+            )
+            approve_resp.raise_for_status()
+            board_key = approve_resp.json().get("token", "")
+
+        # Store the board key
+        await container_repo.update_fields(
+            owner_id,
+            {
+                "paperclip_board_key": board_key,
+            },
+        )
+
+        # Auto-create default company
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            await client.post(
+                f"{paperclip_url}/api/companies",
+                json={"name": "My Company", "issuePrefix": "ISL"},
+                headers={"Authorization": f"Bearer {board_key}"},
+            )
+
+        logger.info("Provisioned Paperclip board key for %s", owner_id)
+        return board_key
+
     def _deregister_task_definition(self, task_definition_arn: str) -> None:
         """Deregister a per-user task definition revision. Idempotent."""
         try:

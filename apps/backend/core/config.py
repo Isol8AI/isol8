@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     # --- OpenClaw ---
     OPENCLAW_IMAGE: str = os.getenv("OPENCLAW_IMAGE", "ghcr.io/openclaw/openclaw:v2026.3.24")
 
+    # --- Paperclip (sidecar) ---
+    PAPERCLIP_IMAGE: str = os.getenv("PAPERCLIP_IMAGE", "ghcr.io/paperclipai/paperclip:latest")
+    PAPERCLIP_PORT: int = int(os.getenv("PAPERCLIP_PORT", "3100"))
+    BETTER_AUTH_SECRET: str = os.getenv("BETTER_AUTH_SECRET", "")
+    ECS_PRO_TASK_DEFINITION: str = os.getenv("ECS_PRO_TASK_DEFINITION", "")
+
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")  # Set by Terraform
@@ -106,6 +112,7 @@ TIER_CONFIG = {
         "container_cpu": "512",
         "container_memory": "1024",
         "scale_to_zero": True,
+        "paperclip_enabled": False,
     },
     "starter": {
         "included_budget_microdollars": 10_000_000,  # $10/mo
@@ -119,6 +126,7 @@ TIER_CONFIG = {
         "container_cpu": "512",
         "container_memory": "1024",
         "scale_to_zero": False,
+        "paperclip_enabled": False,
     },
     "pro": {
         "included_budget_microdollars": 40_000_000,  # $40/mo
@@ -132,6 +140,7 @@ TIER_CONFIG = {
         "container_cpu": "1024",
         "container_memory": "2048",
         "scale_to_zero": False,
+        "paperclip_enabled": True,
     },
     "enterprise": {
         "included_budget_microdollars": 80_000_000,  # $80/mo
@@ -145,5 +154,6 @@ TIER_CONFIG = {
         "container_cpu": "2048",
         "container_memory": "4096",
         "scale_to_zero": False,
+        "paperclip_enabled": True,
     },
 }
