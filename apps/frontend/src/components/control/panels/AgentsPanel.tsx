@@ -92,6 +92,7 @@ export function AgentsPanel() {
       {showCreateForm && (
         <div className="px-4 py-3 border-b border-[#e0dbd0]">
           <AgentCreateForm
+            existingIds={agents.map((a) => a.id)}
             onCreated={handleAgentCreated}
             onCancel={() => setShowCreateForm(false)}
           />
