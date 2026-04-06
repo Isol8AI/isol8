@@ -138,27 +138,21 @@ class NodeUpstreamConnection:
         await self._ws.send(json.dumps(connect_msg))
 
         # Step 4: receive hello-ok (skip any intermediate events like tick)
-        deadline = asyncio.get_event_loop().time() + 10
-        resp = None
-        while asyncio.get_event_loop().time() < deadline:
-            remaining = deadline - asyncio.get_event_loop().time()
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=max(remaining, 0.1))
+        for _ in range(20):
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
             msg = json.loads(raw)
             if msg.get("type") == "res":
-                resp = msg
+                if not msg.get("ok"):
+                    error_detail = json.dumps(msg.get("error", msg), default=str)[:500]
+                    raise RuntimeError(f"Node handshake failed: {error_detail}")
                 break
-            # Queue non-res messages for the reader loop
-            logger.debug("Skipping pre-handshake message: %s", msg.get("type", "unknown"))
-
-        if resp is None:
-            raise RuntimeError("Node handshake timed out waiting for hello-ok")
-        if not resp.get("ok"):
-            error_detail = json.dumps(resp.get("error", resp), default=str)[:500]
-            raise RuntimeError(f"Node handshake failed: {error_detail}")
+            logger.debug("Skipping pre-handshake message: %s", msg.get("type"))
+        else:
+            raise RuntimeError("Node handshake: too many non-res messages before hello-ok")
 
         self._connected = True
         logger.info("Node upstream connected for user %s", self.user_id)
-        return resp
+        return msg
 
     def set_message_callback(self, callback) -> None:
         """Set callback for messages from upstream (container -> node)."""
