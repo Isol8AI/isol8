@@ -132,13 +132,78 @@ app.include_router(paperclip_api.router, prefix="/api/v1/paperclip", tags=["pape
 
 ## Phase 3: Frontend
 
-### Navigation (`ControlSidebar.tsx`)
+### Approach: Adapt Paperclip's UI Source
 
-Add `{ key: "teams", label: "Teams", icon: Users }` to `NAV_ITEMS` after "Cron Jobs", before "Usage". Gated by tier (pro/enterprise) and Paperclip enabled status.
+Paperclip's UI is built with the same stack as Isol8 (React + shadcn/ui + Tailwind + lucide icons). Rather than building views from scratch, we reference Paperclip's component source and adapt each page:
 
-### Panel Routing (`ControlPanelRouter.tsx`)
+1. Copy layout/structure from Paperclip's components
+2. Swap API calls to go through our `/api/v1/paperclip/proxy/*` endpoint
+3. Style to match Isol8's theme (colors, spacing)
+4. Remove what we don't need (see below)
 
-Register `teams: PaperclipPanel`.
+### What We Remove (per-user simplifications)
+
+- **Company Rail** — each user has one company, no workspace switcher needed
+- **Auth pages** — Isol8 handles auth via Clerk
+- **Instance settings** — backend controls Paperclip config
+- **Board claim / CLI auth / invite pages** — backend manages access
+- **Multi-company features** — company prefix routing simplified
+
+### Route: `/teams`
+
+Separate page from the control dashboard, linked from a card in the control dashboard's overview panel. Protected by Clerk middleware (same as `/chat`).
+
+### Layout
+
+```
+Isol8 Header (existing, with nav back to /chat)
++-- Teams Sidebar (240px, Paperclip nav items)
++-- Main Content (flex-1, Paperclip pages restyled to Isol8 theme)
+```
+
+### Teams Sidebar Navigation
+
+Adapted from Paperclip's sidebar, minus company rail and instance settings:
+
+- **Dashboard** (LayoutDashboard) — metric cards + charts
+- **Inbox** (Inbox) — notifications, failed runs
+- **Work section:**
+  - Issues (CircleDot) — task list + kanban
+  - Routines (Repeat) — cron-scheduled recurring tasks
+  - Goals (Target) — hierarchical goal tree
+- **Projects section:** collapsible list of projects
+- **Agents section:** collapsible list with live status indicators
+- **Company section:**
+  - Org Chart (Network) — SVG org chart canvas
+  - Skills (Boxes) — skill management
+  - Costs (DollarSign) — cost analytics + charts
+  - Activity (History) — activity feed
+  - Settings (Settings) — company settings
+
+### Pages (all under `/teams/*`)
+
+| Route | Source Component | Description |
+|-------|-----------------|-------------|
+| `/teams` | Dashboard | Metric cards (agents, tasks, spend, approvals) + charts (run activity, issues by priority/status, success rate) + recent activity + recent tasks |
+| `/teams/inbox` | Inbox | Tabbed inbox (mine/recent/unread/all) |
+| `/teams/issues` | Issues | Issue list with filters, kanban board view |
+| `/teams/issues/:id` | IssueDetail | Single issue detail |
+| `/teams/routines` | Routines | Routine list with schedule editor |
+| `/teams/routines/:id` | RoutineDetail | Routine detail |
+| `/teams/goals` | Goals | Goal tree view |
+| `/teams/goals/:id` | GoalDetail | Goal detail |
+| `/teams/projects` | Projects | Project list |
+| `/teams/projects/:id` | ProjectDetail | Project detail (tabs: overview/issues/workspaces/configuration/budget) |
+| `/teams/agents` | Agents | Agent list with filter tabs (all/active/paused/error), list + org tree views |
+| `/teams/agents/new` | NewAgent | New agent form, pre-filled with OpenClaw gateway adapter config |
+| `/teams/agents/:id` | AgentDetail | Agent detail (tabs: overview/runs/configuration/skills/permissions/keys/budget) |
+| `/teams/agents/:id/runs/:runId` | AgentDetail | Run transcript |
+| `/teams/approvals` | Approvals | Approval cards (pending/all) |
+| `/teams/costs` | Costs | Cost analytics, charts, provider breakdowns |
+| `/teams/activity` | Activity | Activity feed, filterable by entity type |
+| `/teams/org` | OrgChart | SVG canvas with pan/zoom, agent cards in tree layout |
+| `/teams/skills` | Skills | Skill file tree browser |
+| `/teams/settings` | CompanySettings | Company settings form |
 
 ### API Hook (`usePaperclip.ts`)
 
@@ -149,38 +214,20 @@ SWR-based hooks wrapping calls to `/api/v1/paperclip/*`:
 
 Uses `useApi()` from `src/lib/api.ts` for authenticated requests.
 
-### PaperclipPanel (`PaperclipPanel.tsx`)
+### Not-Enabled State
 
-Two states:
-1. **Not enabled** — CTA button to enable Paperclip (calls POST `/paperclip/enable`)
-2. **Enabled** — tab layout with four tabs
+If the user is on pro/enterprise but hasn't enabled Paperclip, `/teams` shows a CTA page explaining the feature with an "Enable Teams" button (calls POST `/paperclip/enable`). If the user is on free/starter, the page shows an upgrade CTA.
 
-### Company Tab (`CompanyOverview.tsx`)
+### Control Dashboard Link
 
-- Auto-creates a company on first visit (`POST /companies`)
-- Shows company name, agent count, active runs, budget status
-- Company settings (name, description)
-- API: `GET /companies`, `POST /companies`, `PATCH /companies/:id`
+Add a "Teams" card to the Overview panel in the control dashboard that links to `/teams`. Gated by tier (pro/enterprise only).
 
-### Agents Tab (`AgentManagement.tsx`)
+### Agent Creation Pre-fill
 
-- List agents with status, role, budget, last heartbeat
-- "Hire Agent" button creates agent pre-configured with OpenClaw gateway adapter (`ws://localhost:18789`)
-- Agent detail: edit role/title, set budget, view run history
-- API: `GET /companies/:id/agents`, `POST /companies/:id/agents`, `PATCH /agents/:id`
-
-### Activity Tab (`ActivityFeed.tsx`)
-
-- Recent heartbeat runs, issue completions, agent events
-- Filterable by agent, status, time range
-- API: `GET /activity`
-
-### Budget Tab (`BudgetOverview.tsx`)
-
-- Per-agent cost tracking
-- Monthly spend overview
-- Budget limits and alerts
-- API: `GET /companies/:id/costs`
+When creating a new agent via `/teams/agents/new`, the OpenClaw gateway adapter config auto-fills:
+- `adapter: openclaw_gateway`
+- `url: ws://localhost:18789`
+- Auth via OpenClaw's trusted-proxy (no token needed)
 
 ## Phase 4: Lifecycle & Integration
 
