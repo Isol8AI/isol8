@@ -8,6 +8,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.containers.config import write_prd_skills
+from core.containers.workspace import get_workspace
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
@@ -203,3 +205,38 @@ async def patch_fleet_config(
             logger.exception("Failed to patch config for owner %s", oid)
 
     return {"status": "done", "patched": patched, "failed": failed, "total": len(owners)}
+
+
+# ---------------------------------------------------------------------------
+# Fleet skill refresh (admin — rewrites skill files from source of truth)
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/skills/refresh",
+    summary="Refresh Project Planner skills for all active containers",
+    description="Rewrites skill files from the repo source of truth to all active user workspaces.",
+)
+async def refresh_fleet_skills(
+    auth: AuthContext = Depends(get_current_user),
+):
+    if auth.is_org_context:
+        require_org_admin(auth)
+
+    workspace = get_workspace()
+    mount_path = workspace._mount
+
+    count = 0
+    for user_dir in mount_path.iterdir():
+        if not user_dir.is_dir():
+            continue
+        # Only update users who have an openclaw.json (i.e., provisioned)
+        if not (user_dir / "openclaw.json").exists():
+            continue
+        try:
+            write_prd_skills(str(user_dir))
+            count += 1
+        except Exception as exc:
+            logger.warning("Failed to refresh skills for %s: %s", user_dir.name, exc)
+
+    return {"status": "refreshed", "count": count}

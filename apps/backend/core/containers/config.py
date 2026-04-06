@@ -259,6 +259,29 @@ _TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
     "enterprise": None,  # None means all models allowed
 }
 
+# Project Planner agent definition — injected into every user's agents.list.
+_PRD_AGENT_CONFIG = {
+    "id": "prd-agent",
+    "name": "Project Planner",
+    "identity": {
+        "name": "Project Planner",
+        "emoji": "\U0001f4cb",
+        "theme": "blue",
+    },
+    "skills": ["prd-generate", "prd-audit", "prd-template"],
+    "tools": {
+        "profile": "full",
+        "exec": {"ask": "on-miss"},
+        "fs": {"enabled": True},
+        "web": {
+            "search": {"enabled": True},
+            "fetch": {"enabled": True},
+        },
+    },
+    "thinkingDefault": "high",
+    "memorySearch": {"enabled": True},
+}
+
 
 def _models_for_tier(tier: str) -> list[dict]:
     """Return the subset of ALL_BEDROCK_MODELS allowed for *tier*."""
@@ -404,6 +427,7 @@ def write_openclaw_config(
                     "enabled": True,
                 },
             },
+            "list": [_PRD_AGENT_CONFIG],
         },
         "memory": {
             "backend": "qmd",
@@ -502,6 +526,36 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     """
     config = {"servers": servers or {}}
     return json.dumps(config, indent=2)
+
+
+def write_prd_skills(workspace_path: str) -> None:
+    """Write PRD agent skill files and default templates to a user's workspace.
+
+    Skills are always overwritten (repo is source of truth).
+    Templates are only written if they don't already exist (preserves user customizations).
+
+    Args:
+        workspace_path: Absolute path to the user's workspace root on EFS.
+    """
+    from pathlib import Path
+
+    workspace = Path(workspace_path)
+    templates_dir = Path(__file__).parent.parent.parent / "skill_templates" / "prd-agent"
+
+    # Write skill files (always overwrite — repo is source of truth)
+    for skill_name in ("prd-generate", "prd-audit", "prd-template"):
+        src = templates_dir / "skills" / skill_name / "SKILL.md"
+        dst = workspace / ".agents" / "skills" / skill_name / "SKILL.md"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Write default templates (skip if user has customized)
+    for template_name in ("lean.md", "medium.md", "full.md", "backlog.md"):
+        src = templates_dir / "templates" / template_name
+        dst = workspace / "docs" / "prds" / "templates" / template_name
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
 
 
 def patch_openclaw_config(

@@ -18,6 +18,7 @@ from core.containers.config import (
     load_node_device_identity,
     write_mcporter_config,
     write_openclaw_config,
+    write_prd_skills,
 )
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import container_repo
@@ -94,8 +95,13 @@ async def provision_container(
             proxy_base_url=settings.PROXY_BASE_URL,
             tier="starter",
         )
-        get_workspace().write_file(owner_id, "openclaw.json", config_json)
-        get_workspace().write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
+        workspace = get_workspace()
+        workspace.write_file(owner_id, "openclaw.json", config_json)
+        workspace.write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+        # Write Project Planner agent skills and default templates
+        write_prd_skills(str(workspace.user_path(owner_id)))
+
         _write_node_device_files(owner_id)
 
         # Step 3: Now start the container — configs are on EFS.

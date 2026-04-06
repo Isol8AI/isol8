@@ -23,6 +23,7 @@ from core.containers.config import (
     load_node_device_identity,
     write_mcporter_config,
     write_openclaw_config,
+    write_prd_skills,
 )
 from core.containers.workspace import get_workspace
 from core.repositories import container_repo
@@ -822,6 +823,10 @@ class EcsManager:
         workspace = get_workspace()
         workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+
+        # Write Project Planner agent skills and default templates
+        user_workspace_path = str(workspace.user_path(user_id))
+        write_prd_skills(user_workspace_path)
 
         # Node device identity — reuse existing key if present, generate otherwise
         try:
