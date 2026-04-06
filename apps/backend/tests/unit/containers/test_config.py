@@ -7,6 +7,7 @@ from core.containers.config import (
     write_openclaw_config,
     write_mcporter_config,
     patch_openclaw_config,
+    write_prd_skills,
     _deep_merge,
 )
 
@@ -372,3 +373,52 @@ class TestPrdAgentConfig:
         agents_list = config["agents"].get("list", [])
         prd_agents = [a for a in agents_list if a["id"] == "prd-agent"]
         assert len(prd_agents) == 1
+
+
+class TestWritePrdSkills:
+    """Test PRD skill file writing to workspace."""
+
+    def test_writes_all_skill_files(self, tmp_path):
+        """All three SKILL.md files are written."""
+        write_prd_skills(str(tmp_path))
+        assert (tmp_path / ".agents/skills/prd-generate/SKILL.md").exists()
+        assert (tmp_path / ".agents/skills/prd-audit/SKILL.md").exists()
+        assert (tmp_path / ".agents/skills/prd-template/SKILL.md").exists()
+
+    def test_writes_all_template_files(self, tmp_path):
+        """All four template files are written."""
+        write_prd_skills(str(tmp_path))
+        assert (tmp_path / "docs/prds/templates/lean.md").exists()
+        assert (tmp_path / "docs/prds/templates/medium.md").exists()
+        assert (tmp_path / "docs/prds/templates/full.md").exists()
+        assert (tmp_path / "docs/prds/templates/backlog.md").exists()
+
+    def test_skill_files_have_frontmatter(self, tmp_path):
+        """SKILL.md files have correct frontmatter name field."""
+        write_prd_skills(str(tmp_path))
+        for skill_name in ("prd-generate", "prd-audit", "prd-template"):
+            content = (tmp_path / f".agents/skills/{skill_name}/SKILL.md").read_text()
+            assert f"name: {skill_name}" in content
+
+    def test_does_not_overwrite_existing_custom_templates(self, tmp_path):
+        """Custom user templates are not overwritten."""
+        custom_dir = tmp_path / "docs/prds/templates"
+        custom_dir.mkdir(parents=True)
+        (custom_dir / "lean.md").write_text("# My Custom Lean Template\n")
+
+        write_prd_skills(str(tmp_path))
+
+        content = (custom_dir / "lean.md").read_text()
+        assert content == "# My Custom Lean Template\n"
+
+    def test_overwrites_skill_files_always(self, tmp_path):
+        """SKILL.md files are always overwritten (source of truth is the repo)."""
+        skill_dir = tmp_path / ".agents/skills/prd-generate"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text("old content")
+
+        write_prd_skills(str(tmp_path))
+
+        content = (skill_dir / "SKILL.md").read_text()
+        assert content != "old content"
+        assert "name: prd-generate" in content

@@ -528,6 +528,36 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     return json.dumps(config, indent=2)
 
 
+def write_prd_skills(workspace_path: str) -> None:
+    """Write PRD agent skill files and default templates to a user's workspace.
+
+    Skills are always overwritten (repo is source of truth).
+    Templates are only written if they don't already exist (preserves user customizations).
+
+    Args:
+        workspace_path: Absolute path to the user's workspace root on EFS.
+    """
+    from pathlib import Path
+
+    workspace = Path(workspace_path)
+    templates_dir = Path(__file__).parent.parent.parent / "skill_templates" / "prd-agent"
+
+    # Write skill files (always overwrite — repo is source of truth)
+    for skill_name in ("prd-generate", "prd-audit", "prd-template"):
+        src = templates_dir / "skills" / skill_name / "SKILL.md"
+        dst = workspace / ".agents" / "skills" / skill_name / "SKILL.md"
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+    # Write default templates (skip if user has customized)
+    for template_name in ("lean.md", "medium.md", "full.md", "backlog.md"):
+        src = templates_dir / "templates" / template_name
+        dst = workspace / "docs" / "prds" / "templates" / template_name
+        if not dst.exists():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+
+
 def patch_openclaw_config(
     existing_config: dict,
     updates: dict,
