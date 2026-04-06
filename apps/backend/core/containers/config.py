@@ -316,12 +316,8 @@ def write_openclaw_config(
     _subagent_model = tier_cfg["subagent_model"]  # reserved for future subagent config
     # Trusted proxy auth — backend is the only path to the container (private subnet).
     # OpenClaw trusts connections from the VPC CIDR and reads user identity from header.
-    # Token is set so the local agent (loopback) can authenticate via shared auth —
-    # OpenClaw's auth.mode controls primary auth, but token is checked as shared auth
-    # for local operator connections (auth-context.ts), enabling roleCanSkipDeviceIdentity.
     auth = {
         "mode": "trusted-proxy",
-        "token": gateway_token,
         "trustedProxy": {
             "userHeader": "x-forwarded-user",
         },
