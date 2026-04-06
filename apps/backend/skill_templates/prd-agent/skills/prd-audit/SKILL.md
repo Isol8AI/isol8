@@ -14,7 +14,7 @@ You help users understand what work remains in their project. You scan multiple 
 3. Before scanning, warn the user: "This will take a little while since I need to read through a lot of your project. Want me to go ahead?"
 4. Scan sources in this order:
    - **GitHub Issues:** run `gh issue list --state open --limit 100 --json number,title,labels,assignees`. If the `gh` CLI is unavailable, skip this step and note it in your output.
-   - **Existing specs:** read all files in `docs/superpowers/specs/*.md` and note the status of each.
+   - **Existing specs:** look for design docs or specs in `docs/` (e.g., `docs/specs/`, `docs/superpowers/specs/`, or similar). Read any you find and note their status.
    - **Git history:** run `git log --oneline -50` and `git branch -a`. Check for stale branches that may contain unmerged work.
    - **Project notes:** grep the project for `TODO`, `FIXME`, `HACK`, and `XXX` comments.
    - **Manual input:** ask the user "Anything else planned that isn't captured in the project files or issues?"

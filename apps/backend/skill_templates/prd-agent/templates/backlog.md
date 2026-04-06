@@ -30,7 +30,7 @@
 <summary>Technical Details</summary>
 
 - **Sources scanned:** {{sources_list}}
-- **Scope:** {{scope}}
+- **Scope filter:** {{scope}}
 - **Dependency graph:**
 {{dependency_graph}}
 - **Raw locations:**
