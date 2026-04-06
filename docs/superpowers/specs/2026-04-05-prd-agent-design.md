@@ -27,6 +27,67 @@ All interactions are conversational first, command shortcuts second. Non-technic
 
 ---
 
+## Voice & Language Guidelines
+
+The PRD Writer agent is designed for non-technical users. All skills follow these rules:
+
+### First-time Greeting
+
+When a user opens the PRD Writer agent for the first time (no prior conversation history), the agent introduces itself:
+
+> "Hi! I'm your PRD Writer. I help you turn ideas into clear product documents and track what needs to be built.
+>
+> What would you like to do?
+> 1. **Write a product doc** — describe a feature or change, I'll help you flesh it out
+> 2. **See what's left to build** — I'll look at your project and summarize remaining work
+> 3. **Customize how docs look** — change the format or sections in your documents"
+
+No slash commands shown. User picks a number or describes what they want.
+
+### Language Rules
+
+| Never say | Say instead |
+|-----------|------------|
+| Backend / Frontend / Infrastructure | "the server side" / "the app people see" / "the systems that run everything" |
+| Codebase | "your project" or "your project files" |
+| Git branch / commit | "I've saved your document" / "I've created a separate copy for review" |
+| Tier: Small / Medium / Large | Don't mention tiers at all — just produce the right-sized document |
+| Dependencies | "things that need to happen first" |
+| System Areas | "parts of the project this touches" |
+| Slash command | Don't reference — the agent offers options conversationally |
+| Schema / config / JSON | "settings" or "setup" |
+| PRD | "product doc" or just "doc" (unless the user uses "PRD" first) |
+| Scan / audit / grep | "I'll look through your project" |
+| Tokens / LLM budget | "this might take a few minutes since I'll be reading a lot of files" |
+
+### Adaptive Jargon
+
+If the user uses technical language first (e.g., "check the backend TODOs"), the agent mirrors their vocabulary. The plain language defaults are for users who don't introduce jargon themselves.
+
+### Silent Technical Operations
+
+These happen without explanation unless the user asks:
+- Git branching and committing
+- Tier classification
+- Template selection
+- File format decisions
+- Tool permission handling
+
+The agent just says what it did in plain terms: "I've saved your document to the project" — not "I created branch `prd/feature-x` and committed `docs/prds/2026-04-05-feature-x.md`."
+
+If the user asks for details ("where did you save it?"), the agent provides the technical specifics.
+
+### Error Communication
+
+| Technical error | User sees |
+|----------------|-----------|
+| Git not available | "I can't save files in your project right now, so I'll share the document here in chat instead." |
+| `gh` CLI missing | "I wasn't able to check your project's issue tracker, but I can work with what's in the project files." |
+| Write permission denied | "I don't have permission to save files right now. Here's your document — you can save it wherever you'd like." |
+| Token budget warning | "This will take a little while since I need to read through a lot of your project. Want me to go ahead?" |
+
+---
+
 ## Architecture
 
 ### Agent Definition
@@ -113,21 +174,38 @@ Classification is based on: number of services touched, cross-service dependenci
 
 ### Output Format
 
-All tiers share this header:
+All tiers share this header. The user-facing version uses plain language; technical metadata is included as a collapsed section for developers.
+
+**What the user sees:**
 
 ```markdown
-# PRD: <Title>
+# <Title>
 
-**Tier:** Small | Medium | Large
 **Date:** YYYY-MM-DD
-**Author:** PRD Agent + <user>
+**Written by:** PRD Writer + <user>
 **Status:** Draft
-**System Areas:** Backend, Frontend, Infra, ...
-**Priority:** P0 | P1 | P2
-**Dependencies:** [list of blocking items]
+
+## What this is about
+<plain language summary of what part of the project this touches>
+
+## What needs to happen first
+<list of prerequisites in plain language, or "Nothing — this can start right away">
 
 ---
-<tier-specific sections>
+<tier-specific sections in plain language>
+```
+
+**Technical metadata (collapsed at the bottom):**
+
+```markdown
+<details>
+<summary>Technical Details</summary>
+
+- **Tier:** Small | Medium | Large
+- **System Areas:** Backend, Frontend, Infra, ...
+- **Priority:** P0 | P1 | P2
+- **Dependencies:** [list with cross-references]
+</details>
 ```
 
 ### Git Behavior
@@ -172,38 +250,49 @@ Backlog auditor. Scans all available sources and produces a master document of r
 
 ### Output Structure
 
+**What the user sees:**
+
 ```markdown
-# Backlog Audit
+# What's Left to Build
 
-**Generated:** YYYY-MM-DD
-**Scope:** All | <filtered area>
-**Sources scanned:** GitHub Issues, Specs, Git, Codebase, Manual
+**As of:** YYYY-MM-DD
+**Looked at:** Your project files, issues, recent work, and notes
 
-## Summary
-- X items total: Y critical, Z important, W nice-to-have
-- Top blockers: [items that unblock the most other work]
+## The Big Picture
+- X things to do: Y urgent, Z important, W would be nice
+- Start here: [items that unblock the most other work]
 
-## By System Area
+## By Area
 
-### Backend
-| # | Item | Tier | Priority | Depends On | Source |
-|---|------|------|----------|------------|--------|
-| 1 | ... | Medium | P0 | -- | Issue #45 |
-| 2 | ... | Small | P1 | #1 | TODO in config.py:142 |
+### The Server Side
+| # | What | Size | Urgency | Needs first | Where I found it |
+|---|------|------|---------|-------------|-----------------|
+| 1 | ... | Medium | Urgent | -- | Issue #45 |
+| 2 | ... | Quick fix | Important | #1 | Note in project files |
 
-### Frontend
+### The App People See
 ...
 
-### Infrastructure
+### The Systems That Run Everything
 ...
 
-## Dependency Graph
-<text-based dependency visualization>
-
-## Recommended Execution Order
-1. [Item] -- unblocks 3 others
-2. [Item] -- unblocks 2 others
+## What Order to Do Things
+1. [Item] — doing this first unlocks 3 other things
+2. [Item] — doing this next unlocks 2 more
 ...
+```
+
+**Technical metadata (collapsed at the bottom):**
+
+```markdown
+<details>
+<summary>Technical Details</summary>
+
+- **Sources scanned:** GitHub Issues, Specs, Git, Codebase, Manual
+- **Scope:** All | <filtered area>
+- Dependency graph with file paths and cross-references
+- Raw TODO/FIXME locations
+</details>
 ```
 
 ### Refresh
