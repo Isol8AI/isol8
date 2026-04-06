@@ -267,7 +267,29 @@ class EcsManager:
             },
         )
 
+        # Provision board key in the background — sidecar needs time to start
+        asyncio.create_task(self._wait_and_provision_board_key(owner_id))
+
         return {"status": "enabling", "task_definition_arn": task_def_arn}
+
+    async def _wait_and_provision_board_key(self, owner_id: str) -> None:
+        """Wait for Paperclip sidecar to be healthy, then provision board key."""
+        import httpx
+
+        for attempt in range(30):  # ~5 minutes max
+            await asyncio.sleep(10)
+            try:
+                ip = await self.discover_ip(owner_id)
+                if not ip:
+                    continue
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.get(f"http://{ip}:{settings.PAPERCLIP_PORT}/api/health")
+                    if resp.status_code == 200:
+                        await self.provision_paperclip_board_key(owner_id)
+                        return
+            except Exception:
+                continue
+        logger.error("Timed out waiting for Paperclip sidecar for %s", owner_id)
 
     async def disable_paperclip(self, owner_id: str) -> dict:
         """Disable Paperclip by swapping back to the standard task definition."""

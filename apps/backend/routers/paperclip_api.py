@@ -131,6 +131,8 @@ async def proxy_to_paperclip(
         raise HTTPException(status_code=502, detail="Cannot resolve container IP")
 
     upstream_url = f"http://{ip}:{settings.PAPERCLIP_PORT}/api/{path}"
+    if request.url.query:
+        upstream_url += f"?{request.url.query}"
 
     body = await request.body()
 
