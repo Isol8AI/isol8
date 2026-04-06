@@ -39,6 +39,7 @@ async def handle_node_connect(
         container_ip=ip,
         node_connect_params=connect_params,
         efs_mount_path=settings.EFS_MOUNT_PATH,
+        gateway_token=container["gateway_token"],
     )
 
     async def on_upstream_message(data: dict):

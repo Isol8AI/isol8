@@ -92,14 +92,15 @@ class GatewayConnection:
     async def connect(self) -> None:
         """Open WebSocket, complete OpenClaw handshake, verify health, start reader."""
         uri = f"ws://{self.ip}:{GATEWAY_PORT}"
-        # Pass user identity header on the WebSocket upgrade request.
-        # OpenClaw trusted-proxy auth reads x-forwarded-user from the HTTP
-        # upgrade headers to identify the user without device pairing.
+        # Token auth: OpenClaw's trusted-proxy mode explicitly blocks loopback
+        # connections (see issue #17761), making it incompatible with our
+        # per-user container setup where the local agent must call its own
+        # gateway. We use token mode with a per-container shared secret instead.
+        # Network isolation (private VPC) provides the transport-level boundary.
         self._ws = await ws_connect(
             uri,
             open_timeout=_HANDSHAKE_TIMEOUT,
             close_timeout=5,
-            additional_headers={"x-forwarded-user": self.user_id},
         )
         await self._handshake()
         await self._verify_health()
@@ -108,12 +109,11 @@ class GatewayConnection:
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
-        """Complete OpenClaw connect handshake via trusted proxy auth.
+        """Complete OpenClaw connect handshake via token auth.
 
-        The gateway is configured with gateway.auth.mode = "trusted-proxy".
-        It trusts connections from the VPC CIDR (10.0.0.0/8) and reads user
-        identity from the x-forwarded-user header passed in the connect params.
-        No device pairing or Ed25519 signing needed.
+        The gateway is configured with gateway.auth.mode = "token" and a
+        per-container shared secret. We pass the token in auth.token on the
+        connect request. Device pairing is not required in token mode.
         """
         # Step 1: receive connect.challenge
         raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
@@ -121,8 +121,7 @@ class GatewayConnection:
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
 
-        # Step 2: send connect request — trusted proxy handles auth at transport
-        # level (IP check), so we send a standard connect with no device block.
+        # Step 2: send connect request with token auth
         connect_msg = {
             "type": "req",
             "id": str(uuid.uuid4()),
@@ -138,6 +137,7 @@ class GatewayConnection:
                 },
                 "role": "operator",
                 "scopes": ["operator.admin"],
+                "auth": {"token": self.token},
             },
         }
         await self._ws.send(json.dumps(connect_msg))

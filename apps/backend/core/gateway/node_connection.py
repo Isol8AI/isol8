@@ -77,11 +77,13 @@ class NodeUpstreamConnection:
         container_ip: str,
         node_connect_params: dict,
         efs_mount_path: str,
+        gateway_token: str,
     ):
         self.user_id = user_id
         self.container_ip = container_ip
         self.node_connect_params = node_connect_params
         self.efs_mount_path = efs_mount_path
+        self.gateway_token = gateway_token
         self._ws = None
         self._connected = False
         self._reader_task: asyncio.Task | None = None
@@ -108,7 +110,6 @@ class NodeUpstreamConnection:
             uri,
             open_timeout=10,
             close_timeout=5,
-            additional_headers={"x-forwarded-user": self.user_id},
         )
 
         # Step 1: receive connect.challenge
@@ -122,7 +123,10 @@ class NodeUpstreamConnection:
         nonce = payload.get("nonce", challenge.get("nonce", ""))
         device = _build_device_identity(private_key, nonce, self.node_connect_params)
 
-        # Step 3: send connect with role:node + device identity
+        # Step 3: send connect with role:node + device identity + token auth.
+        # Nodes always require device identity (OpenClaw doesn't allow nodes
+        # to skip via shared auth), but token auth still needs to pass for the
+        # primary auth check in token mode.
         req_id = str(uuid.uuid4())
         connect_msg = {
             "type": "req",
@@ -133,6 +137,7 @@ class NodeUpstreamConnection:
                 "maxProtocol": 3,
                 **self.node_connect_params,
                 "device": device,
+                "auth": {"token": self.gateway_token},
             },
         }
         await self._ws.send(json.dumps(connect_msg))

@@ -73,11 +73,12 @@ class TestWriteOpenclawConfig:
         assert config["tools"]["media"]["image"]["enabled"] is True
 
     def test_gateway_mode_local(self):
-        """Gateway mode is local with trusted-proxy auth."""
-        config = json.loads(write_openclaw_config())
+        """Gateway uses token auth (trusted-proxy blocks loopback — see #17761)."""
+        config = json.loads(write_openclaw_config(gateway_token="test-token-123"))
         assert config["gateway"]["mode"] == "local"
-        assert config["gateway"]["auth"]["mode"] == "trusted-proxy"
-        assert config["gateway"]["auth"]["trustedProxy"]["userHeader"] == "x-forwarded-user"
+        assert config["gateway"]["auth"]["mode"] == "token"
+        assert config["gateway"]["auth"]["token"] == "test-token-123"
+        assert "trustedProxy" not in config["gateway"]["auth"]
         assert config["gateway"]["trustedProxies"] == ["10.0.0.0/8", "127.0.0.1", "::1"]
 
     def test_control_ui_disabled(self):

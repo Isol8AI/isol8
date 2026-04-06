@@ -314,13 +314,16 @@ def write_openclaw_config(
     if not primary_model:
         primary_model = tier_cfg["primary_model"]
     _subagent_model = tier_cfg["subagent_model"]  # reserved for future subagent config
-    # Trusted proxy auth — backend is the only path to the container (private subnet).
-    # OpenClaw trusts connections from the VPC CIDR and reads user identity from header.
+    # Token auth — shared secret between backend and container.
+    # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
+    # which breaks the local agent's ability to call its own gateway for node
+    # discovery and other internal RPCs. Token mode works for both our backend
+    # (VPC -> container) and the in-container agent (loopback -> container).
+    # Network isolation (private VPC subnet) provides the transport boundary;
+    # user identity is implicit since each container is per-user.
     auth = {
-        "mode": "trusted-proxy",
-        "trustedProxy": {
-            "userHeader": "x-forwarded-user",
-        },
+        "mode": "token",
+        "token": gateway_token,
     }
 
     # Build search plugin config — Perplexity via our proxy (v2026.3.22+ format)
