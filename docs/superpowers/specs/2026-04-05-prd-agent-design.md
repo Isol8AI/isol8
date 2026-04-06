@@ -1,4 +1,4 @@
-# PRD Agent: Dedicated Product Requirements Agent for Isol8
+# Project Planner: Dedicated Planning Agent for Isol8
 
 **Date:** 2026-04-05
 **Status:** Approved
@@ -11,7 +11,7 @@ All interactions are conversational first, command shortcuts second. Non-technic
 
 ## Goals
 
-- Every Isol8 user gets a PRD Writer agent in their sidebar
+- Every Isol8 user gets a Project Planner agent in their sidebar
 - Agent produces tiered PRDs (lean/medium/full) scaled to feature complexity
 - Agent audits remaining work by scanning GitHub issues, specs, git history, codebase TODOs, and manual input
 - Master backlog documents are organized hybrid-style: by system area, then dependency order, with priority tags
@@ -29,13 +29,13 @@ All interactions are conversational first, command shortcuts second. Non-technic
 
 ## Voice & Language Guidelines
 
-The PRD Writer agent is designed for non-technical users. All skills follow these rules:
+The Project Planner agent is designed for non-technical users. All skills follow these rules:
 
 ### First-time Greeting
 
-When a user opens the PRD Writer agent for the first time (no prior conversation history), the agent introduces itself:
+When a user opens the Project Planner agent for the first time (no prior conversation history), the agent introduces itself:
 
-> "Hi! I'm your PRD Writer. I help you turn ideas into clear product documents and track what needs to be built.
+> "Hi! I'm your Project Planner. I help you turn ideas into clear product documents and track what needs to be built.
 >
 > What would you like to do?
 > 1. **Write a product doc** — describe a feature or change, I'll help you flesh it out
@@ -97,9 +97,9 @@ Injected into every user's `openclaw.json` via `config.py` at provision time:
 ```json
 {
   "id": "prd-agent",
-  "name": "PRD Writer",
+  "name": "Project Planner",
   "identity": {
-    "name": "PRD Writer",
+    "name": "Project Planner",
     "emoji": "\ud83d\udccb",
     "theme": "blue"
   },
@@ -182,7 +182,7 @@ All tiers share this header. The user-facing version uses plain language; techni
 # <Title>
 
 **Date:** YYYY-MM-DD
-**Written by:** PRD Writer + <user>
+**Written by:** Project Planner + <user>
 **Status:** Draft
 
 ## What this is about
