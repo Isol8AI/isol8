@@ -36,18 +36,31 @@ def _check_tier_eligible(tier: str) -> None:
 async def paperclip_status(
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Check if Paperclip is enabled and healthy for the current user."""
+    """Check if Paperclip is enabled and healthy for the current user/org."""
     owner_id = resolve_owner_id(auth)
     container = await container_repo.get_by_owner_id(owner_id)
+    # Org members who aren't admins can view but can't toggle
+    can_toggle = not auth.is_org_context or auth.is_org_admin
+
     if not container:
-        return {"enabled": False, "healthy": False, "eligible": False}
+        return {
+            "enabled": False,
+            "healthy": False,
+            "eligible": False,
+            "can_toggle": can_toggle,
+        }
 
     tier = container.get("tier", "free")
     eligible = TIER_CONFIG.get(tier, {}).get("paperclip_enabled", False)
     enabled = container.get("paperclip_enabled", False)
 
     if not enabled:
-        return {"enabled": False, "healthy": False, "eligible": eligible}
+        return {
+            "enabled": False,
+            "healthy": False,
+            "eligible": eligible,
+            "can_toggle": can_toggle,
+        }
 
     # Check Paperclip health
     healthy = False
@@ -61,14 +74,29 @@ async def paperclip_status(
     except Exception:
         pass
 
-    return {"enabled": True, "healthy": healthy, "eligible": eligible}
+    return {
+        "enabled": True,
+        "healthy": healthy,
+        "eligible": eligible,
+        "can_toggle": can_toggle,
+    }
+
+
+def _require_admin_for_org(auth: AuthContext) -> None:
+    """Raise 403 if user is in org context but not an admin."""
+    if auth.is_org_context and not auth.is_org_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only organization admins can enable or disable Teams",
+        )
 
 
 @router.post("/enable")
 async def enable_paperclip(
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Enable Paperclip sidecar for the current user."""
+    """Enable Paperclip sidecar for the current user/org."""
+    _require_admin_for_org(auth)
     owner_id = resolve_owner_id(auth)
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:
@@ -89,7 +117,8 @@ async def enable_paperclip(
 async def disable_paperclip(
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Disable Paperclip sidecar for the current user."""
+    """Disable Paperclip sidecar for the current user/org."""
+    _require_admin_for_org(auth)
     owner_id = resolve_owner_id(auth)
     container = await container_repo.get_by_owner_id(owner_id)
     if not container:

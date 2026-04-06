@@ -3,7 +3,7 @@
 import { Loader2, AlertTriangle } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { usePaperclipApi, usePaperclipEnable } from "@/hooks/usePaperclip";
+import { usePaperclipApi, usePaperclipEnable, usePaperclipStatus } from "@/hooks/usePaperclip";
 import { Button } from "@/components/ui/button";
 
 interface Company {
@@ -16,6 +16,7 @@ interface Company {
 export function SettingsPanel() {
   const { data, isLoading } = usePaperclipApi<Company[]>("companies");
   const { disable } = usePaperclipEnable();
+  const { status } = usePaperclipStatus();
   const router = useRouter();
   const [isDisabling, setIsDisabling] = useState(false);
   const [confirmDisable, setConfirmDisable] = useState(false);
@@ -63,31 +64,33 @@ export function SettingsPanel() {
         </div>
       )}
 
-      {/* Danger Zone */}
-      <div className="rounded-lg border border-red-200 bg-red-50/50 p-4 space-y-3">
-        <div className="flex items-center gap-2">
-          <AlertTriangle className="h-4 w-4 text-red-500" />
-          <h2 className="text-sm font-semibold text-red-700">Danger Zone</h2>
-        </div>
-        <p className="text-sm text-red-600">
-          Disabling Teams will turn off the Paperclip integration. Your data will be preserved but the /teams page will no longer be accessible.
-        </p>
-        {confirmDisable && (
-          <p className="text-xs font-medium text-red-700">
-            Are you sure? Click again to confirm.
+      {/* Danger Zone — only org admins (or personal accounts) can disable */}
+      {status.can_toggle && (
+        <div className="rounded-lg border border-red-200 bg-red-50/50 p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 text-red-500" />
+            <h2 className="text-sm font-semibold text-red-700">Danger Zone</h2>
+          </div>
+          <p className="text-sm text-red-600">
+            Disabling Teams will turn off the Paperclip integration. Your data will be preserved but the /teams page will no longer be accessible.
           </p>
-        )}
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleDisable}
-          disabled={isDisabling}
-          className="text-red-600 border-red-300 hover:bg-red-100"
-        >
-          {isDisabling && <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />}
-          {confirmDisable ? "Confirm Disable" : "Disable Teams"}
-        </Button>
-      </div>
+          {confirmDisable && (
+            <p className="text-xs font-medium text-red-700">
+              Are you sure? Click again to confirm.
+            </p>
+          )}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleDisable}
+            disabled={isDisabling}
+            className="text-red-600 border-red-300 hover:bg-red-100"
+          >
+            {isDisabling && <Loader2 className="h-3.5 w-3.5 animate-spin mr-2" />}
+            {confirmDisable ? "Confirm Disable" : "Disable Teams"}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

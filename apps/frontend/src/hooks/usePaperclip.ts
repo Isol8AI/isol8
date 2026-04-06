@@ -7,6 +7,7 @@ interface PaperclipStatus {
   enabled: boolean;
   healthy: boolean;
   eligible: boolean;
+  can_toggle: boolean;
 }
 
 export function usePaperclipStatus() {
@@ -17,7 +18,12 @@ export function usePaperclipStatus() {
     { dedupingInterval: 10_000 },
   );
   return {
-    status: data ?? { enabled: false, healthy: false, eligible: false },
+    status: data ?? {
+      enabled: false,
+      healthy: false,
+      eligible: false,
+      can_toggle: false,
+    },
     isLoading,
     error,
     refresh: mutate,

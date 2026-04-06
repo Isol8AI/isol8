@@ -75,14 +75,20 @@ export function PaperclipGuard({ children }: PaperclipGuardProps) {
             Teams lets you manage AI agent teams, track issues, run routines, and more — powered by Paperclip.
           </p>
           <div className="flex flex-col gap-2 items-center">
-            <Button onClick={handleEnable} disabled={isEnabling} size="sm">
-              {isEnabling ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : (
-                <ArrowRight className="h-4 w-4 mr-2" />
-              )}
-              Enable Teams
-            </Button>
+            {status.can_toggle ? (
+              <Button onClick={handleEnable} disabled={isEnabling} size="sm">
+                {isEnabling ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <ArrowRight className="h-4 w-4 mr-2" />
+                )}
+                Enable Teams
+              </Button>
+            ) : (
+              <p className="text-xs text-[#b0a99a]">
+                Ask an organization admin to enable Teams.
+              </p>
+            )}
             <Link href="/chat">
               <Button variant="ghost" size="sm" className="text-[#8a8578]">
                 Back to Chat
