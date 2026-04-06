@@ -135,6 +135,14 @@ class NodeUpstreamConnection:
                 "device": device,
             },
         }
+        logger.info(
+            "Sending node connect for %s: client.id=%s role=%s device.id=%s commands=%s",
+            self.user_id,
+            connect_msg["params"].get("client", {}).get("id"),
+            connect_msg["params"].get("role"),
+            device.get("id", "")[:16],
+            connect_msg["params"].get("commands"),
+        )
         await self._ws.send(json.dumps(connect_msg))
 
         # Step 4: receive hello-ok (skip any intermediate events like tick)
