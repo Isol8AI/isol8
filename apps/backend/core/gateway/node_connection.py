@@ -141,8 +141,8 @@ class NodeUpstreamConnection:
         raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
         resp = json.loads(raw)
         if not resp.get("ok"):
-            error = resp.get("error", {}).get("message", "unknown")
-            raise RuntimeError(f"Node handshake failed: {error}")
+            error_detail = json.dumps(resp.get("error", resp), default=str)[:500]
+            raise RuntimeError(f"Node handshake failed: {error_detail}")
 
         self._connected = True
         logger.info("Node upstream connected for user %s", self.user_id)
