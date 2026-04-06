@@ -663,7 +663,7 @@ class GatewayConnectionPool:
         """Send a message to all frontend connections for a user."""
         conn = self._connections.get(user_id)
         if conn:
-            await conn._forward_to_frontends(message)
+            conn._forward_to_frontends(message)
 
     async def close_all(self) -> None:
         """Shutdown: close all connections."""
