@@ -315,3 +315,60 @@ class TestDeepMerge:
     def test_non_dict_override(self):
         """Non-dict values replace entire base."""
         assert _deep_merge({"a": {"b": 1}}, {"a": "string"}) == {"a": "string"}
+
+
+class TestPrdAgentConfig:
+    """Test Project Planner agent injection into openclaw.json."""
+
+    def test_prd_agent_in_agents_list(self):
+        """PRD agent is present in agents.list for all tiers."""
+        for tier in ("free", "starter", "pro", "enterprise"):
+            config = json.loads(write_openclaw_config(tier=tier))
+            agents_list = config["agents"].get("list", [])
+            prd_agents = [a for a in agents_list if a["id"] == "prd-agent"]
+            assert len(prd_agents) == 1, f"PRD agent missing for tier={tier}"
+
+    def test_prd_agent_has_correct_skills(self):
+        """PRD agent has all three skills attached."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        agents_list = config["agents"]["list"]
+        prd_agent = next(a for a in agents_list if a["id"] == "prd-agent")
+        assert prd_agent["skills"] == ["prd-generate", "prd-audit", "prd-template"]
+
+    def test_prd_agent_identity(self):
+        """PRD agent has correct identity fields."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        prd_agent = next(a for a in config["agents"]["list"] if a["id"] == "prd-agent")
+        assert prd_agent["identity"]["name"] == "Project Planner"
+        assert prd_agent["identity"]["emoji"] == "\U0001f4cb"
+        assert prd_agent["identity"]["theme"] == "blue"
+
+    def test_prd_agent_tools(self):
+        """PRD agent has correct tool permissions."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        prd_agent = next(a for a in config["agents"]["list"] if a["id"] == "prd-agent")
+        assert prd_agent["tools"]["profile"] == "full"
+        assert prd_agent["tools"]["exec"]["ask"] == "on-miss"
+        assert prd_agent["tools"]["fs"]["enabled"] is True
+        assert prd_agent["tools"]["web"]["search"]["enabled"] is True
+        assert prd_agent["tools"]["web"]["fetch"]["enabled"] is True
+
+    def test_prd_agent_thinking_and_memory(self):
+        """PRD agent has high thinking and memory search enabled."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        prd_agent = next(a for a in config["agents"]["list"] if a["id"] == "prd-agent")
+        assert prd_agent["thinkingDefault"] == "high"
+        assert prd_agent["memorySearch"]["enabled"] is True
+
+    def test_ollama_provider_also_has_prd_agent(self):
+        """PRD agent is included even with Ollama provider."""
+        config = json.loads(
+            write_openclaw_config(
+                provider="ollama",
+                ollama_base_url="http://ollama:11434",
+                primary_model="ollama/qwen2.5:14b",
+            )
+        )
+        agents_list = config["agents"].get("list", [])
+        prd_agents = [a for a in agents_list if a["id"] == "prd-agent"]
+        assert len(prd_agents) == 1

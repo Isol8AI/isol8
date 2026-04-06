@@ -259,6 +259,29 @@ _TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
     "enterprise": None,  # None means all models allowed
 }
 
+# Project Planner agent definition — injected into every user's agents.list.
+_PRD_AGENT_CONFIG = {
+    "id": "prd-agent",
+    "name": "Project Planner",
+    "identity": {
+        "name": "Project Planner",
+        "emoji": "\U0001f4cb",
+        "theme": "blue",
+    },
+    "skills": ["prd-generate", "prd-audit", "prd-template"],
+    "tools": {
+        "profile": "full",
+        "exec": {"ask": "on-miss"},
+        "fs": {"enabled": True},
+        "web": {
+            "search": {"enabled": True},
+            "fetch": {"enabled": True},
+        },
+    },
+    "thinkingDefault": "high",
+    "memorySearch": {"enabled": True},
+}
+
 
 def _models_for_tier(tier: str) -> list[dict]:
     """Return the subset of ALL_BEDROCK_MODELS allowed for *tier*."""
@@ -404,6 +427,7 @@ def write_openclaw_config(
                     "enabled": True,
                 },
             },
+            "list": [_PRD_AGENT_CONFIG],
         },
         "memory": {
             "backend": "qmd",
