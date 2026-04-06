@@ -5,7 +5,7 @@ import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { useBilling } from "@/hooks/useBilling";
 import { ModelSelector } from "@/components/chat/ModelSelector";
-import type { AgentEntry, ConfigSnapshot } from "./agents-types";
+import type { AgentEntry, AgentIdentity, ConfigSnapshot } from "./agents-types";
 
 function resolveModelPrimary(model?: string | { primary?: string; fallbacks?: string[] }): string | undefined {
   if (typeof model === "string") return model.trim() || undefined;
@@ -44,7 +44,7 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
     return () => { cancelled = true; };
   }, [fetchPricing]);
 
-  const identity = data || agent?.identity;
+  const identity = (data || agent?.identity) as AgentIdentity | undefined;
   const configInner = configSnapshot?.config;
 
   const modelsCatalog = useMemo(
@@ -92,9 +92,9 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
         <h3 className="text-sm font-medium text-[#1a1a1a]">Identity</h3>
         <div className="grid grid-cols-2 gap-3">
           <InfoRow label="Agent ID" value={agentId} />
-          <InfoRow label="Name" value={(identity as Record<string, unknown>)?.name as string || agent?.name || "\u2014"} />
-          <InfoRow label="Emoji" value={(identity as Record<string, unknown>)?.emoji as string || "\u2014"} />
-          <InfoRow label="Theme" value={(identity as Record<string, unknown>)?.theme as string || "\u2014"} />
+          <InfoRow label="Name" value={identity?.name || agent?.name || "\u2014"} />
+          <InfoRow label="Emoji" value={identity?.emoji || "\u2014"} />
+          <InfoRow label="Theme" value={identity?.theme || "\u2014"} />
         </div>
       </div>
 

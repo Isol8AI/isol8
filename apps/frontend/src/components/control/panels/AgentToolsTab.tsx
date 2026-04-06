@@ -170,9 +170,10 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
     [sections],
   );
   const totalTools = allToolIds.length;
-  const enabledCount = allToolIds.filter((id) =>
-    isToolAllowed(id, effectiveProfile, localAlsoAllow, localDeny),
-  ).length;
+  const enabledCount = useMemo(
+    () => allToolIds.filter((id) => isToolAllowed(id, effectiveProfile, localAlsoAllow, localDeny)).length,
+    [allToolIds, effectiveProfile, localAlsoAllow, localDeny],
+  );
 
   const toggleTool = useCallback(
     (toolId: string) => {
@@ -208,11 +209,7 @@ export function AgentToolsTab({ agentId }: { agentId: string }) {
 
   const applyPreset = useCallback(
     (preset: string | null) => {
-      if (preset === null) {
-        setLocalProfile(null);
-      } else {
-        setLocalProfile(preset);
-      }
+      setLocalProfile(preset);
       setLocalAlsoAllow([]);
       setLocalDeny([]);
       setDirty(true);

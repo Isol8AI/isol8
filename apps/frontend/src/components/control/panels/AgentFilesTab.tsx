@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Loader2, RefreshCw, FileText, Save, AlertCircle, FileWarning } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
@@ -58,6 +58,20 @@ export function AgentFilesTab({ agentId }: { agentId: string }) {
     }
   }, [callRpc, agentId, selectedFile, fileContent, mutate]);
 
+  const allFiles = useMemo(() => {
+    const fileMap = new Map(files.map((f) => [f.name, f]));
+    const result: AgentFileEntry[] = KNOWN_FILES.map((name) => {
+      const existing = fileMap.get(name);
+      return existing ?? { name, path: name, missing: true };
+    });
+    for (const f of files) {
+      if (!KNOWN_FILES.includes(f.name)) {
+        result.push(f);
+      }
+    }
+    return result;
+  }, [files]);
+
   if (isLoading) {
     return <Loader2 className="h-4 w-4 animate-spin text-[#8a8578] mt-4" />;
   }
@@ -71,17 +85,6 @@ export function AgentFilesTab({ agentId }: { agentId: string }) {
         </Button>
       </div>
     );
-  }
-
-  const fileMap = new Map(files.map((f) => [f.name, f]));
-  const allFiles: AgentFileEntry[] = KNOWN_FILES.map((name) => {
-    const existing = fileMap.get(name);
-    return existing ?? { name, path: name, missing: true };
-  });
-  for (const f of files) {
-    if (!KNOWN_FILES.includes(f.name)) {
-      allFiles.push(f);
-    }
   }
 
   return (
