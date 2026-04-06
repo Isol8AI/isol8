@@ -137,9 +137,21 @@ class NodeUpstreamConnection:
         }
         await self._ws.send(json.dumps(connect_msg))
 
-        # Step 4: receive hello-ok
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
-        resp = json.loads(raw)
+        # Step 4: receive hello-ok (skip any intermediate events like tick)
+        deadline = asyncio.get_event_loop().time() + 10
+        resp = None
+        while asyncio.get_event_loop().time() < deadline:
+            remaining = deadline - asyncio.get_event_loop().time()
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=max(remaining, 0.1))
+            msg = json.loads(raw)
+            if msg.get("type") == "res":
+                resp = msg
+                break
+            # Queue non-res messages for the reader loop
+            logger.debug("Skipping pre-handshake message: %s", msg.get("type", "unknown"))
+
+        if resp is None:
+            raise RuntimeError("Node handshake timed out waiting for hello-ok")
         if not resp.get("ok"):
             error_detail = json.dumps(resp.get("error", resp), default=str)[:500]
             raise RuntimeError(f"Node handshake failed: {error_detail}")
