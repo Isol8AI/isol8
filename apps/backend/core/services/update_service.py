@@ -133,7 +133,7 @@ async def apply_update(owner_id: str, update_id: str) -> bool:
 
     1. Conditionally set status to 'applying' (prevents double-apply).
     2. Apply config patch if present.
-    3. Apply ECS changes if present (TODO: ecs_manager.update_user_container).
+    3. Apply ECS changes if present (resize_user_container).
     4. Mark as applied on success, failed on error.
 
     Returns True if applied, False if already being applied or failed precondition.

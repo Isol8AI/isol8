@@ -58,6 +58,7 @@ class BillingService:
             mode="subscription",
             line_items=line_items,
             subscription_data={"metadata": {"plan_tier": tier}},
+            allow_promotion_codes=True,
             success_url=f"{FRONTEND_URL}/chat?subscription=success",
             cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
         )

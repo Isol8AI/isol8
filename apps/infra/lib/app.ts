@@ -144,7 +144,7 @@ pipeline.addStageWithGitHubOptions(prodStage, {
   ],
   pre: [e2eGate],
   post: [
-    // Deploy frontend to Vercel (production) and alias to app.isol8.co
+    // Deploy frontend to Vercel (production) and alias to isol8.co
     new GitHubActionStep("DeployVercelProd", {
       jobSteps: [
         { name: "Checkout", uses: "actions/checkout@v4" },
@@ -168,8 +168,8 @@ pipeline.addStageWithGitHubOptions(prodStage, {
           env: vercelEnv,
         },
         {
-          name: "Alias to app.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} app.isol8.co --token=$VERCEL_TOKEN",
+          name: "Alias to isol8.co",
+          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,
         },
       ],

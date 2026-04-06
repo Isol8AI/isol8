@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { useAuth, UserButton } from "@clerk/nextjs";
 
 export function Navbar() {
   const linksRef = useRef<HTMLDivElement>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const { isSignedIn, isLoaded } = useAuth();
 
   useEffect(() => {
     const linksEl = linksRef.current;
@@ -85,17 +87,35 @@ export function Navbar() {
         <Link href="#goosetown" data-section="goosetown">
           GooseTown<span className="nav-alpha">alpha</span>
         </Link>
-        <Link href="/sign-in" className="nav-mobile-login">
-          Log in
-        </Link>
+        {isLoaded && !isSignedIn && (
+          <Link href="/sign-in" className="nav-mobile-login">
+            Log in
+          </Link>
+        )}
+        {isLoaded && isSignedIn && (
+          <Link href="/chat" className="nav-mobile-login">
+            Dashboard
+          </Link>
+        )}
       </div>
       <div className="nav-right">
-        <Link href="/sign-in" className="nav-login">
-          Log in
-        </Link>
-        <Link href="/sign-up" className="btn-primary">
-          Sign up
-        </Link>
+        {isLoaded && isSignedIn ? (
+          <>
+            <Link href="/chat" className="btn-primary">
+              Dashboard
+            </Link>
+            <UserButton />
+          </>
+        ) : (
+          <>
+            <Link href="/sign-in" className="nav-login">
+              Log in
+            </Link>
+            <Link href="/sign-up" className="btn-primary">
+              Sign up
+            </Link>
+          </>
+        )}
         <button
           className="nav-hamburger"
           onClick={() => setMobileOpen((v) => !v)}

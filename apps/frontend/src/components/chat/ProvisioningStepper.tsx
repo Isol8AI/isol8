@@ -572,7 +572,7 @@ function PricingCards({
                 <h3 className="font-medium text-[#1a1a1a]">Starter</h3>
               </div>
               <div className="flex items-baseline gap-1">
-                <span className="text-3xl font-semibold text-[#1a1a1a]">$25</span>
+                <span className="text-3xl font-semibold text-[#1a1a1a]">$40</span>
                 <span className="text-[#8a8578] text-sm">/mo</span>
               </div>
             </div>
