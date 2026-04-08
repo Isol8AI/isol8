@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
+from typing import Any, Callable
 
 from core.config import settings
 
@@ -161,3 +162,81 @@ async def append_to_openclaw_config_list(
                 lock_fd.close()
 
     await asyncio.to_thread(_do_append)
+
+
+async def remove_from_openclaw_config_list(
+    owner_id: str,
+    path: list[str],
+    predicate: Callable[[Any], bool],
+) -> None:
+    """Remove entries from the list at `path` where `predicate(entry)` returns True.
+
+    Semantics:
+    - If `path` doesn't exist or isn't a list, no-op (no error).
+    - Predicate-match approach supports both string matching (e.g. allowFrom)
+      and structural matching (e.g. bindings dict entries).
+    - Acquires the same fcntl.lockf exclusive lock as append_to_openclaw_config_list.
+    """
+    if not path:
+        raise ConfigPatchError("path must not be empty")
+
+    config_dir = os.path.join(_efs_mount_path, owner_id)
+    config_path = os.path.join(config_dir, "openclaw.json")
+    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+
+    if not os.path.exists(config_path):
+        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+
+    def _do_remove():
+        lock_fd = None
+        try:
+            lock_fd = open(config_path, "r+")
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+
+            with open(config_path, "r") as f:
+                current = json.load(f)
+
+            # Walk to the leaf
+            cursor = current
+            for segment in path[:-1]:
+                if segment not in cursor or not isinstance(cursor[segment], dict):
+                    return  # missing path, no-op
+                cursor = cursor[segment]
+
+            leaf_key = path[-1]
+            existing = cursor.get(leaf_key)
+            if not isinstance(existing, list):
+                return  # not a list or missing, no-op
+
+            filtered = [item for item in existing if not predicate(item)]
+            if len(filtered) == len(existing):
+                return  # nothing removed, skip the write
+
+            cursor[leaf_key] = filtered
+
+            shutil.copy2(config_path, backup_path)
+            json.dumps(current)  # validate serializable
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(current, f, indent=2)
+                if os.getuid() == 0:
+                    os.chown(tmp_path, 1000, 1000)
+                os.rename(tmp_path, config_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+
+            logger.info(
+                "Removed from openclaw.json list for owner %s: path=%s removed=%d",
+                owner_id,
+                path,
+                len(existing) - len(filtered),
+            )
+        finally:
+            if lock_fd:
+                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+
+    await asyncio.to_thread(_do_remove)

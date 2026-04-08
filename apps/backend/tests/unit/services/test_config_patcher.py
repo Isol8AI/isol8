@@ -9,6 +9,8 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
+from core.services.config_patcher import remove_from_openclaw_config_list  # noqa: E402
+
 
 @pytest.fixture
 def efs_dir():
@@ -173,3 +175,83 @@ async def test_append_to_list_missing_config_file_raises(monkeypatch):
                 ["channels", "telegram", "accounts", "main", "allowFrom"],
                 "123",
             )
+
+
+@pytest.fixture
+def tmp_efs_with_bindings(monkeypatch):
+    """Minimal openclaw.json with a bindings array for predicate-removal testing."""
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
+        owner_id = "user_test"
+        owner_dir = os.path.join(d, owner_id)
+        os.makedirs(owner_dir)
+        config_path = os.path.join(owner_dir, "openclaw.json")
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "channels": {"telegram": {"accounts": {"main": {"allowFrom": ["111", "222", "333"]}}}},
+                    "bindings": [
+                        {"match": {"channel": "telegram", "accountId": "main"}, "agentId": "main"},
+                        {"match": {"channel": "telegram", "accountId": "sales"}, "agentId": "sales"},
+                        {"match": {"channel": "discord", "accountId": "main"}, "agentId": "main"},
+                    ],
+                },
+                f,
+            )
+        yield d, owner_id, config_path
+
+
+@pytest.mark.asyncio
+async def test_remove_from_list_value_match(tmp_efs_with_bindings):
+    _, owner_id, config_path = tmp_efs_with_bindings
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["channels", "telegram", "accounts", "main", "allowFrom"],
+        predicate=lambda v: v == "222",
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"]["accounts"]["main"]["allowFrom"] == ["111", "333"]
+
+
+@pytest.mark.asyncio
+async def test_remove_from_list_predicate_match_dict(tmp_efs_with_bindings):
+    _, owner_id, config_path = tmp_efs_with_bindings
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["bindings"],
+        predicate=lambda b: (
+            b.get("match", {}).get("channel") == "telegram" and b.get("match", {}).get("accountId") == "sales"
+        ),
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert len(result["bindings"]) == 2
+    assert all(b["match"]["accountId"] != "sales" for b in result["bindings"])
+
+
+@pytest.mark.asyncio
+async def test_remove_from_list_no_match_is_noop(tmp_efs_with_bindings):
+    _, owner_id, config_path = tmp_efs_with_bindings
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["channels", "telegram", "accounts", "main", "allowFrom"],
+        predicate=lambda v: v == "nonexistent",
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"]["accounts"]["main"]["allowFrom"] == ["111", "222", "333"]
+
+
+@pytest.mark.asyncio
+async def test_remove_from_list_missing_path_is_noop(tmp_efs_with_bindings):
+    _, owner_id, config_path = tmp_efs_with_bindings
+    await remove_from_openclaw_config_list(
+        owner_id,
+        ["channels", "slack", "accounts", "main", "allowFrom"],  # doesn't exist
+        predicate=lambda v: True,
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    # Original bindings untouched
+    assert len(result["bindings"]) == 3
