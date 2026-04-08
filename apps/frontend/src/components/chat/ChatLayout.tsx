@@ -11,7 +11,7 @@ import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useGateway } from "@/hooks/useGateway";
 import { useApi } from "@/lib/api";
-import { useAgents, type Agent } from "@/hooks/useAgents";
+import { useAgents, getAgentModelString, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
@@ -236,11 +236,18 @@ export function ChatLayout({
                     </div>
                     <div className="agent-info">
                       <div className="agent-name">{agentDisplayName(agent)}</div>
-                      {agent.model && (
-                        <div className="agent-model">
-                          {agent.model.split("/").pop()?.replace(/-v\d+:\d+$/, "") || agent.model}
-                        </div>
-                      )}
+                      {(() => {
+                        // `agent.model` can be a string OR a
+                        // `{primary, fallbacks}` object (OpenClaw 4.5
+                        // returns the structured shape from agents.list).
+                        // Direct `.split` calls here used to crash the
+                        // chat UI with `TypeError: e.model.split is not a
+                        // function` after sign-in.
+                        const modelStr = getAgentModelString(agent);
+                        if (!modelStr) return null;
+                        const display = modelStr.split("/").pop()?.replace(/-v\d+:\d+$/, "") || modelStr;
+                        return <div className="agent-model">{display}</div>;
+                      })()}
                     </div>
                     <div className="agent-status-dot" />
                   </div>
