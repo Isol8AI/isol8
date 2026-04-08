@@ -29,6 +29,10 @@ class PairingCodeNotFoundError(ChannelLinkError):
     """The pairing code was not found in the EFS pairing file or has expired."""
 
 
+class PeerAlreadyLinkedError(ChannelLinkError):
+    """The platform user ID is already linked to a different Clerk member."""
+
+
 def _pairing_file_path(owner_id: str, provider: str) -> str:
     return os.path.join(
         _efs_mount_path,
@@ -115,6 +119,24 @@ async def complete_link(
     peer_id = str(match.get("id", "")).strip()
     if not peer_id:
         raise PairingCodeNotFoundError(f"Pairing entry for code {code_upper} has no platform user id")
+
+    # Check for an existing link row for this (owner, provider, agent, peer)
+    existing = await channel_link_repo.get_by_peer(
+        owner_id=owner_id,
+        provider=provider,
+        agent_id=agent_id,
+        peer_id=peer_id,
+    )
+    if existing is not None:
+        if existing.get("member_id") == member_id:
+            logger.info(
+                "Link already exists for member %s on %s peer %s — no-op",
+                member_id,
+                provider,
+                peer_id,
+            )
+            return {"status": "already_linked", "peer_id": peer_id}
+        raise PeerAlreadyLinkedError(f"Peer {peer_id} on {provider}/{agent_id} is already linked to another member")
 
     # Write allowFrom entry (dedup-aware append)
     await append_to_openclaw_config_list(

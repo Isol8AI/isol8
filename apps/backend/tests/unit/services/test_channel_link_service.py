@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -91,3 +91,178 @@ async def test_complete_link_happy_path(tmp_efs):
     assert call_kwargs["peer_id"] == "12345"
     assert call_kwargs["member_id"] == "user_bob"
     assert call_kwargs["linked_via"] == "settings"
+
+
+@pytest.mark.asyncio
+async def test_complete_link_code_not_found(tmp_efs):
+    _, owner_id, owner_dir = tmp_efs
+    _write_pairing_file(owner_dir, "telegram", [])  # empty
+
+    from core.services import channel_link_service
+
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=None)
+        with pytest.raises(channel_link_service.PairingCodeNotFoundError):
+            await channel_link_service.complete_link(
+                owner_id=owner_id,
+                provider="telegram",
+                agent_id="main",
+                code="XYZ98765",
+                member_id="user_bob",
+            )
+
+
+@pytest.mark.asyncio
+async def test_complete_link_pairing_file_missing(tmp_efs):
+    _, owner_id, _ = tmp_efs
+    # Don't write any pairing file
+
+    from core.services import channel_link_service
+
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=None)
+        with pytest.raises(channel_link_service.PairingCodeNotFoundError):
+            await channel_link_service.complete_link(
+                owner_id=owner_id,
+                provider="telegram",
+                agent_id="main",
+                code="XYZ98765",
+                member_id="user_bob",
+            )
+
+
+@pytest.mark.asyncio
+async def test_complete_link_code_expired(tmp_efs):
+    _, owner_id, owner_dir = tmp_efs
+    # createdAt is 2 hours ago
+    old_ts = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    _write_pairing_file(
+        owner_dir,
+        "telegram",
+        [{"id": "12345", "code": "XYZ98765", "createdAt": old_ts, "lastSeenAt": old_ts}],
+    )
+
+    from core.services import channel_link_service
+
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=None)
+        with pytest.raises(channel_link_service.PairingCodeNotFoundError):
+            await channel_link_service.complete_link(
+                owner_id=owner_id,
+                provider="telegram",
+                agent_id="main",
+                code="XYZ98765",
+                member_id="user_bob",
+            )
+
+
+@pytest.mark.asyncio
+async def test_complete_link_wrong_channel_file(tmp_efs):
+    _, owner_id, owner_dir = tmp_efs
+    # Code lives in telegram file
+    _write_pairing_file(
+        owner_dir,
+        "telegram",
+        [
+            {
+                "id": "12345",
+                "code": "XYZ98765",
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    )
+
+    from core.services import channel_link_service
+
+    # Caller asks for discord → should miss
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=None)
+        with pytest.raises(channel_link_service.PairingCodeNotFoundError):
+            await channel_link_service.complete_link(
+                owner_id=owner_id,
+                provider="discord",
+                agent_id="main",
+                code="XYZ98765",
+                member_id="user_bob",
+            )
+
+
+@pytest.mark.asyncio
+async def test_complete_link_already_linked_same_member_idempotent(tmp_efs):
+    _, owner_id, owner_dir = tmp_efs
+    _write_pairing_file(
+        owner_dir,
+        "telegram",
+        [
+            {
+                "id": "12345",
+                "code": "XYZ98765",
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    )
+
+    from core.services import channel_link_service
+
+    existing_row = {
+        "owner_id": owner_id,
+        "provider": "telegram",
+        "agent_id": "main",
+        "peer_id": "12345",
+        "member_id": "user_bob",
+        "linked_via": "wizard",
+    }
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=existing_row)
+        mock_repo.put = AsyncMock()
+        result = await channel_link_service.complete_link(
+            owner_id=owner_id,
+            provider="telegram",
+            agent_id="main",
+            code="XYZ98765",
+            member_id="user_bob",
+        )
+    assert result["status"] == "already_linked"
+    mock_repo.put.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_complete_link_peer_already_linked_other_member_raises(tmp_efs):
+    _, owner_id, owner_dir = tmp_efs
+    _write_pairing_file(
+        owner_dir,
+        "telegram",
+        [
+            {
+                "id": "12345",
+                "code": "XYZ98765",
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "lastSeenAt": datetime.now(timezone.utc).isoformat(),
+            }
+        ],
+    )
+
+    from core.services import channel_link_service
+
+    existing_row = {
+        "owner_id": owner_id,
+        "provider": "telegram",
+        "agent_id": "main",
+        "peer_id": "12345",
+        "member_id": "user_alice",
+        "linked_via": "wizard",
+    }
+    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
+        mock_repo.get_by_peer = AsyncMock(return_value=existing_row)
+        mock_repo.put = AsyncMock()
+        with pytest.raises(channel_link_service.PeerAlreadyLinkedError):
+            await channel_link_service.complete_link(
+                owner_id=owner_id,
+                provider="telegram",
+                agent_id="main",
+                code="XYZ98765",
+                member_id="user_bob",  # different member
+            )
+    mock_repo.put.assert_not_called()
