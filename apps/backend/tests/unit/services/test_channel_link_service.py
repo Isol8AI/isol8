@@ -100,8 +100,7 @@ async def test_complete_link_code_not_found(tmp_efs):
 
     from core.services import channel_link_service
 
-    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
-        mock_repo.get_by_peer = AsyncMock(return_value=None)
+    with patch("core.services.channel_link_service.channel_link_repo"):
         with pytest.raises(channel_link_service.PairingCodeNotFoundError):
             await channel_link_service.complete_link(
                 owner_id=owner_id,
@@ -119,8 +118,7 @@ async def test_complete_link_pairing_file_missing(tmp_efs):
 
     from core.services import channel_link_service
 
-    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
-        mock_repo.get_by_peer = AsyncMock(return_value=None)
+    with patch("core.services.channel_link_service.channel_link_repo"):
         with pytest.raises(channel_link_service.PairingCodeNotFoundError):
             await channel_link_service.complete_link(
                 owner_id=owner_id,
@@ -144,8 +142,7 @@ async def test_complete_link_code_expired(tmp_efs):
 
     from core.services import channel_link_service
 
-    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
-        mock_repo.get_by_peer = AsyncMock(return_value=None)
+    with patch("core.services.channel_link_service.channel_link_repo"):
         with pytest.raises(channel_link_service.PairingCodeNotFoundError):
             await channel_link_service.complete_link(
                 owner_id=owner_id,
@@ -176,8 +173,8 @@ async def test_complete_link_wrong_channel_file(tmp_efs):
     from core.services import channel_link_service
 
     # Caller asks for discord → should miss
-    with patch("core.services.channel_link_service.channel_link_repo") as mock_repo:
-        mock_repo.get_by_peer = AsyncMock(return_value=None)
+    # No need to mock get_by_peer — code raises before reaching the repo lookup
+    with patch("core.services.channel_link_service.channel_link_repo"):
         with pytest.raises(channel_link_service.PairingCodeNotFoundError):
             await channel_link_service.complete_link(
                 owner_id=owner_id,
@@ -226,6 +223,10 @@ async def test_complete_link_already_linked_same_member_idempotent(tmp_efs):
         )
     assert result["status"] == "already_linked"
     mock_repo.put.assert_not_called()
+    # And EFS allowFrom must NOT have been touched (idempotent path skips append)
+    with open(os.path.join(owner_dir, "openclaw.json")) as f:
+        cfg = json.load(f)
+    assert cfg["channels"]["telegram"]["accounts"]["main"]["allowFrom"] == []
 
 
 @pytest.mark.asyncio

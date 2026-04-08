@@ -5,6 +5,7 @@ corresponding to a pairing code, adds the peer to the bot's allowFrom via
 the locked EFS writer, and persists the link row in DynamoDB.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -56,9 +57,17 @@ def _read_pairing_requests(owner_id: str, provider: str) -> list[dict]:
     try:
         with open(path, "r") as f:
             store = json.load(f)
-    except (OSError, json.JSONDecodeError) as e:
+    except OSError as e:
         logger.warning(
-            "Failed to read pairing file for owner %s provider %s: %s",
+            "Pairing file I/O error for owner %s provider %s: %s",
+            owner_id,
+            provider,
+            e,
+        )
+        return []
+    except json.JSONDecodeError as e:
+        logger.error(
+            "Pairing file is not valid JSON for owner %s provider %s (will be treated as empty): %s",
             owner_id,
             provider,
             e,
@@ -73,6 +82,10 @@ def _is_expired(created_at_iso: str) -> bool:
         created = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
     except ValueError:
         return True
+    # Defensive: if OpenClaw ever emits a naive timestamp, treat it as UTC
+    # rather than crashing on the offset-aware subtraction.
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=timezone.utc)
     return datetime.now(timezone.utc) - created > PAIRING_CODE_TTL
 
 
@@ -99,7 +112,7 @@ async def complete_link(
     Raises:
         PairingCodeNotFoundError: if the code is missing or expired.
     """
-    requests = _read_pairing_requests(owner_id, provider)
+    requests = await asyncio.to_thread(_read_pairing_requests, owner_id, provider)
     code_upper = code.strip().upper()
 
     match = None
