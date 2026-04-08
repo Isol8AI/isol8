@@ -133,11 +133,11 @@ The system has three top-level components (frontend, backend, OpenClaw container
 - **Three new helpers in `config_patcher.py`**, all using the same locked read-modify-write pattern as the existing `patch_openclaw_config`:
   - `append_to_openclaw_config_list(owner_id, path, value)` — appends `value` to the list at `path`. Dedup-aware (no-op if value already present).
   - `remove_from_openclaw_config_list(owner_id, path, predicate)` — removes any list entries matching `predicate`. `predicate` is a callable so it can match by value equality (for `allowFrom` strings) or by structural match (for `bindings` dicts where we want to find `{match: {channel, accountId}}` matches).
-  - `delete_openclaw_config_path(owner_id, path)` — removes the key at `path` entirely. Used by bot deletion to remove `channels.<provider>.accounts.<agentId>`.
+  - `delete_openclaw_config_path(owner_id, path)` — removes the key at `path` entirely. Used by bot deletion to remove `channels.<provider>.accounts.<agentId>`. **Behavior contract**: (a) if any intermediate segment of `path` is missing, the call is a no-op (no error); (b) if the parent dict is empty after removal, it is left as `{}` rather than being pruned recursively (e.g. deleting the only Telegram bot leaves `channels.telegram.accounts = {}` rather than removing `accounts` from `channels.telegram`). Pruning empty parents is left to a future helper if needed; OpenClaw treats `accounts: {}` and missing `accounts` identically per `account-id.ts`. Acquires the same `fcntl.lockf` exclusive lock on `openclaw.json` as `patch_openclaw_config` and the other helpers.
 - **`_record_usage_from_session` rewritten** to use a new `_parse_session_key` helper that handles the `per-account-channel-peer` key shape, and an `async _resolve_member_from_session` that does the DynamoDB lookup for channel DMs and falls back to `owner_id` for groups/channels/webchat-personal.
 - **New trigger for billing**: lifecycle/end agent events (which fire for ALL runs, channel and webchat alike) replace the existing `chat.final` trigger (which fires only for webchat). The `chat.final` handler keeps its UI signaling (`thinking`, `chunk`, `done`) but no longer drives billing.
 - **New DynamoDB table `channel-links`** stores the per-member identity mappings.
-- **No new RPC subscriptions** to OpenClaw. `agent` events with `stream:"lifecycle"` already arrive on the existing operator WebSocket via the unconditional `broadcast("agent", ...)` at `openclaw/src/gateway/server-chat.ts:938`.
+- **No new RPC subscriptions** to OpenClaw. `agent` events with `stream:"lifecycle"` already arrive on the existing operator WebSocket via the `broadcast("agent", ...)` at `openclaw/src/gateway/server-chat.ts:936`. The broadcast lives in the `else` branch of `if (isToolEvent) { ... } else { ... }`, so it fires for every non-tool agent event (lifecycle, item, etc.) regardless of channel surface — there is no `isControlUiVisible` gate on this path. Lifecycle events are not tool events (`evt.stream === "lifecycle"`, not `"tool"`), so they always reach the operator WS.
 
 ### What's removed
 
@@ -393,7 +393,7 @@ This implicitly fixes a pre-existing parser bug at `connection_pool.py:307` wher
 
 1. Admin already created `@acme_main_bot` and `@acme_sales_bot` for the org's main and sales agents.
 2. Bob (an org member) opens Settings → My Channels.
-3. Frontend calls `GET /api/v1/channels/links/me`. Backend reads `openclaw.json` via `config.get` RPC, queries `channel_links` by-member GSI for Bob's clerk_user_id, joins, returns:
+3. Frontend calls `GET /api/v1/channels/links/me`. Backend reads `openclaw.json` **directly from EFS** (`/mnt/efs/users/<owner_id>/openclaw.json`, same path the existing `patch_openclaw_config` uses) — not via the `config.get` RPC. This is intentional: it works even when the container is scaled to zero (Free tier downgrade), and it's faster than an RPC roundtrip. For the bot's display username, the backend calls the `channels.status` RPC if the container is up, or falls back to showing the raw `accountId` (e.g. `"main"`, `"sales"`) as the bot name when the container is down. The endpoint queries `channel_links` by-member GSI for Bob's clerk_user_id, joins with the openclaw.json account list, and returns:
 
     ```json5
     {
@@ -419,7 +419,7 @@ This implicitly fixes a pre-existing parser bug at `connection_pool.py:307` wher
 1. Bob DMs `@acme_main_bot` "what's the weather?"
 2. OpenClaw receives the message. `from.id == 12345` is in `allowFrom`. Routes to the bound `main` agent. Session key is `agent:main:telegram:main:direct:12345`.
 3. Agent runs, streams tokens.
-4. On agent run completion, OpenClaw broadcasts an `agent` event with `stream:"lifecycle"`, `data.phase:"end"`, `sessionKey:"agent:main:telegram:main:direct:12345"`. This broadcast is **unconditional** (`openclaw/src/gateway/server-chat.ts:938`) and reaches Isol8's existing operator WebSocket connection without any subscription.
+4. On agent run completion, OpenClaw broadcasts an `agent` event with `stream:"lifecycle"`, `data.phase:"end"`, `sessionKey:"agent:main:telegram:main:direct:12345"`. This broadcast is **unconditional** (`openclaw/src/gateway/server-chat.ts:936`) and reaches Isol8's existing operator WebSocket connection without any subscription.
 5. Isol8's `connection_pool._handle_message` receives the event. The new branch detects `stream:"lifecycle"` + `phase:"end"` and calls `_record_usage_from_session({"sessionKey": ...})`.
 6. `_record_usage_from_session` calls `_parse_session_key` → `{source: "dm", channel: "telegram", agent_id: "main", peer_id: "12345"}`.
 7. Async task calls `_resolve_member_from_session(parsed)`, which calls `channel_link_repo.get_by_peer(owner_id, "telegram", "main", "12345")` → returns the link row → returns Bob's clerk_user_id.
@@ -480,7 +480,7 @@ Pairing acts as a built-in spam guard.
 | `sessions.list` returns the session with zero tokens | Existing path at `connection_pool.py:372-379` already handles this — log and skip. |
 | DynamoDB lookup fails in `channel_link_repo.get_by_peer` | Catch exception, log, fall back to billing under `owner_id`. Worst outcome: one message billed at org level instead of member level. |
 | Lifecycle/end event with `phase:"error"` (aborted run) | Skip — only `phase:"end"` triggers billing. |
-| Lifecycle/end for a sub-agent run | Sub-agent session keys don't match the channel DM pattern; parser returns "unknown" or "webchat" source; resolver returns `owner_id`. Sub-agent token usage is correctly billed at org level. |
+| Lifecycle/end for a sub-agent run | Sub-agents emit their own lifecycle/end events with their own runId, but they use **distinct session keys** (`childSessionKey` in `openclaw/src/agents/subagent-spawn.ts:554`). The sub-agent session key has a different `agent_id` slot than the parent (e.g. `agent:research_subagent:...`), so when our parser sees it, the channel DM regex doesn't match — the parser returns `webchat` or `unknown` source and the resolver returns `owner_id`. Sub-agent token usage is correctly billed at org level. The token counts are session-scoped (one set per session key), so the parent's lifecycle/end and the sub-agent's lifecycle/end read independent counters from `sessions.list` — no double-counting. **Residual risk**: if a future OpenClaw change reuses the parent's session key for a sub-agent run, lifecycle/end would fire twice for the same key and `_fetch_and_record_usage` would re-bill the same per-run tokens. Consistent with the same risk on the existing webchat path; runId-based dedup is a deferred mitigation. |
 | Same lifecycle/end event arriving twice (network duplicate) | Same risk as today's webchat path — double-billing. Pre-existing risk, not a regression. Out of scope to fix in v1; can mitigate later with a runId LRU. |
 
 ### Channel deletion / unlink
@@ -496,7 +496,7 @@ Pairing acts as a built-in spam guard.
 
 | Case | Behavior |
 |---|---|
-| User downgrades from Pro to Free | Container scales to zero (existing Free tier behavior). Channels stop responding because the container isn't on. Configs and link rows stay intact in EFS and DynamoDB. On re-upgrade, container starts again with existing config; bots resume; no relinking required. Documented in the upgrade/downgrade UI: "Channels stop working when you downgrade to Free." |
+| User downgrades from Pro to Free | Container scales to zero (existing Free tier behavior). Channels stop responding because the container isn't on. Configs and link rows stay intact in EFS and DynamoDB. On re-upgrade, container starts again with existing config; bots resume; no relinking required. Documented in the upgrade/downgrade UI: "Channels stop working when you downgrade to Free." **Settings → My Channels page** still renders for downgraded users because the backend reads openclaw.json directly from EFS (independent of the container being up); bot rows show with raw accountId as the display name and a "Container scaled down — upgrade to reactivate" banner at the top. Link/unlink buttons are disabled in this state. |
 
 ### Channel-specific quirks
 
@@ -504,7 +504,7 @@ Pairing acts as a built-in spam guard.
 |---|---|---|
 | Telegram | If admin deletes the bot in BotFather, OpenClaw long-poll fails with auth errors. | OpenClaw surfaces this in `channels.status` as `auth_error`. Wizard shows it on the agent's channels card. Admin re-creates the bot, gets a new token, edits config. |
 | Discord | Discord apps need "Message Content Intent" enabled in the developer portal to read DMs. | Wizard step 1 includes a checklist: "Enable Message Content Intent in Discord developer portal." Status check after chokidar wait surfaces a clear error if intents are missing. |
-| Slack | Slack apps need scopes added at install time. The Socket Mode app token (`xapp-...`) is separate from the bot token (`xoxb-...`). | Wizard for Slack has TWO token fields plus a "use this manifest" link to a pre-filled manifest URL with the right scopes. Acceptable v1 friction. |
+| Slack | Slack apps need scopes added at install time. The Socket Mode app token (`xapp-...`) is separate from the bot token (`xoxb-...`). | Wizard for Slack has TWO token fields plus a **static manifest** the user copy/pastes into Slack's app creation flow. The manifest is hardcoded in the frontend wizard component (not generated server-side) — Slack accepts pasted YAML/JSON manifests at `https://api.slack.com/apps?new_app=1`. The manifest declares the required scopes (`im:history`, `chat:write`, `app_mentions:read`, plus Socket Mode `connections:write` on the app token). No `redirect_uri` is needed because Socket Mode is outbound-only. The manifest content is the same for every Isol8 install — there's no per-agent or per-user customization. |
 
 ### Concurrency
 
@@ -600,6 +600,10 @@ Pure-function tests covering all 10 session-key shapes from the Data model secti
 - [ ] Member self-unlinks → openclaw.json `allowFrom` no longer contains their peer_id → next DM gets a fresh pairing code
 - [ ] **Bug fix verification:** group message in a Telegram group with the bot → check usage records → confirm `member_id == owner_id` for the group session, NOT the literal `"telegram"` string
 - [ ] **Org webchat per-member billing still works:** two org members chat via the in-app UI → each member's usage shows up under their own clerk_user_id
+- [ ] **Concurrent member links:** two org members link to the same bot at roughly the same time → both peers end up in `allowFrom`, both DynamoDB rows exist, no lost write
+- [ ] **Pairing code expired (1 hour):** start the link wizard, get a code from the bot, wait 65 minutes, paste → wizard shows the 404 "code expired" message gracefully
+- [ ] **Peer collision (409 path):** Account A links peer 12345; manually insert a different `member_id` row for the same SK in DynamoDB; have Account B attempt to link a code that resolves to peer 12345 → wizard shows the 409 "peer already linked to another member" error
+- [ ] **Container restart mid-link:** start the link wizard, paste the pairing code, while the EFS write is in flight kill and restart the container → verify final state (peer in allowFrom OR not, DynamoDB row present OR not, AND consistent: never one without the other after retrying the link)
 
 ### What we're NOT doing upfront
 
