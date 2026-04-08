@@ -46,6 +46,20 @@ class LinkCompleteBody(BaseModel):
 
 @router.get("/links/me", summary="List the caller's channel link status across all bots")
 async def get_links_me(auth: AuthContext = Depends(get_current_user)):
+    """List the caller's channel link status for every bot in their org.
+
+    Reads the openclaw.json `channels.<provider>.accounts` map for each
+    supported provider (telegram, discord, slack), then joins it against
+    the caller's own channel-link rows to mark each bot as `linked` or not.
+
+    Returns a dict shaped as:
+        {
+          "can_create_bots": bool,
+          "telegram": [{"agent_id", "bot_username", "linked"}, ...],
+          "discord":  [...],
+          "slack":    [...],
+        }
+    """
     owner_id = resolve_owner_id(auth)
     member_id = auth.user_id
 
@@ -87,6 +101,19 @@ async def link_complete(
     body: LinkCompleteBody,
     auth: AuthContext = Depends(get_current_user),
 ):
+    """Consume a one-time pairing code to link the caller's identity to a bot.
+
+    The user gets the pairing code by DMing the bot from a fresh channel
+    account; OpenClaw writes the code to a per-owner pairing file on EFS.
+    This endpoint validates the code, writes a `channel-links` row keyed by
+    `(owner_id, provider, agent_id, peer_id)`, and appends the peer to the
+    bot's `allowFrom` list in `openclaw.json` so the per-account-channel-peer
+    DM scope routes future messages to the right member.
+
+    Errors:
+        404 PairingCodeNotFoundError — code missing/expired/already used.
+        409 PeerAlreadyLinkedError — peer is already linked to another member.
+    """
     _validate_provider(provider)
     owner_id = resolve_owner_id(auth)
     member_id = auth.user_id
@@ -116,6 +143,13 @@ async def link_delete(
     agent_id: str,
     auth: AuthContext = Depends(get_current_user),
 ):
+    """Remove the caller's own channel-link row for a specific bot.
+
+    Looks up the caller's link row for `(owner_id, provider, agent_id)`,
+    then removes the matching `peer_id` from the bot's `allowFrom` list in
+    `openclaw.json` and deletes the DynamoDB row. Idempotent: returns
+    `{"status": "not_linked"}` if no row exists for the caller.
+    """
     _validate_provider(provider)
     owner_id = resolve_owner_id(auth)
     member_id = auth.user_id
@@ -158,6 +192,19 @@ async def admin_delete_bot(
     agent_id: str,
     auth: AuthContext = Depends(get_current_user),
 ):
+    """Admin-only: completely remove a bot from an agent and sweep its links.
+
+    Requires org admin (or personal-account caller). Performs three writes:
+
+    1. Deletes `channels.<provider>.accounts.<agent_id>` from `openclaw.json`.
+    2. Removes the routing binding that points `(provider, accountId)` at the
+       agent.
+    3. Sweeps every `channel-links` row for the same `(owner, provider,
+       agent_id)` so member identities don't dangle on a bot that no longer
+       exists.
+
+    Returns the number of link rows swept, for observability.
+    """
     _validate_provider(provider)
     require_org_admin(auth)
     owner_id = resolve_owner_id(auth)
