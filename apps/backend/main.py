@@ -20,6 +20,7 @@ from core.containers import startup_containers, shutdown_containers
 from routers import (
     billing,
     channels,
+    config,
     container,
     container_recover,
     container_rpc,
@@ -214,6 +215,9 @@ app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
 
 # Channel management (Telegram, Discord, WhatsApp)
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
+
+# Config patching (unified EFS write endpoint)
+app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 

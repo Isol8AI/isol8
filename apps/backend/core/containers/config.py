@@ -542,3 +542,26 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+async def read_openclaw_config_from_efs(owner_id: str) -> dict | None:
+    """Read and parse openclaw.json directly from EFS.
+
+    Works even when the container is scaled down (no gateway RPC needed).
+    Returns None if the file doesn't exist yet.
+    """
+    import asyncio
+    import json
+    import os
+
+    from core.config import settings
+
+    config_path = os.path.join(settings.EFS_MOUNT_PATH, owner_id, "openclaw.json")
+    if not os.path.exists(config_path):
+        return None
+
+    def _read():
+        with open(config_path, "r") as f:
+            return json.load(f)
+
+    return await asyncio.to_thread(_read)
