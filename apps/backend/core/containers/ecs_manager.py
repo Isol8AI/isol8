@@ -519,6 +519,25 @@ class EcsManager:
 
             await container_repo.delete(user_id)
 
+        # Sweep channel_links rows for this owner
+        try:
+            from core.repositories import channel_link_repo
+
+            link_count = await channel_link_repo.sweep_by_owner(user_id)
+            if link_count:
+                logger.info(
+                    "Swept %d channel_link rows for deleted container (owner=%s)",
+                    link_count,
+                    user_id,
+                )
+        except Exception:
+            # Non-fatal — the container is already gone, orphan rows are
+            # cheap to keep. Log and continue.
+            logger.exception(
+                "Failed to sweep channel_link rows for owner %s after container delete",
+                user_id,
+            )
+
         logger.info("Deleted ECS service %s for user %s", service_name, user_id)
 
     # ------------------------------------------------------------------

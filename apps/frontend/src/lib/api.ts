@@ -20,6 +20,7 @@ interface ApiMethods {
   post: (endpoint: string, body: unknown) => Promise<unknown>;
   put: (endpoint: string, body: unknown) => Promise<unknown>;
   del: (endpoint: string) => Promise<unknown>;
+  patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
   uploadFiles: (files: File[]) => Promise<UploadResponse>;
 }
 
@@ -47,7 +48,13 @@ export function useApi(): ApiMethods {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || "API request failed");
+        const error = new Error(errorData.detail || "API request failed") as Error & {
+          status: number;
+          detail?: string;
+        };
+        error.status = response.status;
+        error.detail = errorData.detail;
+        throw error;
       }
 
       return response.json();
@@ -77,6 +84,12 @@ export function useApi(): ApiMethods {
       },
       del(endpoint: string): Promise<unknown> {
         return authenticatedFetch(endpoint, { method: "DELETE" });
+      },
+      patchConfig(patch: Record<string, unknown>): Promise<{ status: string; owner_id: string }> {
+        return authenticatedFetch("/config", {
+          method: "PATCH",
+          body: JSON.stringify({ patch }),
+        }) as Promise<{ status: string; owner_id: string }>;
       },
       async uploadFiles(files: File[]): Promise<UploadResponse> {
         const token = await getToken();

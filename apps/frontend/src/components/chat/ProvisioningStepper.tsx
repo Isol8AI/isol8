@@ -16,7 +16,16 @@ import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
-import { ChannelCards, isChannelCardsDismissed } from "@/components/chat/ChannelCards";
+import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+
+// Legacy localStorage key — preserved so existing users who dismissed the old
+// channel cards don't re-see the onboarding wizard after upgrade.
+const CHANNEL_CARDS_DISMISS_KEY = "isol8:channel-cards-dismissed";
+function isChannelCardsDismissed(): boolean {
+  if (typeof window === "undefined") return true;
+  return localStorage.getItem(CHANNEL_CARDS_DISMISS_KEY) === "true";
+}
+
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
@@ -145,8 +154,16 @@ export function ProvisioningStepper({
   // Channel onboarding — shown after gateway is connected for users with no channels
   if (phase === "channels") {
     return (
-      <div className="flex-1 flex items-center justify-center p-6">
-        <ChannelCards onDismiss={() => setOnboardingComplete(true)} />
+      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+        <div className="w-full max-w-md">
+          <BotSetupWizard
+            mode="create"
+            provider="telegram"
+            agentId="main"
+            onComplete={() => setOnboardingComplete(true)}
+            onCancel={() => setOnboardingComplete(true)}
+          />
+        </div>
       </div>
     );
   }

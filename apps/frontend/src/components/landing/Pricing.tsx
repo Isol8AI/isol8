@@ -24,7 +24,7 @@ export function Pricing() {
               <li><span className="plan-dash">—</span> 1 personal pod</li>
               <li><span className="plan-dash">—</span> Scale-to-zero container</li>
               <li><span className="plan-dash">—</span> $2 lifetime LLM credit</li>
-              <li><span className="plan-dash">—</span> MiniMax M2.1 model</li>
+              <li><span className="plan-dash">—</span> MiniMax M2.5 model</li>
               <li><span className="plan-dash">—</span> Community support</li>
             </ul>
             <Link href="/chat" className="plan-cta default">
@@ -45,7 +45,7 @@ export function Pricing() {
             <ul className="plan-features">
               <li><span className="plan-dash">—</span> Always-on container</li>
               <li><span className="plan-dash">—</span> $10/mo included LLM usage</li>
-              <li><span className="plan-dash">—</span> Kimi K2.5 primary model</li>
+              <li><span className="plan-dash">—</span> Qwen3 235B primary model</li>
               <li><span className="plan-dash">—</span> Core skills &amp; tools</li>
               <li><span className="plan-dash">—</span> Standard support</li>
             </ul>
@@ -90,7 +90,7 @@ export function Pricing() {
               <li><span className="plan-dash">—</span> Everything in Pro</li>
               <li><span className="plan-dash">—</span> 2 vCPU / 4 GB container</li>
               <li><span className="plan-dash">—</span> $80/mo included LLM usage</li>
-              <li><span className="plan-dash">—</span> Kimi K2.5 subagent model</li>
+              <li><span className="plan-dash">—</span> Qwen3 235B subagent model</li>
               <li><span className="plan-dash">—</span> Dedicated support</li>
             </ul>
             <a href="mailto:team@isol8.co" className="plan-cta default">

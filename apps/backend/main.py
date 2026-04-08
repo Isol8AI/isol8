@@ -20,6 +20,7 @@ from core.containers import startup_containers, shutdown_containers
 from routers import (
     billing,
     channels,
+    config,
     container,
     container_recover,
     container_rpc,
@@ -31,6 +32,7 @@ from routers import (
     settings_keys,
     updates,
     users,
+    webhooks,
     websocket_chat,
     workspace_files,
 )
@@ -188,6 +190,9 @@ app.openapi = custom_openapi
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
 
+# Clerk webhook events (user lifecycle)
+app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
+
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
@@ -214,6 +219,9 @@ app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
 
 # Channel management (Telegram, Discord, WhatsApp)
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])
+
+# Config patching (unified EFS write endpoint)
+app.include_router(config.router, prefix="/api/v1/config", tags=["config"])
 
 app.include_router(settings_keys.router, prefix="/api/v1/settings/keys", tags=["settings"])
 

@@ -1,0 +1,173 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import useSWR from "swr";
+import { Plus, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useApi } from "@/lib/api";
+import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
+import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+
+interface BotEntry {
+  agent_id: string;
+  bot_username: string;
+  linked: boolean;
+}
+
+interface LinksMeResponse {
+  telegram: BotEntry[];
+  discord: BotEntry[];
+  slack: BotEntry[];
+  can_create_bots: boolean;
+}
+
+interface AgentChannelsSectionProps {
+  agentId: string;
+}
+
+export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
+  const api = useApi();
+  const { data, mutate } = useSWR<LinksMeResponse>(
+    "/channels/links/me",
+    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
+  );
+  const [wizardFor, setWizardFor] = useState<Provider | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!wizardFor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setWizardFor(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [wizardFor]);
+
+  if (!data) {
+    return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
+  }
+
+  const performDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.del(`/channels/${deleteTarget}/${agentId}`);
+      setDeleteTarget(null);
+      await mutate();
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  return (
+    <div className="space-y-4 p-4">
+      <h3 className="text-sm font-semibold">Channels</h3>
+      {PROVIDERS.map((provider) => {
+        const bots = data[provider].filter((b) => b.agent_id === agentId);
+        return (
+          <div key={provider} className="rounded-md border border-[#e0dbd0] p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-[#8a8578]">
+                {PROVIDER_LABELS[provider]}
+              </span>
+            </div>
+            {bots.length === 0 ? (
+              <p className="text-xs text-[#8a8578]">No bot configured</p>
+            ) : (
+              bots.map((bot) => (
+                <div key={bot.agent_id} className="flex items-center gap-2 text-sm">
+                  {bot.linked ? (
+                    <CheckCircle2 className="h-4 w-4 text-[#2d8a4e]" />
+                  ) : (
+                    <AlertCircle className="h-4 w-4 text-amber-500" />
+                  )}
+                  <span className="font-mono">{formatBotHandle(provider, bot.bot_username)}</span>
+                  <div className="flex-1" />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDeleteTarget(provider)}
+                    aria-label={`Delete ${provider} bot`}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </Button>
+                </div>
+              ))
+            )}
+            {data.can_create_bots && bots.length === 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="mt-2"
+                onClick={() => setWizardFor(provider)}
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Add {PROVIDER_LABELS[provider]} bot
+              </Button>
+            )}
+          </div>
+        );
+      })}
+
+      {wizardFor && (
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setWizardFor(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <BotSetupWizard
+              mode="create"
+              provider={wizardFor}
+              agentId={agentId}
+              onComplete={() => {
+                setWizardFor(null);
+                mutate();
+              }}
+              onCancel={() => setWizardFor(null)}
+            />
+          </div>
+        </div>
+      )}
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this bot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget && (
+                <>
+                  This removes the {PROVIDER_LABELS[deleteTarget]} bot from the
+                  <span className="font-mono"> {agentId} </span>
+                  agent and unlinks every member who paired with it. This cannot be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={performDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete bot"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}

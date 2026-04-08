@@ -7,6 +7,7 @@ import {
   Bot,
   FileText,
   Wrench,
+  MessageSquare,
   Plus,
   Trash2,
 } from "lucide-react";
@@ -14,12 +15,13 @@ import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentFilesTab } from "./AgentFilesTab";
 import { AgentToolsTab } from "./AgentToolsTab";
+import { AgentChannelsSection } from "./AgentChannelsSection";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
-type AgentTab = "overview" | "files" | "tools";
+type AgentTab = "overview" | "files" | "tools" | "channels";
 
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
@@ -150,6 +152,7 @@ export function AgentsPanel() {
                   { id: "overview", icon: Bot, label: "Overview" },
                   { id: "files", icon: FileText, label: "Files" },
                   { id: "tools", icon: Wrench, label: "Tools" },
+                  { id: "channels", icon: MessageSquare, label: "Channels" },
                 ] as const).map((tab) => (
                   <button
                     key={tab.id}
@@ -175,6 +178,9 @@ export function AgentsPanel() {
               )}
               {activeTab === "tools" && (
                 <AgentToolsTab agentId={selected.id} />
+              )}
+              {activeTab === "channels" && (
+                <AgentChannelsSection agentId={selected.id} />
               )}
             </>
           ) : (

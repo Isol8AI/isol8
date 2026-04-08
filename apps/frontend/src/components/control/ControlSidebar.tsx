@@ -5,7 +5,6 @@ import {
   Bot,
   Sparkles,
   MessageSquare,
-  Link2,
   Clock,
   BarChart3,
 } from "lucide-react";
@@ -25,15 +24,14 @@ const NAV_ITEMS = [
   { key: "agents", label: "Agents", icon: Bot },
   { key: "skills", label: "Skills", icon: Sparkles },
   { key: "sessions", label: "Sessions", icon: MessageSquare },
-  { key: "channels", label: "Channels", icon: Link2 },
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "usage", label: "Usage", icon: BarChart3 },
 ];
 
 // Panels hidden from non-admin org members
-const ADMIN_ONLY_PANELS = new Set(["channels", "usage"]);
-// Panels hidden from free tier (cron + channels disabled for free)
-const PAID_ONLY_PANELS = new Set(["channels", "cron"]);
+const ADMIN_ONLY_PANELS = new Set(["usage"]);
+// Panels hidden from free tier (cron disabled for free)
+const PAID_ONLY_PANELS = new Set(["cron"]);
 
 export function ControlSidebar({ activePanel, onPanelChange }: ControlSidebarProps) {
   const { membership } = useOrganization();

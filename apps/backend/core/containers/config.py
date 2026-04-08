@@ -9,9 +9,12 @@ Each container gets a gateway auth token so it can bind to LAN
 import base64
 import hashlib
 import json
+import logging
 import time
 
 from core.config import TIER_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -95,18 +98,8 @@ def build_device_paired_json(device_id: str, public_key_b64: str) -> str:
 ALL_BEDROCK_MODELS = [
     # --- MiniMax ---
     {
-        "id": "minimax.minimax-m2.1",
-        "name": "MiniMax M2.1",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": False,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Moonshot (Kimi) ---
-    {
-        "id": "moonshotai.kimi-k2.5",
-        "name": "Kimi K2.5",
+        "id": "minimax.minimax-m2.5",
+        "name": "MiniMax M2.5",
         "contextWindow": 128000,
         "maxTokens": 8192,
         "reasoning": False,
@@ -243,18 +236,18 @@ ALL_BEDROCK_MODELS = [
 _MODEL_NAME_MAP = {m["id"]: m["name"] for m in ALL_BEDROCK_MODELS}
 
 # Model IDs allowed per tier.  Free gets only MiniMax; starter/pro get MiniMax
-# + Kimi; enterprise gets everything.
+# + Qwen3 235B; enterprise gets everything.
 _TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
     "free": {
-        "minimax.minimax-m2.1",
+        "minimax.minimax-m2.5",
     },
     "starter": {
-        "minimax.minimax-m2.1",
-        "moonshotai.kimi-k2.5",
+        "minimax.minimax-m2.5",
+        "us.qwen.qwen3-235b-a22b-2507-v1:0",
     },
     "pro": {
-        "minimax.minimax-m2.1",
-        "moonshotai.kimi-k2.5",
+        "minimax.minimax-m2.5",
+        "us.qwen.qwen3-235b-a22b-2507-v1:0",
     },
     "enterprise": None,  # None means all models allowed
 }
@@ -361,7 +354,6 @@ def write_openclaw_config(
                 ],
             },
         }
-        bedrock_discovery = {"enabled": False}
         agent_models = {
             primary_model: {"alias": "Qwen 2.5 14B"},
         }
@@ -375,8 +367,20 @@ def write_openclaw_config(
                 "models": tier_models,
             },
         }
-        bedrock_discovery = {"enabled": False}
         agent_models = _agent_models_for_tier(tier, primary_model)
+
+    # Amazon Bedrock plugin config — OpenClaw 4.5 moved discovery from
+    # `models.bedrockDiscovery` to `plugins.entries.amazon-bedrock.config.discovery`.
+    # We disable auto-discovery because we manage the model catalog explicitly per
+    # tier (see ALL_BEDROCK_MODELS / _TIER_ALLOWED_MODEL_IDS). Without this flag the
+    # plugin would call bedrock:ListFoundationModels at startup — extra latency and
+    # an unwanted IAM dependency. The plugin itself is enabledByDefault in its
+    # manifest, so we don't need to set `enabled: True` here.
+    amazon_bedrock_plugin = {
+        "config": {
+            "discovery": {"enabled": False},
+        },
+    }
 
     config = {
         "gateway": {
@@ -395,7 +399,6 @@ def write_openclaw_config(
         },
         "models": {
             "providers": providers_config,
-            "bedrockDiscovery": bedrock_discovery,
         },
         "agents": {
             "defaults": {
@@ -463,14 +466,13 @@ def write_openclaw_config(
         },
         "plugins": {
             "slots": {},
-            "entries": search_plugin,
+            "entries": {
+                **search_plugin,
+                "amazon-bedrock": amazon_bedrock_plugin,
+            },
         },
         "channels": {
             "telegram": {
-                "enabled": False,
-                "dmPolicy": "pairing",
-            },
-            "whatsapp": {
                 "enabled": False,
                 "dmPolicy": "pairing",
             },
@@ -478,6 +480,9 @@ def write_openclaw_config(
                 "enabled": False,
                 "dmPolicy": "pairing",
             },
+        },
+        "session": {
+            "dmScope": "per-account-channel-peer",
         },
         "web": {
             "enabled": True,
@@ -507,11 +512,11 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     return json.dumps(config, indent=2)
 
 
-def patch_openclaw_config(
+def merge_openclaw_config(
     existing_config: dict,
     updates: dict,
 ) -> dict:
-    """Apply partial updates to an existing openclaw.json config.
+    """Merge partial updates into an existing openclaw.json config dict.
 
     Performs a shallow merge at the top-level section keys (gateway, models,
     agents, tools, browser, update). Nested dicts within each section are
@@ -542,3 +547,34 @@ def _deep_merge(base: dict, override: dict) -> dict:
         else:
             result[key] = value
     return result
+
+
+async def read_openclaw_config_from_efs(owner_id: str) -> dict | None:
+    """Read and parse openclaw.json directly from EFS.
+
+    Works even when the container is scaled down (no gateway RPC needed).
+    Returns None if the file doesn't exist yet.
+    """
+    import asyncio
+    import json
+    import os
+
+    from core.config import settings
+
+    config_path = os.path.join(settings.EFS_MOUNT_PATH, owner_id, "openclaw.json")
+    if not os.path.exists(config_path):
+        return None
+
+    def _read():
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                "Failed to parse openclaw.json for owner %s: %s",
+                owner_id,
+                e,
+            )
+            return None
+
+    return await asyncio.to_thread(_read)

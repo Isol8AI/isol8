@@ -39,6 +39,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     apiKeysTable: dynamodb.Table;
     usageCountersTable: dynamodb.Table;
     pendingUpdatesTable: dynamodb.Table;
+    channelLinksTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -222,6 +223,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.apiKeysTable.grantReadWriteData(this.taskRole);
     props.database.usageCountersTable.grantReadWriteData(this.taskRole);
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
+    props.database.channelLinksTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -483,7 +485,7 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        FREE_TIER_MODEL: "minimax.minimax-m2.1",
+        FREE_TIER_MODEL: "minimax.minimax-m2.5",
         STRIPE_STARTER_PRICE_ID:
           env === "prod"
             ? "price_1TF5MkI54BysGS3rLYE6K0fZ"

@@ -6,7 +6,7 @@ import json
 from core.containers.config import (
     write_openclaw_config,
     write_mcporter_config,
-    patch_openclaw_config,
+    merge_openclaw_config,
     _deep_merge,
 )
 
@@ -93,9 +93,17 @@ class TestWriteOpenclawConfig:
         assert endpoints["chatCompletions"]["enabled"] is False
 
     def test_bedrock_discovery_disabled(self):
-        """Bedrock discovery is disabled — we control the model catalog via config."""
+        """Bedrock discovery is disabled — we control the model catalog via config.
+
+        OpenClaw 4.5 moved this from `models.bedrockDiscovery` to
+        `plugins.entries.amazon-bedrock.config.discovery`.
+        """
         config = json.loads(write_openclaw_config())
-        assert config["models"]["bedrockDiscovery"]["enabled"] is False
+        plugin = config["plugins"]["entries"]["amazon-bedrock"]
+        assert plugin["config"]["discovery"]["enabled"] is False
+        # Legacy key must NOT be present — OpenClaw 4.5 doctor flags it as
+        # "Unrecognized key" and the migration runs at startup.
+        assert "bedrockDiscovery" not in config.get("models", {})
 
     def test_free_tier_single_model_catalog(self):
         """Free tier catalog has only MiniMax model."""
@@ -126,12 +134,12 @@ class TestWriteOpenclawConfig:
         assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
 
     def test_starter_tier_models(self):
-        """Starter tier includes MiniMax and Kimi only."""
+        """Starter tier includes MiniMax and Qwen3 235B only."""
         config = json.loads(write_openclaw_config(tier="starter"))
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
         model_ids = [m["id"] for m in models]
-        assert "minimax.minimax-m2.1" in model_ids
-        assert "moonshotai.kimi-k2.5" in model_ids
+        assert "minimax.minimax-m2.5" in model_ids
+        assert "us.qwen.qwen3-235b-a22b-2507-v1:0" in model_ids
         assert len(models) == 2
 
     def test_memory_search_enabled(self):
@@ -204,7 +212,9 @@ class TestWriteOpenclawConfig:
         assert len(ollama["models"]) > 0
 
         assert config["agents"]["defaults"]["model"]["primary"] == "ollama/qwen2.5:14b"
-        assert config["models"]["bedrockDiscovery"]["enabled"] is False
+        # Plugin discovery stays disabled in ollama mode too (no AWS creds anyway).
+        plugin = config["plugins"]["entries"]["amazon-bedrock"]
+        assert plugin["config"]["discovery"]["enabled"] is False
 
     def test_default_provider_is_bedrock(self):
         """write_openclaw_config without provider arg still uses Bedrock."""
@@ -257,7 +267,7 @@ class TestPatchOpenclawConfig:
         """Top-level keys are replaced."""
         base = {"gateway": {"mode": "local"}, "browser": {"enabled": False}}
         patch = {"browser": {"enabled": True}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["browser"]["enabled"] is True
         assert result["gateway"]["mode"] == "local"  # unchanged
 
@@ -274,7 +284,7 @@ class TestPatchOpenclawConfig:
                 "web": {"search": {"enabled": True}},
             }
         }
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["tools"]["web"]["search"]["enabled"] is True
         assert result["tools"]["web"]["search"]["provider"] == "perplexity"  # preserved
         assert result["tools"]["media"]["image"]["enabled"] is False  # preserved
@@ -283,14 +293,14 @@ class TestPatchOpenclawConfig:
         """New keys in patch are added."""
         base = {"gateway": {"mode": "local"}}
         patch = {"newSection": {"key": "value"}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["newSection"]["key"] == "value"
 
     def test_original_not_mutated(self):
         """Original config dict is not mutated."""
         base = {"gateway": {"mode": "local"}}
         patch = {"gateway": {"mode": "remote"}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["gateway"]["mode"] == "remote"
         assert base["gateway"]["mode"] == "local"  # unchanged
 

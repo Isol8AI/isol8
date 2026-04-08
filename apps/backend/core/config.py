@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Clerk Secret Key (for fetching user/org metadata)
     CLERK_SECRET_KEY: str | None = os.getenv("CLERK_SECRET_KEY")
 
+    # Clerk Webhook Secret (svix signing secret for verifying Clerk webhook payloads)
+    CLERK_WEBHOOK_SECRET: str | None = os.getenv("CLERK_WEBHOOK_SECRET")
+
     # AWS Configuration
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
@@ -79,7 +82,7 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 
     # Free tier default model
-    FREE_TIER_MODEL: str = os.getenv("FREE_TIER_MODEL", "minimax.minimax-m2.1")
+    FREE_TIER_MODEL: str = os.getenv("FREE_TIER_MODEL", "minimax.minimax-m2.5")
 
     @field_validator("CLERK_ISSUER")
     @classmethod
@@ -100,10 +103,10 @@ TIER_CONFIG = {
     "free": {
         "included_budget_microdollars": 2_000_000,  # $2 lifetime
         "budget_type": "lifetime",
-        "primary_model": "amazon-bedrock/minimax.minimax-m2.1",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "primary_model": "amazon-bedrock/minimax.minimax-m2.5",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
         },
         "container_cpu": "512",
         "container_memory": "1024",
@@ -112,11 +115,11 @@ TIER_CONFIG = {
     "starter": {
         "included_budget_microdollars": 10_000_000,  # $10/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
-            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
+            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
         },
         "container_cpu": "512",
         "container_memory": "1024",
@@ -125,11 +128,11 @@ TIER_CONFIG = {
     "pro": {
         "included_budget_microdollars": 40_000_000,  # $40/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.1",
+        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
-            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
+            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
         },
         "container_cpu": "1024",
         "container_memory": "2048",
@@ -138,11 +141,11 @@ TIER_CONFIG = {
     "enterprise": {
         "included_budget_microdollars": 80_000_000,  # $80/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/moonshotai.kimi-k2.5",
-        "subagent_model": "amazon-bedrock/moonshotai.kimi-k2.5",
+        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "subagent_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
         "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
-            "amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"},
+            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
+            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
         },
         "container_cpu": "2048",
         "container_memory": "4096",

@@ -20,7 +20,17 @@ def _build_tier_config_patch(tier_config: dict, tier: str) -> dict:
                     "models": _models_for_tier(tier),
                 },
             },
-            "bedrockDiscovery": {"enabled": False},
+        },
+        "plugins": {
+            "entries": {
+                # OpenClaw 4.5: discovery moved here from `models.bedrockDiscovery`.
+                # Disabled because we manage the catalog explicitly per tier.
+                "amazon-bedrock": {
+                    "config": {
+                        "discovery": {"enabled": False},
+                    },
+                },
+            },
         },
         "agents": {
             "defaults": {

@@ -20,16 +20,16 @@ class TestGetModelPrice:
         _reset_cache_for_test()
 
     def test_minimax_pricing(self):
-        price = get_model_price("minimax.minimax-m2.1")
+        price = get_model_price("minimax.minimax-m2.5")
         assert price is not None
         assert price["input"] == pytest.approx(0.30 / 1e6)
         assert price["output"] == pytest.approx(1.20 / 1e6)
 
-    def test_kimi_pricing(self):
-        price = get_model_price("moonshotai.kimi-k2.5")
+    def test_qwen3_pricing(self):
+        price = get_model_price("us.qwen.qwen3-235b-a22b-2507-v1:0")
         assert price is not None
-        assert price["input"] == pytest.approx(0.72 / 1e6)
-        assert price["output"] == pytest.approx(3.60 / 1e6)
+        assert price["input"] == pytest.approx(0.80 / 1e6)
+        assert price["output"] == pytest.approx(2.00 / 1e6)
 
     def test_unknown_model_returns_none(self):
         assert get_model_price("nonexistent-model") is None
@@ -54,5 +54,5 @@ class TestGetModelPrice:
 
         refresh_pricing_cache()
 
-        price = get_model_price("moonshotai.kimi-k2.5")
+        price = get_model_price("us.qwen.qwen3-235b-a22b-2507-v1:0")
         assert price is not None

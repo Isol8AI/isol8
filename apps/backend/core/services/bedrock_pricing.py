@@ -25,17 +25,11 @@ class ModelPrice(TypedDict):
     cache_write: float
 
 
-# Per-token USD. Source: aws.amazon.com/bedrock/pricing/ — verified 2026-03-25
+# Per-token USD. Source: aws.amazon.com/bedrock/pricing/ — verified 2026-04-08
 FALLBACK_PRICING: dict[str, ModelPrice] = {
-    "minimax.minimax-m2.1": {
+    "minimax.minimax-m2.5": {
         "input": 0.30 / 1e6,
         "output": 1.20 / 1e6,
-        "cache_read": 0.0,
-        "cache_write": 0.0,
-    },
-    "moonshotai.kimi-k2.5": {
-        "input": 0.72 / 1e6,
-        "output": 3.60 / 1e6,
         "cache_read": 0.0,
         "cache_write": 0.0,
     },

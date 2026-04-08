@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.repositories import channel_link_repo
+
 GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,7 @@ class GatewayConnection:
         self._frontend_connections: Set[str] = set()
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
+        self._billing_tasks: Set[asyncio.Task] = set()
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
@@ -282,32 +285,72 @@ class GatewayConnection:
             logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
 
     def _record_usage_from_session(self, payload: dict) -> None:
-        """Record usage after chat.final by querying the session for token counts.
+        """Record usage after a billable event by resolving the session key
+        to a member_id and querying session tokens.
 
-        The chat.final event itself doesn't contain token counts. We extract
-        the sessionKey from the payload, parse the member user_id from it
-        (org sessions use format agent:{agentId}:{userId}), then fire an
-        async task that calls sessions.list RPC to get the actual token data
-        and records it via usage_service.
+        Triggered from the `agent` event lifecycle/end branch below (not
+        from chat.final, which only fires for webchat and doesn't exist for
+        channel-driven runs).
         """
         session_key = payload.get("sessionKey", "")
-        logger.info(
-            "chat.final for user %s: sessionKey=%s payload_keys=%s",
-            self.user_id,
-            session_key or "(empty)",
-            list(payload.keys()),
-        )
         if not session_key:
-            logger.warning("No sessionKey in chat.final for user %s — cannot record usage", self.user_id)
+            logger.warning(
+                "No sessionKey in billable event for user %s — cannot record usage",
+                self.user_id,
+            )
             return
 
-        # Extract member user_id from session key: "agent:{agentId}:{target}"
-        # For org members, target is the user_id. For personal, it's "main".
-        parts = session_key.split(":")
-        member_user_id = parts[2] if len(parts) >= 3 and parts[2] != "main" else self.user_id
-        logger.info("Usage: querying sessions.list for session=%s member=%s", session_key, member_user_id)
+        parsed = _parse_session_key(session_key)
+        if not parsed:
+            logger.warning(
+                "Malformed sessionKey %r for user %s — cannot record usage",
+                session_key,
+                self.user_id,
+            )
+            return
 
-        asyncio.create_task(self._fetch_and_record_usage(session_key, member_user_id))
+        async def _resolve_then_record():
+            try:
+                member_id = await self._resolve_member_from_session(parsed)
+                await self._fetch_and_record_usage(session_key, member_id)
+            except Exception:
+                # Don't let billing failures crash the gateway reader. Log
+                # with full traceback so DynamoDB outages and similar
+                # transient failures are observable.
+                logger.exception(
+                    "Failed to resolve+record usage for user %s session %s",
+                    self.user_id,
+                    session_key,
+                )
+
+        task = asyncio.create_task(_resolve_then_record())
+        # Track the in-flight task so close() can await it on shutdown.
+        # Without this, scale-to-zero teardown can cancel pending billing
+        # writes mid-flight, silently losing the last few usage events.
+        self._billing_tasks.add(task)
+        task.add_done_callback(self._billing_tasks.discard)
+
+    async def _resolve_member_from_session(self, parsed: dict) -> str:
+        """Map a parsed session key to the Clerk member_id.
+
+        Falls back to self.user_id (the owner) if no per-member attribution
+        is available (unlinked DM, group, channel, webchat-personal, unknown).
+        """
+        if parsed.get("source") == "dm":
+            link = await channel_link_repo.get_by_peer(
+                owner_id=self.user_id,
+                provider=parsed["channel"],
+                agent_id=parsed["agent_id"],
+                peer_id=parsed["peer_id"],
+            )
+            if link:
+                return link.get("member_id", self.user_id)
+            return self.user_id
+
+        if parsed.get("source") == "webchat" and parsed.get("member_id"):
+            return parsed["member_id"]
+
+        return self.user_id
 
     async def _fetch_and_record_usage(self, session_key: str, member_user_id: str) -> None:
         """Fetch session token counts via RPC and record usage."""
@@ -462,6 +505,15 @@ class GatewayConnection:
                         data.get("name", ""),
                         list(data.keys()) if isinstance(data, dict) else type(data).__name__,
                     )
+                # Billing: lifecycle/end fires once per completed agent run
+                # for BOTH webchat and channel-driven runs (webchat's chat.final
+                # only fires for webchat, so we use lifecycle/end instead).
+                if (
+                    stream == "lifecycle"
+                    and isinstance(payload.get("data"), dict)
+                    and payload["data"].get("phase") == "end"
+                ):
+                    self._record_usage_from_session(payload)
                 transformed = self._transform_agent_event(payload)
                 if transformed:
                     self._forward_to_frontends(transformed)
@@ -480,8 +532,6 @@ class GatewayConnection:
                     if final_text:
                         self._forward_to_frontends({"type": "chunk", "content": final_text})
                     self._forward_to_frontends({"type": "done"})
-                    # Record usage by querying session for token counts
-                    self._record_usage_from_session(payload)
                 elif state == "error":
                     err = payload.get("error", {})
                     msg = (
@@ -539,6 +589,19 @@ class GatewayConnection:
         """Shut down: cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN", "Gateway connection closed")
         self._closed = True
+        # Wait for any in-flight billing-resolver tasks to finish writing
+        # so scale-to-zero teardown doesn't drop the last few usage events.
+        if self._billing_tasks:
+            try:
+                await asyncio.wait(
+                    self._billing_tasks,
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.exception(
+                    "Error waiting for in-flight billing tasks during close for user %s",
+                    self.user_id,
+                )
         if self._grace_task and not self._grace_task.done():
             self._grace_task.cancel()
         if self._reader_task and not self._reader_task.done():
@@ -722,3 +785,69 @@ class GatewayConnectionPool:
         except asyncio.CancelledError:
             logger.info("Idle checker stopped")
             return
+
+
+def _parse_session_key(session_key: str) -> dict:
+    """Parse an OpenClaw session key into its components.
+
+    Shapes (from openclaw/src/routing/session-key.ts with dmScope=per-account-channel-peer):
+      Personal webchat:  agent:<agentId>:main
+      Org webchat:       agent:<agentId>:<clerk_user_id>
+      Channel DM:        agent:<agentId>:<channel>:<accountId>:direct:<peerId>
+      Channel group:     agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
+      Channel room:      agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
+
+    Returns dict with:
+      - empty {} for malformed input
+      - {agent_id, source} for webchat personal
+      - {agent_id, source, member_id} for org webchat (member_id is the clerk user_id)
+      - {agent_id, source, channel, peer_id} for channel DMs (source="dm")
+      - {agent_id, source, channel, group_id} for channel groups (source="group")
+      - {agent_id, source, channel, channel_id} for channel rooms (source="channel")
+    """
+    parts = session_key.split(":")
+    if len(parts) < 3 or parts[0] != "agent":
+        return {}
+    agent_id = parts[1]
+
+    # Webchat: 3 parts (agent:<agentId>:<sessionName>)
+    if len(parts) == 3:
+        if parts[2] == "main":
+            return {"agent_id": agent_id, "source": "webchat"}
+        # Org webchat — parts[2] is a Clerk user_id
+        return {
+            "agent_id": agent_id,
+            "source": "webchat",
+            "member_id": parts[2],
+        }
+
+    # Channel DM (per-account-channel-peer):
+    # agent:<agentId>:<channel>:<accountId>:direct:<peerId>
+    # In our design accountId == agentId so we don't extract parts[3] separately.
+    if len(parts) == 6 and parts[4] == "direct":
+        return {
+            "agent_id": agent_id,
+            "source": "dm",
+            "channel": parts[2],
+            "peer_id": parts[5],
+        }
+
+    # Channel group: agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
+    if len(parts) >= 5 and parts[3] == "group":
+        return {
+            "agent_id": agent_id,
+            "source": "group",
+            "channel": parts[2],
+            "group_id": parts[4],
+        }
+
+    # Channel room: agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
+    if len(parts) >= 5 and parts[3] == "channel":
+        return {
+            "agent_id": agent_id,
+            "source": "channel",
+            "channel": parts[2],
+            "channel_id": parts[4],
+        }
+
+    return {"agent_id": agent_id, "source": "unknown"}

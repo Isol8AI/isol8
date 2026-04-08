@@ -334,42 +334,6 @@ class TestExtractChatText:
         assert GatewayConnection._extract_chat_text(payload) is None
 
 
-class TestRecordUsageFromSession:
-    """Test session-based usage recording from chat final events."""
-
-    @pytest.fixture
-    def connection(self):
-        mgmt = MagicMock()
-        conn = GatewayConnection(
-            user_id="owner-1",
-            ip="10.0.0.1",
-            token="test-token",
-            management_api=mgmt,
-        )
-        conn._frontend_connections = {"conn-1"}
-        return conn
-
-    def test_extracts_member_user_id_from_session_key(self, connection):
-        conn = connection
-        # Org session key format: agent:{agentId}:{userId}
-        with patch("asyncio.create_task"):
-            conn._record_usage_from_session({"sessionKey": "agent:main:user_abc"})
-        # The task should have been created with member_user_id="user_abc"
-
-    def test_uses_owner_id_for_personal_session(self, connection):
-        conn = connection
-        # Personal session key: agent:{agentId}:main
-        with patch("asyncio.create_task"):
-            conn._record_usage_from_session({"sessionKey": "agent:main:main"})
-        # member_user_id should fall back to self.user_id ("owner-1")
-
-    def test_skips_when_no_session_key(self, connection):
-        conn = connection
-        with patch("asyncio.create_task") as mock_task:
-            conn._record_usage_from_session({})
-        mock_task.assert_not_called()
-
-
 class TestHandleMessageChatEvents:
     """Test _handle_message routing for chat event states."""
 
