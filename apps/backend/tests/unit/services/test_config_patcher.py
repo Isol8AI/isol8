@@ -9,8 +9,13 @@ import pytest
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
-from core.services.config_patcher import remove_from_openclaw_config_list  # noqa: E402
-from core.services.config_patcher import delete_openclaw_config_path  # noqa: E402
+from core.services.config_patcher import (  # noqa: E402
+    ConfigPatchError,
+    append_to_openclaw_config_list,
+    delete_openclaw_config_path,
+    patch_openclaw_config,
+    remove_from_openclaw_config_list,
+)
 
 
 @pytest.fixture
@@ -39,8 +44,6 @@ def efs_dir():
 
 @pytest.mark.asyncio
 async def test_patch_updates_model(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config
-
     await patch_openclaw_config(
         "user_1", {"agents": {"defaults": {"model": {"primary": "amazon-bedrock/moonshotai.kimi-k2.5"}}}}
     )
@@ -51,8 +54,6 @@ async def test_patch_updates_model(efs_dir):
 
 @pytest.mark.asyncio
 async def test_patch_preserves_gateway(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config
-
     await patch_openclaw_config("user_1", {"agents": {"defaults": {"model": {"primary": "new-model"}}}})
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
@@ -62,8 +63,6 @@ async def test_patch_preserves_gateway(efs_dir):
 
 @pytest.mark.asyncio
 async def test_patch_preserves_tools(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config
-
     await patch_openclaw_config("user_1", {"agents": {"defaults": {"model": {"primary": "new-model"}}}})
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
@@ -72,8 +71,6 @@ async def test_patch_preserves_tools(efs_dir):
 
 @pytest.mark.asyncio
 async def test_patch_creates_backup(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config
-
     await patch_openclaw_config("user_1", {"agents": {"defaults": {"model": {"primary": "new-model"}}}})
     backup = os.path.join(efs_dir, "user_1", "openclaw.json.bak")
     assert os.path.exists(backup)
@@ -84,8 +81,6 @@ async def test_patch_creates_backup(efs_dir):
 
 @pytest.mark.asyncio
 async def test_patch_deep_merges_models(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config
-
     await patch_openclaw_config(
         "user_1",
         {"agents": {"defaults": {"models": {"amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"}}}}},
@@ -99,8 +94,6 @@ async def test_patch_deep_merges_models(efs_dir):
 
 @pytest.mark.asyncio
 async def test_patch_nonexistent_owner_raises(efs_dir):
-    from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
-
     with pytest.raises(ConfigPatchError, match="not found"):
         await patch_openclaw_config("nonexistent_user", {"agents": {}})
 
@@ -121,8 +114,6 @@ def tmp_efs_with_config(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_append_to_list_appends_to_existing(tmp_efs_with_config):
-    from core.services.config_patcher import append_to_openclaw_config_list
-
     _, owner_id, config_path = tmp_efs_with_config
     await append_to_openclaw_config_list(
         owner_id,
@@ -136,8 +127,6 @@ async def test_append_to_list_appends_to_existing(tmp_efs_with_config):
 
 @pytest.mark.asyncio
 async def test_append_to_list_creates_path_when_missing(tmp_efs_with_config):
-    from core.services.config_patcher import append_to_openclaw_config_list
-
     _, owner_id, config_path = tmp_efs_with_config
     await append_to_openclaw_config_list(
         owner_id,
@@ -151,8 +140,6 @@ async def test_append_to_list_creates_path_when_missing(tmp_efs_with_config):
 
 @pytest.mark.asyncio
 async def test_append_to_list_dedups(tmp_efs_with_config):
-    from core.services.config_patcher import append_to_openclaw_config_list
-
     _, owner_id, config_path = tmp_efs_with_config
     await append_to_openclaw_config_list(
         owner_id,
@@ -166,8 +153,6 @@ async def test_append_to_list_dedups(tmp_efs_with_config):
 
 @pytest.mark.asyncio
 async def test_append_to_list_missing_config_file_raises(monkeypatch):
-    from core.services.config_patcher import append_to_openclaw_config_list, ConfigPatchError
-
     with tempfile.TemporaryDirectory() as d:
         monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
         with pytest.raises(ConfigPatchError):
@@ -254,8 +239,15 @@ async def test_remove_from_list_missing_path_is_noop(tmp_efs_with_bindings):
     )
     with open(config_path) as f:
         result = json.load(f)
-    # Original bindings untouched
-    assert len(result["bindings"]) == 3
+    # Original config completely untouched (no path collision wrote anything)
+    assert result == {
+        "channels": {"telegram": {"accounts": {"main": {"allowFrom": ["111", "222", "333"]}}}},
+        "bindings": [
+            {"match": {"channel": "telegram", "accountId": "main"}, "agentId": "main"},
+            {"match": {"channel": "telegram", "accountId": "sales"}, "agentId": "sales"},
+            {"match": {"channel": "discord", "accountId": "main"}, "agentId": "main"},
+        ],
+    }
 
 
 @pytest.fixture

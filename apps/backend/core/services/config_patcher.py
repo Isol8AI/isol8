@@ -64,8 +64,9 @@ async def _locked_rmw(
                 raise ConfigPatchError(f"Config not found for owner {owner_id}")
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
-            with open(config_path, "r") as f:
-                current = json.load(f)
+            # Read from the same fd we hold the lock on (avoid TOCTOU + double-open).
+            lock_fd.seek(0)
+            current = json.load(lock_fd)
 
             changed = mutate_fn(current)
             if not changed:
@@ -88,7 +89,7 @@ async def _locked_rmw(
                 os.unlink(tmp_path)
                 raise
 
-            logger.info("openclaw.json %s for owner %s", log_context, owner_id)
+            logger.info("openclaw.json for owner %s: %s", owner_id, log_context)
         finally:
             if lock_fd:
                 fcntl.lockf(lock_fd, fcntl.LOCK_UN)
@@ -179,7 +180,10 @@ async def remove_from_openclaw_config_list(
         if not isinstance(existing, list):
             return False  # not a list or missing, no-op
 
-        filtered = [item for item in existing if not predicate(item)]
+        try:
+            filtered = [item for item in existing if not predicate(item)]
+        except Exception as exc:
+            raise ConfigPatchError(f"predicate raised while filtering path={path}: {exc}") from exc
         if len(filtered) == len(existing):
             return False  # nothing removed, skip the write
 
