@@ -100,3 +100,76 @@ async def test_patch_nonexistent_owner_raises(efs_dir):
 
     with pytest.raises(ConfigPatchError, match="not found"):
         await patch_openclaw_config("nonexistent_user", {"agents": {}})
+
+
+@pytest.fixture
+def tmp_efs_with_config(monkeypatch):
+    """Write a minimal openclaw.json to a tmp 'EFS' dir and point the patcher at it."""
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
+        owner_id = "user_test"
+        owner_dir = os.path.join(d, owner_id)
+        os.makedirs(owner_dir)
+        config_path = os.path.join(owner_dir, "openclaw.json")
+        with open(config_path, "w") as f:
+            json.dump({"channels": {"telegram": {"accounts": {"main": {"allowFrom": ["111"]}}}}}, f)
+        yield d, owner_id, config_path
+
+
+@pytest.mark.asyncio
+async def test_append_to_list_appends_to_existing(tmp_efs_with_config):
+    from core.services.config_patcher import append_to_openclaw_config_list
+
+    _, owner_id, config_path = tmp_efs_with_config
+    await append_to_openclaw_config_list(
+        owner_id,
+        ["channels", "telegram", "accounts", "main", "allowFrom"],
+        "222",
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"]["accounts"]["main"]["allowFrom"] == ["111", "222"]
+
+
+@pytest.mark.asyncio
+async def test_append_to_list_creates_path_when_missing(tmp_efs_with_config):
+    from core.services.config_patcher import append_to_openclaw_config_list
+
+    _, owner_id, config_path = tmp_efs_with_config
+    await append_to_openclaw_config_list(
+        owner_id,
+        ["channels", "discord", "accounts", "sales", "allowFrom"],
+        "999",
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert result["channels"]["discord"]["accounts"]["sales"]["allowFrom"] == ["999"]
+
+
+@pytest.mark.asyncio
+async def test_append_to_list_dedups(tmp_efs_with_config):
+    from core.services.config_patcher import append_to_openclaw_config_list
+
+    _, owner_id, config_path = tmp_efs_with_config
+    await append_to_openclaw_config_list(
+        owner_id,
+        ["channels", "telegram", "accounts", "main", "allowFrom"],
+        "111",  # already present
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"]["accounts"]["main"]["allowFrom"] == ["111"]
+
+
+@pytest.mark.asyncio
+async def test_append_to_list_missing_config_file_raises(monkeypatch):
+    from core.services.config_patcher import append_to_openclaw_config_list, ConfigPatchError
+
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
+        with pytest.raises(ConfigPatchError):
+            await append_to_openclaw_config_list(
+                "user_doesnt_exist",
+                ["channels", "telegram", "accounts", "main", "allowFrom"],
+                "123",
+            )

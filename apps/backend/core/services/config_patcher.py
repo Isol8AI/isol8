@@ -84,3 +84,80 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
                 lock_fd.close()
 
     await asyncio.to_thread(_do_patch)
+
+
+async def append_to_openclaw_config_list(
+    owner_id: str,
+    path: list[str],
+    value,
+) -> None:
+    """Append `value` to the list at `path` in the owner's openclaw.json.
+
+    Semantics:
+    - If `path` doesn't exist, create nested dicts as needed and initialize the
+      list with `[value]`.
+    - If the list already contains `value`, this is a no-op (dedup).
+    - Acquires the same fcntl.lockf exclusive lock on openclaw.json as
+      `patch_openclaw_config` to serialize concurrent writes.
+    """
+    if not path:
+        raise ConfigPatchError("path must not be empty")
+
+    config_dir = os.path.join(_efs_mount_path, owner_id)
+    config_path = os.path.join(config_dir, "openclaw.json")
+    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+
+    if not os.path.exists(config_path):
+        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+
+    def _do_append():
+        lock_fd = None
+        try:
+            lock_fd = open(config_path, "r+")
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+
+            with open(config_path, "r") as f:
+                current = json.load(f)
+
+            shutil.copy2(config_path, backup_path)
+
+            # Walk/create the nested path, stopping one short of the leaf
+            cursor = current
+            for segment in path[:-1]:
+                if segment not in cursor or not isinstance(cursor[segment], dict):
+                    cursor[segment] = {}
+                cursor = cursor[segment]
+
+            leaf_key = path[-1]
+            existing = cursor.get(leaf_key)
+            if not isinstance(existing, list):
+                cursor[leaf_key] = [value]
+            elif value not in existing:
+                existing.append(value)
+            # else: already present, no-op
+
+            json.dumps(current)  # validate serializable
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(current, f, indent=2)
+                if os.getuid() == 0:
+                    os.chown(tmp_path, 1000, 1000)
+                os.rename(tmp_path, config_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+
+            logger.info(
+                "Appended to openclaw.json list for owner %s: path=%s value=%r",
+                owner_id,
+                path,
+                value,
+            )
+        finally:
+            if lock_fd:
+                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+
+    await asyncio.to_thread(_do_append)
