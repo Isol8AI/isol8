@@ -19,6 +19,7 @@ def conn():
     c._frontend_connections = set()
     c._pending_rpcs = {}
     c._management_api = MagicMock()
+    c._billing_tasks = set()
     return c
 
 
