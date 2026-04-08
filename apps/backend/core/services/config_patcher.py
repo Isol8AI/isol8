@@ -32,15 +32,24 @@ def _deep_merge(base: dict, patch: dict) -> dict:
     return result
 
 
-async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
-    """Patch openclaw.json on EFS with file locking and atomic write.
+async def _locked_rmw(
+    owner_id: str,
+    mutate_fn: Callable[[dict], bool],
+    log_context: str,
+) -> None:
+    """Locked read-modify-write skeleton for openclaw.json on EFS.
 
-    1. Acquire file lock (prevents concurrent patches)
-    2. Read current config
-    3. Back up to .bak
-    4. Deep-merge patch
-    5. Write atomically (temp file + rename)
-    6. Release lock
+    Resolves the owner's config path, raises ConfigPatchError if missing,
+    acquires an exclusive fcntl.lockf on openclaw.json, reads + parses JSON,
+    invokes ``mutate_fn(current)`` to apply per-call mutation logic in place.
+
+    ``mutate_fn`` returns True if the config was modified and a write is
+    needed, or False to signal a no-op (skip backup + write entirely).
+
+    On a write, takes a .bak backup, validates serializability, atomically
+    renames a tempfile into place, and chowns to uid/gid 1000 if running
+    as root. Releases the lock in a finally block. Logs success with
+    ``log_context``.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
@@ -49,7 +58,7 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
     if not os.path.exists(config_path):
         raise ConfigPatchError(f"Config not found for owner {owner_id}")
 
-    def _do_patch():
+    def _do_rmw():
         lock_fd = None
         try:
             lock_fd = open(config_path, "r+")
@@ -58,15 +67,17 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
             with open(config_path, "r") as f:
                 current = json.load(f)
 
-            shutil.copy2(config_path, backup_path)
+            changed = mutate_fn(current)
+            if not changed:
+                return  # no-op: skip backup + write
 
-            merged = _deep_merge(current, patch)
-            json.dumps(merged)  # validate serializable
+            shutil.copy2(config_path, backup_path)
+            json.dumps(current)  # validate serializable
 
             fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
             try:
                 with os.fdopen(fd, "w") as f:
-                    json.dump(merged, f, indent=2)
+                    json.dump(current, f, indent=2)
                 # Match OpenClaw container ownership (node uid=1000 gid=1000).
                 # Only chown if running as root (backend container runs as root,
                 # but tests run as the local user).
@@ -77,14 +88,30 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
                 os.unlink(tmp_path)
                 raise
 
-            logger.info("Patched openclaw.json for owner %s: %s", owner_id, list(patch.keys()))
-
+            logger.info("openclaw.json %s for owner %s", log_context, owner_id)
         finally:
             if lock_fd:
                 fcntl.lockf(lock_fd, fcntl.LOCK_UN)
                 lock_fd.close()
 
-    await asyncio.to_thread(_do_patch)
+    await asyncio.to_thread(_do_rmw)
+
+
+async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
+    """Patch openclaw.json on EFS with file locking and atomic write.
+
+    Deep-merges the patch into the existing config and writes the result
+    atomically. Raises ConfigPatchError if the config file doesn't exist.
+    Always writes (even for empty patches) to preserve historical behavior.
+    """
+
+    def _mutate(current: dict) -> bool:
+        merged = _deep_merge(current, patch)
+        current.clear()
+        current.update(merged)
+        return True  # always write, even for empty patches
+
+    await _locked_rmw(owner_id, _mutate, f"patch keys={list(patch.keys())}")
 
 
 async def append_to_openclaw_config_list(
@@ -104,64 +131,24 @@ async def append_to_openclaw_config_list(
     if not path:
         raise ConfigPatchError("path must not be empty")
 
-    config_dir = os.path.join(_efs_mount_path, owner_id)
-    config_path = os.path.join(config_dir, "openclaw.json")
-    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+    def _mutate(current: dict) -> bool:
+        cursor = current
+        for segment in path[:-1]:
+            if segment not in cursor or not isinstance(cursor[segment], dict):
+                cursor[segment] = {}
+            cursor = cursor[segment]
 
-    if not os.path.exists(config_path):
-        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+        leaf_key = path[-1]
+        existing = cursor.get(leaf_key)
+        if not isinstance(existing, list):
+            cursor[leaf_key] = [value]
+            return True
+        if value in existing:
+            return False  # dedup no-op
+        existing.append(value)
+        return True
 
-    def _do_append():
-        lock_fd = None
-        try:
-            lock_fd = open(config_path, "r+")
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-
-            with open(config_path, "r") as f:
-                current = json.load(f)
-
-            shutil.copy2(config_path, backup_path)
-
-            # Walk/create the nested path, stopping one short of the leaf
-            cursor = current
-            for segment in path[:-1]:
-                if segment not in cursor or not isinstance(cursor[segment], dict):
-                    cursor[segment] = {}
-                cursor = cursor[segment]
-
-            leaf_key = path[-1]
-            existing = cursor.get(leaf_key)
-            if not isinstance(existing, list):
-                cursor[leaf_key] = [value]
-            elif value not in existing:
-                existing.append(value)
-            # else: already present, no-op
-
-            json.dumps(current)  # validate serializable
-
-            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(current, f, indent=2)
-                if os.getuid() == 0:
-                    os.chown(tmp_path, 1000, 1000)
-                os.rename(tmp_path, config_path)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-
-            logger.info(
-                "Appended to openclaw.json list for owner %s: path=%s value=%r",
-                owner_id,
-                path,
-                value,
-            )
-        finally:
-            if lock_fd:
-                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
-
-    await asyncio.to_thread(_do_append)
+    await _locked_rmw(owner_id, _mutate, f"append path={path} value={value!r}")
 
 
 async def remove_from_openclaw_config_list(
@@ -180,66 +167,26 @@ async def remove_from_openclaw_config_list(
     if not path:
         raise ConfigPatchError("path must not be empty")
 
-    config_dir = os.path.join(_efs_mount_path, owner_id)
-    config_path = os.path.join(config_dir, "openclaw.json")
-    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+    def _mutate(current: dict) -> bool:
+        cursor = current
+        for segment in path[:-1]:
+            if segment not in cursor or not isinstance(cursor[segment], dict):
+                return False  # missing path, no-op
+            cursor = cursor[segment]
 
-    if not os.path.exists(config_path):
-        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+        leaf_key = path[-1]
+        existing = cursor.get(leaf_key)
+        if not isinstance(existing, list):
+            return False  # not a list or missing, no-op
 
-    def _do_remove():
-        lock_fd = None
-        try:
-            lock_fd = open(config_path, "r+")
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+        filtered = [item for item in existing if not predicate(item)]
+        if len(filtered) == len(existing):
+            return False  # nothing removed, skip the write
 
-            with open(config_path, "r") as f:
-                current = json.load(f)
+        cursor[leaf_key] = filtered
+        return True
 
-            # Walk to the leaf
-            cursor = current
-            for segment in path[:-1]:
-                if segment not in cursor or not isinstance(cursor[segment], dict):
-                    return  # missing path, no-op
-                cursor = cursor[segment]
-
-            leaf_key = path[-1]
-            existing = cursor.get(leaf_key)
-            if not isinstance(existing, list):
-                return  # not a list or missing, no-op
-
-            filtered = [item for item in existing if not predicate(item)]
-            if len(filtered) == len(existing):
-                return  # nothing removed, skip the write
-
-            cursor[leaf_key] = filtered
-
-            shutil.copy2(config_path, backup_path)
-            json.dumps(current)  # validate serializable
-
-            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(current, f, indent=2)
-                if os.getuid() == 0:
-                    os.chown(tmp_path, 1000, 1000)
-                os.rename(tmp_path, config_path)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-
-            logger.info(
-                "Removed from openclaw.json list for owner %s: path=%s removed=%d",
-                owner_id,
-                path,
-                len(existing) - len(filtered),
-            )
-        finally:
-            if lock_fd:
-                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
-
-    await asyncio.to_thread(_do_remove)
+    await _locked_rmw(owner_id, _mutate, f"remove path={path}")
 
 
 async def delete_openclaw_config_path(
@@ -259,57 +206,18 @@ async def delete_openclaw_config_path(
     if not path:
         raise ConfigPatchError("path must not be empty")
 
-    config_dir = os.path.join(_efs_mount_path, owner_id)
-    config_path = os.path.join(config_dir, "openclaw.json")
-    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+    def _mutate(current: dict) -> bool:
+        cursor = current
+        for segment in path[:-1]:
+            if segment not in cursor or not isinstance(cursor[segment], dict):
+                return False  # missing intermediate, no-op
+            cursor = cursor[segment]
 
-    if not os.path.exists(config_path):
-        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+        leaf_key = path[-1]
+        if leaf_key not in cursor:
+            return False  # already absent, no-op
 
-    def _do_delete():
-        lock_fd = None
-        try:
-            lock_fd = open(config_path, "r+")
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+        del cursor[leaf_key]
+        return True
 
-            with open(config_path, "r") as f:
-                current = json.load(f)
-
-            # Walk to the parent of the leaf
-            cursor = current
-            for segment in path[:-1]:
-                if segment not in cursor or not isinstance(cursor[segment], dict):
-                    return  # missing intermediate, no-op
-                cursor = cursor[segment]
-
-            leaf_key = path[-1]
-            if leaf_key not in cursor:
-                return  # already absent, no-op
-
-            shutil.copy2(config_path, backup_path)
-            del cursor[leaf_key]
-
-            json.dumps(current)  # validate serializable
-
-            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "w") as f:
-                    json.dump(current, f, indent=2)
-                if os.getuid() == 0:
-                    os.chown(tmp_path, 1000, 1000)
-                os.rename(tmp_path, config_path)
-            except Exception:
-                os.unlink(tmp_path)
-                raise
-
-            logger.info(
-                "Deleted openclaw.json path for owner %s: path=%s",
-                owner_id,
-                path,
-            )
-        finally:
-            if lock_fd:
-                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
-                lock_fd.close()
-
-    await asyncio.to_thread(_do_delete)
+    await _locked_rmw(owner_id, _mutate, f"delete path={path}")
