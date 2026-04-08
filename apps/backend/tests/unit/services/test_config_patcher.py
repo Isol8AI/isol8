@@ -27,9 +27,9 @@ def efs_dir():
             "gateway": {"mode": "local", "bind": "lan"},
             "agents": {
                 "defaults": {
-                    "model": {"primary": "amazon-bedrock/minimax.minimax-m2.1"},
+                    "model": {"primary": "amazon-bedrock/minimax.minimax-m2.5"},
                     "models": {
-                        "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+                        "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
                     },
                 }
             },
@@ -45,11 +45,11 @@ def efs_dir():
 @pytest.mark.asyncio
 async def test_patch_updates_model(efs_dir):
     await patch_openclaw_config(
-        "user_1", {"agents": {"defaults": {"model": {"primary": "amazon-bedrock/moonshotai.kimi-k2.5"}}}}
+        "user_1", {"agents": {"defaults": {"model": {"primary": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"}}}}
     )
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
-    assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/moonshotai.kimi-k2.5"
+    assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
 
 
 @pytest.mark.asyncio
@@ -76,20 +76,24 @@ async def test_patch_creates_backup(efs_dir):
     assert os.path.exists(backup)
     with open(backup) as f:
         original = json.load(f)
-    assert original["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/minimax.minimax-m2.1"
+    assert original["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/minimax.minimax-m2.5"
 
 
 @pytest.mark.asyncio
 async def test_patch_deep_merges_models(efs_dir):
     await patch_openclaw_config(
         "user_1",
-        {"agents": {"defaults": {"models": {"amazon-bedrock/moonshotai.kimi-k2.5": {"alias": "Kimi K2.5"}}}}},
+        {
+            "agents": {
+                "defaults": {"models": {"amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"}}}
+            }
+        },
     )
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
     models = result["agents"]["defaults"]["models"]
-    assert "amazon-bedrock/moonshotai.kimi-k2.5" in models
-    assert "amazon-bedrock/minimax.minimax-m2.1" in models
+    assert "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0" in models
+    assert "amazon-bedrock/minimax.minimax-m2.5" in models
 
 
 @pytest.mark.asyncio

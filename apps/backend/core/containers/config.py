@@ -98,18 +98,8 @@ def build_device_paired_json(device_id: str, public_key_b64: str) -> str:
 ALL_BEDROCK_MODELS = [
     # --- MiniMax ---
     {
-        "id": "minimax.minimax-m2.1",
-        "name": "MiniMax M2.1",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": False,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Moonshot (Kimi) ---
-    {
-        "id": "moonshotai.kimi-k2.5",
-        "name": "Kimi K2.5",
+        "id": "minimax.minimax-m2.5",
+        "name": "MiniMax M2.5",
         "contextWindow": 128000,
         "maxTokens": 8192,
         "reasoning": False,
@@ -246,18 +236,18 @@ ALL_BEDROCK_MODELS = [
 _MODEL_NAME_MAP = {m["id"]: m["name"] for m in ALL_BEDROCK_MODELS}
 
 # Model IDs allowed per tier.  Free gets only MiniMax; starter/pro get MiniMax
-# + Kimi; enterprise gets everything.
+# + Qwen3 235B; enterprise gets everything.
 _TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
     "free": {
-        "minimax.minimax-m2.1",
+        "minimax.minimax-m2.5",
     },
     "starter": {
-        "minimax.minimax-m2.1",
-        "moonshotai.kimi-k2.5",
+        "minimax.minimax-m2.5",
+        "us.qwen.qwen3-235b-a22b-2507-v1:0",
     },
     "pro": {
-        "minimax.minimax-m2.1",
-        "moonshotai.kimi-k2.5",
+        "minimax.minimax-m2.5",
+        "us.qwen.qwen3-235b-a22b-2507-v1:0",
     },
     "enterprise": None,  # None means all models allowed
 }
@@ -364,7 +354,6 @@ def write_openclaw_config(
                 ],
             },
         }
-        bedrock_discovery = {"enabled": False}
         agent_models = {
             primary_model: {"alias": "Qwen 2.5 14B"},
         }
@@ -378,8 +367,20 @@ def write_openclaw_config(
                 "models": tier_models,
             },
         }
-        bedrock_discovery = {"enabled": False}
         agent_models = _agent_models_for_tier(tier, primary_model)
+
+    # Amazon Bedrock plugin config — OpenClaw 4.5 moved discovery from
+    # `models.bedrockDiscovery` to `plugins.entries.amazon-bedrock.config.discovery`.
+    # We disable auto-discovery because we manage the model catalog explicitly per
+    # tier (see ALL_BEDROCK_MODELS / _TIER_ALLOWED_MODEL_IDS). Without this flag the
+    # plugin would call bedrock:ListFoundationModels at startup — extra latency and
+    # an unwanted IAM dependency. The plugin itself is enabledByDefault in its
+    # manifest, so we don't need to set `enabled: True` here.
+    amazon_bedrock_plugin = {
+        "config": {
+            "discovery": {"enabled": False},
+        },
+    }
 
     config = {
         "gateway": {
@@ -398,7 +399,6 @@ def write_openclaw_config(
         },
         "models": {
             "providers": providers_config,
-            "bedrockDiscovery": bedrock_discovery,
         },
         "agents": {
             "defaults": {
@@ -466,7 +466,10 @@ def write_openclaw_config(
         },
         "plugins": {
             "slots": {},
-            "entries": search_plugin,
+            "entries": {
+                **search_plugin,
+                "amazon-bedrock": amazon_bedrock_plugin,
+            },
         },
         "channels": {
             "telegram": {

@@ -60,9 +60,9 @@ def efs_dir():
             "gateway": {"mode": "local", "bind": "lan"},
             "agents": {
                 "defaults": {
-                    "model": {"primary": "amazon-bedrock/minimax.minimax-m2.1"},
+                    "model": {"primary": "amazon-bedrock/minimax.minimax-m2.5"},
                     "models": {
-                        "amazon-bedrock/minimax.minimax-m2.1": {"alias": "MiniMax M2.1"},
+                        "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
                     },
                 }
             },
@@ -91,8 +91,8 @@ async def test_queue_tier_change_free_to_starter_no_resize(dynamodb_table, efs_d
     # Config should be patched with starter model
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/moonshotai.kimi-k2.5"
-    assert "amazon-bedrock/moonshotai.kimi-k2.5" in config["agents"]["defaults"]["models"]
+    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
+    assert "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0" in config["agents"]["defaults"]["models"]
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_queue_tier_change_starter_to_pro_with_resize(dynamodb_table, efs_
     # Config should be patched with pro model
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/moonshotai.kimi-k2.5"
+    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
 
 
 @pytest.mark.asyncio
@@ -137,8 +137,11 @@ async def test_queue_tier_change_patches_subagent_model(dynamodb_table, efs_dir)
 
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    # Enterprise has kimi as subagent model
-    assert config["agents"]["defaults"]["subagents"]["model"]["primary"] == "amazon-bedrock/moonshotai.kimi-k2.5"
+    # Enterprise has qwen3 235b as subagent model
+    assert (
+        config["agents"]["defaults"]["subagents"]["model"]["primary"]
+        == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
+    )
 
 
 @pytest.mark.asyncio
