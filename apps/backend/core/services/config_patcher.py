@@ -55,13 +55,13 @@ async def _locked_rmw(
     config_path = os.path.join(config_dir, "openclaw.json")
     backup_path = os.path.join(config_dir, "openclaw.json.bak")
 
-    if not os.path.exists(config_path):
-        raise ConfigPatchError(f"Config not found for owner {owner_id}")
-
     def _do_rmw():
         lock_fd = None
         try:
-            lock_fd = open(config_path, "r+")
+            try:
+                lock_fd = open(config_path, "r+")
+            except FileNotFoundError:
+                raise ConfigPatchError(f"Config not found for owner {owner_id}")
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
             with open(config_path, "r") as f:
