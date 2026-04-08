@@ -240,3 +240,76 @@ async def remove_from_openclaw_config_list(
                 lock_fd.close()
 
     await asyncio.to_thread(_do_remove)
+
+
+async def delete_openclaw_config_path(
+    owner_id: str,
+    path: list[str],
+) -> None:
+    """Remove the key at `path` from the owner's openclaw.json entirely.
+
+    Semantics:
+    - If any intermediate path segment is missing, no-op (no error).
+    - If the leaf key doesn't exist, no-op.
+    - If the parent dict is empty after removal, it is left as `{}` rather
+      than being pruned recursively. OpenClaw treats empty dicts the same
+      as missing keys for `channels.*.accounts`.
+    - Acquires the same fcntl.lockf exclusive lock as the other helpers.
+    """
+    if not path:
+        raise ConfigPatchError("path must not be empty")
+
+    config_dir = os.path.join(_efs_mount_path, owner_id)
+    config_path = os.path.join(config_dir, "openclaw.json")
+    backup_path = os.path.join(config_dir, "openclaw.json.bak")
+
+    if not os.path.exists(config_path):
+        raise ConfigPatchError(f"Config not found for owner {owner_id}")
+
+    def _do_delete():
+        lock_fd = None
+        try:
+            lock_fd = open(config_path, "r+")
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+
+            with open(config_path, "r") as f:
+                current = json.load(f)
+
+            # Walk to the parent of the leaf
+            cursor = current
+            for segment in path[:-1]:
+                if segment not in cursor or not isinstance(cursor[segment], dict):
+                    return  # missing intermediate, no-op
+                cursor = cursor[segment]
+
+            leaf_key = path[-1]
+            if leaf_key not in cursor:
+                return  # already absent, no-op
+
+            shutil.copy2(config_path, backup_path)
+            del cursor[leaf_key]
+
+            json.dumps(current)  # validate serializable
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(current, f, indent=2)
+                if os.getuid() == 0:
+                    os.chown(tmp_path, 1000, 1000)
+                os.rename(tmp_path, config_path)
+            except Exception:
+                os.unlink(tmp_path)
+                raise
+
+            logger.info(
+                "Deleted openclaw.json path for owner %s: path=%s",
+                owner_id,
+                path,
+            )
+        finally:
+            if lock_fd:
+                fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                lock_fd.close()
+
+    await asyncio.to_thread(_do_delete)

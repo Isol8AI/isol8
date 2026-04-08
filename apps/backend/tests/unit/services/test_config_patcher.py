@@ -10,6 +10,7 @@ import pytest
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.services.config_patcher import remove_from_openclaw_config_list  # noqa: E402
+from core.services.config_patcher import delete_openclaw_config_path  # noqa: E402
 
 
 @pytest.fixture
@@ -255,3 +256,80 @@ async def test_remove_from_list_missing_path_is_noop(tmp_efs_with_bindings):
         result = json.load(f)
     # Original bindings untouched
     assert len(result["bindings"]) == 3
+
+
+@pytest.fixture
+def tmp_efs_with_multi_accounts(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr("core.services.config_patcher._efs_mount_path", d)
+        owner_id = "user_test"
+        owner_dir = os.path.join(d, owner_id)
+        os.makedirs(owner_dir)
+        config_path = os.path.join(owner_dir, "openclaw.json")
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "channels": {
+                        "telegram": {
+                            "accounts": {
+                                "main": {"botToken": "aaa", "allowFrom": ["111"]},
+                                "sales": {"botToken": "bbb", "allowFrom": ["222"]},
+                            },
+                        },
+                    },
+                },
+                f,
+            )
+        yield d, owner_id, config_path
+
+
+@pytest.mark.asyncio
+async def test_delete_path_removes_nested_key(tmp_efs_with_multi_accounts):
+    _, owner_id, config_path = tmp_efs_with_multi_accounts
+    await delete_openclaw_config_path(
+        owner_id,
+        ["channels", "telegram", "accounts", "sales"],
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    # sales removed, main preserved
+    assert "sales" not in result["channels"]["telegram"]["accounts"]
+    assert "main" in result["channels"]["telegram"]["accounts"]
+    assert result["channels"]["telegram"]["accounts"]["main"]["botToken"] == "aaa"
+
+
+@pytest.mark.asyncio
+async def test_delete_path_leaves_empty_parent_as_empty_dict(tmp_efs_with_multi_accounts):
+    _, owner_id, config_path = tmp_efs_with_multi_accounts
+    await delete_openclaw_config_path(owner_id, ["channels", "telegram", "accounts", "main"])
+    await delete_openclaw_config_path(owner_id, ["channels", "telegram", "accounts", "sales"])
+    with open(config_path) as f:
+        result = json.load(f)
+    # The parent accounts dict is left as {} rather than being pruned
+    assert result["channels"]["telegram"]["accounts"] == {}
+
+
+@pytest.mark.asyncio
+async def test_delete_path_missing_key_is_noop(tmp_efs_with_multi_accounts):
+    _, owner_id, config_path = tmp_efs_with_multi_accounts
+    await delete_openclaw_config_path(
+        owner_id,
+        ["channels", "telegram", "accounts", "does_not_exist"],
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    # Nothing removed
+    assert "main" in result["channels"]["telegram"]["accounts"]
+    assert "sales" in result["channels"]["telegram"]["accounts"]
+
+
+@pytest.mark.asyncio
+async def test_delete_path_missing_intermediate_is_noop(tmp_efs_with_multi_accounts):
+    _, owner_id, config_path = tmp_efs_with_multi_accounts
+    await delete_openclaw_config_path(
+        owner_id,
+        ["channels", "slack", "accounts", "main"],  # slack branch doesn't exist
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+    assert "main" in result["channels"]["telegram"]["accounts"]
