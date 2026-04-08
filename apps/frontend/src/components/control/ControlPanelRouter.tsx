@@ -1,7 +1,6 @@
 "use client";
 
 import { OverviewPanel } from "./panels/OverviewPanel";
-import { ChannelsPanel } from "./panels/ChannelsPanel";
 import { InstancesPanel } from "./panels/InstancesPanel";
 import { SessionsPanel } from "./panels/SessionsPanel";
 import { UsagePanel } from "./panels/UsagePanel";
@@ -20,7 +19,6 @@ interface ControlPanelRouterProps {
 
 const PANELS: Record<string, React.ComponentType> = {
   overview: OverviewPanel,
-  channels: ChannelsPanel,
   instances: InstancesPanel,
   sessions: SessionsPanel,
   usage: UsagePanel,
