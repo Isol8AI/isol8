@@ -22,6 +22,29 @@ def _owner_provider_agent(owner_id: str, provider: str, agent_id: str) -> str:
     return f"{owner_id}#{provider}#{agent_id}"
 
 
+async def _batch_delete(table, items: list[dict]) -> None:
+    """Delete the given items from a DynamoDB table using batch_writer.
+
+    Runs the entire batch_writer lifetime (including flush on __exit__)
+    inside a single run_in_thread call so boto3's BatchWriter — which
+    is NOT thread-safe — stays on one worker thread. Called by the sweep
+    helpers below.
+
+    Chunks items into 25-row batches (DynamoDB BatchWriteItem max).
+    """
+    if not items:
+        return
+
+    def _do_batch(batch_items: list[dict]) -> None:
+        with table.batch_writer() as w:
+            for item in batch_items:
+                w.delete_item(Key={"owner_id": item["owner_id"], "sk": item["sk"]})
+
+    for i in range(0, len(items), 25):
+        chunk = items[i : i + 25]
+        await run_in_thread(_do_batch, chunk)
+
+
 async def put(
     *,
     owner_id: str,
@@ -128,18 +151,7 @@ async def sweep_by_owner_provider_agent(
         KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("sk").begins_with(prefix),
     )
     items = response.get("Items", [])
-    if not items:
-        return 0
-
-    # DynamoDB BatchWriteItem max 25 per batch
-    for i in range(0, len(items), 25):
-        batch = items[i : i + 25]
-        with table.batch_writer() as writer:
-            for item in batch:
-                await run_in_thread(
-                    writer.delete_item,
-                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
-                )
+    await _batch_delete(table, items)
     return len(items)
 
 
@@ -149,18 +161,7 @@ async def sweep_by_owner(owner_id: str) -> int:
     Returns the number of rows deleted.
     """
     items = await query_by_owner(owner_id)
-    if not items:
-        return 0
-
-    table = _get_table()
-    for i in range(0, len(items), 25):
-        batch = items[i : i + 25]
-        with table.batch_writer() as writer:
-            for item in batch:
-                await run_in_thread(
-                    writer.delete_item,
-                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
-                )
+    await _batch_delete(_get_table(), items)
     return len(items)
 
 
@@ -171,16 +172,5 @@ async def sweep_by_member(member_id: str) -> int:
     Returns the number of rows deleted.
     """
     items = await query_by_member(member_id)
-    if not items:
-        return 0
-
-    table = _get_table()
-    for i in range(0, len(items), 25):
-        batch = items[i : i + 25]
-        with table.batch_writer() as writer:
-            for item in batch:
-                await run_in_thread(
-                    writer.delete_item,
-                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
-                )
+    await _batch_delete(_get_table(), items)
     return len(items)
