@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     # Clerk Secret Key (for fetching user/org metadata)
     CLERK_SECRET_KEY: str | None = os.getenv("CLERK_SECRET_KEY")
 
+    # Clerk Webhook Secret (svix signing secret for verifying Clerk webhook payloads)
+    CLERK_WEBHOOK_SECRET: str | None = os.getenv("CLERK_WEBHOOK_SECRET")
+
     # AWS Configuration
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"

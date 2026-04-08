@@ -32,6 +32,7 @@ from routers import (
     settings_keys,
     updates,
     users,
+    webhooks,
     websocket_chat,
     workspace_files,
 )
@@ -188,6 +189,9 @@ app.openapi = custom_openapi
 
 # Routes
 app.include_router(users.router, prefix="/api/v1/users", tags=["users"])
+
+# Clerk webhook events (user lifecycle)
+app.include_router(webhooks.router, prefix="/api/v1/webhooks", tags=["webhooks"])
 
 # WebSocket routes (API Gateway WebSocket -> HTTP POST)
 app.include_router(websocket_chat.router, prefix="/api/v1/ws")
