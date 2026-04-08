@@ -4,10 +4,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 
+const postMock = vi.fn();
+const patchConfigMock = vi.fn();
+
 vi.mock("@/lib/api", () => ({
   useApi: () => ({
-    patchConfig: vi.fn().mockResolvedValue({ status: "patched", owner_id: "user_test" }),
-    post: vi.fn().mockResolvedValue({ status: "linked", peer_id: "12345" }),
+    patchConfig: patchConfigMock,
+    post: postMock,
   }),
 }));
 
@@ -20,6 +23,8 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
 describe("BotSetupWizard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    patchConfigMock.mockResolvedValue({ status: "patched", owner_id: "user_test" });
+    postMock.mockResolvedValue({ status: "linked", peer_id: "12345" });
   });
 
   it("shows the token paste step in create mode", () => {
@@ -63,5 +68,49 @@ describe("BotSetupWizard", () => {
     );
     expect(screen.queryByLabelText(/bot token/i)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/pairing code/i)).toBeInTheDocument();
+  });
+
+  it("shows friendly message on 404 code not found", async () => {
+    const err: Error & { status?: number } = new Error("not found");
+    err.status = 404;
+    postMock.mockRejectedValueOnce(err);
+
+    render(
+      <BotSetupWizard
+        mode="link-only"
+        provider="telegram"
+        agentId="main"
+        onComplete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/pairing code/i), "BADCODE");
+    await user.click(screen.getByRole("button", { name: /link/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/code expired or not found/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows friendly message on 409 peer already linked", async () => {
+    const err: Error & { status?: number } = new Error("conflict");
+    err.status = 409;
+    postMock.mockRejectedValueOnce(err);
+
+    render(
+      <BotSetupWizard
+        mode="link-only"
+        provider="telegram"
+        agentId="main"
+        onComplete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText(/pairing code/i), "ABC12345");
+    await user.click(screen.getByRole("button", { name: /link/i }));
+    await waitFor(() => {
+      expect(screen.getByText(/already linked to another member/i)).toBeInTheDocument();
+    });
   });
 });
