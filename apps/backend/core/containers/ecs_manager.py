@@ -627,16 +627,31 @@ class EcsManager:
         if not ip:
             return container, None
 
-        # Auto-transition provisioning -> running once the task is reachable
+        # Auto-transition provisioning -> running once the task is reachable.
+        # Also opportunistically capture the task ARN if we don't already have
+        # one on the row — previously this field was silently missing on every
+        # container row because no code path wrote it.
         if container.get("status") == "provisioning" and self.is_healthy(ip):
             try:
-                await container_repo.update_fields(
-                    user_id,
-                    {
-                        "substatus": "gateway_healthy",
-                        "status": "running",
-                    },
-                )
+                fields = {
+                    "substatus": "gateway_healthy",
+                    "status": "running",
+                }
+                if not container.get("task_arn"):
+                    try:
+                        list_resp = self._ecs.list_tasks(
+                            cluster=self._cluster,
+                            serviceName=container["service_name"],
+                            desiredStatus="RUNNING",
+                        )
+                        task_arns = list_resp.get("taskArns", [])
+                        if task_arns:
+                            fields["task_arn"] = task_arns[0]
+                    except Exception:
+                        # Task ARN is a nice-to-have for observability,
+                        # not load-bearing for the transition itself.
+                        pass
+                await container_repo.update_fields(user_id, fields)
                 logger.info(
                     "Container %s for user %s transitioned to running",
                     container["service_name"],
@@ -645,6 +660,8 @@ class EcsManager:
                 # Update local dict to reflect changes
                 container["status"] = "running"
                 container["substatus"] = "gateway_healthy"
+                if "task_arn" in fields:
+                    container["task_arn"] = fields["task_arn"]
             except Exception:
                 logger.warning(
                     "Failed to persist running status for user %s, will retry on next poll",
@@ -729,7 +746,7 @@ class EcsManager:
                     )
 
                 try:
-                    await self._write_user_configs(user_id, gateway_token, tier=tier)
+                    await self.write_user_configs(user_id, gateway_token, tier=tier)
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
@@ -815,7 +832,7 @@ class EcsManager:
 
         # Step 3: Write configs to EFS
         try:
-            await self._write_user_configs(user_id, gateway_token, tier=tier)
+            await self.write_user_configs(user_id, gateway_token, tier=tier)
         except Exception as e:
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
@@ -828,10 +845,124 @@ class EcsManager:
             raise
 
         logger.info("Provisioned container %s for user %s", service_name, user_id)
+
+        # Step 5: Eagerly drive the provisioning → running transition. The
+        # previous design relied on the next call to `resolve_running_container`
+        # to flip the status when the task became reachable, which left rows
+        # stuck at `provisioning` forever if the user's first chat hit an
+        # upstream error (e.g. a bad model id) before the poll path fired.
+        # Now we fire-and-forget a background poller immediately so the row
+        # transitions as soon as the ECS task reports healthy, independent of
+        # user activity.
+        asyncio.create_task(self._await_running_transition(user_id))
+
         return service_name
 
-    async def _write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
-        """Write OpenClaw config files to the user's EFS workspace."""
+    async def _await_running_transition(
+        self,
+        user_id: str,
+        *,
+        max_attempts: int = 30,
+        interval_s: float = 4.0,
+    ) -> None:
+        """Background poller that drives provisioning → running eagerly.
+
+        Polls ECS for the task's private IP, then TCP-connects to the gateway
+        port, then writes status=running once both succeed. Also stores the
+        task ARN on the row (previously never written because the old code
+        path only updated status, not task_arn).
+
+        Exits quietly on timeout — the next user request will still retry
+        via `resolve_running_container`, so this is strictly an optimization
+        for the happy path.
+        """
+        for attempt in range(max_attempts):
+            try:
+                container = await container_repo.get_by_owner_id(user_id)
+                if not container or container.get("status") != "provisioning":
+                    # Already transitioned (or the row is gone) — nothing to do.
+                    return
+
+                service_name = container["service_name"]
+                list_resp = self._ecs.list_tasks(
+                    cluster=self._cluster,
+                    serviceName=service_name,
+                    desiredStatus="RUNNING",
+                )
+                task_arns = list_resp.get("taskArns", [])
+                if not task_arns:
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                task_arn = task_arns[0]
+                desc_resp = self._ecs.describe_tasks(
+                    cluster=self._cluster,
+                    tasks=[task_arn],
+                )
+                tasks = desc_resp.get("tasks", [])
+                if not tasks or tasks[0].get("lastStatus") != "RUNNING":
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                ip = None
+                for attachment in tasks[0].get("attachments", []):
+                    if attachment.get("type") == "ElasticNetworkInterface":
+                        for detail in attachment.get("details", []):
+                            if detail.get("name") == "privateIPv4Address":
+                                ip = detail.get("value")
+                                break
+                if not ip or not self.is_healthy(ip):
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                await container_repo.update_fields(
+                    user_id,
+                    {
+                        "status": "running",
+                        "substatus": "gateway_healthy",
+                        "task_arn": task_arn,
+                    },
+                )
+                logger.info(
+                    "Eagerly transitioned container %s to running (user=%s, task=%s)",
+                    service_name,
+                    user_id,
+                    task_arn.split("/")[-1],
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "Unexpected error in eager running transition for %s (attempt %d)",
+                    user_id,
+                    attempt,
+                )
+                await asyncio.sleep(interval_s)
+
+        logger.warning(
+            "Eager provisioning -> running transition timed out for user %s after %d attempts",
+            user_id,
+            max_attempts,
+        )
+
+    async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
+        """Write OpenClaw config files + pre-paired device trust store to EFS.
+
+        Writes four files to the user's EFS workspace:
+
+        - `openclaw.json` — the gateway config (models, channels, scopes, etc.)
+        - `.mcporter/mcporter.json` — MCP server registry (currently empty)
+        - `devices/.node-device-key.pem` — the node role's private key, read
+          by the in-container agent for loopback authentication
+        - `devices/paired.json` — the combined trust store (node + operator)
+
+        Also ensures the operator Ed25519 private key is present in the
+        container's DynamoDB row (KMS-encrypted).
+
+        Callers that only need to refresh the device trust store (e.g. after
+        a config patch that updated openclaw.json in-place) should call
+        :meth:`ensure_device_identities` instead to avoid overwriting the
+        openclaw.json that was just patched.
+        """
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
@@ -841,16 +972,103 @@ class EcsManager:
         workspace = get_workspace()
         workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
+        await self.ensure_device_identities(user_id, gateway_token)
 
-        # Node device identity — reuse existing key if present, generate otherwise
+    async def ensure_device_identities(self, user_id: str, gateway_token: str) -> None:
+        """Idempotently provision node + operator device identities.
+
+        Separated from :meth:`write_user_configs` so callers can refresh the
+        device trust store without touching openclaw.json — important for
+        the redeploy path that patches openclaw.json in-place and just
+        needs the operator entry backfilled after an OpenClaw 4.5 upgrade.
+
+        What this writes:
+
+        - `devices/.node-device-key.pem` (if not already on EFS)
+        - `devices/paired.json` (always overwritten with the latest node +
+          operator entries)
+        - DynamoDB `containers` row `operator_device_id` + `operator_priv_key_enc`
+          (latter is KMS-encrypted with encryption-context bound to owner_id)
+
+        Safe to call repeatedly: reuses existing node PEM and existing
+        KMS-encrypted operator seed when present. Only regenerates when the
+        ciphertext is missing or undecryptable.
+        """
+        from core.crypto import kms_secrets
+        from core.crypto.operator_device import (
+            BACKEND_OPERATOR_SCOPES,
+            build_paired_operator_entry,
+            generate_operator_device,
+            load_operator_device_from_seed,
+        )
+
+        workspace = get_workspace()
+
+        # --- Node device identity -------------------------------------------
+        # Reuse the existing key if the PEM is already on EFS (so the node's
+        # in-container agent keeps the same identity across restarts),
+        # otherwise generate fresh.
         try:
             existing_pem = workspace.read_file(user_id, "devices/.node-device-key.pem")
-            identity = load_node_device_identity(existing_pem)
+            node_identity = load_node_device_identity(existing_pem)
             logger.info("Reusing existing node device key for user %s", user_id)
         except Exception:
-            identity = generate_node_device_identity()
-            workspace.write_file(user_id, "devices/.node-device-key.pem", identity["private_key_pem"])
+            node_identity = generate_node_device_identity()
+            workspace.write_file(
+                user_id,
+                "devices/.node-device-key.pem",
+                node_identity["private_key_pem"],
+            )
             logger.info("Generated new node device key for user %s", user_id)
 
-        paired_json = build_device_paired_json(identity["device_id"], identity["public_key_b64"])
+        # --- Operator device identity (OpenClaw 4.5 scoped-auth requirement) -
+        # Bind the ciphertext to the owner_id via KMS encryption context — a
+        # stolen row can't be replayed against a different container.
+        kms_ctx = {"owner_id": user_id, "purpose": "operator-device-seed"}
+        existing_container = await container_repo.get_by_owner_id(user_id)
+        existing_enc_seed = existing_container.get("operator_priv_key_enc") if existing_container else None
+
+        if existing_enc_seed:
+            try:
+                seed_bytes = kms_secrets.decrypt_bytes(existing_enc_seed, encryption_context=kms_ctx)
+                operator_identity = load_operator_device_from_seed(seed_bytes)
+                logger.info("Reusing existing operator device for user %s", user_id)
+            except Exception as exc:
+                # KMS decrypt failure or corrupted ciphertext — regenerate
+                # rather than wedging the container. The old encrypted blob is
+                # replaced below before the container boots, so the mismatch
+                # never becomes visible to the gateway.
+                logger.warning(
+                    "Failed to decrypt existing operator device for user %s (%s); regenerating",
+                    user_id,
+                    exc,
+                )
+                operator_identity = generate_operator_device()
+        else:
+            operator_identity = generate_operator_device()
+            logger.info("Generated new operator device for user %s", user_id)
+
+        # Always re-encrypt and persist. This covers both "first provision"
+        # and "we just regenerated after a decrypt failure" — the DynamoDB row
+        # becomes the source of truth alongside the paired.json on EFS.
+        enc_seed_b64 = kms_secrets.encrypt_bytes(operator_identity.private_key_seed, encryption_context=kms_ctx)
+        await container_repo.update_fields(
+            user_id,
+            {
+                "operator_device_id": operator_identity.device_id,
+                "operator_priv_key_enc": enc_seed_b64,
+            },
+        )
+
+        operator_entry = build_paired_operator_entry(
+            operator_identity,
+            gateway_token=gateway_token,
+            scopes=BACKEND_OPERATOR_SCOPES,
+        )
+
+        paired_json = build_device_paired_json(
+            node_identity["device_id"],
+            node_identity["public_key_b64"],
+            operator_entry=operator_entry,
+        )
         workspace.write_file(user_id, "devices/paired.json", paired_json)

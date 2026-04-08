@@ -52,7 +52,7 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const { organization } = useOrganization();
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const isOrg = !!organization;
   const api = useApi();
   const { isLoading: billingLoading, isSubscribed, planTier, createCheckout } = useBilling();
@@ -77,6 +77,13 @@ export function ProvisioningStepper({
   // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
   const needsProvision = container === null || container?.status === "stopped";
   useEffect(() => {
+    // Defensive: don't fire provision until Clerk's org state has fully
+    // hydrated. ChatLayout already gates this component behind an onboarded
+    // check, so in practice orgLoaded is true by the time we mount — but
+    // keeping the guard here means a direct caller (tests, recovery paths)
+    // can't accidentally fire /container/provision with a still-loading JWT
+    // and get a personal container when an org was expected.
+    if (!orgLoaded) return;
     if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
       provisionRequestedRef.current = true;
       api.post("/container/provision", {}).catch((err: unknown) => {
@@ -87,7 +94,7 @@ export function ProvisioningStepper({
     if (container && container.status !== "stopped") {
       provisionRequestedRef.current = false;
     }
-  }, [needsProvision, container, shouldPollContainer, api]);
+  }, [needsProvision, orgLoaded, container, shouldPollContainer, api]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 

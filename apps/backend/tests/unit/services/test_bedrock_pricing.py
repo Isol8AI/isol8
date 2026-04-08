@@ -26,10 +26,12 @@ class TestGetModelPrice:
         assert price["output"] == pytest.approx(1.20 / 1e6)
 
     def test_qwen3_pricing(self):
-        price = get_model_price("us.qwen.qwen3-235b-a22b-2507-v1:0")
+        # Qwen3 VL 235B (standard tier) — verified via `aws pricing
+        # get-products --service-code AmazonBedrock` on 2026-04-09.
+        price = get_model_price("qwen.qwen3-vl-235b-a22b")
         assert price is not None
-        assert price["input"] == pytest.approx(0.80 / 1e6)
-        assert price["output"] == pytest.approx(2.00 / 1e6)
+        assert price["input"] == pytest.approx(0.53 / 1e6)
+        assert price["output"] == pytest.approx(2.66 / 1e6)
 
     def test_unknown_model_returns_none(self):
         assert get_model_price("nonexistent-model") is None
@@ -54,5 +56,5 @@ class TestGetModelPrice:
 
         refresh_pricing_cache()
 
-        price = get_model_price("us.qwen.qwen3-235b-a22b-2507-v1:0")
+        price = get_model_price("qwen.qwen3-vl-235b-a22b")
         assert price is not None

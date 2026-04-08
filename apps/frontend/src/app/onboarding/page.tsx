@@ -56,7 +56,15 @@ export default function OnboardingPage() {
           </p>
         </div>
         <CreateOrganization
-          afterCreateOrganizationUrl="/chat"
+          // Round-trip back through /onboarding (NOT /chat). The effect at
+          // the top of this file will then detect the freshly-created org
+          // in userMemberships.data, call setActive() so the JWT has the
+          // right org_id, await it, and redirect to /chat with a fully-
+          // settled session. If we redirected straight to /chat, ChatLayout
+          // could mount ProvisioningStepper while the JWT is still mid-
+          // switch between personal and org context — causing the double-
+          // provision bug where the same human ends up with two containers.
+          afterCreateOrganizationUrl="/onboarding"
           skipInvitationScreen={false}
         />
         <Button variant="ghost" onClick={() => setMode("choose")}>

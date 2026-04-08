@@ -51,7 +51,7 @@ export function ChatLayout({
 }: ChatLayoutProps): React.ReactElement {
   const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
-  const { organization } = useOrganization();
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, createAgent } = useAgents();
@@ -78,14 +78,24 @@ export function ChatLayout({
     .slice(0, 2)
     .toUpperCase();
 
-  // Client-side onboarding check: redirect if user hasn't onboarded and has no org
+  // Onboarding gate: a single Clerk user must pick personal-vs-org exactly
+  // ONCE, before any container is provisioned. We block rendering until both
+  // Clerk hooks have finished loading AND the user has either marked
+  // themselves onboarded (personal choice stored in unsafeMetadata) or has
+  // an active Clerk organization in their session (org choice — either
+  // invited-via-link or picked via <CreateOrganization/>). Doing the gate
+  // here as an early return (NOT a useEffect) means ProvisioningStepper
+  // literally never mounts until the decision is settled, so it can't fire
+  // a speculative provision with a loading-state JWT.
+  const clerkLoaded = userLoaded && orgLoaded;
+  const isOnboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded === true;
+  const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !organization;
+
   useEffect(() => {
-    if (!userLoaded || !isSignedIn) return;
-    const onboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded;
-    if (!onboarded && !organization) {
+    if (needsOnboarding) {
       router.replace("/onboarding");
     }
-  }, [userLoaded, isSignedIn, user, organization, router]);
+  }, [needsOnboarding, router]);
 
   useEffect(() => {
     if (!isSignedIn) return;
@@ -122,6 +132,19 @@ export function ChatLayout({
   async function handleCreateAgent(): Promise<void> {
     const name = "Agent " + (agents.length + 1);
     await createAgent({ name, workspace: name.toLowerCase().replace(/\s+/g, "-") });
+  }
+
+  // Block the whole chat shell until Clerk hydration + onboarding state are
+  // settled. This is the hinge for the personal/org race fix: if we render
+  // ProvisioningStepper before the JWT has finished flipping into its final
+  // context, it fires POST /container/provision with the stale JWT and we
+  // end up with two containers for the same human.
+  if (!clerkLoaded || isSignedIn !== true || needsOnboarding) {
+    return (
+      <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
+        <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>
+      </div>
+    );
   }
 
   return (
