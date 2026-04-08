@@ -20,6 +20,28 @@ export interface BotSetupWizardProps {
 
 type Step = "token" | "waiting" | "pair" | "done";
 
+const SLACK_APP_MANIFEST = `display_information:
+  name: Isol8 Agent
+features:
+  bot_user:
+    display_name: Isol8 Agent
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - im:history
+      - im:read
+      - im:write
+      - users:read
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  socket_mode_enabled: true`;
+
 const PROVIDER_LABELS: Record<Provider, string> = {
   telegram: "Telegram",
   discord: "Discord",
@@ -38,6 +60,7 @@ export function BotSetupWizard({
 
   const [step, setStep] = useState<Step>(mode === "create" ? "token" : "pair");
   const [token, setToken] = useState("");
+  const [slackAppToken, setSlackAppToken] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,15 +71,24 @@ export function BotSetupWizard({
     setBusy(true);
     setError(null);
     try {
+      const accountCfg: Record<string, unknown> =
+        provider === "slack"
+          ? {
+              mode: "socket",
+              appToken: slackAppToken.trim(),
+              botToken: token.trim(),
+              dmPolicy: "pairing",
+            }
+          : {
+              botToken: token.trim(),
+              dmPolicy: "pairing",
+            };
       const patch: Record<string, unknown> = {
         channels: {
           [provider]: {
             enabled: true,
             accounts: {
-              [agentId]: {
-                botToken: token.trim(),
-                dmPolicy: "pairing",
-              },
+              [agentId]: accountCfg,
             },
           },
         },
@@ -122,15 +154,55 @@ export function BotSetupWizard({
 
       {step === "token" && (
         <div className="space-y-3">
+          {provider === "slack" && (
+            <div className="rounded-md bg-[#f3efe6] p-3 text-xs space-y-2">
+              <p className="font-semibold">Paste this manifest when creating a new Slack app:</p>
+              <pre className="whitespace-pre-wrap font-mono text-[10px] bg-white p-2 rounded border border-[#e0dbd0]">
+                {SLACK_APP_MANIFEST}
+              </pre>
+              <p>
+                Go to{" "}
+                <a
+                  href="https://api.slack.com/apps?new_app=1"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="underline"
+                >
+                  api.slack.com/apps
+                </a>
+                , choose &ldquo;From an app manifest&rdquo;, paste the above, install to your
+                workspace, then copy the two tokens below.
+              </p>
+            </div>
+          )}
+          {provider === "slack" && (
+            <label className="block text-sm font-medium">
+              App-Level Token (xapp-...)
+              <input
+                type="password"
+                value={slackAppToken}
+                onChange={(e) => setSlackAppToken(e.target.value)}
+                placeholder="xapp-..."
+                className="mt-1 w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-sm font-mono"
+                aria-label="App-Level Token"
+              />
+            </label>
+          )}
           <label className="block text-sm font-medium">
-            {label} bot token
+            {provider === "slack" ? "Bot Token (xoxb-...)" : `${label} bot token`}
             <input
               type="password"
               value={token}
               onChange={(e) => setToken(e.target.value)}
-              placeholder={provider === "telegram" ? "123456:ABC-DEF..." : "token..."}
+              placeholder={
+                provider === "telegram"
+                  ? "123456:ABC-DEF..."
+                  : provider === "slack"
+                    ? "xoxb-..."
+                    : "token..."
+              }
               className="mt-1 w-full rounded-md border border-[#e0dbd0] bg-white px-3 py-2 text-sm font-mono"
-              aria-label={`${label} bot token`}
+              aria-label={provider === "slack" ? "Bot Token" : `${label} bot token`}
             />
           </label>
           {error && <p className="text-xs text-red-600">{error}</p>}
@@ -138,7 +210,14 @@ export function BotSetupWizard({
             <Button variant="outline" onClick={onCancel} disabled={busy}>
               Cancel
             </Button>
-            <Button onClick={handleTokenSubmit} disabled={busy || !token.trim()}>
+            <Button
+              onClick={handleTokenSubmit}
+              disabled={
+                busy ||
+                !token.trim() ||
+                (provider === "slack" && !slackAppToken.trim())
+              }
+            >
               {busy && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
               Next
             </Button>

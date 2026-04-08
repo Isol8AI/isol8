@@ -113,4 +113,20 @@ describe("BotSetupWizard", () => {
       expect(screen.getByText(/already linked to another member/i)).toBeInTheDocument();
     });
   });
+
+  it("shows TWO token fields plus a manifest block when provider is slack", () => {
+    render(
+      <BotSetupWizard
+        mode="create"
+        provider="slack"
+        agentId="main"
+        onComplete={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByLabelText(/app.level token/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/bot token/i)).toBeInTheDocument();
+    // Manifest instructions visible
+    expect(screen.getByText(/paste.*manifest/i)).toBeInTheDocument();
+  });
 });
