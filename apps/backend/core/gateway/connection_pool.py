@@ -722,3 +722,69 @@ class GatewayConnectionPool:
         except asyncio.CancelledError:
             logger.info("Idle checker stopped")
             return
+
+
+def _parse_session_key(session_key: str) -> dict:
+    """Parse an OpenClaw session key into its components.
+
+    Shapes (from openclaw/src/routing/session-key.ts with dmScope=per-account-channel-peer):
+      Personal webchat:  agent:<agentId>:main
+      Org webchat:       agent:<agentId>:<clerk_user_id>
+      Channel DM:        agent:<agentId>:<channel>:<accountId>:direct:<peerId>
+      Channel group:     agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
+      Channel room:      agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
+
+    Returns dict with:
+      - empty {} for malformed input
+      - {agent_id, source} for webchat personal
+      - {agent_id, source, member_id} for org webchat (member_id is the clerk user_id)
+      - {agent_id, source, channel, peer_id} for channel DMs (source="dm")
+      - {agent_id, source, channel, group_id} for channel groups (source="group")
+      - {agent_id, source, channel, channel_id} for channel rooms (source="channel")
+    """
+    parts = session_key.split(":")
+    if len(parts) < 3 or parts[0] != "agent":
+        return {}
+    agent_id = parts[1]
+
+    # Webchat: 3 parts (agent:<agentId>:<sessionName>)
+    if len(parts) == 3:
+        if parts[2] == "main":
+            return {"agent_id": agent_id, "source": "webchat"}
+        # Org webchat — parts[2] is a Clerk user_id
+        return {
+            "agent_id": agent_id,
+            "source": "webchat",
+            "member_id": parts[2],
+        }
+
+    # Channel DM (per-account-channel-peer):
+    # agent:<agentId>:<channel>:<accountId>:direct:<peerId>
+    # In our design accountId == agentId so we don't extract parts[3] separately.
+    if len(parts) == 6 and parts[4] == "direct":
+        return {
+            "agent_id": agent_id,
+            "source": "dm",
+            "channel": parts[2],
+            "peer_id": parts[5],
+        }
+
+    # Channel group: agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
+    if len(parts) >= 5 and parts[3] == "group":
+        return {
+            "agent_id": agent_id,
+            "source": "group",
+            "channel": parts[2],
+            "group_id": parts[4],
+        }
+
+    # Channel room: agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
+    if len(parts) >= 5 and parts[3] == "channel":
+        return {
+            "agent_id": agent_id,
+            "source": "channel",
+            "channel": parts[2],
+            "channel_id": parts[4],
+        }
+
+    return {"agent_id": agent_id, "source": "unknown"}
