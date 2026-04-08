@@ -1,26 +1,21 @@
-import pytest
+"""Tests for channel_link DynamoDB repository."""
+
+import os
+from unittest.mock import patch
 
 import boto3
+import pytest
 from moto import mock_aws
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 @pytest.fixture
-def dynamodb_setup(monkeypatch):
-    """Create the channel-links table in moto and point the repo at it."""
-    monkeypatch.setenv("DYNAMODB_TABLE_PREFIX", "test-")
-    monkeypatch.setenv("AWS_REGION", "us-east-1")
-    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
-    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
-
+def dynamodb_table():
+    """Create a moto DynamoDB channel-links table with the by-member GSI."""
     with mock_aws():
-        # Reset the cached resource/table prefix so the fixture's env vars take effect
-        import importlib
-        import core.dynamodb
-
-        importlib.reload(core.dynamodb)
-
-        client = boto3.client("dynamodb", region_name="us-east-1")
-        client.create_table(
+        client = boto3.resource("dynamodb", region_name="us-east-1")
+        table = client.create_table(
             TableName="test-channel-links",
             KeySchema=[
                 {"AttributeName": "owner_id", "KeyType": "HASH"},
@@ -44,15 +39,17 @@ def dynamodb_setup(monkeypatch):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
-        client.get_waiter("table_exists").wait(TableName="test-channel-links")
+        table.meta.client.get_waiter("table_exists").wait(TableName="test-channel-links")
 
-        import core.repositories.channel_link_repo  # noqa: F401
-
-        yield
+        with (
+            patch("core.dynamodb._table_prefix", "test-"),
+            patch("core.dynamodb._dynamodb_resource", client),
+        ):
+            yield table
 
 
 @pytest.mark.asyncio
-async def test_put_and_get_by_peer(dynamodb_setup):
+async def test_put_and_get_by_peer(dynamodb_table):
     from core.repositories import channel_link_repo
 
     await channel_link_repo.put(
@@ -78,7 +75,7 @@ async def test_put_and_get_by_peer(dynamodb_setup):
 
 
 @pytest.mark.asyncio
-async def test_get_by_peer_miss_returns_none(dynamodb_setup):
+async def test_get_by_peer_miss_returns_none(dynamodb_table):
     from core.repositories import channel_link_repo
 
     result = await channel_link_repo.get_by_peer(
@@ -91,7 +88,7 @@ async def test_get_by_peer_miss_returns_none(dynamodb_setup):
 
 
 @pytest.mark.asyncio
-async def test_query_by_member_across_orgs(dynamodb_setup):
+async def test_query_by_member_across_orgs(dynamodb_table):
     from core.repositories import channel_link_repo
 
     await channel_link_repo.put(
@@ -126,7 +123,7 @@ async def test_query_by_member_across_orgs(dynamodb_setup):
 
 
 @pytest.mark.asyncio
-async def test_delete_link(dynamodb_setup):
+async def test_delete_link(dynamodb_table):
     from core.repositories import channel_link_repo
 
     await channel_link_repo.put(
@@ -150,3 +147,37 @@ async def test_delete_link(dynamodb_setup):
         peer_id="99999",
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_query_by_owner(dynamodb_table):
+    from core.repositories import channel_link_repo
+
+    await channel_link_repo.put(
+        owner_id="org_1",
+        provider="telegram",
+        agent_id="main",
+        peer_id="111",
+        member_id="user_a",
+        linked_via="settings",
+    )
+    await channel_link_repo.put(
+        owner_id="org_1",
+        provider="discord",
+        agent_id="sales",
+        peer_id="222",
+        member_id="user_b",
+        linked_via="settings",
+    )
+    await channel_link_repo.put(
+        owner_id="org_2",
+        provider="telegram",
+        agent_id="main",
+        peer_id="333",
+        member_id="user_a",
+        linked_via="settings",
+    )
+
+    rows = await channel_link_repo.query_by_owner("org_1")
+    assert len(rows) == 2
+    assert {r["provider"] for r in rows} == {"telegram", "discord"}

@@ -68,13 +68,30 @@ async def get_by_peer(
 async def query_by_member(member_id: str) -> list[dict]:
     """Return all link rows for a Clerk member across all orgs.
 
-    Uses the by-member GSI.
+    Uses the by-member GSI. Does not paginate — acceptable because a
+    member is realistically in at most a handful of orgs with a few bots
+    each, so the result set fits in a single 1MB query page.
     """
     table = _get_table()
     response = await run_in_thread(
         table.query,
         IndexName="by-member",
         KeyConditionExpression=Key("member_id").eq(member_id),
+    )
+    return response.get("Items", [])
+
+
+async def query_by_owner(owner_id: str) -> list[dict]:
+    """Return all link rows for a container owner across all providers/agents/peers.
+
+    Uses the main table's hash key directly. Note: does not paginate —
+    acceptable because per-owner link counts are small (bounded by number
+    of bots × number of members linked).
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
     )
     return response.get("Items", [])
 
