@@ -9,9 +9,12 @@ Each container gets a gateway auth token so it can bind to LAN
 import base64
 import hashlib
 import json
+import logging
 import time
 
 from core.config import TIER_CONFIG
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -561,7 +564,15 @@ async def read_openclaw_config_from_efs(owner_id: str) -> dict | None:
         return None
 
     def _read():
-        with open(config_path, "r") as f:
-            return json.load(f)
+        try:
+            with open(config_path, "r") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError) as e:
+            logger.warning(
+                "Failed to parse openclaw.json for owner %s: %s",
+                owner_id,
+                e,
+            )
+            return None
 
     return await asyncio.to_thread(_read)
