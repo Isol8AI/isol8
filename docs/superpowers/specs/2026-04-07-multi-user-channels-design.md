@@ -167,21 +167,20 @@ Table: isol8-{env}-channel-links
 
 Primary key:
   PK (hash)  : owner_id          # container owner (org_id or user_id)
-  SK (range) : provider#account_id#peer_id
+  SK (range) : provider#agent_id#peer_id
 
 Attributes:
   owner_id    : string   # container owner
   provider    : string   # "telegram" | "discord" | "slack"
-  account_id  : string   # the OpenClaw accountId (matches the agentId)
+  agent_id    : string   # the Isol8 agent that owns the bot
   peer_id     : string   # platform user ID (Telegram numeric, Discord snowflake, Slack U...)
   member_id   : string   # Clerk user_id of the linked member
-  agent_id    : string   # denormalized — same value as account_id
   linked_at   : string   # ISO8601 timestamp
   linked_via  : string   # "wizard" | "settings"
 
 GSI: by-member
   PK : member_id
-  SK : owner_id#provider#account_id
+  SK : owner_id#provider#agent_id
   Use: Settings page lookup ("show me my links across all my orgs")
 ```
 
@@ -196,7 +195,7 @@ GSI: by-member
 | Member delete cleanup (Clerk webhook): remove all links for a Clerk user | `Query(member_id)` + `BatchDelete` | by-member GSI |
 | Member self-unlink | `DeleteItem(owner_id, "telegram#sales#99999")` | Main table |
 
-**Note on naming:** In this design we always use the same string for both the OpenClaw `accountId` and the Isol8 `agentId` — when the admin sets up a Telegram bot for the `sales` agent, the bot is written to `channels.telegram.accounts.sales` and the binding is `{accountId: "sales", agentId: "sales"}`. There is no scenario where they differ. The `channel_links` table stores both fields with the same value: `account_id` is named after the OpenClaw concept (it's what appears in the session key the parser sees); `agent_id` is the Isol8 concept and is kept for query clarity in admin-side flows. Future maintainers should not introduce code that lets them diverge without updating this note.
+**A note on OpenClaw's vocabulary:** OpenClaw uses the term `accountId` in its config (`channels.<provider>.accounts.<accountId>.*`) and in session keys (`agent:<agentId>:<channel>:<accountId>:direct:<peerId>`). Isol8 uses `agent_id` everywhere. **In this design, the OpenClaw `accountId` is always the Isol8 `agent_id` — same string.** When we write `openclaw.json`, we put the agent_id into the `accountId` slot. When the parser reads a session key, the value in the `accountId` slot IS the agent_id. There is no translation step. This is a deliberate design choice; future code should not introduce any path where the two diverge.
 
 ### openclaw.json fields written by Isol8
 
@@ -256,7 +255,7 @@ The `bindings` array uses `append_to_openclaw_config_list` to avoid clobbering e
 
 - `session.dmScope`: enum string `"main" | "per-peer" | "per-channel-peer" | "per-account-channel-peer"` (`openclaw/src/routing/session-key.ts:138`)
 - `channels.<provider>.accounts.<accountId>`: keyed by string `accountId` matching regex `/^[a-z0-9][a-z0-9_-]{0,63}$/i` and lowercased (`openclaw/src/routing/account-id.ts:6,35-47`). Default if unspecified: literal `"default"`.
-- `agentId` (used both as the OpenClaw agent identifier and as our `accountId`): same regex (`openclaw/src/routing/session-key.ts:91-109`). Reserved value: `"main"` cannot be passed to `agents.create` per `agents-mutate.test.ts`. The auto-created main agent uses agentId `"main"` for legacy reasons; new agents created via the UI get slugified names (e.g. `"Test Agent"` → `"test-agent"`).
+- Isol8 `agent_id` (also written into the OpenClaw `accountId` slot): same regex (`openclaw/src/routing/session-key.ts:91-109`). Reserved value: `"main"` cannot be passed to OpenClaw's `agents.create` per `agents-mutate.test.ts`, but the auto-created main agent uses agent_id `"main"` because OpenClaw seeds it directly, not via the create RPC. New agents created via the UI get slugified names (e.g. `"Test Agent"` → `"test-agent"`).
 - `bindings[].match.channel`: string, lowercase channel id (`"telegram"`, `"discord"`, `"slack"`)
 - `bindings[].match.accountId`: same as above
 - `bindings[].agentId`: same regex as agentId
@@ -301,13 +300,15 @@ def _parse_session_key(self, session_key: str) -> dict:
             "member_id": parts[2],   # already a Clerk user_id
         }
 
-    # Channel DM (per-account-channel-peer)
+    # Channel DM (per-account-channel-peer):
+    # OpenClaw shape is agent:<agentId>:<channel>:<accountId>:direct:<peerId>.
+    # In our design accountId == agentId, so parts[1] and parts[3] always hold
+    # the same value. We use parts[1] (which we already extracted as agent_id).
     if len(parts) == 6 and parts[4] == "direct":
         return {
             "agent_id": agent_id,
             "source": "dm",
             "channel": parts[2],
-            "account_id": parts[3],
             "peer_id": parts[5],
         }
 
@@ -343,7 +344,7 @@ async def _resolve_member_from_session(self, parsed: dict) -> str:
         link = await channel_link_repo.get_by_peer(
             owner_id=self.user_id,
             provider=parsed["channel"],
-            account_id=parsed["account_id"],
+            agent_id=parsed["agent_id"],
             peer_id=parsed["peer_id"],
         )
         if link:
@@ -397,12 +398,12 @@ This implicitly fixes a pre-existing parser bug at `connection_pool.py:307` wher
     ```json5
     {
       telegram: [
-        { accountId: "main",  agentId: "main",  botUsername: "acme_main_bot",  linked: false },
-        { accountId: "sales", agentId: "sales", botUsername: "acme_sales_bot", linked: false }
+        { agent_id: "main",  bot_username: "acme_main_bot",  linked: false },
+        { agent_id: "sales", bot_username: "acme_sales_bot", linked: false }
       ],
       discord: [],
       slack: [],
-      canCreateBots: false
+      can_create_bots: false
     }
     ```
 
@@ -420,7 +421,7 @@ This implicitly fixes a pre-existing parser bug at `connection_pool.py:307` wher
 3. Agent runs, streams tokens.
 4. On agent run completion, OpenClaw broadcasts an `agent` event with `stream:"lifecycle"`, `data.phase:"end"`, `sessionKey:"agent:main:telegram:main:direct:12345"`. This broadcast is **unconditional** (`openclaw/src/gateway/server-chat.ts:938`) and reaches Isol8's existing operator WebSocket connection without any subscription.
 5. Isol8's `connection_pool._handle_message` receives the event. The new branch detects `stream:"lifecycle"` + `phase:"end"` and calls `_record_usage_from_session({"sessionKey": ...})`.
-6. `_record_usage_from_session` calls `_parse_session_key` → `{source: "dm", channel: "telegram", account_id: "main", peer_id: "12345", agent_id: "main"}`.
+6. `_record_usage_from_session` calls `_parse_session_key` → `{source: "dm", channel: "telegram", agent_id: "main", peer_id: "12345"}`.
 7. Async task calls `_resolve_member_from_session(parsed)`, which calls `channel_link_repo.get_by_peer(owner_id, "telegram", "main", "12345")` → returns the link row → returns Bob's clerk_user_id.
 8. `_fetch_and_record_usage` runs unchanged: queries `sessions.list` RPC, reads the per-run `inputTokens`/`outputTokens` (which OpenClaw overwrites per-run, not cumulative — `openclaw/src/agents/command/session-store.ts:109-122`), calls `usage_service.record_usage(owner_id=org_id, user_id=bob_clerk_id, model, tokens...)`.
 9. `record_usage` writes monthly counter (org_id), lifetime counter (org_id), and per-member counter (`member:bob_clerk_id:{period}`).
@@ -467,7 +468,7 @@ Pairing acts as a built-in spam guard.
 | Pairing file doesn't exist yet | `ENOENT` from EFS read → `404 pairing_code_not_found`. |
 | Already linked to this bot (re-link attempt) | Backend detects the row already exists with the same `member_id`. Returns `200 already_linked` (idempotent). |
 | Peer already linked to a DIFFERENT member (shoulder-surfed code attack) | Backend detects an existing row with the same SK but different `member_id`. Returns `409 peer_already_linked_to_other_member`. UI: "Ask the existing member to unlink first or contact your admin." |
-| Member linked, then admin deletes the bot | The link row points at a now-nonexistent `account_id`. Settings page filters out orphans (the bot doesn't appear in the openclaw.json read, so the row has no UI representation). On bot delete, the backend sweeps `channel_links` rows by `(owner_id, provider, account_id)` and BatchDeletes them. |
+| Member linked, then admin deletes the bot | The link row points at a now-nonexistent `agent_id`. Settings page filters out orphans (the bot doesn't appear in the openclaw.json read, so the row has no UI representation). On bot delete, the backend sweeps `channel_links` rows by `(owner_id, provider, agent_id)` and BatchDeletes them. |
 | Container restart mid-link (EFS write succeeds, DynamoDB write fails) | Worst case: peer is in `allowFrom` but no link row in DynamoDB. Detection: next message billed under owner_id (no per-member attribution). Recovery: member re-runs the link flow; the EFS append is a no-op (already in allowFrom), the DynamoDB write succeeds. Acceptable. |
 
 ### Inbound DM / billing path
@@ -486,8 +487,8 @@ Pairing acts as a built-in spam guard.
 
 | Case | Behavior |
 |---|---|
-| Admin deletes a bot | Backend (a) `delete_openclaw_config_path(owner_id, ["channels", provider, "accounts", account_id])` removes the account block. (b) `remove_from_openclaw_config_list(owner_id, ["bindings"], predicate=lambda b: b.get("match", {}).get("channel") == provider and b.get("match", {}).get("accountId") == account_id)` removes the binding. (c) Sweep `channel_links` by `(owner_id, provider, account_id)` and BatchDelete. (d) Container picks up the change via chokidar, stops the bot. |
-| Member self-unlinks | Backend (a) `remove_from_openclaw_config_list(owner_id, ["channels", provider, "accounts", account_id, "allowFrom"], predicate=lambda v: v == peer_id)` for the member's peer_id. (b) DynamoDB DeleteItem on the link row. If the EFS write fails (admin removed the bot in the meantime), catch and proceed with the DDB delete. End state is consistent. |
+| Admin deletes a bot | Backend (a) `delete_openclaw_config_path(owner_id, ["channels", provider, "accounts", agent_id])` removes the account block (the OpenClaw `accountId` slot holds our `agent_id`). (b) `remove_from_openclaw_config_list(owner_id, ["bindings"], predicate=lambda b: b.get("match", {}).get("channel") == provider and b.get("match", {}).get("accountId") == agent_id)` removes the binding. (c) Sweep `channel_links` by `(owner_id, provider, agent_id)` and BatchDelete. (d) Container picks up the change via chokidar, stops the bot. |
+| Member self-unlinks | Backend (a) `remove_from_openclaw_config_list(owner_id, ["channels", provider, "accounts", agent_id, "allowFrom"], predicate=lambda v: v == peer_id)` for the member's peer_id. (b) DynamoDB DeleteItem on the link row. If the EFS write fails (admin removed the bot in the meantime), catch and proceed with the DDB delete. End state is consistent. |
 | Org member leaves the org / Clerk `user.deleted` webhook fires | Existing handler in `routers/webhooks.py` extended to sweep `channel_links` by-member GSI and BatchDelete. |
 | Whole container deleted (`delete_user_service`) | `core/containers/ecs_manager.py` extended to query `channel_links` by owner_id and BatchDelete before tearing down ECS. |
 
@@ -669,7 +670,7 @@ Pure-function tests covering all 10 session-key shapes from the Data model secti
 | Are channel-driven runs billed today? | No. `chat.final` only fires for webchat. Channel usage is unbilled. Fixed by switching the billing trigger to lifecycle/end agent events. |
 | Do we need to subscribe to anything to receive lifecycle events? | No. `broadcast("agent", ...)` reaches all operator-scoped clients automatically (`server-broadcast.ts:71-128`). Isol8 already receives `agent` events; we just add a new branch in the existing handler. |
 | Do we need to track cumulative tokens to avoid double-billing? | No. OpenClaw's session store overwrites `inputTokens`/`outputTokens` per agent run (`session-store.ts:109`). Reading after each lifecycle/end gives that turn's tokens. Stateless. |
-| What's the format of `accountId`? | Lowercase string matching `/^[a-z0-9][a-z0-9_-]{0,63}$/i`. Default is `"default"`. Isol8 uses the agentId as the accountId (e.g. `"main"`, `"sales"`). Both pass the same regex. |
+| What's the format of OpenClaw's `accountId`, and how does it relate to Isol8's `agent_id`? | Lowercase string matching `/^[a-z0-9][a-z0-9_-]{0,63}$/i`. Default is `"default"`. Isol8's `agent_id` uses the same regex. **In this design the OpenClaw `accountId` IS the Isol8 `agent_id` — same string, no translation.** Inside Isol8 code we always say `agent_id` (matching `useAgents.ts`, `agents.create`, etc.); the word `accountId` only appears when we're literally writing or reading the OpenClaw config field name. |
 | Does the frontend use OpenClaw `config.patch` RPC today? | Yes, in `ChannelsPanel.tsx` and `ChannelCards.tsx`. We're unifying through a new `PATCH /api/v1/config` endpoint that wraps `patch_openclaw_config`. |
 | Does deep-merge in `_deep_merge` concat or replace arrays? | Replaces. New helpers `append_to_openclaw_config_list` / `remove_from_openclaw_config_list` do locked read-modify-write for list semantics. |
 
