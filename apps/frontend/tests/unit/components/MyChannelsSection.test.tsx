@@ -55,7 +55,11 @@ beforeEach(() => {
 describe("MyChannelsSection", () => {
   it("lists bots grouped by provider", () => {
     render(<MyChannelsSection />);
-    expect(screen.getByText(/telegram/i)).toBeInTheDocument();
+    // Use heading role since "Telegram" also appears in the section
+    // description text ("Link your Telegram, Discord, and Slack ...").
+    expect(
+      screen.getByRole("heading", { name: /telegram/i }),
+    ).toBeInTheDocument();
     expect(screen.getByText(/@main/)).toBeInTheDocument();
     expect(screen.getByText(/@sales/)).toBeInTheDocument();
   });

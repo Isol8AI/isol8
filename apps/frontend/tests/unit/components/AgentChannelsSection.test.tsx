@@ -28,9 +28,18 @@ vi.mock("@/lib/api", () => ({
 describe("AgentChannelsSection", () => {
   it("renders telegram, discord, and slack (no whatsapp)", () => {
     render(<AgentChannelsSection agentId="main" />);
-    expect(screen.getByText(/telegram/i)).toBeInTheDocument();
-    expect(screen.getByText(/discord/i)).toBeInTheDocument();
-    expect(screen.getByText(/slack/i)).toBeInTheDocument();
+    // Use the section's provider headings — "Discord" / "Slack" also
+    // appear inside the "Add ... bot" button labels for empty providers,
+    // so getByText would find multiple matches.
+    expect(
+      screen.getByText(/telegram/i, { selector: "span" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/^discord$/i, { selector: "span" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/^slack$/i, { selector: "span" }),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/whatsapp/i)).not.toBeInTheDocument();
   });
 
