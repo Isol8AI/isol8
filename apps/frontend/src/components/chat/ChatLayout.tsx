@@ -15,7 +15,6 @@ import { useAgents, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
-import { useNodeBridge } from "@/hooks/useNodeBridge";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -59,9 +58,6 @@ export function ChatLayout({
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
-
-  // Desktop app: bridge node commands via browser WebSocket + Tauri IPC
-  useNodeBridge();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
