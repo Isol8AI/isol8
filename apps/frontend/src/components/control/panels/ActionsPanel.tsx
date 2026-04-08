@@ -10,7 +10,8 @@ import {
   CheckCircle2,
   Radio,
 } from "lucide-react";
-import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useGatewayRpc } from "@/hooks/useGatewayRpc";
+import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -57,7 +58,7 @@ const PAIRING_CHANNELS = [
 /* ── Component ─────────────────────────────────────────── */
 
 export function ActionsPanel() {
-  const callRpc = useGatewayRpcMutation();
+  const api = useApi();
   const {
     data: configData,
     mutate: mutateConfig,
@@ -94,31 +95,31 @@ export function ActionsPanel() {
 
   const patchConfig = useCallback(
     async (label: string, patch: Record<string, unknown>, postAction?: () => void) => {
-      const snapshot = configData as ConfigSnapshot | undefined;
-      if (!snapshot?.hash) {
-        setFeedback({ type: "error", message: "Config not loaded yet. Please wait." });
-        return;
-      }
       setBusy(label);
       setFeedback(null);
       try {
-        await callRpc("config.patch", {
-          raw: JSON.stringify(patch),
-          baseHash: snapshot.hash,
-        });
+        await api.patchConfig(patch);
         setFeedback({ type: "success", message: `${label}: success. Gateway restarting...` });
         mutateConfig();
         postAction?.();
       } catch (err) {
-        setFeedback({
-          type: "error",
-          message: `${label}: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        // REST endpoint can return 403 for free-tier-channels or non-admin org members.
+        // Surface the detail field if available; otherwise fall through to the error message.
+        const error = err as { status?: number; detail?: string; message?: string };
+        let msg = error.detail || error.message || String(err);
+        if (error.status === 403) {
+          if (msg === "channels_require_paid_tier") {
+            msg = "Channels require a paid plan. Upgrade from Settings to continue.";
+          } else if (msg === "admin_required") {
+            msg = "Only organization admins can change channel settings.";
+          }
+        }
+        setFeedback({ type: "error", message: `${label}: ${msg}` });
       } finally {
         setBusy(null);
       }
     },
-    [callRpc, configData, mutateConfig],
+    [api, mutateConfig],
   );
 
   const selectedDef = PAIRING_CHANNELS.find((c) => c.id === selectedChannel)!;
