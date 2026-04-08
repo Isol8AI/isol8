@@ -473,14 +473,13 @@ def write_openclaw_config(
                 "enabled": False,
                 "dmPolicy": "pairing",
             },
-            "whatsapp": {
-                "enabled": False,
-                "dmPolicy": "pairing",
-            },
             "discord": {
                 "enabled": False,
                 "dmPolicy": "pairing",
             },
+        },
+        "session": {
+            "dmScope": "per-account-channel-peer",
         },
         "web": {
             "enabled": True,
