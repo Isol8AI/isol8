@@ -5,13 +5,14 @@ import React, { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
+import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
 import { cn } from "@/lib/utils";
 
 // =============================================================================
 // Types & Navigation
 // =============================================================================
 
-type Panel = "profile" | "billing";
+type Panel = "profile" | "billing" | "channels";
 
 const NAV_SECTIONS = [
   {
@@ -19,6 +20,7 @@ const NAV_SECTIONS = [
     items: [
       { id: "profile" as Panel, name: "Profile", icon: "profile" },
       { id: "billing" as Panel, name: "Billing", icon: "billing" },
+      { id: "channels" as Panel, name: "Channels", icon: "channels" },
     ],
   },
 ];
@@ -97,6 +99,12 @@ function NavIcon({ icon }: { icon: string }) {
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
           <rect x="1" y="4" width="22" height="16" rx="2" />
           <line x1="1" y1="10" x2="23" y2="10" />
+        </svg>
+      );
+    case "channels":
+      return (
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       );
     default:
@@ -441,12 +449,27 @@ function BillingPanel() {
 }
 
 // =============================================================================
+// Channels Panel
+// =============================================================================
+
+function ChannelsPanel() {
+  return (
+    <div className="settings-panel" id="panel-channels" role="tabpanel">
+      <h1 className="settings-page-title">Channels</h1>
+      <p className="settings-page-desc">Link your personal Telegram, Discord, and Slack accounts to your organization&apos;s bots.</p>
+      <MyChannelsSection />
+    </div>
+  );
+}
+
+// =============================================================================
 // Panel Registry
 // =============================================================================
 
 const PANELS: Record<Panel, () => React.ReactElement> = {
   profile: ProfilePanel,
   billing: BillingPanel,
+  channels: ChannelsPanel,
 };
 
 // =============================================================================
