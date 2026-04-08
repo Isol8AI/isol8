@@ -103,7 +103,7 @@ export function GooseTown() {
           </p>
         </div>
 
-        {/* RIGHT: Pixel art game window */}
+        {/* RIGHT: Game window with screenshot */}
         <div className="gt-game-wrap">
           {/* Top bar */}
           <div className="gt-topbar">
@@ -112,10 +112,7 @@ export function GooseTown() {
               <span className="gt-toptab active">Town</span>
               <span className="gt-toptab">Apartment</span>
             </div>
-            <div className="gt-topbar-right">
-              <span className="gt-music-btn" aria-hidden="true">🔊 Music</span>
-              <span className="gt-topbar-user">Præs(ddi...</span>
-            </div>
+            <span className="gt-music-btn" aria-hidden="true">🔊 Music</span>
           </div>
 
           {/* Game body */}
@@ -128,7 +125,9 @@ export function GooseTown() {
               </div>
               <div className="gt-agent-card">
                 <div className="gt-card-top">
-                  <div className="gt-card-icon">?</div>
+                  <div className="gt-card-icon">
+                    <img src="/goosetown/peeps-head.png" width="38" height="38" alt="Peeps" style={{ borderRadius: 6, imageRendering: "pixelated" as const }} />
+                  </div>
                   <div className="gt-card-name-wrap">
                     <span className="gt-card-name">PEEPS</span>
                     <span className="gt-card-sub">PeePz</span>
@@ -136,7 +135,7 @@ export function GooseTown() {
                 </div>
                 <div className="gt-card-status">
                   <div className="gt-status-dot" />
-                  <span className="gt-status-text">Sleeping</span>
+                  <span className="gt-status-text">Exploring</span>
                 </div>
                 <div className="gt-card-row">Location: Town - café</div>
                 <div className="gt-card-row">Mood: 🌗 4</div>
@@ -151,52 +150,10 @@ export function GooseTown() {
               </div>
             </div>
 
-            {/* Pixel art scene viewport */}
+            {/* Town screenshot viewport */}
             <div className="gt-viewport">
-              <div className="px-sky" />
-              <div
-                className="px-cloud"
-                style={{
-                  width: 48,
-                  height: 14,
-                  top: "12%",
-                  left: "12%",
-                  boxShadow:
-                    "8px -8px 0 rgba(255,255,255,.85),-8px 0 0 rgba(255,255,255,.85),40px 0 0 rgba(255,255,255,.85)",
-                }}
-              />
-              <div
-                className="px-cloud"
-                style={{
-                  width: 36,
-                  height: 10,
-                  top: "22%",
-                  left: "58%",
-                  opacity: 0.75,
-                }}
-              />
-              <div className="px-ground" />
-              {/* Building */}
-              <div className="px-building">
-                <div className="px-bldg-ridge" />
-                <div className="px-bldg-top" />
-                <div className="px-bldg-eave" />
-                <div className="px-bldg-wall">
-                  <div className="px-win px-win-l" />
-                  <div className="px-win px-win-r" />
-                  <div className="px-door" />
-                </div>
-              </div>
-              {/* Pixel tree */}
-              <div className="px-tree">
-                <div className="px-tree-top" />
-                <div className="px-tree-top2" />
-                <div className="px-tree-trunk" />
-              </div>
-              {/* Pixel art character */}
-              <div className="px-char-wrap">
-                <div className="px-char" />
-              </div>
+              <img src="/goosetown-preview.png" alt="GooseTown" className="gt-town-screenshot" />
+              <img src="/goosetown/peeps-sprite.png" alt="Peeps" className="gt-peeps-sprite" />
             </div>
           </div>
         </div>

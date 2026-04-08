@@ -153,9 +153,9 @@ export function Hero() {
       <div className="hero-left">
         <p className="eyebrow">isol8 — private AI pods</p>
         <h1 className="hero-h1">
-          An agent that <em>lives with you,</em>
+          An agent for <em>every part</em>
           <br />
-          for you.
+          of your business.
         </h1>
         <p className="hero-sub">
           Your isol8 pod is a dedicated AI environment — isolated, persistent,
@@ -259,16 +259,12 @@ export function Hero() {
               </div>
               <span className="wf-int-lbl">Office 365</span>
             </div>
-            {/* AWS */}
+            {/* Salesforce */}
             <div className="wf-int">
               <div className="wf-int-bubble">
-                <svg width="38" height="24" viewBox="0 0 46 28" xmlns="http://www.w3.org/2000/svg">
-                  <text x="1" y="18" style={{ fontFamily: "'DM Sans',Arial,sans-serif", fontWeight: 900, fontSize: "19px", fill: "#232F3E", letterSpacing: "-0.5px" }}>aws</text>
-                  <path d="M4 24 Q23 31.5 42 24" stroke="#FF9900" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-                  <path d="M37 21 L42 24 L37 27" stroke="#FF9900" strokeWidth="2.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                </svg>
+                <img src="/logos/salesforce.png" width="38" height="38" alt="Salesforce" style={{ objectFit: "contain" }} />
               </div>
-              <span className="wf-int-lbl">AWS</span>
+              <span className="wf-int-lbl">Salesforce</span>
             </div>
           </div>
         </div>

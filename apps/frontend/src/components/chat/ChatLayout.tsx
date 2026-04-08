@@ -133,14 +133,7 @@ export function ChatLayout({
           {/* Header */}
           <div className="sidebar-header">
             <div className="sidebar-logo">
-              <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect x="3" y="3" width="18" height="18" rx="4" fill="#1a1a1a"/>
-                <rect x="7" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
-                <rect x="13" y="7" width="4" height="4" rx="1" fill="#f3efe6"/>
-                <rect x="7" y="13" width="4" height="4" rx="1" fill="#f3efe6"/>
-                <rect x="13" y="13" width="4" height="4" rx="1" fill="#2d8a4e"/>
-              </svg>
-              <span>isol8</span>
+              <span className="sidebar-logo-8">8</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <Link href="/settings" className="sidebar-settings-link">
