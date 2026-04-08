@@ -109,3 +109,78 @@ async def delete(
         table.delete_item,
         Key={"owner_id": owner_id, "sk": _sk(provider, agent_id, peer_id)},
     )
+
+
+async def sweep_by_owner_provider_agent(
+    *,
+    owner_id: str,
+    provider: str,
+    agent_id: str,
+) -> int:
+    """Delete all link rows for one bot. Used by bot-delete cleanup.
+
+    Returns the number of rows deleted.
+    """
+    table = _get_table()
+    prefix = f"{provider}#{agent_id}#"
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("sk").begins_with(prefix),
+    )
+    items = response.get("Items", [])
+    if not items:
+        return 0
+
+    # DynamoDB BatchWriteItem max 25 per batch
+    for i in range(0, len(items), 25):
+        batch = items[i : i + 25]
+        with table.batch_writer() as writer:
+            for item in batch:
+                await run_in_thread(
+                    writer.delete_item,
+                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
+                )
+    return len(items)
+
+
+async def sweep_by_owner(owner_id: str) -> int:
+    """Delete all link rows for one container. Used by container-delete cleanup.
+
+    Returns the number of rows deleted.
+    """
+    items = await query_by_owner(owner_id)
+    if not items:
+        return 0
+
+    table = _get_table()
+    for i in range(0, len(items), 25):
+        batch = items[i : i + 25]
+        with table.batch_writer() as writer:
+            for item in batch:
+                await run_in_thread(
+                    writer.delete_item,
+                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
+                )
+    return len(items)
+
+
+async def sweep_by_member(member_id: str) -> int:
+    """Delete all link rows for a Clerk member. Used by Clerk user.deleted webhook.
+
+    Queries the by-member GSI, then deletes via the main table keys.
+    Returns the number of rows deleted.
+    """
+    items = await query_by_member(member_id)
+    if not items:
+        return 0
+
+    table = _get_table()
+    for i in range(0, len(items), 25):
+        batch = items[i : i + 25]
+        with table.batch_writer() as writer:
+            for item in batch:
+                await run_in_thread(
+                    writer.delete_item,
+                    Key={"owner_id": item["owner_id"], "sk": item["sk"]},
+                )
+    return len(items)

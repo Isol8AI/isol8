@@ -181,3 +181,149 @@ async def test_query_by_owner(dynamodb_table):
     rows = await channel_link_repo.query_by_owner("org_1")
     assert len(rows) == 2
     assert {r["provider"] for r in rows} == {"telegram", "discord"}
+
+
+@pytest.mark.asyncio
+async def test_sweep_by_owner_provider_agent(dynamodb_table):
+    from core.repositories import channel_link_repo
+
+    # Seed: two bots with members linked
+    for peer in ["111", "222", "333"]:
+        await channel_link_repo.put(
+            owner_id="org_1",
+            provider="telegram",
+            agent_id="main",
+            peer_id=peer,
+            member_id=f"user_{peer}",
+            linked_via="settings",
+        )
+    for peer in ["444", "555"]:
+        await channel_link_repo.put(
+            owner_id="org_1",
+            provider="telegram",
+            agent_id="sales",
+            peer_id=peer,
+            member_id=f"user_{peer}",
+            linked_via="settings",
+        )
+
+    # Sweep only the main-agent bot
+    count = await channel_link_repo.sweep_by_owner_provider_agent(
+        owner_id="org_1",
+        provider="telegram",
+        agent_id="main",
+    )
+    assert count == 3
+
+    # main is gone, sales is intact
+    assert (
+        await channel_link_repo.get_by_peer(
+            owner_id="org_1",
+            provider="telegram",
+            agent_id="main",
+            peer_id="111",
+        )
+        is None
+    )
+    assert (
+        await channel_link_repo.get_by_peer(
+            owner_id="org_1",
+            provider="telegram",
+            agent_id="sales",
+            peer_id="444",
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_by_owner(dynamodb_table):
+    from core.repositories import channel_link_repo
+
+    # Seed across two orgs
+    await channel_link_repo.put(
+        owner_id="org_a",
+        provider="telegram",
+        agent_id="main",
+        peer_id="111",
+        member_id="user_1",
+        linked_via="settings",
+    )
+    await channel_link_repo.put(
+        owner_id="org_a",
+        provider="discord",
+        agent_id="main",
+        peer_id="222",
+        member_id="user_1",
+        linked_via="settings",
+    )
+    await channel_link_repo.put(
+        owner_id="org_b",
+        provider="telegram",
+        agent_id="main",
+        peer_id="333",
+        member_id="user_1",
+        linked_via="settings",
+    )
+
+    count = await channel_link_repo.sweep_by_owner("org_a")
+    assert count == 2
+
+    assert (
+        await channel_link_repo.get_by_peer(
+            owner_id="org_a",
+            provider="telegram",
+            agent_id="main",
+            peer_id="111",
+        )
+        is None
+    )
+    # org_b untouched
+    assert (
+        await channel_link_repo.get_by_peer(
+            owner_id="org_b",
+            provider="telegram",
+            agent_id="main",
+            peer_id="333",
+        )
+        is not None
+    )
+
+
+@pytest.mark.asyncio
+async def test_sweep_by_member(dynamodb_table):
+    from core.repositories import channel_link_repo
+
+    # Bob is in two orgs
+    await channel_link_repo.put(
+        owner_id="org_a",
+        provider="telegram",
+        agent_id="main",
+        peer_id="111",
+        member_id="user_bob",
+        linked_via="settings",
+    )
+    await channel_link_repo.put(
+        owner_id="org_b",
+        provider="discord",
+        agent_id="main",
+        peer_id="222",
+        member_id="user_bob",
+        linked_via="settings",
+    )
+    # Alice is in one
+    await channel_link_repo.put(
+        owner_id="org_a",
+        provider="telegram",
+        agent_id="main",
+        peer_id="333",
+        member_id="user_alice",
+        linked_via="settings",
+    )
+
+    count = await channel_link_repo.sweep_by_member("user_bob")
+    assert count == 2
+
+    # Bob's rows gone, Alice untouched
+    assert len(await channel_link_repo.query_by_member("user_bob")) == 0
+    assert len(await channel_link_repo.query_by_member("user_alice")) == 1
