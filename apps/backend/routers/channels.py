@@ -41,6 +41,7 @@ def _validate_provider(provider: str) -> str:
 class LinkCompleteBody(BaseModel):
     agent_id: str
     code: str
+    linked_via: str = "settings"
 
 
 @router.get("/links/me", summary="List the caller's channel link status across all bots")
@@ -97,7 +98,7 @@ async def link_complete(
             agent_id=body.agent_id,
             code=body.code,
             member_id=member_id,
-            linked_via="settings",
+            linked_via=body.linked_via,
         )
     except channel_link_service.PairingCodeNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

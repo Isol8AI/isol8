@@ -8,6 +8,10 @@ from unittest.mock import AsyncMock, patch
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 from core.auth import AuthContext  # noqa: E402
+from core.services.channel_link_service import (  # noqa: E402
+    PairingCodeNotFoundError,
+    PeerAlreadyLinkedError,
+)
 
 
 @pytest.fixture
@@ -67,8 +71,6 @@ def test_link_complete_happy_path(client):
 def test_link_complete_code_not_found_returns_404(client):
     cleanup = _patch_auth(_personal_auth())
     try:
-        from core.services.channel_link_service import PairingCodeNotFoundError
-
         with patch(
             "routers.channels.channel_link_service.complete_link",
             AsyncMock(side_effect=PairingCodeNotFoundError("not found")),
@@ -85,8 +87,6 @@ def test_link_complete_code_not_found_returns_404(client):
 def test_link_complete_peer_already_linked_returns_409(client):
     cleanup = _patch_auth(_personal_auth())
     try:
-        from core.services.channel_link_service import PeerAlreadyLinkedError
-
         with patch(
             "routers.channels.channel_link_service.complete_link",
             AsyncMock(side_effect=PeerAlreadyLinkedError("taken")),
@@ -276,5 +276,39 @@ def test_admin_delete_bot_sweeps_links_and_config(client):
         mock_rm_binding.assert_awaited_once()
         mock_sweep.assert_awaited_once()
         assert resp.json()["links_swept"] == 3
+    finally:
+        cleanup()
+
+
+def test_admin_delete_bot_personal_account_sweeps_links_and_config(client):
+    """Personal-account user calling admin_delete_bot also gets the sweep —
+    require_org_admin is a no-op pass-through for non-org callers."""
+    cleanup = _patch_auth(_personal_auth("user_personal"))
+    try:
+        with (
+            patch(
+                "routers.channels.delete_openclaw_config_path",
+                AsyncMock(),
+            ) as mock_del_path,
+            patch(
+                "routers.channels.remove_from_openclaw_config_list",
+                AsyncMock(),
+            ) as mock_rm_binding,
+            patch(
+                "routers.channels.channel_link_repo.sweep_by_owner_provider_agent",
+                AsyncMock(return_value=2),
+            ) as mock_sweep,
+        ):
+            resp = client.delete("/api/v1/channels/telegram/sales")
+        assert resp.status_code == 200
+        mock_del_path.assert_awaited_once()
+        mock_rm_binding.assert_awaited_once()
+        mock_sweep.assert_awaited_once()
+        # Personal account: owner_id should equal user_id
+        sweep_call = mock_sweep.call_args.kwargs
+        assert sweep_call["owner_id"] == "user_personal"
+        assert sweep_call["provider"] == "telegram"
+        assert sweep_call["agent_id"] == "sales"
+        assert resp.json()["links_swept"] == 2
     finally:
         cleanup()
