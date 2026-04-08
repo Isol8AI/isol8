@@ -6,7 +6,7 @@ import json
 from core.containers.config import (
     write_openclaw_config,
     write_mcporter_config,
-    patch_openclaw_config,
+    merge_openclaw_config,
     _deep_merge,
 )
 
@@ -257,7 +257,7 @@ class TestPatchOpenclawConfig:
         """Top-level keys are replaced."""
         base = {"gateway": {"mode": "local"}, "browser": {"enabled": False}}
         patch = {"browser": {"enabled": True}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["browser"]["enabled"] is True
         assert result["gateway"]["mode"] == "local"  # unchanged
 
@@ -274,7 +274,7 @@ class TestPatchOpenclawConfig:
                 "web": {"search": {"enabled": True}},
             }
         }
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["tools"]["web"]["search"]["enabled"] is True
         assert result["tools"]["web"]["search"]["provider"] == "perplexity"  # preserved
         assert result["tools"]["media"]["image"]["enabled"] is False  # preserved
@@ -283,14 +283,14 @@ class TestPatchOpenclawConfig:
         """New keys in patch are added."""
         base = {"gateway": {"mode": "local"}}
         patch = {"newSection": {"key": "value"}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["newSection"]["key"] == "value"
 
     def test_original_not_mutated(self):
         """Original config dict is not mutated."""
         base = {"gateway": {"mode": "local"}}
         patch = {"gateway": {"mode": "remote"}}
-        result = patch_openclaw_config(base, patch)
+        result = merge_openclaw_config(base, patch)
         assert result["gateway"]["mode"] == "remote"
         assert base["gateway"]["mode"] == "local"  # unchanged
 

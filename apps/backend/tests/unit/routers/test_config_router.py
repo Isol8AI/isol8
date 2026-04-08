@@ -148,7 +148,7 @@ def test_patch_config_rejects_token_collision(client):
         with (
             patch("routers.config.patch_openclaw_config", AsyncMock()),
             patch(
-                "core.containers.config.read_openclaw_config_from_efs",
+                "routers.config.read_openclaw_config_from_efs",
                 AsyncMock(return_value=existing_cfg),
             ),
             _mock_billing("pro"),
@@ -189,7 +189,7 @@ def test_patch_config_allows_overwriting_own_agent_token(client):
         with (
             patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch,
             patch(
-                "core.containers.config.read_openclaw_config_from_efs",
+                "routers.config.read_openclaw_config_from_efs",
                 AsyncMock(return_value=existing_cfg),
             ),
             _mock_billing("pro"),

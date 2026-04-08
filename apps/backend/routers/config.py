@@ -16,6 +16,7 @@ from core.auth import (
     require_org_admin,
     resolve_owner_id,
 )
+from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo
 from core.services.config_patcher import (
     ConfigPatchError,
@@ -54,8 +55,6 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
     a botToken that already exists under a different accounts.<agent_id> entry
     in the owner's openclaw.json.
     """
-    from core.containers.config import read_openclaw_config_from_efs
-
     channels = patch.get("channels")
     if not isinstance(channels, dict):
         return
@@ -121,7 +120,7 @@ async def patch_config(
     # Tier gate on channel fields
     if _patch_touches_channels(body.patch):
         account = await billing_repo.get_by_owner_id(owner_id)
-        tier = (account or {}).get("plan_tier", "free")
+        tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
         if tier == "free":
             raise HTTPException(
                 status_code=403,

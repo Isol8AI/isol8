@@ -509,11 +509,11 @@ def write_mcporter_config(servers: dict | None = None) -> str:
     return json.dumps(config, indent=2)
 
 
-def patch_openclaw_config(
+def merge_openclaw_config(
     existing_config: dict,
     updates: dict,
 ) -> dict:
-    """Apply partial updates to an existing openclaw.json config.
+    """Merge partial updates into an existing openclaw.json config dict.
 
     Performs a shallow merge at the top-level section keys (gateway, models,
     agents, tools, browser, update). Nested dicts within each section are
