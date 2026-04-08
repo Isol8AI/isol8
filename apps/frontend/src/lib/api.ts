@@ -48,7 +48,13 @@ export function useApi(): ApiMethods {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || "API request failed");
+        const error = new Error(errorData.detail || "API request failed") as Error & {
+          status: number;
+          detail?: string;
+        };
+        error.status = response.status;
+        error.detail = errorData.detail;
+        throw error;
       }
 
       return response.json();
