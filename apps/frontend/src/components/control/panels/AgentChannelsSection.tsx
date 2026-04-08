@@ -1,14 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { Plus, Trash2, CheckCircle2, AlertCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useApi } from "@/lib/api";
+import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
-
-type Provider = "telegram" | "discord" | "slack";
 
 interface BotEntry {
   agent_id: string;
@@ -27,13 +36,6 @@ interface AgentChannelsSectionProps {
   agentId: string;
 }
 
-const PROVIDERS: Provider[] = ["telegram", "discord", "slack"];
-const PROVIDER_LABELS: Record<Provider, string> = {
-  telegram: "Telegram",
-  discord: "Discord",
-  slack: "Slack",
-};
-
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
   const { data, mutate } = useSWR<LinksMeResponse>(
@@ -41,21 +43,32 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
   const [wizardFor, setWizardFor] = useState<Provider | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
+  const [deleting, setDeleting] = useState(false);
+
+  useEffect(() => {
+    if (!wizardFor) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setWizardFor(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [wizardFor]);
 
   if (!data) {
     return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
   }
 
-  const handleDelete = async (provider: Provider) => {
-    if (
-      !confirm(
-        `Delete the ${PROVIDER_LABELS[provider]} bot for this agent? This cannot be undone.`,
-      )
-    ) {
-      return;
+  const performDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await api.del(`/channels/${deleteTarget}/${agentId}`);
+      setDeleteTarget(null);
+      await mutate();
+    } finally {
+      setDeleting(false);
     }
-    await api.del(`/channels/${provider}/${agentId}`);
-    mutate();
   };
 
   return (
@@ -80,12 +93,12 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                   ) : (
                     <AlertCircle className="h-4 w-4 text-amber-500" />
                   )}
-                  <span className="font-mono">@{bot.bot_username}</span>
+                  <span className="font-mono">{formatBotHandle(provider, bot.bot_username)}</span>
                   <div className="flex-1" />
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => handleDelete(provider)}
+                    onClick={() => setDeleteTarget(provider)}
                     aria-label={`Delete ${provider} bot`}
                   >
                     <Trash2 className="h-3 w-3" />
@@ -109,8 +122,16 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
       })}
 
       {wizardFor && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl">
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setWizardFor(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <BotSetupWizard
               mode="create"
               provider={wizardFor}
@@ -124,6 +145,29 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
           </div>
         </div>
       )}
+
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => !open && setDeleteTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this bot?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteTarget && (
+                <>
+                  This removes the {PROVIDER_LABELS[deleteTarget]} bot from the
+                  <span className="font-mono"> {agentId} </span>
+                  agent and unlinks every member who paired with it. This cannot be undone.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={performDelete} disabled={deleting}>
+              {deleting ? "Deleting…" : "Delete bot"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -1,14 +1,23 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import { CheckCircle2, AlertCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { useApi } from "@/lib/api";
+import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
-
-type Provider = "telegram" | "discord" | "slack";
 
 interface BotEntry {
   agent_id: string;
@@ -23,29 +32,53 @@ interface LinksMeResponse {
   can_create_bots: boolean;
 }
 
-const PROVIDERS: Provider[] = ["telegram", "discord", "slack"];
-const PROVIDER_LABELS: Record<Provider, string> = {
-  telegram: "Telegram",
-  discord: "Discord",
-  slack: "Slack",
-};
-
 export function MyChannelsSection() {
   const api = useApi();
-  const { data, mutate } = useSWR<LinksMeResponse>(
+  const { data, error, isLoading, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
   const [wizard, setWizard] = useState<{ provider: Provider; agentId: string } | null>(null);
+  const [unlinkTarget, setUnlinkTarget] = useState<{ provider: Provider; agentId: string } | null>(null);
+  const [unlinking, setUnlinking] = useState(false);
 
-  if (!data) {
-    return <div className="p-4 text-sm text-[#8a8578]">Loading…</div>;
+  useEffect(() => {
+    if (!wizard && !unlinkTarget) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setWizard(null);
+        setUnlinkTarget(null);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [wizard, unlinkTarget]);
+
+  if (error) {
+    return (
+      <div className="p-4 space-y-2">
+        <p className="text-sm text-[#dc2626]">Failed to load channels.</p>
+        <Button variant="outline" size="sm" onClick={() => mutate()}>
+          Retry
+        </Button>
+      </div>
+    );
   }
 
-  const handleUnlink = async (provider: Provider, agentId: string) => {
-    if (!confirm(`Unlink your ${PROVIDER_LABELS[provider]} from this bot?`)) return;
-    await api.del(`/channels/link/${provider}/${agentId}`);
-    mutate();
+  if (isLoading || !data) {
+    return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
+  }
+
+  const performUnlink = async () => {
+    if (!unlinkTarget) return;
+    setUnlinking(true);
+    try {
+      await api.del(`/channels/link/${unlinkTarget.provider}/${unlinkTarget.agentId}`);
+      setUnlinkTarget(null);
+      await mutate();
+    } finally {
+      setUnlinking(false);
+    }
   };
 
   return (
@@ -82,14 +115,15 @@ export function MyChannelsSection() {
                       <AlertCircle className="h-4 w-4 text-amber-500" />
                     )}
                     <div className="flex-1">
-                      <p className="text-sm font-mono">@{bot.bot_username}</p>
-                      <p className="text-xs text-[#8a8578]">{bot.agent_id} agent</p>
+                      <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
+                      <p className="text-xs text-[#8a8578]">{bot.agent_id}</p>
                     </div>
                     {bot.linked ? (
                       <Button
                         variant="outline"
                         size="sm"
-                        onClick={() => handleUnlink(provider, bot.agent_id)}
+                        onClick={() => setUnlinkTarget({ provider, agentId: bot.agent_id })}
+                        aria-label={`Unlink your ${PROVIDER_LABELS[provider]} from ${bot.bot_username}`}
                       >
                         Unlink
                       </Button>
@@ -97,6 +131,7 @@ export function MyChannelsSection() {
                       <Button
                         size="sm"
                         onClick={() => setWizard({ provider, agentId: bot.agent_id })}
+                        aria-label={`Link your ${PROVIDER_LABELS[provider]} to ${bot.bot_username}`}
                       >
                         Link
                       </Button>
@@ -110,8 +145,16 @@ export function MyChannelsSection() {
       })}
 
       {wizard && (
-        <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-50">
-          <div className="bg-white rounded-lg shadow-xl">
+        <div
+          className="fixed inset-0 bg-black/30 flex items-center justify-center z-50"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setWizard(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl"
+            onClick={(e) => e.stopPropagation()}
+          >
             <BotSetupWizard
               mode="link-only"
               provider={wizard.provider}
@@ -125,6 +168,29 @@ export function MyChannelsSection() {
           </div>
         </div>
       )}
+
+      <AlertDialog open={unlinkTarget !== null} onOpenChange={(open) => !open && setUnlinkTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Unlink your account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {unlinkTarget && (
+                <>
+                  This removes your {PROVIDER_LABELS[unlinkTarget.provider]} from the
+                  <span className="font-mono"> {unlinkTarget.agentId} </span>
+                  bot. You can re-link anytime by pasting a new pairing code.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={unlinking}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={performUnlink} disabled={unlinking}>
+              {unlinking ? "Unlinking…" : "Unlink"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
