@@ -52,6 +52,7 @@ class GatewayConnection:
         self._frontend_connections: Set[str] = set()
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
+        self._billing_tasks: Set[asyncio.Task] = set()
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
@@ -309,10 +310,25 @@ class GatewayConnection:
             return
 
         async def _resolve_then_record():
-            member_id = await self._resolve_member_from_session(parsed)
-            await self._fetch_and_record_usage(session_key, member_id)
+            try:
+                member_id = await self._resolve_member_from_session(parsed)
+                await self._fetch_and_record_usage(session_key, member_id)
+            except Exception:
+                # Don't let billing failures crash the gateway reader. Log
+                # with full traceback so DynamoDB outages and similar
+                # transient failures are observable.
+                logger.exception(
+                    "Failed to resolve+record usage for user %s session %s",
+                    self.user_id,
+                    session_key,
+                )
 
-        asyncio.create_task(_resolve_then_record())
+        task = asyncio.create_task(_resolve_then_record())
+        # Track the in-flight task so close() can await it on shutdown.
+        # Without this, scale-to-zero teardown can cancel pending billing
+        # writes mid-flight, silently losing the last few usage events.
+        self._billing_tasks.add(task)
+        task.add_done_callback(self._billing_tasks.discard)
 
     async def _resolve_member_from_session(self, parsed: dict) -> str:
         """Map a parsed session key to the Clerk member_id.
@@ -573,6 +589,19 @@ class GatewayConnection:
         """Shut down: cancel reader, close WebSocket."""
         self._emit_status_change("GATEWAY_DOWN", "Gateway connection closed")
         self._closed = True
+        # Wait for any in-flight billing-resolver tasks to finish writing
+        # so scale-to-zero teardown doesn't drop the last few usage events.
+        if self._billing_tasks:
+            try:
+                await asyncio.wait(
+                    self._billing_tasks,
+                    timeout=5.0,
+                )
+            except Exception:
+                logger.exception(
+                    "Error waiting for in-flight billing tasks during close for user %s",
+                    self.user_id,
+                )
         if self._grace_task and not self._grace_task.done():
             self._grace_task.cancel()
         if self._reader_task and not self._reader_task.done():
