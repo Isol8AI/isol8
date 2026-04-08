@@ -21,6 +21,7 @@ from core.auth import (
     require_org_admin,
     resolve_owner_id,
 )
+from core.services import channel_link_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,6 +33,41 @@ def _validate_provider(provider: str) -> str:
     if provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Unsupported provider: {provider}")
     return provider
+
+
+class LinkCompleteBody(BaseModel):
+    agent_id: str
+    code: str
+
+
+@router.post(
+    "/link/{provider}/complete",
+    summary="Complete the member-link flow by pasting the pairing code",
+)
+async def link_complete(
+    provider: str,
+    body: LinkCompleteBody,
+    auth: AuthContext = Depends(get_current_user),
+):
+    _validate_provider(provider)
+    owner_id = resolve_owner_id(auth)
+    member_id = auth.user_id  # always the caller, even in org context
+
+    try:
+        result = await channel_link_service.complete_link(
+            owner_id=owner_id,
+            provider=provider,
+            agent_id=body.agent_id,
+            code=body.code,
+            member_id=member_id,
+            linked_via="settings",
+        )
+    except channel_link_service.PairingCodeNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except channel_link_service.PeerAlreadyLinkedError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+    return result
 
 
 @router.delete(
