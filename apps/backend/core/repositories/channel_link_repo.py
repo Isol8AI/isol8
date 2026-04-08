@@ -54,7 +54,13 @@ async def put(
     member_id: str,
     linked_via: str,
 ) -> dict:
-    """Create or overwrite a channel link row."""
+    """Create or overwrite a channel link row.
+
+    Returns the constructed item dict (with the client-side ``linked_at``
+    timestamp) — does NOT re-fetch from DynamoDB, so callers should treat
+    ``linked_at`` as the wall-clock time when ``put`` was called rather
+    than the server-side write time.
+    """
     item = {
         "owner_id": owner_id,
         "sk": _sk(provider, agent_id, peer_id),
@@ -141,6 +147,13 @@ async def sweep_by_owner_provider_agent(
     agent_id: str,
 ) -> int:
     """Delete all link rows for one bot. Used by bot-delete cleanup.
+
+    Queries the main table with a ``provider#agent_id#`` SK prefix and
+    deletes all matches. Does NOT paginate — acceptable because a single
+    bot's linked-member count is bounded by the org's member count, which
+    fits in a single 1MB query page in practice. If a bot ever accumulates
+    >~400 linked peers, items beyond the page boundary would be silently
+    left behind; revisit pagination if that becomes a real concern.
 
     Returns the number of rows deleted.
     """
