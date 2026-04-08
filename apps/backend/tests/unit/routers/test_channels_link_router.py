@@ -135,3 +135,146 @@ def test_link_complete_uses_member_id_not_owner_for_org_callers(client):
         assert kwargs["member_id"] == "user_bob"
     finally:
         cleanup()
+
+
+def test_get_links_me_returns_grouped_by_provider(client):
+    cleanup = _patch_auth(_personal_auth("user_bob"))
+    try:
+        fake_config = {
+            "channels": {
+                "telegram": {
+                    "accounts": {
+                        "main": {"botToken": "xxx"},
+                        "sales": {"botToken": "yyy"},
+                    },
+                },
+                "discord": {
+                    "accounts": {},
+                },
+            },
+        }
+        fake_links = [
+            {
+                "owner_id": "user_bob",
+                "provider": "telegram",
+                "agent_id": "main",
+                "peer_id": "12345",
+                "member_id": "user_bob",
+            },
+        ]
+        with (
+            patch(
+                "routers.channels.read_openclaw_config_from_efs",
+                AsyncMock(return_value=fake_config),
+            ),
+            patch(
+                "routers.channels.channel_link_repo.query_by_member",
+                AsyncMock(return_value=fake_links),
+            ),
+        ):
+            resp = client.get("/api/v1/channels/links/me")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["telegram"]) == 2  # main + sales
+        main = next(b for b in body["telegram"] if b["agent_id"] == "main")
+        assert main["linked"] is True
+        sales = next(b for b in body["telegram"] if b["agent_id"] == "sales")
+        assert sales["linked"] is False
+        assert body["discord"] == []
+        assert body["slack"] == []
+        # Personal user is always admin of their own container
+        assert body["can_create_bots"] is True
+    finally:
+        cleanup()
+
+
+def test_get_links_me_org_member_cannot_create_bots(client):
+    auth = AuthContext(
+        user_id="user_bob",
+        org_id="org_1",
+        org_role="org:member",
+    )
+    cleanup = _patch_auth(auth)
+    try:
+        with (
+            patch(
+                "routers.channels.read_openclaw_config_from_efs",
+                AsyncMock(return_value={"channels": {"telegram": {"accounts": {}}}}),
+            ),
+            patch(
+                "routers.channels.channel_link_repo.query_by_member",
+                AsyncMock(return_value=[]),
+            ),
+        ):
+            resp = client.get("/api/v1/channels/links/me")
+        assert resp.status_code == 200
+        assert resp.json()["can_create_bots"] is False
+    finally:
+        cleanup()
+
+
+def test_delete_link_unlinks_self(client):
+    cleanup = _patch_auth(_personal_auth("user_bob"))
+    try:
+        fake_link = {
+            "owner_id": "user_bob",
+            "provider": "telegram",
+            "agent_id": "main",
+            "peer_id": "12345",
+            "member_id": "user_bob",
+        }
+        with (
+            patch(
+                "routers.channels.channel_link_repo.query_by_member",
+                AsyncMock(return_value=[fake_link]),
+            ),
+            patch(
+                "routers.channels.channel_link_repo.delete",
+                AsyncMock(),
+            ) as mock_delete,
+            patch(
+                "routers.channels.remove_from_openclaw_config_list",
+                AsyncMock(),
+            ) as mock_remove,
+        ):
+            resp = client.delete("/api/v1/channels/link/telegram/main")
+        assert resp.status_code == 200
+        mock_delete.assert_awaited_once()
+        mock_remove.assert_awaited_once()
+        call = mock_remove.call_args
+        # Path is allowFrom
+        assert call[0][1] == ["channels", "telegram", "accounts", "main", "allowFrom"]
+    finally:
+        cleanup()
+
+
+def test_admin_delete_bot_sweeps_links_and_config(client):
+    auth = AuthContext(
+        user_id="admin_a",
+        org_id="org_1",
+        org_role="org:admin",
+    )
+    cleanup = _patch_auth(auth)
+    try:
+        with (
+            patch(
+                "routers.channels.delete_openclaw_config_path",
+                AsyncMock(),
+            ) as mock_del_path,
+            patch(
+                "routers.channels.remove_from_openclaw_config_list",
+                AsyncMock(),
+            ) as mock_rm_binding,
+            patch(
+                "routers.channels.channel_link_repo.sweep_by_owner_provider_agent",
+                AsyncMock(return_value=3),
+            ) as mock_sweep,
+        ):
+            resp = client.delete("/api/v1/channels/telegram/sales")
+        assert resp.status_code == 200
+        mock_del_path.assert_awaited_once()
+        mock_rm_binding.assert_awaited_once()
+        mock_sweep.assert_awaited_once()
+        assert resp.json()["links_swept"] == 3
+    finally:
+        cleanup()
