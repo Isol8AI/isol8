@@ -177,7 +177,18 @@ class TestGatewayConnectionPool:
 
 
 class TestGatewayConnectionHandshake:
-    """Test _handshake and _verify_health edge cases."""
+    """Test _handshake and _verify_health edge cases.
+
+    The handshake in OpenClaw 4.5 requires a signed Ed25519 device identity
+    in the connect request (see `apps/backend/core/crypto/operator_device.py`
+    and the OpenClaw reference `src/gateway/device-auth.ts`). Tests stub:
+
+    - `container_repo.get_by_owner_id` → returns a row with an
+      `operator_priv_key_enc` ciphertext (opaque blob — KMS is mocked).
+    - `kms_secrets.decrypt_bytes` → returns a real 32-byte Ed25519 seed,
+      so `sign_connect_request` can produce a real signature the test can
+      assert on.
+    """
 
     @pytest.fixture
     def connection(self):
@@ -187,6 +198,35 @@ class TestGatewayConnectionHandshake:
             token="test-token",
             management_api=MagicMock(),
         )
+
+    @pytest.fixture
+    def operator_seed(self):
+        """Fresh 32-byte Ed25519 seed for the test run."""
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import (
+            Encoding,
+            NoEncryption,
+            PrivateFormat,
+        )
+
+        priv = Ed25519PrivateKey.generate()
+        return priv.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+
+    @pytest.fixture
+    def mock_device_auth_deps(self, operator_seed):
+        """Patch container_repo + kms_secrets so _handshake can load a real identity."""
+        with (
+            patch("core.repositories.container_repo.get_by_owner_id", new_callable=AsyncMock) as mock_get,
+            patch("core.crypto.kms_secrets.decrypt_bytes") as mock_decrypt,
+        ):
+            mock_get.return_value = {
+                "owner_id": "test-user",
+                "operator_priv_key_enc": "opaque-kms-ciphertext-blob",
+                "operator_device_id": "stub-device-id",
+                "gateway_token": "test-token",
+            }
+            mock_decrypt.return_value = operator_seed
+            yield mock_get, mock_decrypt
 
     @pytest.mark.asyncio
     async def test_handshake_fails_wrong_event(self, connection):
@@ -199,7 +239,7 @@ class TestGatewayConnectionHandshake:
             await connection._handshake()
 
     @pytest.mark.asyncio
-    async def test_handshake_fails_connect_rejected(self, connection):
+    async def test_handshake_fails_connect_rejected(self, connection, mock_device_auth_deps):
         """_handshake raises RuntimeError if gateway rejects the connect request."""
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
@@ -214,8 +254,14 @@ class TestGatewayConnectionHandshake:
             await connection._handshake()
 
     @pytest.mark.asyncio
-    async def test_handshake_sends_connect_with_token(self, connection):
-        """_handshake sends a trusted-proxy connect request with operator role."""
+    async def test_handshake_sends_signed_device(self, connection, mock_device_auth_deps):
+        """_handshake sends a v3-scoped-auth connect request with a signed Ed25519 device.
+
+        Verifies: role + protocol version + scopes list match what
+        `BACKEND_OPERATOR_SCOPES` declares, the device fields are all
+        present, and the signature verifies against the public key for the
+        exact v2 payload the server will re-build.
+        """
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(
             side_effect=[
@@ -227,12 +273,46 @@ class TestGatewayConnectionHandshake:
 
         await connection._handshake()
 
-        sent_raw = mock_ws.send.call_args[0][0]
-        sent = json.loads(sent_raw)
+        sent = json.loads(mock_ws.send.call_args[0][0])
+        params = sent["params"]
+
+        # Connect request envelope
         assert sent["method"] == "connect"
-        assert sent["params"]["role"] == "operator"
-        assert sent["params"]["minProtocol"] == 3
-        assert sent["params"]["maxProtocol"] == 3
+        assert params["role"] == "operator"
+        assert params["minProtocol"] == 3
+        assert params["maxProtocol"] == 3
+        assert params["scopes"] == ["operator.read", "operator.write"]
+        assert params["auth"]["token"] == "test-token"
+        assert params["client"]["id"] == "gateway-client"
+        assert params["client"]["mode"] == "backend"
+
+        # Device block
+        device = params["device"]
+        assert set(device.keys()) == {"id", "publicKey", "signature", "signedAt", "nonce"}
+        assert device["nonce"] == "test-nonce-abc"
+        assert isinstance(device["signedAt"], int)
+        assert device["signature"]  # non-empty
+
+        # Signature must verify against the v2 payload format exactly as
+        # the server will re-build it — mismatch here would mean the
+        # client/server would disagree on scope binding and the server
+        # would clear scopes, reproducing the original regression.
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        from core.crypto.operator_device import build_v2_connect_payload, _b64url_nopad_decode
+
+        expected_payload = build_v2_connect_payload(
+            device_id=device["id"],
+            client_id="gateway-client",
+            client_mode="backend",
+            role="operator",
+            scopes=["operator.read", "operator.write"],
+            signed_at_ms=device["signedAt"],
+            token="test-token",
+            nonce="test-nonce-abc",
+        )
+        pub = Ed25519PublicKey.from_public_bytes(_b64url_nopad_decode(device["publicKey"]))
+        # Raises InvalidSignature if the payload or signature don't match.
+        pub.verify(_b64url_nopad_decode(device["signature"]), expected_payload.encode("utf-8"))
 
     @pytest.mark.asyncio
     async def test_verify_health_raises_on_unhealthy(self, connection):

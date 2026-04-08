@@ -11,36 +11,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
-from core.containers import get_ecs_manager, get_workspace
-from core.containers.config import (
-    build_device_paired_json,
-    generate_node_device_identity,
-    load_node_device_identity,
-    write_mcporter_config,
-    write_openclaw_config,
-)
+from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _write_node_device_files(owner_id: str) -> None:
-    """Generate (or reuse) Ed25519 node device identity on EFS."""
-    workspace = get_workspace()
-    try:
-        existing_pem = workspace.read_file(owner_id, "devices/.node-device-key.pem")
-        identity = load_node_device_identity(existing_pem)
-        logger.info("Reusing existing node device key for user %s", owner_id)
-    except Exception:
-        identity = generate_node_device_identity()
-        workspace.write_file(owner_id, "devices/.node-device-key.pem", identity["private_key_pem"])
-        logger.info("Generated new node device key for user %s", owner_id)
-
-    paired_json = build_device_paired_json(identity["device_id"], identity["public_key_b64"])
-    workspace.write_file(owner_id, "devices/paired.json", paired_json)
 
 
 async def require_non_production() -> None:
@@ -82,24 +59,22 @@ async def provision_container(
 
     try:
         gateway_token = secrets.token_urlsafe(32)
+        ecs_manager = get_ecs_manager()
 
         # Step 1: Create ECS service (desiredCount=0) — creates access
         # point and EFS dir, but does NOT start the container yet.
-        service_name = await get_ecs_manager().create_user_service(owner_id, gateway_token)
+        service_name = await ecs_manager.create_user_service(owner_id, gateway_token)
 
-        # Step 2: Write all configs to EFS before the container boots.
-        config_json = write_openclaw_config(
-            region=settings.AWS_REGION,
-            gateway_token=gateway_token,
-            proxy_base_url=settings.PROXY_BASE_URL,
-            tier="starter",
-        )
-        get_workspace().write_file(owner_id, "openclaw.json", config_json)
-        get_workspace().write_file(owner_id, ".mcporter/mcporter.json", write_mcporter_config())
-        _write_node_device_files(owner_id)
+        # Step 2: Write all configs to EFS before the container boots. This
+        # is the single source of truth for per-container files — it writes
+        # openclaw.json, .mcporter/mcporter.json, the node device PEM, and
+        # the combined devices/paired.json (with BOTH the node and the
+        # operator device entries, KMS-encrypted operator seed persisted to
+        # the DynamoDB containers row).
+        await ecs_manager.write_user_configs(owner_id, gateway_token, tier="starter")
 
         # Step 3: Now start the container — configs are on EFS.
-        await get_ecs_manager().start_user_service(owner_id)
+        await ecs_manager.start_user_service(owner_id)
 
         return {
             "status": "provisioned",
@@ -168,21 +143,23 @@ async def redeploy_container(
             },
         }
 
+        ecs_manager = get_ecs_manager()
         try:
             await patch_openclaw_config(owner_id, patch)
         except ConfigPatchError:
-            # No existing config — fall back to full write (first provision)
-            config_json = write_openclaw_config(
-                region=settings.AWS_REGION,
-                gateway_token=container["gateway_token"],
-                proxy_base_url=settings.PROXY_BASE_URL,
-                tier=tier,
-            )
-            get_workspace().write_file(owner_id, "openclaw.json", config_json)
+            # No existing config — fall back to full write (first provision).
+            # write_user_configs handles openclaw.json + mcporter.json + node
+            # device PEM + combined devices/paired.json (node + operator),
+            # and persists the KMS-encrypted operator seed to DynamoDB.
+            await ecs_manager.write_user_configs(owner_id, container["gateway_token"], tier=tier)
+        else:
+            # Patch succeeded — openclaw.json was updated in place via deep
+            # merge. We still need to ensure device trust store is current
+            # (e.g. a newly-added operator entry after the OpenClaw 4.5
+            # upgrade), without rewriting openclaw.json.
+            await ecs_manager.ensure_device_identities(owner_id, container["gateway_token"])
 
-        _write_node_device_files(owner_id)
-
-        await get_ecs_manager().start_user_service(owner_id)
+        await ecs_manager.start_user_service(owner_id)
 
         return {
             "status": "redeploying",

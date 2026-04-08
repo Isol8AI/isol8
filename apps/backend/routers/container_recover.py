@@ -32,13 +32,67 @@ def _get_lock(owner_id: str) -> asyncio.Lock:
     return _recovery_locks[owner_id]
 
 
-async def _call_gateway_rpc(ip: str, token: str, method: str, params: dict | None = None) -> dict:
-    """Short-lived WebSocket RPC call to a gateway container."""
+async def _call_gateway_rpc(
+    ip: str,
+    owner_id: str,
+    token: str,
+    method: str,
+    params: dict | None = None,
+) -> dict:
+    """Short-lived WebSocket RPC call to a gateway container.
+
+    Uses the same OpenClaw 4.5 signed-device handshake as the long-lived
+    pool in `core.gateway.connection_pool`: loads the per-container operator
+    device seed from DynamoDB (KMS-decrypted), signs the v2 payload with
+    the nonce from connect.challenge, and sends both the token AND the
+    signed device in the connect request.
+
+    Falls back cleanly if the container row doesn't have an
+    `operator_priv_key_enc` field yet (pre-4.5 row) — propagates a
+    RuntimeError the caller already catches and turns into a reprovision.
+    """
+    from core.crypto import kms_secrets
+    from core.crypto.operator_device import (
+        BACKEND_CLIENT_ID,
+        BACKEND_CLIENT_MODE,
+        BACKEND_OPERATOR_SCOPES,
+        BACKEND_ROLE,
+        load_operator_device_from_seed,
+        sign_connect_request,
+    )
+
+    container = await container_repo.get_by_owner_id(owner_id)
+    if not container:
+        raise RuntimeError(f"No container row for owner {owner_id}")
+    enc_seed = container.get("operator_priv_key_enc")
+    if not enc_seed:
+        raise RuntimeError(
+            f"Container row for owner {owner_id} missing operator_priv_key_enc "
+            "(pre-4.5 provision — reprovision required)"
+        )
+    seed_bytes = kms_secrets.decrypt_bytes(
+        enc_seed,
+        encryption_context={"owner_id": owner_id, "purpose": "operator-device-seed"},
+    )
+    identity = load_operator_device_from_seed(seed_bytes)
+
     uri = f"ws://{ip}:{GATEWAY_PORT}"
     async with websockets.connect(uri, open_timeout=5, close_timeout=2) as ws:
+        # Receive challenge + extract nonce
         challenge = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError("Unexpected handshake message")
+        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
+        if not nonce:
+            raise RuntimeError("connect.challenge missing nonce")
+
+        # Sign the v2 payload with our operator identity
+        device = sign_connect_request(
+            identity=identity,
+            token=token,
+            nonce=nonce,
+            scopes=BACKEND_OPERATOR_SCOPES,
+        )
 
         req_id = str(uuid.uuid4())
         await ws.send(
@@ -47,13 +101,27 @@ async def _call_gateway_rpc(ip: str, token: str, method: str, params: dict | Non
                     "type": "req",
                     "id": req_id,
                     "method": "connect",
-                    "params": {"token": token},
+                    "params": {
+                        "minProtocol": 3,
+                        "maxProtocol": 3,
+                        "client": {
+                            "id": BACKEND_CLIENT_ID,
+                            "version": "1.0.0",
+                            "platform": "linux",
+                            "mode": BACKEND_CLIENT_MODE,
+                        },
+                        "role": BACKEND_ROLE,
+                        "scopes": list(BACKEND_OPERATOR_SCOPES),
+                        "auth": {"token": token},
+                        "device": device,
+                    },
                 }
             )
         )
         connect_resp = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
-        if not connect_resp.get("payload", {}).get("ok"):
-            raise RuntimeError("Handshake rejected")
+        if not connect_resp.get("ok"):
+            err = connect_resp.get("error", {}).get("message", "unknown")
+            raise RuntimeError(f"Handshake rejected: {err}")
 
         rpc_id = str(uuid.uuid4())
         await ws.send(
@@ -142,7 +210,7 @@ async def container_recover(
 
         # Try gateway health check
         try:
-            health = await _call_gateway_rpc(ip, token, "health")
+            health = await _call_gateway_rpc(ip, owner_id, token, "health")
             if health.get("ok"):
                 return {
                     "action": "none",
@@ -155,7 +223,7 @@ async def container_recover(
         # 4. Gateway is down -> try restart via update.run RPC
         logger.info("Recovering owner %s: gateway restart", owner_id)
         try:
-            await _call_gateway_rpc(ip, token, "update.run")
+            await _call_gateway_rpc(ip, owner_id, token, "update.run")
             return {
                 "action": "gateway_restart",
                 "state": "GATEWAY_DOWN",

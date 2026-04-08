@@ -112,19 +112,82 @@ class GatewayConnection:
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
     async def _handshake(self) -> None:
-        """Complete OpenClaw connect handshake via token auth.
+        """Complete OpenClaw 4.5 connect handshake via signed-device auth.
 
-        The gateway is configured with gateway.auth.mode = "token" and a
-        per-container shared secret. We pass the token in auth.token on the
-        connect request. Device pairing is not required in token mode.
+        OpenClaw 4.5 replaced the pre-4.5 "token = admin" model with a
+        scoped-auth system (see `src/gateway/method-scopes.ts` in the
+        reference). A connect request that provides only `auth.token` with
+        no signed device identity gets its self-declared scopes silently
+        cleared by the server (`message-handler.ts:438-595`), leaving the
+        connection with zero permissions — which breaks `sessions.list`
+        (billing poll), `status`, and most of our RPC surface.
+
+        To receive the scopes we actually need, we must:
+
+        1. Hold an Ed25519 keypair (generated at provision time, seed is
+           KMS-encrypted in the containers DynamoDB row).
+        2. Have the public half pre-registered in the container's
+           `devices/paired.json` (also written at provision time).
+        3. Sign the canonical v2 payload over the nonce from
+           `connect.challenge` and include the signature + public key in
+           the `device` field of the connect request.
+
+        This method does all three per connection open. The resulting device
+        identity is bound by the signature to the specific gateway token +
+        nonce, so captured signatures can't be replayed against different
+        tokens or different connects.
         """
-        # Step 1: receive connect.challenge
+        from core.crypto import kms_secrets
+        from core.crypto.operator_device import (
+            BACKEND_CLIENT_ID,
+            BACKEND_CLIENT_MODE,
+            BACKEND_OPERATOR_SCOPES,
+            BACKEND_ROLE,
+            load_operator_device_from_seed,
+            sign_connect_request,
+        )
+        from core.repositories import container_repo
+
+        # Step 1: receive connect.challenge (nonce for the signature)
         raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
         challenge = json.loads(raw)
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got: {challenge.get('event', 'unknown')}")
+        nonce = challenge.get("payload", {}).get("nonce") or challenge.get("nonce")
+        if not nonce:
+            raise RuntimeError(f"connect.challenge missing nonce: {challenge}")
 
-        # Step 2: send connect request with token auth
+        # Step 2: load the operator device identity for this container.
+        # The private seed is KMS-encrypted in DynamoDB and bound by
+        # encryption context to the owner_id — a stolen row can't be
+        # replayed against a different container.
+        container = await container_repo.get_by_owner_id(self.user_id)
+        if not container:
+            raise RuntimeError(f"No container row for user {self.user_id}")
+        enc_seed = container.get("operator_priv_key_enc")
+        if not enc_seed:
+            raise RuntimeError(
+                f"Container row for user {self.user_id} has no operator_priv_key_enc — "
+                "re-provision needed (pre-4.5 row without signed-device auth)"
+            )
+        seed_bytes = kms_secrets.decrypt_bytes(
+            enc_seed,
+            encryption_context={"owner_id": self.user_id, "purpose": "operator-device-seed"},
+        )
+        identity = load_operator_device_from_seed(seed_bytes)
+
+        # Step 3: sign the v2 payload with the nonce from the challenge.
+        device = sign_connect_request(
+            identity=identity,
+            token=self.token,
+            nonce=nonce,
+            scopes=BACKEND_OPERATOR_SCOPES,
+        )
+
+        # Step 4: send the connect request with both the token AND the
+        # signed device. The scopes field in params must exactly match the
+        # scopes in the signed payload — the server re-builds the v2 string
+        # from these fields and compares signatures.
         connect_msg = {
             "type": "req",
             "id": str(uuid.uuid4()),
@@ -133,19 +196,20 @@ class GatewayConnection:
                 "minProtocol": 3,
                 "maxProtocol": 3,
                 "client": {
-                    "id": "gateway-client",
+                    "id": BACKEND_CLIENT_ID,
                     "version": "1.0.0",
                     "platform": "linux",
-                    "mode": "backend",
+                    "mode": BACKEND_CLIENT_MODE,
                 },
-                "role": "operator",
-                "scopes": ["operator.admin"],
+                "role": BACKEND_ROLE,
+                "scopes": list(BACKEND_OPERATOR_SCOPES),
                 "auth": {"token": self.token},
+                "device": device,
             },
         }
         await self._ws.send(json.dumps(connect_msg))
 
-        # Step 3: verify hello-ok
+        # Step 5: verify hello-ok
         resp_raw = await asyncio.wait_for(self._ws.recv(), timeout=_HANDSHAKE_TIMEOUT)
         resp = json.loads(resp_raw)
         if not resp.get("ok"):

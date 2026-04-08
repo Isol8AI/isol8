@@ -81,6 +81,13 @@ class Settings(BaseSettings):
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 
+    # KMS CMK ARN/alias for per-container secrets (operator device private keys,
+    # gateway tokens). Provisioned by CDK as `alias/isol8-{env}-container-secrets`.
+    # Backend calls kms:Encrypt at provision time and kms:Decrypt at handshake
+    # time — both operations are audited via CloudTrail so we have a per-call
+    # record of which backend instance touched which container's secrets.
+    CONTAINER_SECRETS_KMS_KEY_ID: str = os.getenv("CONTAINER_SECRETS_KMS_KEY_ID", "")
+
     # Free tier default model
     FREE_TIER_MODEL: str = os.getenv("FREE_TIER_MODEL", "minimax.minimax-m2.5")
 
@@ -115,11 +122,11 @@ TIER_CONFIG = {
     "starter": {
         "included_budget_microdollars": 10_000_000,  # $10/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
         "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
             "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
+            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
         },
         "container_cpu": "512",
         "container_memory": "1024",
@@ -128,11 +135,11 @@ TIER_CONFIG = {
     "pro": {
         "included_budget_microdollars": 40_000_000,  # $40/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
         "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
             "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
+            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
         },
         "container_cpu": "1024",
         "container_memory": "2048",
@@ -141,11 +148,14 @@ TIER_CONFIG = {
     "enterprise": {
         "included_budget_microdollars": 80_000_000,  # $80/mo
         "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
-        "subagent_model": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
+        # Per product rule (2026-04-09): MiniMax is the subagent model on every
+        # paid tier, not just starter/pro. Enterprise used to clone the primary
+        # for the subagent; we've unified.
+        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
         "model_aliases": {
             "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"},
+            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
         },
         "container_cpu": "2048",
         "container_memory": "4096",

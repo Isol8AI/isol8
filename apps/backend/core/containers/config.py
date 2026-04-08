@@ -75,155 +75,91 @@ def load_node_device_identity(private_key_pem: str) -> dict:
     }
 
 
-def build_device_paired_json(device_id: str, public_key_b64: str) -> str:
-    """Build the devices/paired.json content for a pre-paired node device."""
+def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
+    """One `devices/paired.json` entry for the in-container node role."""
     now_ms = int(time.time() * 1000)
-    paired = {
-        device_id: {
-            "deviceId": device_id,
-            "publicKey": public_key_b64,
-            "role": "node",
-            "roles": ["node"],
-            "scopes": [],
-            "approvedScopes": [],
-            "createdAtMs": now_ms,
-            "approvedAtMs": now_ms,
-        }
+    return {
+        "deviceId": device_id,
+        "publicKey": public_key_b64,
+        "role": "node",
+        "roles": ["node"],
+        "scopes": [],
+        "approvedScopes": [],
+        "createdAtMs": now_ms,
+        "approvedAtMs": now_ms,
     }
-    return json.dumps(paired, indent=2)
 
 
-# Complete catalog of all Bedrock models available on the platform.
-# Each entry is a provider model spec used in openclaw.json.
+def build_device_paired_json(
+    node_device_id: str,
+    node_public_key_b64: str,
+    *,
+    operator_entry: dict | None = None,
+) -> str:
+    """Build the combined `devices/paired.json` content for a per-user container.
+
+    The paired.json file is the container's trust store — it maps each
+    pre-approved device public key to a role + scope list, and the gateway
+    rejects any connect request whose signed device identity isn't in this
+    file (see OpenClaw 4.5 `handshake-auth-helpers.ts:244-281`).
+
+    We write TWO entries per container by default:
+    - **node** — the in-container agent's loopback identity (role: "node",
+      no scopes — the node role has its own RPC surface, see
+      `method-scopes.ts:NODE_ROLE_METHODS`).
+    - **operator** — our Python backend's remote identity, used to make
+      scoped RPCs like `sessions.list` and `chat.send` against the gateway
+      from outside the container. Required since OpenClaw 4.5; without it
+      the backend's self-declared scopes are silently cleared.
+
+    The operator entry is passed in pre-built (from
+    `core.crypto.operator_device.build_paired_operator_entry`) so this
+    module doesn't need to import the crypto helpers. Pass `None` for
+    pre-4.5 behavior (node-only paired.json).
+    """
+    entries = {
+        node_device_id: _build_node_paired_entry(node_device_id, node_public_key_b64),
+    }
+    if operator_entry is not None:
+        entries[operator_entry["deviceId"]] = operator_entry
+    return json.dumps(entries, indent=2)
+
+
+# Catalog of Bedrock models we actively support on the platform. Intentionally
+# narrow — we only use two today:
+#
+#   - MiniMax M2.5:        free tier everywhere; paid tier subagent model
+#   - Qwen3 VL 235B A22B:  paid tier primary (with image input support)
+#
+# Both are direct foundation models on Bedrock (no region-prefixed inference
+# profile IDs). See `aws bedrock list-foundation-models --query
+# "modelSummaries[?providerName=='MiniMax'||providerName=='Qwen']"` for the
+# source of truth; the pricing API lists additional variants that are NOT
+# actually invokable with our IAM role.
+#
+# Claude / DeepSeek / Llama / Nova / GPT-OSS / Mistral used to live here but
+# were removed on 2026-04-09 — too expensive vs. the Qwen/MiniMax tier story.
 ALL_BEDROCK_MODELS = [
-    # --- MiniMax ---
+    # --- MiniMax M2.5: free tier primary + paid tier subagent ---
+    # M2.5 is a reasoning model (emits reasoningContent/reasoningText blocks);
+    # `reasoning: True` tells OpenClaw to allocate thinking tokens separately
+    # so a short prompt doesn't blow the entire output budget on chain-of-thought.
     {
         "id": "minimax.minimax-m2.5",
         "name": "MiniMax M2.5",
         "contextWindow": 128000,
         "maxTokens": 8192,
-        "reasoning": False,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Claude (Anthropic) ---
-    {
-        "id": "us.anthropic.claude-opus-4-6-v1",
-        "name": "Claude Opus 4.6",
-        "contextWindow": 200000,
-        "maxTokens": 16384,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.anthropic.claude-opus-4-5-20251101-v1:0",
-        "name": "Claude Opus 4.5",
-        "contextWindow": 200000,
-        "maxTokens": 16384,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
-        "name": "Claude Sonnet 4.5",
-        "contextWindow": 200000,
-        "maxTokens": 16384,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-        "name": "Claude Haiku 4.5",
-        "contextWindow": 200000,
-        "maxTokens": 16384,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- DeepSeek ---
-    {
-        "id": "us.deepseek.r1-v1:0",
-        "name": "DeepSeek R1",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
         "reasoning": True,
         "input": ["text"],
         "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
     },
-    # --- Meta Llama ---
+    # --- Qwen3 VL 235B A22B: paid tier primary ---
+    # Only Qwen3 variant on Bedrock that accepts image input — required because
+    # OpenClaw's transport layer silently drops image attachments if the
+    # primary model doesn't declare `input: ["image"]`.
     {
-        "id": "us.meta.llama3-3-70b-instruct-v1:0",
-        "name": "Llama 3.3 70B",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": False,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Amazon Nova ---
-    {
-        "id": "us.amazon.nova-pro-v1:0",
-        "name": "Amazon Nova Pro",
-        "contextWindow": 300000,
-        "maxTokens": 5120,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.amazon.nova-lite-v1:0",
-        "name": "Amazon Nova Lite",
-        "contextWindow": 300000,
-        "maxTokens": 5120,
-        "reasoning": False,
-        "input": ["text", "image"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- OpenAI (GPT-OSS open weight) ---
-    {
-        "id": "us.openai.gpt-oss-120b-1:0",
-        "name": "GPT-OSS 120B",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": True,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.openai.gpt-oss-20b-1:0",
-        "name": "GPT-OSS 20B",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": True,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Qwen (Alibaba) ---
-    {
-        "id": "us.qwen.qwen3-235b-a22b-2507-v1:0",
-        "name": "Qwen3 235B",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": True,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    {
-        "id": "us.qwen.qwen3-32b-v1:0",
-        "name": "Qwen3 32B",
-        "contextWindow": 128000,
-        "maxTokens": 8192,
-        "reasoning": True,
-        "input": ["text"],
-        "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
-    },
-    # --- Mistral ---
-    {
-        "id": "us.mistral.mistral-large-2512-v1:0",
-        "name": "Mistral Large 3",
+        "id": "qwen.qwen3-vl-235b-a22b",
+        "name": "Qwen3 VL 235B",
         "contextWindow": 128000,
         "maxTokens": 8192,
         "reasoning": False,
@@ -235,29 +171,36 @@ ALL_BEDROCK_MODELS = [
 # Lookup from model ID to its friendly name (for agent_models aliases).
 _MODEL_NAME_MAP = {m["id"]: m["name"] for m in ALL_BEDROCK_MODELS}
 
-# Model IDs allowed per tier.  Free gets only MiniMax; starter/pro get MiniMax
-# + Qwen3 235B; enterprise gets everything.
-_TIER_ALLOWED_MODEL_IDS: dict[str, set[str] | None] = {
+# Model IDs allowed per tier. Both free and paid are now explicit whitelists —
+# we removed the `None = all models` wildcard on enterprise so new entries in
+# ALL_BEDROCK_MODELS don't accidentally leak into enterprise without a
+# deliberate decision.
+_TIER_ALLOWED_MODEL_IDS: dict[str, set[str]] = {
     "free": {
         "minimax.minimax-m2.5",
     },
     "starter": {
         "minimax.minimax-m2.5",
-        "us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "qwen.qwen3-vl-235b-a22b",
     },
     "pro": {
         "minimax.minimax-m2.5",
-        "us.qwen.qwen3-235b-a22b-2507-v1:0",
+        "qwen.qwen3-vl-235b-a22b",
     },
-    "enterprise": None,  # None means all models allowed
+    "enterprise": {
+        "minimax.minimax-m2.5",
+        "qwen.qwen3-vl-235b-a22b",
+    },
 }
 
 
 def _models_for_tier(tier: str) -> list[dict]:
-    """Return the subset of ALL_BEDROCK_MODELS allowed for *tier*."""
-    allowed = _TIER_ALLOWED_MODEL_IDS.get(tier)
-    if allowed is None:
-        return list(ALL_BEDROCK_MODELS)
+    """Return the subset of ALL_BEDROCK_MODELS allowed for *tier*.
+
+    Falls back to the free-tier allowlist for unknown tier strings, rather
+    than returning everything — matches the default-deny posture.
+    """
+    allowed = _TIER_ALLOWED_MODEL_IDS.get(tier, _TIER_ALLOWED_MODEL_IDS["free"])
     return [m for m in ALL_BEDROCK_MODELS if m["id"] in allowed]
 
 

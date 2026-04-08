@@ -295,10 +295,15 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // KMS (use string ARN to avoid cross-stack dependency)
+    //
+    // kms:Encrypt is required so the provision flow can seal per-container
+    // secrets (operator device Ed25519 seeds, gateway tokens) before writing
+    // them to the containers DynamoDB table. kms:Decrypt is the pre-existing
+    // permission for reading them back at handshake time.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "KmsAccess",
-        actions: ["kms:Decrypt", "kms:GenerateDataKey"],
+        actions: ["kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey"],
         resources: [props.kmsKeyArn],
       }),
     );
@@ -486,6 +491,11 @@ export class ServiceStack extends cdk.Stack {
               ? "https://isol8.co"
               : "https://dev.isol8.co",
         FREE_TIER_MODEL: "minimax.minimax-m2.5",
+        // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
+        // encrypt operator device seeds + gateway tokens at rest. Reuses the
+        // same CMK as the BYOK Fernet layer since the blast radius is the same
+        // (any principal with kms:Decrypt on this key can read any of them).
+        CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
         STRIPE_STARTER_PRICE_ID:
           env === "prod"
             ? "price_1TF5MkI54BysGS3rLYE6K0fZ"

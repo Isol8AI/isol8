@@ -91,8 +91,8 @@ async def test_queue_tier_change_free_to_starter_no_resize(dynamodb_table, efs_d
     # Config should be patched with starter model
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
-    assert "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0" in config["agents"]["defaults"]["models"]
+    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    assert "amazon-bedrock/qwen.qwen3-vl-235b-a22b" in config["agents"]["defaults"]["models"]
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_queue_tier_change_starter_to_pro_with_resize(dynamodb_table, efs_
     # Config should be patched with pro model
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
+    assert config["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
 
 
 @pytest.mark.asyncio
@@ -137,11 +137,12 @@ async def test_queue_tier_change_patches_subagent_model(dynamodb_table, efs_dir)
 
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         config = json.load(f)
-    # Enterprise has qwen3 235b as subagent model
-    assert (
-        config["agents"]["defaults"]["subagents"]["model"]["primary"]
-        == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
-    )
+    # Per the 2026-04-09 unification rule, MiniMax is the subagent model on
+    # every paid tier including enterprise. Previously enterprise cloned
+    # the primary (Kimi, then Qwen) as its subagent; we moved it to
+    # MiniMax for consistency with starter/pro and so subagent latency is
+    # dominated by a smaller, faster model.
+    assert config["agents"]["defaults"]["subagents"]["model"]["primary"] == "amazon-bedrock/minimax.minimax-m2.5"
 
 
 @pytest.mark.asyncio

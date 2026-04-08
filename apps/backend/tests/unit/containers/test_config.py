@@ -115,31 +115,55 @@ class TestWriteOpenclawConfig:
         assert "minimax" in primary
 
     def test_enterprise_tier_models_catalog_populated(self):
-        """Enterprise tier catalog has entries for all models."""
+        """Enterprise tier catalog has the supported models (MiniMax + Qwen3 VL)."""
         config = json.loads(write_openclaw_config(tier="enterprise"))
         models = config["agents"]["defaults"]["models"]
-        assert len(models) >= 3
+        # Post-2026-04-09 we trimmed the catalog to the two models we
+        # actively ship. Enterprise no longer gets Claude/Llama/Nova/etc.
+        assert len(models) == 2
         primary = config["agents"]["defaults"]["model"]["primary"]
         assert primary in models
 
-    def test_multiple_bedrock_models_configured(self):
-        """Multiple Bedrock models are pre-configured with inference profile IDs (enterprise tier)."""
+    def test_catalog_has_only_minimax_and_qwen(self):
+        """Enterprise tier exposes exactly the two supported models."""
         config = json.loads(write_openclaw_config(tier="enterprise"))
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
-        assert len(models) >= 4
+        model_ids = sorted(m["id"] for m in models)
+        assert model_ids == ["minimax.minimax-m2.5", "qwen.qwen3-vl-235b-a22b"]
+
+    def test_no_claude_models_in_catalog(self):
+        """Claude models were removed from the catalog on cost grounds (2026-04-09)."""
+        config = json.loads(write_openclaw_config(tier="enterprise"))
+        models = config["models"]["providers"]["amazon-bedrock"]["models"]
         model_ids = [m["id"] for m in models]
-        assert "us.anthropic.claude-opus-4-6-v1" in model_ids
-        assert "us.anthropic.claude-opus-4-5-20251101-v1:0" in model_ids
-        assert "us.anthropic.claude-sonnet-4-5-20250929-v1:0" in model_ids
-        assert "us.anthropic.claude-haiku-4-5-20251001-v1:0" in model_ids
+        assert not any("anthropic" in mid or "claude" in mid for mid in model_ids)
+
+    def test_qwen_supports_image_input(self):
+        """Qwen3 VL declares image input so OpenClaw doesn't silently drop
+        chat attachments. The text-only variants get filtered at transport
+        layer per `src/agents/google-transport-stream.ts:302` in the
+        OpenClaw reference; we explicitly picked VL for chat."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        models = config["models"]["providers"]["amazon-bedrock"]["models"]
+        qwen = next(m for m in models if m["id"] == "qwen.qwen3-vl-235b-a22b")
+        assert "image" in qwen["input"]
+
+    def test_minimax_declared_as_reasoning_model(self):
+        """MiniMax M2.5 emits reasoningContent blocks — the flag tells
+        OpenClaw to budget thinking tokens separately so short prompts
+        don't exhaust the output cap mid-chain-of-thought."""
+        config = json.loads(write_openclaw_config(tier="starter"))
+        models = config["models"]["providers"]["amazon-bedrock"]["models"]
+        minimax = next(m for m in models if m["id"] == "minimax.minimax-m2.5")
+        assert minimax["reasoning"] is True
 
     def test_starter_tier_models(self):
-        """Starter tier includes MiniMax and Qwen3 235B only."""
+        """Starter tier includes MiniMax M2.5 and Qwen3 VL 235B only."""
         config = json.loads(write_openclaw_config(tier="starter"))
         models = config["models"]["providers"]["amazon-bedrock"]["models"]
         model_ids = [m["id"] for m in models]
         assert "minimax.minimax-m2.5" in model_ids
-        assert "us.qwen.qwen3-235b-a22b-2507-v1:0" in model_ids
+        assert "qwen.qwen3-vl-235b-a22b" in model_ids
         assert len(models) == 2
 
     def test_memory_search_enabled(self):

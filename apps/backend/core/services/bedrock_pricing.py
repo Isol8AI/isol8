@@ -25,59 +25,27 @@ class ModelPrice(TypedDict):
     cache_write: float
 
 
-# Per-token USD. Source: aws.amazon.com/bedrock/pricing/ — verified 2026-04-08
+# Per-token USD. Source: `aws pricing get-products --service-code AmazonBedrock`
+# for us-east-1, verified 2026-04-09 via direct Bedrock Pricing API.
+#
+# Only the two models we actively ship are listed. Other families (Claude,
+# Llama, DeepSeek, Nova, Mistral, GPT-OSS) were removed — we don't expose
+# them on any tier today, and listing them here would let billing attribute
+# charges to models a customer can't actually select, masking the real
+# cost center behind dead entries.
 FALLBACK_PRICING: dict[str, ModelPrice] = {
+    # Free tier primary + every paid tier subagent.
     "minimax.minimax-m2.5": {
         "input": 0.30 / 1e6,
         "output": 1.20 / 1e6,
         "cache_read": 0.0,
         "cache_write": 0.0,
     },
-    "us.amazon.nova-lite-v1:0": {
-        "input": 0.06 / 1e6,
-        "output": 0.24 / 1e6,
-        "cache_read": 0.006 / 1e6,
-        "cache_write": 0.06 / 1e6,
-    },
-    "us.amazon.nova-pro-v1:0": {
-        "input": 0.80 / 1e6,
-        "output": 3.20 / 1e6,
-        "cache_read": 0.08 / 1e6,
-        "cache_write": 0.80 / 1e6,
-    },
-    "us.anthropic.claude-haiku-4-5-20251001-v1:0": {
-        "input": 1.0 / 1e6,
-        "output": 5.0 / 1e6,
-        "cache_read": 0.1 / 1e6,
-        "cache_write": 1.25 / 1e6,
-    },
-    "us.meta.llama3-3-70b-instruct-v1:0": {
-        "input": 0.72 / 1e6,
-        "output": 0.72 / 1e6,
-        "cache_read": 0.0,
-        "cache_write": 0.0,
-    },
-    "us.deepseek.r1-v1:0": {
-        "input": 1.35 / 1e6,
-        "output": 5.40 / 1e6,
-        "cache_read": 0.135 / 1e6,
-        "cache_write": 1.35 / 1e6,
-    },
-    "us.mistral.mistral-large-2512-v1:0": {
-        "input": 2.0 / 1e6,
-        "output": 6.0 / 1e6,
-        "cache_read": 0.2 / 1e6,
-        "cache_write": 2.0 / 1e6,
-    },
-    "us.qwen.qwen3-235b-a22b-2507-v1:0": {
-        "input": 0.80 / 1e6,
-        "output": 2.00 / 1e6,
-        "cache_read": 0.0,
-        "cache_write": 0.0,
-    },
-    "us.qwen.qwen3-32b-v1:0": {
-        "input": 0.15 / 1e6,
-        "output": 0.60 / 1e6,
+    # Paid tier primary. Qwen3 VL 235B A22B — only Qwen on Bedrock with image input.
+    # Pricing is the "standard" service tier; flex tier is cheaper but queues.
+    "qwen.qwen3-vl-235b-a22b": {
+        "input": 0.53 / 1e6,
+        "output": 2.66 / 1e6,
         "cache_read": 0.0,
         "cache_write": 0.0,
     },

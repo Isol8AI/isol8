@@ -45,11 +45,11 @@ def efs_dir():
 @pytest.mark.asyncio
 async def test_patch_updates_model(efs_dir):
     await patch_openclaw_config(
-        "user_1", {"agents": {"defaults": {"model": {"primary": "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"}}}}
+        "user_1", {"agents": {"defaults": {"model": {"primary": "amazon-bedrock/qwen.qwen3-vl-235b-a22b"}}}}
     )
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
-    assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0"
+    assert result["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
 
 
 @pytest.mark.asyncio
@@ -83,16 +83,12 @@ async def test_patch_creates_backup(efs_dir):
 async def test_patch_deep_merges_models(efs_dir):
     await patch_openclaw_config(
         "user_1",
-        {
-            "agents": {
-                "defaults": {"models": {"amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0": {"alias": "Qwen3 235B"}}}
-            }
-        },
+        {"agents": {"defaults": {"models": {"amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 235B"}}}}},
     )
     with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
     models = result["agents"]["defaults"]["models"]
-    assert "amazon-bedrock/us.qwen.qwen3-235b-a22b-2507-v1:0" in models
+    assert "amazon-bedrock/qwen.qwen3-vl-235b-a22b" in models
     assert "amazon-bedrock/minimax.minimax-m2.5" in models
 
 

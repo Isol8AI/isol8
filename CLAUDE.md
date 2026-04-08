@@ -443,9 +443,9 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | Tier | Price | Container | Primary Model | Subagent Model | Included LLM | Overage |
 |------|-------|-----------|---------------|----------------|-------------|---------|
 | `free` | $0 | 0.5 vCPU/1GB, scale-to-zero (5 min idle) | MiniMax M2.5 | MiniMax M2.5 | $2 lifetime | Blocked |
-| `starter` | $40/mo | 0.5 vCPU/1GB, always-on | Qwen3 235B | MiniMax M2.5 | $10/mo | Opt-in 1.4x |
-| `pro` | $75/mo | 1 vCPU/2GB, always-on | Qwen3 235B | MiniMax M2.5 | $40/mo | Opt-in 1.4x |
-| `enterprise` | $165/mo | 2 vCPU/4GB, always-on | Qwen3 235B | Qwen3 235B | $80/mo | Opt-in 1.4x |
+| `starter` | $40/mo | 0.5 vCPU/1GB, always-on | Qwen3 VL 235B | MiniMax M2.5 | $10/mo | Opt-in 1.4x |
+| `pro` | $75/mo | 1 vCPU/2GB, always-on | Qwen3 VL 235B | MiniMax M2.5 | $40/mo | Opt-in 1.4x |
+| `enterprise` | $165/mo | 2 vCPU/4GB, always-on | Qwen3 VL 235B | MiniMax M2.5 | $80/mo | Opt-in 1.4x |
 
 ### Scale-to-Zero (Free Tier)
 
