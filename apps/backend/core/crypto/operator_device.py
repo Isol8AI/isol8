@@ -56,24 +56,12 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-# Scopes granted to the backend operator device.
-#
-# We need `operator.admin` because the backend proxies RPCs like
-# `skills.install`, `agents.create`, `agents.update`, `agents.delete`,
-# `secrets.reload`, `cron.add/update/remove`, and `sessions.patch/reset/delete`
-# from the frontend to the gateway — all of which require admin scope per
-# `src/gateway/method-scopes.ts` in the OpenClaw reference. The authorize
-# function short-circuits on admin (`method-scopes.ts:232`), so we keep the
-# read + write entries for observability ("this device was granted these
-# specific scopes") but admin is what actually unblocks every method.
-#
-# Original attempt used `[read, write]` only — principle of least privilege —
-# but the frontend's skill install flow hit a "missing scope: operator.admin"
-# error because `skills.install` is an admin-only method. Widened on 2026-04-09.
+# Scopes granted to the backend operator device. Principle of least privilege —
+# NOT operator.admin. See `src/gateway/method-scopes.ts` in the OpenClaw
+# reference for which RPCs each scope unlocks.
 BACKEND_OPERATOR_SCOPES: tuple[str, ...] = (
     "operator.read",  # health, sessions.list, status, agents.list, etc.
     "operator.write",  # chat.send, chat.abort, sessions.create/send, etc.
-    "operator.admin",  # skills.install, agents.create/update/delete, etc.
 )
 
 # The client.id / client.mode strings the backend identifies as. These must
