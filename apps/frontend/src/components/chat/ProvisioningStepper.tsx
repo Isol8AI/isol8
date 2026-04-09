@@ -43,6 +43,60 @@ const STEPS_FREE: { phase: Phase; label: string; activeLabel: string }[] = [
 
 const TIMEOUT_MS = 180_000;
 
+/**
+ * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
+ * so they fit on one line and don't cause layout shift. Tone matches the rest of the
+ * onboarding copy: concrete, action-oriented, a little aspirational.
+ */
+const PROVISION_IDEAS: readonly string[] = [
+  "Draft your weekly status report from your inbox",
+  "Triage email and reply in your voice",
+  "Summarize yesterday's meetings into action items",
+  "Spin up a research brief on any topic",
+  "Schedule focus time around your calendar",
+  "Turn a messy doc into a clean one-pager",
+  "Watch a channel and ping you on what matters",
+  "Run a recurring morning briefing for you",
+  "Pull metrics and drop them into a shared doc",
+  "Review a PR and flag the risky changes",
+];
+
+const IDEA_ROTATION_MS = 3200;
+
+function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
+  const [idx, setIdx] = useState(0);
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    const tick = setInterval(() => {
+      setVisible(false);
+      const swap = setTimeout(() => {
+        setIdx((i) => (i + 1) % PROVISION_IDEAS.length);
+        setVisible(true);
+      }, 180);
+      return () => clearTimeout(swap);
+    }, IDEA_ROTATION_MS);
+    return () => clearInterval(tick);
+  }, []);
+
+  return (
+    <>
+      <span className="provision-idea-eyebrow">{eyebrow}</span>
+      <span
+        className={`provision-idea${visible ? "" : " provision-idea-fading"}`}
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        {PROVISION_IDEAS[idx]}
+      </span>
+    </>
+  );
+}
+
 export function ProvisioningStepper({
   children,
   trigger = "onboarding",
@@ -354,6 +408,28 @@ export function ProvisioningStepper({
         }
         .provision-fading { opacity: 0; }
 
+        /* Rotating idea suggestions — stacked eyebrow + phrase, space reserved
+           so the layout never shifts during crossfade. */
+        .provision-desc-ideas {
+          display: flex; flex-direction: column; align-items: center;
+          gap: 6px; min-height: 56px;
+        }
+        .provision-idea-eyebrow {
+          font-family: var(--font-dm-sans), sans-serif;
+          font-size: 12px; font-weight: 500;
+          color: #a8a396; letter-spacing: 0.3px;
+          text-transform: uppercase;
+        }
+        .provision-idea {
+          font-family: var(--font-lora-serif), serif;
+          font-size: 15px; font-style: italic;
+          color: #4a4638; line-height: 1.4;
+          max-width: 42ch; text-align: center;
+          transition: opacity 180ms ease-out, transform 180ms ease-out;
+          will-change: opacity, transform;
+        }
+        .provision-idea-fading { opacity: 0; transform: translateY(4px); }
+
         /* Progress dots */
         .provision-dots {
           display: flex; align-items: center; justify-content: center; gap: 0;
@@ -455,11 +531,15 @@ export function ProvisioningStepper({
           </div>
 
           <h2 className="provision-title">{currentStep?.activeLabel || "Setting up..."}</h2>
-          <p className="provision-desc">
-            {isOrg
-              ? `Preparing workspace for ${organization?.name}`
-              : "This usually takes about 30-60 seconds"}
-          </p>
+          <div className="provision-desc provision-desc-ideas">
+            <RotatingIdeas
+              eyebrow={
+                isOrg
+                  ? `Preparing workspace for ${organization?.name} — try asking your agent to…`
+                  : "While you wait, try asking your agent to…"
+              }
+            />
+          </div>
 
           {/* Progress dots */}
           <div className="provision-dots">
