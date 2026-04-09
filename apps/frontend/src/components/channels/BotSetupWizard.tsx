@@ -101,17 +101,33 @@ export function BotSetupWizard({
       };
       await api.patchConfig(patch);
       setStep("waiting");
-      // Poll channels.status until the account reports connected. The
-      // channel restart is fast, so a short deadline is fine.
+      // Poll channels.status until the account reports running or
+      // connected. Telegram's long-poll provider sets `running: true`
+      // as soon as `getMe()` succeeds and polling starts, but
+      // `connected: true` only lands after the first probe/message,
+      // which may be never — hence the original wizard always timed
+      // out. Either flag means the plugin accepted our token and is
+      // ready to receive DMs.
+      type AccountSnapshot = {
+        running?: boolean;
+        connected?: boolean;
+        lastError?: string | null;
+      };
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try {
           const status = (await callRpc("channels.status", { probe: false })) as {
-            channelAccounts?: Record<string, { connected?: boolean }[]>;
+            channelAccounts?: Record<string, AccountSnapshot[]>;
           };
           const accounts = status?.channelAccounts?.[provider] ?? [];
-          if (accounts.some((a) => a.connected)) {
+          if (accounts.some((a) => a.running || a.connected)) {
             setStep("pair");
+            return;
+          }
+          const firstError = accounts.find((a) => a.lastError)?.lastError;
+          if (firstError) {
+            setError(`Bot failed to start: ${firstError}`);
+            setStep("token");
             return;
           }
         } catch {
@@ -119,7 +135,7 @@ export function BotSetupWizard({
         }
         await new Promise((r) => setTimeout(r, 2000));
       }
-      setError("Bot started but never reported connected. Check the token and try again.");
+      setError("Bot started but never reported ready. Check the token and try again.");
       setStep("token");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
