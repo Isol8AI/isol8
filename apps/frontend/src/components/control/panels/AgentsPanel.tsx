@@ -16,6 +16,7 @@ import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentFilesTab } from "./AgentFilesTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
+import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -26,6 +27,10 @@ type AgentTab = "overview" | "files" | "tools" | "channels";
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
   const callRpc = useGatewayRpcMutation();
+  // Free tier containers scale to zero after idle, so a bot session can't
+  // stay logged in — hide the Channels tab entirely for free accounts.
+  const { planTier } = useBilling();
+  const channelsEnabled = planTier !== "free";
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -148,12 +153,16 @@ export function AgentsPanel() {
           {selected ? (
             <>
               <div className="flex items-center gap-1 border-b border-[#e0dbd0] py-2">
-                {([
-                  { id: "overview", icon: Bot, label: "Overview" },
-                  { id: "files", icon: FileText, label: "Files" },
-                  { id: "tools", icon: Wrench, label: "Tools" },
-                  { id: "channels", icon: MessageSquare, label: "Channels" },
-                ] as const).map((tab) => (
+                {(
+                  [
+                    { id: "overview", icon: Bot, label: "Overview" },
+                    { id: "files", icon: FileText, label: "Files" },
+                    { id: "tools", icon: Wrench, label: "Tools" },
+                    ...(channelsEnabled
+                      ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
+                      : []),
+                  ] as const
+                ).map((tab) => (
                   <button
                     key={tab.id}
                     className={cn(
@@ -179,7 +188,7 @@ export function AgentsPanel() {
               {activeTab === "tools" && (
                 <AgentToolsTab agentId={selected.id} />
               )}
-              {activeTab === "channels" && (
+              {activeTab === "channels" && channelsEnabled && (
                 <AgentChannelsSection agentId={selected.id} />
               )}
             </>
