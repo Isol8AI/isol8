@@ -14,7 +14,6 @@ import base64
 import logging
 import mimetypes
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -164,34 +163,6 @@ class Workspace:
                 logger.warning("Failed to write default mcporter.json for %s: %s", user_id, exc)
 
         return p
-
-    def wipe_user_dir(self, user_id: str) -> bool:
-        """Recursively delete a user's entire EFS workspace directory.
-
-        Intended for dev clean-slate resets — wipes `openclaw.json`,
-        agent workspaces, pairing files, device keys, everything under
-        `{mount_path}/{user_id}/`. Idempotent: returns False if the
-        directory did not exist.
-
-        Returns:
-            True if a directory was removed, False if it was already absent.
-
-        Raises:
-            WorkspaceError: On filesystem errors.
-        """
-        p = self.user_path(user_id)
-        if not p.exists():
-            return False
-        try:
-            shutil.rmtree(p)
-        except OSError as exc:
-            logger.error("Failed to wipe user dir for %s: %s", user_id, exc)
-            raise WorkspaceError(
-                f"Failed to wipe user dir for {user_id}: {exc}",
-                user_id=user_id,
-            ) from exc
-        logger.info("Wiped EFS user dir for %s", user_id)
-        return True
 
     def list_agents(self, user_id: str) -> list[str]:
         """List agent names (subdirectories) under a user's agents/ dir.

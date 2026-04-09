@@ -11,9 +11,8 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
-from core.containers import get_ecs_manager, get_workspace
+from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
-from core.containers.workspace import WorkspaceError
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
@@ -194,16 +193,7 @@ async def remove_container(
 
     try:
         await get_ecs_manager().delete_user_service(owner_id)
+        return {"status": "removed"}
     except EcsManagerError as e:
         logger.error("Dev remove failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
-
-    # Also wipe the user's EFS workspace dir so the next provision starts
-    # from a fully clean slate (fresh openclaw.json from the new scaffold,
-    # no stale pairing files, no stale device keys). Dev-only.
-    try:
-        wiped = get_workspace().wipe_user_dir(owner_id)
-    except WorkspaceError as exc:
-        logger.error("EFS wipe failed for owner %s: %s", owner_id, exc)
-        return {"status": "removed", "efs_wiped": False, "efs_error": str(exc)}
-    return {"status": "removed", "efs_wiped": wiped}
