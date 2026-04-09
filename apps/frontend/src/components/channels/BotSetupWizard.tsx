@@ -18,7 +18,7 @@ export interface BotSetupWizardProps {
   onCancel: () => void;
 }
 
-type Step = "enable" | "restarting" | "token" | "waiting" | "pair" | "done";
+type Step = "token" | "waiting" | "pair" | "done";
 
 const SLACK_APP_MANIFEST = `display_information:
   name: Isol8 Agent
@@ -58,7 +58,7 @@ export function BotSetupWizard({
   const api = useApi();
   const callRpc = useGatewayRpcMutation();
 
-  const [step, setStep] = useState<Step>(mode === "create" ? "enable" : "pair");
+  const [step, setStep] = useState<Step>(mode === "create" ? "token" : "pair");
   const [token, setToken] = useState("");
   const [slackAppToken, setSlackAppToken] = useState("");
   const [code, setCode] = useState("");
@@ -66,47 +66,6 @@ export function BotSetupWizard({
   const [error, setError] = useState<string | null>(null);
 
   const label = PROVIDER_LABELS[provider];
-
-  const handleEnable = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      // Step 1: flip the channel on. OpenClaw picks this up via the config
-      // watcher and loads the channel plugin, which usually bumps the
-      // gateway connection. We intentionally do NOT send the token yet —
-      // sending it in the same patch races the plugin load and we've seen
-      // the token get dropped until a manual restart.
-      await api.patchConfig({
-        channels: {
-          [provider]: { enabled: true },
-        },
-      });
-      setStep("restarting");
-      // Wait for the gateway to come back. channels.status responds as soon
-      // as the plugin is loaded, even without any accounts configured.
-      const deadline = Date.now() + 30_000;
-      // Give the watcher a beat before we start polling so we don't catch
-      // the pre-restart gateway still answering.
-      await new Promise((r) => setTimeout(r, 1500));
-      while (Date.now() < deadline) {
-        try {
-          await callRpc("channels.status", { probe: false });
-          setStep("token");
-          return;
-        } catch {
-          // gateway still restarting
-        }
-        await new Promise((r) => setTimeout(r, 1500));
-      }
-      setError("Container took too long to enable the channel. Try again.");
-      setStep("enable");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStep("enable");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const handleTokenSubmit = async () => {
     setBusy(true);
@@ -124,9 +83,12 @@ export function BotSetupWizard({
               botToken: token.trim(),
               dmPolicy: "pairing",
             };
-      // Step 2: submit just the account credentials. The channel is already
-      // enabled from handleEnable — keep `enabled: true` to be defensive
-      // against deep-merge edge cases but the plugin is already loaded.
+      // Single PATCH with enabled+accounts. Channels are shipped with
+      // `enabled: true` at provision time for paid tiers (see
+      // containers/config.py), so the plugin is already loaded in the
+      // gateway. OpenClaw's reload plan treats `channels.{id}.accounts.*`
+      // as a hot-reload against the already-running plugin, which just
+      // restarts that one channel (seconds) instead of the whole gateway.
       const patch: Record<string, unknown> = {
         channels: {
           [provider]: {
@@ -139,8 +101,9 @@ export function BotSetupWizard({
       };
       await api.patchConfig(patch);
       setStep("waiting");
-      // Poll channels.status until the account reports connected
-      const deadline = Date.now() + 30_000;
+      // Poll channels.status until the account reports connected. The
+      // channel restart is fast, so a short deadline is fine.
+      const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try {
           const status = (await callRpc("channels.status", { probe: false })) as {
@@ -154,9 +117,9 @@ export function BotSetupWizard({
         } catch {
           // fall through to retry
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 2000));
       }
-      setError("Container took too long to start the bot. Check the agent's channel status.");
+      setError("Bot started but never reported connected. Check the token and try again.");
       setStep("token");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -195,33 +158,6 @@ export function BotSetupWizard({
       <h3 className="text-lg font-semibold">
         {mode === "create" ? `Set up ${label} bot` : `Link your ${label} identity`}
       </h3>
-
-      {step === "enable" && (
-        <div className="space-y-3">
-          <p className="text-sm text-[#5a564c]">
-            First we&apos;ll turn on the {label} channel for this agent. The
-            container will restart its gateway to load the plugin, then
-            you&apos;ll paste your bot token on the next step.
-          </p>
-          {error && <p className="text-xs text-red-600">{error}</p>}
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={onCancel} disabled={busy}>
-              Cancel
-            </Button>
-            <Button onClick={handleEnable} disabled={busy}>
-              {busy && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-              Enable {label}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === "restarting" && (
-        <div className="flex items-center gap-2 text-sm text-[#8a8578]">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Restarting the gateway to load {label}…
-        </div>
-      )}
 
       {step === "token" && (
         <div className="space-y-3">
