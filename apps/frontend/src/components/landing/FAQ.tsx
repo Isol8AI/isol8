@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 
 const faqs = [
   {
@@ -30,15 +30,6 @@ const faqs = [
 ];
 
 function FaqItem({ faq, isOpen, onToggle }: { faq: typeof faqs[number]; isOpen: boolean; onToggle: () => void }) {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const [height, setHeight] = useState<number>(0);
-
-  useEffect(() => {
-    if (contentRef.current) {
-      setHeight(isOpen ? contentRef.current.scrollHeight : 0);
-    }
-  }, [isOpen]);
-
   const handleKeydown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Enter" || e.key === " ") {
       e.preventDefault();
@@ -58,11 +49,8 @@ function FaqItem({ faq, isOpen, onToggle }: { faq: typeof faqs[number]; isOpen: 
         {faq.q}
         <span className="faq-icon" />
       </h3>
-      <div
-        className="faq-a-wrapper"
-        style={{ height, opacity: isOpen ? 1 : 0 }}
-      >
-        <div ref={contentRef}>
+      <div className="faq-a-wrapper" aria-hidden={!isOpen}>
+        <div className="faq-a-inner">
           <p className="faq-a">{faq.a}</p>
         </div>
       </div>
