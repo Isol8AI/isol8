@@ -550,9 +550,17 @@ export function BotSetupWizard({
           </>,
           <>
             Under <span className="font-semibold">Scopes</span>, check{" "}
-            <span className="font-mono">bot</span>. (No bot permissions need to be selected for
-            basic DMs.) Copy the generated URL at the bottom.
+            <span className="font-mono">bot</span>. A{" "}
+            <span className="font-semibold">Bot Permissions</span> section will appear below.
           </>,
+          <>
+            In <span className="font-semibold">Bot Permissions</span> → Text Permissions, check:{" "}
+            <span className="font-semibold">Send Messages</span>,{" "}
+            <span className="font-semibold">Read Message History</span>, and{" "}
+            <span className="font-semibold">Embed Links</span>. (DMs technically work without
+            permissions, but these are the sensible minimum so the bot can actually reply.)
+          </>,
+          <>Copy the generated URL at the bottom of the page.</>,
           <>
             Open that URL in a new tab and invite the bot to a Discord server you own. You can{" "}
             <InlineLink href="https://support.discord.com/hc/en-us/articles/204849977-How-do-I-create-a-server">
