@@ -414,29 +414,34 @@ def write_openclaw_config(
                 "amazon-bedrock": amazon_bedrock_plugin,
             },
         },
-        # Channels: we ship every supported provider as `enabled: true` for
-        # paid tiers so the plugin is loaded into the gateway at startup.
-        # OpenClaw's reload plan treats `channels.{id}` as a hot-reload
-        # prefix ONLY when the channel plugin is already running — on the
-        # very first enable of a never-before-loaded channel it escalates
-        # to a full gateway restart (~6 minutes on Fargate). Shipping the
-        # plugins hot at provision time means every subsequent token /
-        # account change is a fast per-channel restart, not a gateway
-        # restart. Plugins with no `accounts` entries sit idle safely.
+        # Channels: we ship every supported provider as `enabled: true`
+        # for ALL tiers so the plugin is loaded into the gateway at
+        # startup. OpenClaw's reload plan treats `channels.{id}` as a
+        # hot-reload prefix ONLY when the channel plugin is already
+        # running — on the very first enable of a never-before-loaded
+        # channel it escalates to a full gateway restart (~6 min on
+        # Fargate). Shipping the plugins hot at provision time means
+        # every subsequent token/account change is a fast per-channel
+        # restart, not a gateway restart. Plugins with no `accounts`
+        # entries sit idle safely.
         #
-        # Free tier keeps channels disabled: scale-to-zero + no always-on
-        # workers means nothing will keep the bot logged in anyway.
+        # Free-tier UI is gated client-side (AgentsPanel hides the
+        # Channels tab when planTier === "free"), so idle plugins in
+        # free containers never receive a token or serve traffic. This
+        # also makes the tier-upgrade path work without re-provisioning:
+        # upgrading free → paid just unlocks the UI; the plugins are
+        # already loaded from the initial scaffold.
         "channels": {
             "telegram": {
-                "enabled": tier != "free",
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
             "discord": {
-                "enabled": tier != "free",
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
             "slack": {
-                "enabled": tier != "free",
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
         },
