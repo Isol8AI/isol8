@@ -22,15 +22,19 @@ function stripe(): Stripe {
  */
 export async function cancelSubscriptionIfExists(email: string): Promise<void> {
   const customers = await stripe().customers.list({ email, limit: 100 });
+  if (customers.data.length === 0) return; // no customer → nothing to cancel
   for (const customer of customers.data) {
-    const [active, trialing, incomplete] = await Promise.all([
-      stripe().subscriptions.list({ customer: customer.id, status: 'active' }),
-      stripe().subscriptions.list({ customer: customer.id, status: 'trialing' }),
-      stripe().subscriptions.list({ customer: customer.id, status: 'incomplete' }),
-    ]);
-    const allSubs = [...active.data, ...trialing.data, ...incomplete.data];
-    for (const sub of allSubs) {
-      await stripe().subscriptions.cancel(sub.id);
+    // `status: 'all'` returns subscriptions in every state (active, trialing,
+    // incomplete, past_due, paused, etc.) except already-canceled ones.
+    const subs = await stripe().subscriptions.list({ customer: customer.id, status: 'all', limit: 100 });
+    for (const sub of subs.data) {
+      if (sub.status === 'canceled' || sub.status === 'incomplete_expired') continue;
+      try {
+        await stripe().subscriptions.cancel(sub.id);
+      } catch (err) {
+        // Don't let one bad subscription block cleanup of the others.
+        console.error(`[e2e] Failed to cancel subscription ${sub.id} (status=${sub.status}):`, err);
+      }
     }
   }
 }

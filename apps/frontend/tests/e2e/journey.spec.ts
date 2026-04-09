@@ -54,6 +54,13 @@ test.describe('E2E Gate: Full User Journey', () => {
 
   test.beforeAll(async ({ browser }) => {
     test.setTimeout(240_000);
+    // Defense in depth: cancel any leftover subscription before we do anything else,
+    // in case a previous run crashed without running afterAll cleanup.
+    try {
+      await cancelSubscriptionIfExists(E2E_EMAIL);
+    } catch (err) {
+      console.error('[e2e] beforeAll pre-cleanup cancelSubscriptionIfExists failed (non-fatal):', err);
+    }
     await clerkSetup();
     const ctx = await browser.newContext({
       extraHTTPHeaders: process.env.VERCEL_AUTOMATION_BYPASS_SECRET
@@ -102,7 +109,31 @@ test.describe('E2E Gate: Full User Journey', () => {
   });
 
   test.afterAll(async () => {
-    try { await cancelSubscriptionIfExists(E2E_EMAIL); } catch { /* ignore */ }
+    // Retry cancellation up to 3 times with exponential backoff. If all retries
+    // fail, log loudly so a human can clean up manually — but do not throw, since
+    // the test itself may have passed and we don't want to mask the real result.
+    const backoffs = [1_000, 2_000, 4_000];
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < backoffs.length; attempt++) {
+      try {
+        await cancelSubscriptionIfExists(E2E_EMAIL);
+        lastErr = undefined;
+        break;
+      } catch (err) {
+        lastErr = err;
+        console.error(`[e2e] afterAll cancelSubscriptionIfExists attempt ${attempt + 1} failed:`, err);
+        if (attempt < backoffs.length - 1) {
+          await new Promise((r) => setTimeout(r, backoffs[attempt]));
+        }
+      }
+    }
+    if (lastErr !== undefined) {
+      console.error(
+        `[e2e] CRITICAL: afterAll cleanup FAILED after ${backoffs.length} retries for ${E2E_EMAIL}. ` +
+          `A subscription may be leaked. Manual cleanup required. Last error:`,
+        lastErr,
+      );
+    }
     // Don't deprovision — leave the container running for the next run.
     // This avoids triggering ECS drain cycles that cause long timeouts.
     await sharedPage?.context().close();
