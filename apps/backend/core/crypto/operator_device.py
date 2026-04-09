@@ -67,13 +67,25 @@ from cryptography.hazmat.primitives.serialization import (
 # read + write entries for observability ("this device was granted these
 # specific scopes") but admin is what actually unblocks every method.
 #
+# **Ordering matters for signature verification.** OpenClaw normalizes
+# device-auth scopes via `src/shared/device-auth.ts:normalizeDeviceAuthScopes`
+# which calls `.toSorted()` — alphabetical order. The paired.json entry we
+# write to EFS goes through that normalization path
+# (`src/infra/device-pairing.ts:254`), so the persisted form is
+# alphabetically sorted. When the client (us) signs the v2 connect payload,
+# the server rebuilds the same payload from `connectParams.scopes` in the
+# order WE sent them, and Ed25519 verifies byte-by-byte — so we must send
+# the scopes in the same alphabetical order to match whatever form might
+# appear anywhere in the server's auth pipeline. Hence: admin, read, write
+# (alphabetical), not read-write-admin as added originally.
+#
 # Original attempt used `[read, write]` only — principle of least privilege —
 # but the frontend's skill install flow hit a "missing scope: operator.admin"
 # error because `skills.install` is an admin-only method. Widened on 2026-04-09.
 BACKEND_OPERATOR_SCOPES: tuple[str, ...] = (
+    "operator.admin",  # skills.install, agents.create/update/delete, etc.
     "operator.read",  # health, sessions.list, status, agents.list, etc.
     "operator.write",  # chat.send, chat.abort, sessions.create/send, etc.
-    "operator.admin",  # skills.install, agents.create/update/delete, etc.
 )
 
 # The client.id / client.mode strings the backend identifies as. These must

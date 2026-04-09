@@ -284,7 +284,7 @@ class TestGatewayConnectionHandshake:
         # Backend needs admin for skills.install, agents.create/update/delete,
         # etc. — read/write alone was too restrictive. Admin short-circuits
         # per-method checks on the server (method-scopes.ts:232).
-        assert params["scopes"] == ["operator.read", "operator.write", "operator.admin"]
+        assert params["scopes"] == ["operator.admin", "operator.read", "operator.write"]
         assert params["auth"]["token"] == "test-token"
         assert params["client"]["id"] == "gateway-client"
         assert params["client"]["mode"] == "backend"
@@ -308,7 +308,7 @@ class TestGatewayConnectionHandshake:
             client_id="gateway-client",
             client_mode="backend",
             role="operator",
-            scopes=["operator.read", "operator.write", "operator.admin"],
+            scopes=["operator.admin", "operator.read", "operator.write"],
             signed_at_ms=device["signedAt"],
             token="test-token",
             nonce="test-nonce-abc",
