@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -229,6 +229,32 @@ export function BotSetupWizard({
   const [error, setError] = useState<string | null>(null);
   const [manifestCopied, setManifestCopied] = useState(false);
 
+  // Whether the wizard has written an account row to openclaw.json that has
+  // not yet been confirmed working. If the user cancels, the bot reports
+  // an error, or polling times out, we DELETE the account row so the user
+  // doesn't end up with broken half-configured state on EFS that they
+  // can't fix from the UI. Cleared once we successfully reach the pair
+  // step (the bot is running and the row should stick around).
+  const dirtyConfig = useRef(false);
+  const rollbackInFlight = useRef(false);
+
+  const rollbackAccount = async () => {
+    if (!dirtyConfig.current || rollbackInFlight.current) return;
+    rollbackInFlight.current = true;
+    try {
+      await api.del(`/channels/${provider}/${agentId}`);
+      dirtyConfig.current = false;
+    } catch (e) {
+      // Best-effort cleanup; surface to the console but don't block UI.
+      // The admin delete endpoint is idempotent enough that retrying on
+      // the next attempt is safe.
+      // eslint-disable-next-line no-console
+      console.warn("Channel rollback failed", e);
+    } finally {
+      rollbackInFlight.current = false;
+    }
+  };
+
   const label = PROVIDER_LABELS[provider];
 
   // Progress indicator excludes the terminal "done" step so the dots don't
@@ -316,6 +342,9 @@ export function BotSetupWizard({
         },
       };
       await api.patchConfig(patch);
+      // Mark the config dirty so any failure / cancel from this point on
+      // rolls the account row back instead of leaving broken state on EFS.
+      dirtyConfig.current = true;
 
       // Poll channels.status until the account reports ready (running OR
       // connected — Telegram's long-poll provider sets running first, and
@@ -335,12 +364,16 @@ export function BotSetupWizard({
           };
           const accounts = status?.channelAccounts?.[provider] ?? [];
           if (accounts.some((a) => a.running || a.connected)) {
+            // Bot is up — keep the config; from here on Cancel just closes
+            // the modal and the bot stays installed.
+            dirtyConfig.current = false;
             setStepIndex(steps.indexOf("pair"));
             return;
           }
           const firstError = accounts.find((a) => a.lastError)?.lastError;
           if (firstError) {
             setError(`Bot failed to start: ${firstError}`);
+            await rollbackAccount();
             setStepIndex(steps.indexOf("token"));
             return;
           }
@@ -350,9 +383,13 @@ export function BotSetupWizard({
         await new Promise((r) => setTimeout(r, 2000));
       }
       setError("Bot started but never reported ready. Check the token and try again.");
+      await rollbackAccount();
       setStepIndex(steps.indexOf("token"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // patchConfig itself may have thrown; rollback is a no-op if nothing
+      // was committed (dirtyConfig.current === false).
+      await rollbackAccount();
       setStepIndex(steps.indexOf("token"));
     } finally {
       setBusy(false);
@@ -711,6 +748,15 @@ export function BotSetupWizard({
   // Footer (cancel / back / next)
   // ---------------------------------------------------------------------------
 
+  // Cancel handler that rolls back any half-committed config (e.g. user
+  // pasted a bad token, bot is starting, they bail before it succeeds).
+  const handleCancel = async () => {
+    if (dirtyConfig.current) {
+      await rollbackAccount();
+    }
+    onCancel();
+  };
+
   const renderFooter = () => {
     if (step === "connecting" || step === "done") {
       return null;
@@ -738,7 +784,7 @@ export function BotSetupWizard({
         <Button
           variant="ghost"
           size="sm"
-          onClick={canGoBack ? goBack : onCancel}
+          onClick={canGoBack ? goBack : handleCancel}
           disabled={busy}
           className="text-[#8a8578] cursor-pointer"
         >
