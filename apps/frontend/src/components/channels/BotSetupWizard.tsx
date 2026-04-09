@@ -140,6 +140,19 @@ function ExternalLinkButton({
   );
 }
 
+function InlineLink({ href, children }: { href: string; children: React.ReactNode }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="font-semibold text-[#1a1a1a] underline decoration-[#e0dbd0] decoration-2 underline-offset-2 hover:decoration-[#1a1a1a] cursor-pointer"
+    >
+      {children}
+    </a>
+  );
+}
+
 function InstructionsList({ items }: { items: React.ReactNode[] }) {
   return (
     <ol className="space-y-2 text-sm text-[#3a3a3a]">
@@ -267,6 +280,13 @@ export function BotSetupWizard({
     setStepIndex(steps.indexOf("connecting"));
 
     try {
+      // Field name varies per provider:
+      //   telegram → botToken
+      //   discord  → token       (NOT botToken — confirmed in
+      //                            extensions/discord/src/shared.ts:62,115:
+      //                            clearBaseFields=['token','name'],
+      //                            isConfigured: account.token)
+      //   slack    → botToken + appToken (socket mode)
       const accountCfg: Record<string, unknown> =
         provider === "slack"
           ? {
@@ -275,10 +295,15 @@ export function BotSetupWizard({
               botToken: token.trim(),
               dmPolicy: "pairing",
             }
-          : {
-              botToken: token.trim(),
-              dmPolicy: "pairing",
-            };
+          : provider === "discord"
+            ? {
+                token: token.trim(),
+                dmPolicy: "pairing",
+              }
+            : {
+                botToken: token.trim(),
+                dmPolicy: "pairing",
+              };
       // Single PATCH with enabled + accounts. Channels ship enabled:true at
       // provision time, so this is a pure hot reload of the plugin with the
       // new account — seconds, not the full gateway restart.
@@ -372,7 +397,7 @@ export function BotSetupWizard({
       telegram: [
         <>
           Open Telegram on your phone or desktop and start a chat with{" "}
-          <span className="font-mono">@BotFather</span>.
+          <InlineLink href="https://t.me/BotFather">@BotFather</InlineLink>.
         </>,
         <>
           Send <code className="px-1 py-0.5 rounded bg-[#f3efe6] font-mono text-[11px]">/newbot</code>{" "}
@@ -388,14 +413,18 @@ export function BotSetupWizard({
       discord: [
         <>
           Open the{" "}
-          <span className="font-semibold">Discord Developer Portal</span> and click{" "}
-          <span className="font-semibold">New Application</span>. Give it a name — this is what
-          users will see.
+          <InlineLink href="https://discord.com/developers/applications">
+            Discord Developer Portal
+          </InlineLink>{" "}
+          and click <span className="font-semibold">New Application</span>. Give it a name — this
+          is what users will see.
         </>,
         <>
           In the left sidebar, go to <span className="font-semibold">Bot</span>, then click{" "}
-          <span className="font-semibold">Reset Token</span> → <span className="font-semibold">Yes, do it!</span>
-          {" "}→ <span className="font-semibold">Copy</span>. Save the token somewhere safe.
+          <span className="font-semibold">Reset Token</span> →{" "}
+          <span className="font-semibold">Yes, do it!</span> →{" "}
+          <span className="font-semibold">Copy</span>. Save the token somewhere safe — Discord
+          won&apos;t show it again.
         </>,
         <>You&apos;ll need a couple more settings on the next step before we can connect.</>,
       ],
@@ -429,26 +458,42 @@ export function BotSetupWizard({
         title="Enable Message Content Intent"
         body={
           <>
-            Still on the <span className="font-semibold">Bot</span> page, scroll down to{" "}
+            Open your app in the{" "}
+            <InlineLink href="https://discord.com/developers/applications">
+              Developer Portal
+            </InlineLink>
+            , click <span className="font-semibold">Bot</span> in the sidebar, scroll down to{" "}
             <span className="font-semibold">Privileged Gateway Intents</span> and toggle{" "}
-            <span className="font-semibold">Message Content Intent</span> on. Without this, Discord
-            will silently drop your messages and the pairing code will never arrive.
+            <InlineLink href="https://discord.com/developers/docs/topics/gateway#privileged-intents">
+              Message Content Intent
+            </InlineLink>{" "}
+            on. Without this, Discord will silently drop message content and pairing will never
+            work.
           </>
         }
       />
       <InstructionsList
         items={[
           <>
-            Go to <span className="font-semibold">OAuth2</span> →{" "}
+            Back in the{" "}
+            <InlineLink href="https://discord.com/developers/applications">
+              Developer Portal
+            </InlineLink>
+            , open your app and go to{" "}
+            <span className="font-semibold">OAuth2</span> →{" "}
             <span className="font-semibold">URL Generator</span> in the sidebar.
           </>,
           <>
             Under <span className="font-semibold">Scopes</span>, check{" "}
-            <span className="font-mono">bot</span>. Copy the generated URL at the bottom.
+            <span className="font-mono">bot</span>. (No bot permissions need to be selected for
+            basic DMs.) Copy the generated URL at the bottom.
           </>,
           <>
-            Open that URL in a new tab and invite the bot to a Discord server you own. You can
-            create a private server just for testing.
+            Open that URL in a new tab and invite the bot to a Discord server you own. You can{" "}
+            <InlineLink href="https://support.discord.com/hc/en-us/articles/204849977-How-do-I-create-a-server">
+              create a private server
+            </InlineLink>{" "}
+            just for testing if you don&apos;t have one.
           </>,
         ]}
       />
@@ -466,8 +511,11 @@ export function BotSetupWizard({
       <InstructionsList
         items={[
           <>
-            Open <span className="font-semibold">api.slack.com/apps</span> and click{" "}
-            <span className="font-semibold">Create New App</span> →{" "}
+            Open{" "}
+            <InlineLink href="https://api.slack.com/apps?new_app=1">
+              api.slack.com/apps
+            </InlineLink>{" "}
+            and click <span className="font-semibold">Create New App</span> →{" "}
             <span className="font-semibold">From an app manifest</span>.
           </>,
           <>
