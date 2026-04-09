@@ -1,11 +1,10 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
-import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 type Provider = "telegram" | "discord" | "slack";
@@ -19,7 +18,7 @@ export interface BotSetupWizardProps {
   onCancel: () => void;
 }
 
-type Step = "enable" | "restarting" | "token" | "waiting" | "pair" | "done";
+type Step = "token" | "waiting" | "pair" | "done";
 
 const SLACK_APP_MANIFEST = `display_information:
   name: Isol8 Agent
@@ -58,33 +57,8 @@ export function BotSetupWizard({
 }: BotSetupWizardProps) {
   const api = useApi();
   const callRpc = useGatewayRpcMutation();
-  // Same `isConnected` flag that the top-left status bar reads from
-  // useGateway — we watch it go true→false→true to detect a container
-  // gateway restart triggered by our config patches.
-  const { isConnected } = useGateway();
-  const isConnectedRef = useRef(isConnected);
-  isConnectedRef.current = isConnected;
 
-  // Waits for the gateway WS to bounce: first see it drop (or time out
-  // on a short grace period if the drop already happened), then see it
-  // come back. Returns true once reconnected, false on overall timeout.
-  const waitForGatewayBounce = async (overallTimeoutMs: number): Promise<boolean> => {
-    const deadline = Date.now() + overallTimeoutMs;
-    // Grace window to catch the disconnect. If the WS was already down
-    // when we started, skip straight to waiting for reconnect.
-    const dropDeadline = Date.now() + 10_000;
-    while (isConnectedRef.current && Date.now() < dropDeadline) {
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    // Now wait for it to come back.
-    while (!isConnectedRef.current) {
-      if (Date.now() >= deadline) return false;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    return true;
-  };
-
-  const [step, setStep] = useState<Step>(mode === "create" ? "enable" : "pair");
+  const [step, setStep] = useState<Step>(mode === "create" ? "token" : "pair");
   const [token, setToken] = useState("");
   const [slackAppToken, setSlackAppToken] = useState("");
   const [code, setCode] = useState("");
@@ -92,36 +66,6 @@ export function BotSetupWizard({
   const [error, setError] = useState<string | null>(null);
 
   const label = PROVIDER_LABELS[provider];
-
-  const handleEnable = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      // Step 1: flip the channel on. OpenClaw's reload watcher marks
-      // `channels.*.enabled` as NOT hot-reloadable and performs a full
-      // gateway restart (confirmed in logs: "config change requires
-      // gateway restart"). We intentionally do NOT send the token yet —
-      // the plugin reads credentials at startup, so we need the restart
-      // to finish *before* writing accounts.
-      await api.patchConfig({
-        channels: {
-          [provider]: { enabled: true },
-        },
-      });
-      setStep("restarting");
-      if (!(await waitForGatewayBounce(300_000))) {
-        setError("Container took too long to restart. Check the agent's status and try again.");
-        setStep("enable");
-        return;
-      }
-      setStep("token");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setStep("enable");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const handleTokenSubmit = async () => {
     setBusy(true);
@@ -139,9 +83,12 @@ export function BotSetupWizard({
               botToken: token.trim(),
               dmPolicy: "pairing",
             };
-      // Step 2: submit just the account credentials. The channel is already
-      // enabled from handleEnable — keep `enabled: true` to be defensive
-      // against deep-merge edge cases but the plugin is already loaded.
+      // Single PATCH with enabled+accounts. Channels are shipped with
+      // `enabled: true` at provision time for paid tiers (see
+      // containers/config.py), so the plugin is already loaded in the
+      // gateway. OpenClaw's reload plan treats `channels.{id}.accounts.*`
+      // as a hot-reload against the already-running plugin, which just
+      // restarts that one channel (seconds) instead of the whole gateway.
       const patch: Record<string, unknown> = {
         channels: {
           [provider]: {
@@ -154,16 +101,8 @@ export function BotSetupWizard({
       };
       await api.patchConfig(patch);
       setStep("waiting");
-      // `channels.*.accounts` is ALSO not hot-reloadable — writing the
-      // token triggers a second gateway restart. Wait for the gateway
-      // to come back before we start looking for `connected`.
-      if (!(await waitForGatewayBounce(300_000))) {
-        setError("Container took too long to restart. Check the agent's status and try again.");
-        setStep("token");
-        return;
-      }
-      // Now the bot should actually be connecting. Poll until it reports
-      // connected=true, or time out.
+      // Poll channels.status until the account reports connected. The
+      // channel restart is fast, so a short deadline is fine.
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try {
@@ -219,33 +158,6 @@ export function BotSetupWizard({
       <h3 className="text-lg font-semibold">
         {mode === "create" ? `Set up ${label} bot` : `Link your ${label} identity`}
       </h3>
-
-      {step === "enable" && (
-        <div className="space-y-3">
-          <p className="text-sm text-[#5a564c]">
-            First we&apos;ll turn on the {label} channel for this agent. The
-            container will restart its gateway to load the plugin, then
-            you&apos;ll paste your bot token on the next step.
-          </p>
-          {error && <p className="text-xs text-red-600">{error}</p>}
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={onCancel} disabled={busy}>
-              Cancel
-            </Button>
-            <Button onClick={handleEnable} disabled={busy}>
-              {busy && <Loader2 className="h-3 w-3 animate-spin mr-1" />}
-              Enable {label}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {step === "restarting" && (
-        <div className="flex items-center gap-2 text-sm text-[#8a8578]">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          Restarting the gateway to load {label}…
-        </div>
-      )}
 
       {step === "token" && (
         <div className="space-y-3">
