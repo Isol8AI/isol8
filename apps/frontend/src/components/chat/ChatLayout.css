@@ -26,15 +26,13 @@
   align-items: center;
   gap: 8px;
 }
-.sidebar-logo svg {
-  width: 24px;
-  height: 24px;
-}
-.sidebar-logo span {
-  font-size: 16px;
-  font-weight: 600;
+.sidebar-logo-8 {
+  font-family: var(--font-lora), serif;
+  font-style: italic;
+  font-weight: 400;
+  font-size: 28px;
   color: #1a1a1a;
-  letter-spacing: -0.01em;
+  line-height: 1;
 }
 .sidebar-settings-link {
   color: #8a8578;

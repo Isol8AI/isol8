@@ -512,10 +512,7 @@ export function AgentChatWindow({
         <div className="flex-1 flex flex-col items-center justify-center p-4">
           <div className="text-center mb-8">
             <div className="mb-6 flex justify-center">
-              <svg width="56" height="56" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="100" height="100" rx="22" fill="#06402B" />
-                <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
-              </svg>
+              <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>
             </div>
             <h1 className="text-3xl mb-3 text-[#1a1a1a] tracking-tight font-lora">
               {agentId ?? "Select an agent"}

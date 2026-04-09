@@ -4,37 +4,36 @@ export function Features() {
       <div className="section-inner">
         <p className="section-eyebrow reveal">Your Pod</p>
         <h2 className="section-h2 reveal">
-          A private AI that&apos;s <em>entirely yours.</em>
+          AI agents that fit into <em>your</em> tools.
         </h2>
 
         <div className="feat-grid">
           <div className="feat-card reveal reveal-d1">
             <div className="feat-icon">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="8" r="4" />
-                <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
-                <path d="M16 3.5c1.5.8 2.5 2.3 2.5 4s-1 3.2-2.5 4" />
+                <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                <path d="M2 17l10 5 10-5" />
+                <path d="M2 12l10 5 10-5" />
               </svg>
             </div>
-            <h3 className="feat-title">Custom Personality</h3>
+            <h3 className="feat-title">Plugs Into Your Stack</h3>
             <p className="feat-desc">
-              Shape how your agent thinks, speaks, and approaches problems.
-              Define its tone, values, and working style. It learns your
-              preferences and adapts — not the other way around.
+              Gmail, Slack, Salesforce, Notion — your agents connect natively
+              to the tools your team relies on. No new apps to learn, no
+              workflows to rebuild.
             </p>
           </div>
           <div className="feat-card reveal reveal-d2">
             <div className="feat-icon">
               <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="3" y="11" width="18" height="11" rx="2" />
-                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
               </svg>
             </div>
-            <h3 className="feat-title">Memory &amp; Privacy</h3>
+            <h3 className="feat-title">Always In The Loop</h3>
             <p className="feat-desc">
-              Every conversation builds on the last. Your pod runs in a fully
-              isolated container — no shared state, no model training on your
-              data. What&apos;s yours stays yours, across every session.
+              Message your agents on Slack, WhatsApp, or Discord — just like
+              texting a teammate. Your container is always running, so your
+              agents never stop working, even when you log off.
             </p>
           </div>
           <div className="feat-card reveal reveal-d3">

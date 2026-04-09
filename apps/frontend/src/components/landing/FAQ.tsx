@@ -1,19 +1,27 @@
 "use client";
 
-import { useEffect } from "react";
+import { useCallback, useState } from "react";
 
 const faqs = [
   {
-    q: "What exactly is a pod?",
-    a: "A pod is your own isolated AI container — a private environment running a Claude-powered agent that belongs only to you. It stores your memory, runs your skills, and connects to your tools.",
+    q: "What is an agent?",
+    a: "An agent is an AI that doesn\u2019t just chat \u2014 it takes action. It can read your emails, update your CRM, schedule meetings, search the web, and run multi-step tasks on its own. Think of it like a digital employee that works 24/7 and gets smarter the more you use it.",
   },
   {
-    q: "How is this different from ChatGPT or Claude.ai?",
-    a: "Those are shared, stateless interfaces. Your isol8 pod is a dedicated environment with persistent memory, customizable personality, real integrations, and a running process that's always on.",
+    q: "What is a pod, and is my data safe?",
+    a: "A pod is your own private, isolated container in the cloud \u2014 it\u2019s where your agents live and run. No other user can access your pod, your conversations, or your files. Your data never leaves your container and is never used to train models. It\u2019s your workspace, fully locked down.",
   },
   {
-    q: "Is my data private?",
-    a: "Yes. Your pod is fully isolated — no other user has access to your container, memory, or conversations. Your data doesn't train models.",
+    q: "How is this different from ChatGPT or Claude?",
+    a: "ChatGPT and Claude are chat interfaces \u2014 you ask a question, you get an answer, and it forgets you. isol8 gives you persistent agents that connect to your actual tools, remember your preferences, and take real actions across your workflows. It\u2019s less of a chatbot and more of an AI team embedded in how you work.",
+  },
+  {
+    q: "Can I talk to my agents on Slack, WhatsApp, or Discord?",
+    a: "Yes. You can connect your agents to channels like Slack, WhatsApp, Discord, and Telegram. Message them the same way you\u2019d message a coworker \u2014 they\u2019ll respond, take action, and follow up, all from the app you\u2019re already in.",
+  },
+  {
+    q: "Can my agents run tasks on a schedule?",
+    a: "Absolutely. You can set up recurring tasks \u2014 like sending a daily report, checking your inbox every morning, or syncing data between tools on a weekly basis. Your agents handle it automatically in the background, no manual work required.",
   },
   {
     q: "Can I cancel anytime?",
@@ -21,41 +29,37 @@ const faqs = [
   },
 ];
 
+function FaqItem({ faq, isOpen, onToggle }: { faq: typeof faqs[number]; isOpen: boolean; onToggle: () => void }) {
+  const handleKeydown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onToggle();
+    }
+  }, [onToggle]);
+
+  return (
+    <div
+      className={`faq-item${isOpen ? " open" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={onToggle}
+      onKeyDown={handleKeydown}
+    >
+      <h3 className="faq-q">
+        {faq.q}
+        <span className="faq-icon" />
+      </h3>
+      <div className="faq-a-wrapper" aria-hidden={!isOpen}>
+        <div className="faq-a-inner">
+          <p className="faq-a">{faq.a}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FAQ() {
-  useEffect(() => {
-    const items = document.querySelectorAll(".faq-item");
-    if (!items.length) return;
-
-    // Open first FAQ by default
-    items[0].classList.add("open");
-
-    const cleanups: Array<() => void> = [];
-
-    items.forEach((item) => {
-      const toggle = () => {
-        const wasOpen = item.classList.contains("open");
-        items.forEach((i) => i.classList.remove("open"));
-        if (!wasOpen) item.classList.add("open");
-      };
-      const onKeydown = (e: Event) => {
-        const key = (e as KeyboardEvent).key;
-        if (key === "Enter" || key === " ") {
-          e.preventDefault();
-          toggle();
-        }
-      };
-      item.addEventListener("click", toggle);
-      item.addEventListener("keydown", onKeydown);
-      cleanups.push(() => {
-        item.removeEventListener("click", toggle);
-        item.removeEventListener("keydown", onKeydown);
-      });
-    });
-
-    return () => {
-      cleanups.forEach((fn) => fn());
-    };
-  }, []);
+  const [openIndex, setOpenIndex] = useState<number>(0);
 
   return (
     <section className="landing-faq" id="faq">
@@ -67,10 +71,12 @@ export function FAQ() {
 
         <div className="faq-list">
           {faqs.map((faq, i) => (
-            <div className="faq-item" role="button" tabIndex={0} key={i}>
-              <h3 className="faq-q">{faq.q}</h3>
-              <p className="faq-a">{faq.a}</p>
-            </div>
+            <FaqItem
+              key={i}
+              faq={faq}
+              isOpen={openIndex === i}
+              onToggle={() => setOpenIndex(openIndex === i ? -1 : i)}
+            />
           ))}
         </div>
       </div>
