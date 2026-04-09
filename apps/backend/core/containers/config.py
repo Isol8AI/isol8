@@ -423,6 +423,10 @@ def write_openclaw_config(
                 "enabled": False,
                 "dmPolicy": "pairing",
             },
+            "slack": {
+                "enabled": False,
+                "dmPolicy": "pairing",
+            },
         },
         "session": {
             "dmScope": "per-account-channel-peer",
