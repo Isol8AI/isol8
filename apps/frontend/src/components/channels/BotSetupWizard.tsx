@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -229,6 +229,29 @@ export function BotSetupWizard({
   const [error, setError] = useState<string | null>(null);
   const [manifestCopied, setManifestCopied] = useState(false);
 
+  // Whether the wizard has written an account row to openclaw.json that has
+  // not yet been confirmed working. If the user cancels, the bot reports
+  // an error, or polling times out, we DELETE the account row so they
+  // don't end up with broken half-configured state on EFS that they can't
+  // fix from the UI. Cleared once we successfully reach the pair step.
+  const dirtyConfig = useRef(false);
+  const rollbackInFlight = useRef(false);
+
+  const rollbackAccount = async () => {
+    if (!dirtyConfig.current || rollbackInFlight.current) return;
+    rollbackInFlight.current = true;
+    try {
+      await api.del(`/channels/${provider}/${agentId}`);
+      dirtyConfig.current = false;
+    } catch (e) {
+      // Best-effort cleanup; surface to console but don't block UI.
+      // eslint-disable-next-line no-console
+      console.warn("Channel rollback failed", e);
+    } finally {
+      rollbackInFlight.current = false;
+    }
+  };
+
   const label = PROVIDER_LABELS[provider];
 
   // Progress indicator excludes the terminal "done" step so the dots don't
@@ -279,6 +302,39 @@ export function BotSetupWizard({
     // Move UI to the connecting state immediately so the user sees progress.
     setStepIndex(steps.indexOf("connecting"));
 
+    // OpenClaw stores per-account runtime state in a Map that PERSISTS
+    // across restarts: src/gateway/server-channels.ts:246-256 setRuntime
+    // does { ...current, ...patch } so stale fields stick around. When
+    // the previous attempt failed it left lastError="not configured" on
+    // the runtime entry. The new restart only clears it when the new
+    // instance successfully starts (server-channels.ts:392 lastError:
+    // null) — until then, polling channels.status returns the stale
+    // error and we'd false-positive a failure.
+    //
+    // To detect when the restart has actually completed, capture
+    // lastStartAt before the PATCH and only trust the snapshot once it
+    // has advanced. If the previous instance never ran, initialStartAt
+    // will be null and any defined value means the new instance started.
+    type AccountSnapshot = {
+      accountId?: string;
+      running?: boolean;
+      connected?: boolean;
+      lastError?: string | null;
+      lastStartAt?: number | null;
+    };
+    let initialStartAt: number | null = null;
+    try {
+      const preStatus = (await callRpc("channels.status", { probe: false })) as {
+        channelAccounts?: Record<string, AccountSnapshot[]>;
+      };
+      const preAccounts = preStatus?.channelAccounts?.[provider] ?? [];
+      const preEntry = preAccounts.find((a) => a.accountId === agentId);
+      initialStartAt = preEntry?.lastStartAt ?? null;
+    } catch {
+      // If we can't read pre-state, treat as null — first defined value
+      // we see post-PATCH counts as a fresh start.
+    }
+
     try {
       // Field name varies per provider:
       //   telegram → botToken
@@ -316,17 +372,14 @@ export function BotSetupWizard({
         },
       };
       await api.patchConfig(patch);
+      // Mark the config dirty so any failure / cancel from this point on
+      // rolls the account row back instead of leaving broken state on EFS.
+      dirtyConfig.current = true;
 
-      // Poll channels.status until the account reports ready (running OR
-      // connected — Telegram's long-poll provider sets running first, and
-      // connected never lands without a probe, so either flag means the
-      // plugin accepted our token). Surface lastError eagerly for fast
-      // failures on a bad token.
-      type AccountSnapshot = {
-        running?: boolean;
-        connected?: boolean;
-        lastError?: string | null;
-      };
+      // Poll until the runtime entry actually reflects the new restart
+      // (lastStartAt > initialStartAt). Only THEN do we trust the
+      // snapshot's running / connected / lastError fields — anything
+      // before that is stale runtime state from a previous attempt.
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try {
@@ -334,15 +387,23 @@ export function BotSetupWizard({
             channelAccounts?: Record<string, AccountSnapshot[]>;
           };
           const accounts = status?.channelAccounts?.[provider] ?? [];
-          if (accounts.some((a) => a.running || a.connected)) {
-            setStepIndex(steps.indexOf("pair"));
-            return;
-          }
-          const firstError = accounts.find((a) => a.lastError)?.lastError;
-          if (firstError) {
-            setError(`Bot failed to start: ${firstError}`);
-            setStepIndex(steps.indexOf("token"));
-            return;
+          const ourAccount = accounts.find((a) => a.accountId === agentId);
+          const newStartAt = ourAccount?.lastStartAt ?? null;
+          const restartHappened =
+            newStartAt != null &&
+            (initialStartAt == null || newStartAt > initialStartAt);
+          if (restartHappened) {
+            if (ourAccount?.running || ourAccount?.connected) {
+              dirtyConfig.current = false;
+              setStepIndex(steps.indexOf("pair"));
+              return;
+            }
+            if (ourAccount?.lastError) {
+              setError(`Bot failed to start: ${ourAccount.lastError}`);
+              await rollbackAccount();
+              setStepIndex(steps.indexOf("token"));
+              return;
+            }
           }
         } catch {
           // retry
@@ -350,9 +411,13 @@ export function BotSetupWizard({
         await new Promise((r) => setTimeout(r, 2000));
       }
       setError("Bot started but never reported ready. Check the token and try again.");
+      await rollbackAccount();
       setStepIndex(steps.indexOf("token"));
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      // patchConfig itself may have thrown; rollback is a no-op if nothing
+      // was committed (dirtyConfig.current === false).
+      await rollbackAccount();
       setStepIndex(steps.indexOf("token"));
     } finally {
       setBusy(false);
@@ -711,6 +776,15 @@ export function BotSetupWizard({
   // Footer (cancel / back / next)
   // ---------------------------------------------------------------------------
 
+  // Cancel handler that rolls back any half-committed config (e.g. user
+  // pasted a bad token, bot is starting, they bail before it succeeds).
+  const handleCancel = async () => {
+    if (dirtyConfig.current) {
+      await rollbackAccount();
+    }
+    onCancel();
+  };
+
   const renderFooter = () => {
     if (step === "connecting" || step === "done") {
       return null;
@@ -738,7 +812,7 @@ export function BotSetupWizard({
         <Button
           variant="ghost"
           size="sm"
-          onClick={canGoBack ? goBack : onCancel}
+          onClick={canGoBack ? goBack : handleCancel}
           disabled={busy}
           className="text-[#8a8578] cursor-pointer"
         >
