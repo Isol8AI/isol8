@@ -280,6 +280,13 @@ export function BotSetupWizard({
     setStepIndex(steps.indexOf("connecting"));
 
     try {
+      // Field name varies per provider:
+      //   telegram → botToken
+      //   discord  → token       (NOT botToken — confirmed in
+      //                            extensions/discord/src/shared.ts:62,115:
+      //                            clearBaseFields=['token','name'],
+      //                            isConfigured: account.token)
+      //   slack    → botToken + appToken (socket mode)
       const accountCfg: Record<string, unknown> =
         provider === "slack"
           ? {
@@ -288,10 +295,15 @@ export function BotSetupWizard({
               botToken: token.trim(),
               dmPolicy: "pairing",
             }
-          : {
-              botToken: token.trim(),
-              dmPolicy: "pairing",
-            };
+          : provider === "discord"
+            ? {
+                token: token.trim(),
+                dmPolicy: "pairing",
+              }
+            : {
+                botToken: token.trim(),
+                dmPolicy: "pairing",
+              };
       // Single PATCH with enabled + accounts. Channels ship enabled:true at
       // provision time, so this is a pure hot reload of the plugin with the
       // new account — seconds, not the full gateway restart.
