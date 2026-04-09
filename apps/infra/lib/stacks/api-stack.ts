@@ -68,9 +68,18 @@ export class ApiStack extends cdk.Stack {
     const httpApi = new apigatewayv2.CfnApi(this, "HttpApi", {
       name: `isol8-${env}-api`,
       protocolType: "HTTP",
+      // AWS API Gateway HTTP API handles CORS preflight AT THE GATEWAY LAYER —
+      // the backend never sees OPTIONS requests for declared CORS headers.
+      // This list MUST match what FastAPI's CORSMiddleware allows, otherwise
+      // requests get silently rejected with "preflight failed" before they
+      // reach the backend. PATCH was missing here, which broke PATCH
+      // /api/v1/config (used by the channels bot-setup wizard) with a
+      // confusing "No 'Access-Control-Allow-Origin' header" browser error —
+      // FastAPI's middleware was correct, but AWS API Gateway returned its
+      // own preflight response with PATCH missing from allow_methods.
       corsConfiguration: {
         allowOrigins: [frontendUrl],
-        allowMethods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allowHeaders: [
           "Content-Type",
           "Authorization",
