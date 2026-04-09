@@ -89,41 +89,57 @@ describe('cancelSubscriptionIfExists', () => {
     const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
-    // Three separate status calls are made (active, trialing, incomplete)
-    expect(mocks.subscriptionsList).toHaveBeenCalledTimes(3);
+    // A single list call with status: 'all' covers every non-canceled state.
+    expect(mocks.subscriptionsList).toHaveBeenCalledTimes(1);
+    expect(mocks.subscriptionsList).toHaveBeenCalledWith({
+      customer: 'cus_123',
+      status: 'all',
+      limit: 100,
+    });
     expect(mocks.subscriptionsCancel).not.toHaveBeenCalled();
   });
 
-  it('cancels active subscription and fetches all three statuses', async () => {
+  it('cancels all non-canceled subscriptions returned by status=all', async () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_123' }] });
-    // active returns the subscription; trialing and incomplete return empty
-    mocks.subscriptionsList
-      .mockResolvedValueOnce({ data: [{ id: 'sub_active', status: 'active' }] })
-      .mockResolvedValueOnce({ data: [] })
-      .mockResolvedValueOnce({ data: [] });
-    mocks.subscriptionsCancel.mockResolvedValue({ id: 'sub_active', status: 'canceled' });
+    mocks.subscriptionsList.mockResolvedValue({
+      data: [
+        { id: 'sub_active', status: 'active' },
+        { id: 'sub_past_due', status: 'past_due' },
+        { id: 'sub_canceled', status: 'canceled' },
+        { id: 'sub_incomplete_expired', status: 'incomplete_expired' },
+      ],
+    });
+    mocks.subscriptionsCancel.mockResolvedValue({ status: 'canceled' });
 
     const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
-    expect(mocks.subscriptionsList).toHaveBeenCalledTimes(3);
-    expect(mocks.subscriptionsList).toHaveBeenCalledWith({ customer: 'cus_123', status: 'active' });
-    expect(mocks.subscriptionsList).toHaveBeenCalledWith({ customer: 'cus_123', status: 'trialing' });
-    expect(mocks.subscriptionsList).toHaveBeenCalledWith({ customer: 'cus_123', status: 'incomplete' });
+    expect(mocks.subscriptionsList).toHaveBeenCalledTimes(1);
+    expect(mocks.subscriptionsCancel).toHaveBeenCalledTimes(2);
     expect(mocks.subscriptionsCancel).toHaveBeenCalledWith('sub_active');
+    expect(mocks.subscriptionsCancel).toHaveBeenCalledWith('sub_past_due');
+    expect(mocks.subscriptionsCancel).not.toHaveBeenCalledWith('sub_canceled');
+    expect(mocks.subscriptionsCancel).not.toHaveBeenCalledWith('sub_incomplete_expired');
   });
 
-  it('canceled subscriptions are never fetched and cancel is not called', async () => {
+  it('continues cancelling other subscriptions when one cancel call throws', async () => {
     const mocks = await getMocks();
     mocks.customersList.mockResolvedValue({ data: [{ id: 'cus_123' }] });
-    // All three status-specific calls return empty (simulating only a canceled sub exists)
-    mocks.subscriptionsList.mockResolvedValue({ data: [] });
+    mocks.subscriptionsList.mockResolvedValue({
+      data: [
+        { id: 'sub_bad', status: 'active' },
+        { id: 'sub_good', status: 'active' },
+      ],
+    });
+    mocks.subscriptionsCancel
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ status: 'canceled' });
 
     const { cancelSubscriptionIfExists } = await import('../../e2e/helpers/stripe');
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
-    expect(mocks.subscriptionsCancel).not.toHaveBeenCalled();
+    expect(mocks.subscriptionsCancel).toHaveBeenCalledTimes(2);
   });
 });
 

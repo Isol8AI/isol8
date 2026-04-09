@@ -20,6 +20,7 @@ class TestBillingServiceCreateCustomer:
     async def test_create_customer_for_owner(self, mock_stripe, mock_repo, service):
         """Should create Stripe customer and billing account for user."""
         mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_stripe.Customer.search.return_value = MagicMock(data=[])
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_new_123")
         mock_repo.get_or_create = AsyncMock(
             return_value={
@@ -38,6 +39,70 @@ class TestBillingServiceCreateCustomer:
         assert account["owner_id"] == "user_new_123"
         assert account["stripe_customer_id"] == "cus_new_123"
         assert account["plan_tier"] == "free"
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_customer_reuses_existing_stripe_customer(self, mock_stripe, mock_repo, service):
+        """If Stripe search returns 1 match, reuse it instead of creating a duplicate."""
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_stripe.Customer.search.return_value = MagicMock(data=[MagicMock(id="cus_existing", created=1000)])
+        mock_repo.get_or_create = AsyncMock(
+            return_value={"owner_id": "user_x", "stripe_customer_id": "cus_existing", "plan_tier": "free"}
+        )
+
+        result = await service.create_customer_for_owner(owner_id="user_x")
+
+        mock_stripe.Customer.create.assert_not_called()
+        mock_repo.get_or_create.assert_called_once_with(
+            owner_id="user_x",
+            stripe_customer_id="cus_existing",
+            owner_type="personal",
+        )
+        assert result["stripe_customer_id"] == "cus_existing"
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_customer_reuses_oldest_when_multiple(self, mock_stripe, mock_repo, service, caplog):
+        """If Stripe search returns >1 matches, reuse the oldest and log a warning."""
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        newer = MagicMock(id="cus_newer", created=2000)
+        older = MagicMock(id="cus_older", created=1000)
+        mock_stripe.Customer.search.return_value = MagicMock(data=[newer, older])
+        mock_repo.get_or_create = AsyncMock(
+            return_value={"owner_id": "user_y", "stripe_customer_id": "cus_older", "plan_tier": "free"}
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="core.services.billing_service"):
+            await service.create_customer_for_owner(owner_id="user_y")
+
+        mock_stripe.Customer.create.assert_not_called()
+        mock_repo.get_or_create.assert_called_once_with(
+            owner_id="user_y",
+            stripe_customer_id="cus_older",
+            owner_type="personal",
+        )
+        assert any("orphan" in r.message.lower() for r in caplog.records)
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_customer_falls_back_when_search_raises(self, mock_stripe, mock_repo, service):
+        """If Stripe search raises, fall back to Customer.create — never block provisioning."""
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_stripe.Customer.search.side_effect = RuntimeError("search disabled")
+        mock_stripe.Customer.create.return_value = MagicMock(id="cus_fallback")
+        mock_repo.get_or_create = AsyncMock(
+            return_value={"owner_id": "user_z", "stripe_customer_id": "cus_fallback", "plan_tier": "free"}
+        )
+
+        result = await service.create_customer_for_owner(owner_id="user_z")
+
+        mock_stripe.Customer.create.assert_called_once()
+        assert result["stripe_customer_id"] == "cus_fallback"
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")

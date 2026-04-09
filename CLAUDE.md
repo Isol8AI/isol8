@@ -151,6 +151,18 @@ await fetch('https://api-dev.isol8.co/api/v1/debug/provision', {method:'POST', h
 
 Debug endpoints return 403 in production.
 
+### Manual dev testing accounts
+
+DO NOT use `isol8-e2e-testing@mailsac.com` for manual dev testing. That Clerk
+account is reserved for the Playwright E2E gate that runs on every deploy.
+The E2E journey test cancels + recreates a Starter subscription on that
+account on each run, which will clobber any manual testing state.
+
+For manual dev testing, create your own Clerk account (or use an existing
+personal email) at https://dev.isol8.co/sign-up. The dev Clerk instance is
+the same one used for prod previews, so test accounts created in dev are
+real accounts -- don't use a production email.
+
 ### CI/CD Monitoring
 
 ```bash
