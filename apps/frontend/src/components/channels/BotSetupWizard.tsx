@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
+import { useGateway } from "@/hooks/useGateway";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 type Provider = "telegram" | "discord" | "slack";
@@ -57,6 +58,31 @@ export function BotSetupWizard({
 }: BotSetupWizardProps) {
   const api = useApi();
   const callRpc = useGatewayRpcMutation();
+  // Same `isConnected` flag that the top-left status bar reads from
+  // useGateway — we watch it go true→false→true to detect a container
+  // gateway restart triggered by our config patches.
+  const { isConnected } = useGateway();
+  const isConnectedRef = useRef(isConnected);
+  isConnectedRef.current = isConnected;
+
+  // Waits for the gateway WS to bounce: first see it drop (or time out
+  // on a short grace period if the drop already happened), then see it
+  // come back. Returns true once reconnected, false on overall timeout.
+  const waitForGatewayBounce = async (overallTimeoutMs: number): Promise<boolean> => {
+    const deadline = Date.now() + overallTimeoutMs;
+    // Grace window to catch the disconnect. If the WS was already down
+    // when we started, skip straight to waiting for reconnect.
+    const dropDeadline = Date.now() + 10_000;
+    while (isConnectedRef.current && Date.now() < dropDeadline) {
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    // Now wait for it to come back.
+    while (!isConnectedRef.current) {
+      if (Date.now() >= deadline) return false;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return true;
+  };
 
   const [step, setStep] = useState<Step>(mode === "create" ? "enable" : "pair");
   const [token, setToken] = useState("");
@@ -71,35 +97,24 @@ export function BotSetupWizard({
     setBusy(true);
     setError(null);
     try {
-      // Step 1: flip the channel on. OpenClaw picks this up via the config
-      // watcher and loads the channel plugin, which usually bumps the
-      // gateway connection. We intentionally do NOT send the token yet —
-      // sending it in the same patch races the plugin load and we've seen
-      // the token get dropped until a manual restart.
+      // Step 1: flip the channel on. OpenClaw's reload watcher marks
+      // `channels.*.enabled` as NOT hot-reloadable and performs a full
+      // gateway restart (confirmed in logs: "config change requires
+      // gateway restart"). We intentionally do NOT send the token yet —
+      // the plugin reads credentials at startup, so we need the restart
+      // to finish *before* writing accounts.
       await api.patchConfig({
         channels: {
           [provider]: { enabled: true },
         },
       });
       setStep("restarting");
-      // Wait for the gateway to come back. channels.status responds as soon
-      // as the plugin is loaded, even without any accounts configured.
-      const deadline = Date.now() + 30_000;
-      // Give the watcher a beat before we start polling so we don't catch
-      // the pre-restart gateway still answering.
-      await new Promise((r) => setTimeout(r, 1500));
-      while (Date.now() < deadline) {
-        try {
-          await callRpc("channels.status", { probe: false });
-          setStep("token");
-          return;
-        } catch {
-          // gateway still restarting
-        }
-        await new Promise((r) => setTimeout(r, 1500));
+      if (!(await waitForGatewayBounce(300_000))) {
+        setError("Container took too long to restart. Check the agent's status and try again.");
+        setStep("enable");
+        return;
       }
-      setError("Container took too long to enable the channel. Try again.");
-      setStep("enable");
+      setStep("token");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setStep("enable");
@@ -139,8 +154,17 @@ export function BotSetupWizard({
       };
       await api.patchConfig(patch);
       setStep("waiting");
-      // Poll channels.status until the account reports connected
-      const deadline = Date.now() + 30_000;
+      // `channels.*.accounts` is ALSO not hot-reloadable — writing the
+      // token triggers a second gateway restart. Wait for the gateway
+      // to come back before we start looking for `connected`.
+      if (!(await waitForGatewayBounce(300_000))) {
+        setError("Container took too long to restart. Check the agent's status and try again.");
+        setStep("token");
+        return;
+      }
+      // Now the bot should actually be connecting. Poll until it reports
+      // connected=true, or time out.
+      const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try {
           const status = (await callRpc("channels.status", { probe: false })) as {
@@ -154,9 +178,9 @@ export function BotSetupWizard({
         } catch {
           // fall through to retry
         }
-        await new Promise((r) => setTimeout(r, 1500));
+        await new Promise((r) => setTimeout(r, 2000));
       }
-      setError("Container took too long to start the bot. Check the agent's channel status.");
+      setError("Bot started but never reported connected. Check the token and try again.");
       setStep("token");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
