@@ -39,6 +39,7 @@ class GatewayConnection:
         ip: str,
         token: str,
         management_api: Any,
+        frontend_connections: Set[str],
         on_activity: Any = None,
     ) -> None:
         self.user_id = user_id
@@ -49,7 +50,13 @@ class GatewayConnection:
         self._ws: Any = None
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
-        self._frontend_connections: Set[str] = set()
+        # Shared reference to the pool's canonical set — NOT a copy.
+        # The pool owns add/remove; the connection reads for fan-out.
+        # This eliminates the race where add_frontend_connection ran
+        # during _create_connection's connect() yield and the new
+        # connection_id never reached the GatewayConnection's internal
+        # copy. Now there's only one set.
+        self._frontend_connections = frontend_connections
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
@@ -634,17 +641,6 @@ class GatewayConnection:
                     future.set_exception(RuntimeError("Gateway connection lost"))
             self._pending_rpcs.clear()
 
-    def add_frontend_connection(self, connection_id: str) -> None:
-        """Register a frontend WebSocket connection for event forwarding."""
-        self._frontend_connections.add(connection_id)
-        if self._grace_task and not self._grace_task.done():
-            self._grace_task.cancel()
-            self._grace_task = None
-
-    def remove_frontend_connection(self, connection_id: str) -> None:
-        """Unregister a frontend connection."""
-        self._frontend_connections.discard(connection_id)
-
     @property
     def has_frontend_connections(self) -> bool:
         return len(self._frontend_connections) > 0
@@ -703,15 +699,18 @@ class GatewayConnectionPool:
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
+        # Ensure the canonical set exists before passing it as a shared
+        # reference. The GatewayConnection reads this set directly when
+        # fanning out events — no copy, no sync, no race.
+        if user_id not in self._frontend_connections:
+            self._frontend_connections[user_id] = set()
         conn = GatewayConnection(
             user_id=user_id,
             ip=ip,
             token=token,
             management_api=self._management_api,
+            frontend_connections=self._frontend_connections[user_id],
         )
-        # Transfer any already-registered frontend connections
-        for fc in self._frontend_connections.get(user_id, set()):
-            conn.add_frontend_connection(fc)
         await conn.connect()
         self._connections[user_id] = conn
         return conn
@@ -738,15 +737,15 @@ class GatewayConnectionPool:
         return await conn.wait_for_response(req_id)
 
     def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
-        """Register a frontend WS connection for event forwarding."""
+        """Register a frontend WS connection for event forwarding.
+
+        Writes to the canonical set in ``self._frontend_connections``.
+        The GatewayConnection holds a shared reference to the same set,
+        so the change is visible immediately — no sync step needed.
+        """
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
-
-        # Also register on existing gateway connection
-        conn = self._connections.get(user_id)
-        if conn:
-            conn.add_frontend_connection(connection_id)
 
         # Cancel grace period if one is running
         grace = self._grace_tasks.pop(user_id, None)
@@ -758,10 +757,6 @@ class GatewayConnectionPool:
         fcs = self._frontend_connections.get(user_id)
         if fcs:
             fcs.discard(connection_id)
-
-        conn = self._connections.get(user_id)
-        if conn:
-            conn.remove_frontend_connection(connection_id)
 
         # Start grace period if no frontend connections remain
         if not fcs and user_id in self._connections:

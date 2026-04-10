@@ -352,6 +352,9 @@ def write_openclaw_config(
                 "memorySearch": {
                     "enabled": True,
                 },
+                "llm": {
+                    "idleTimeoutSeconds": 300,
+                },
             },
         },
         "memory": {
