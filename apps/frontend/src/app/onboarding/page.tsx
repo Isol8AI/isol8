@@ -42,8 +42,18 @@ export default function OnboardingPage() {
   // userMemberships (with infinite: true) never re-fired because the
   // paginated hook didn't revalidate. useOrganization() IS reactive —
   // Clerk updates it synchronously when the active org changes.
+  // Auto-redirect when the user already has an org (e.g. accepted an
+  // invite and landed here, or returning to /onboarding after the
+  // CreateOrganization flow finishes via afterCreateOrganizationUrl).
+  //
+  // IMPORTANT: skip when mode === "org" — the user is actively inside
+  // Clerk's CreateOrganization component (which includes the invitation
+  // screen). Clerk sets `organization` the instant the org is created,
+  // BEFORE the invitation step. If we redirect on that signal, the
+  // invitation screen never shows.
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
+    if (mode === "org") return; // let CreateOrganization handle its flow
     // Path 1: org already active
     if (organization) {
       router.push("/chat");
@@ -56,13 +66,14 @@ export default function OnboardingPage() {
         router.push("/chat");
       });
     }
-  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router]);
+  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router, mode]);
 
   if (!isLoaded || !orgsLoaded || !orgLoaded) return null;
 
   // If user has an active org or memberships, we're redirecting — show nothing
-  if (organization) return null;
-  if (userMemberships?.data && userMemberships.data.length > 0) return null;
+  // (but only when not in the org-creation flow)
+  if (mode !== "org" && organization) return null;
+  if (mode !== "org" && userMemberships?.data && userMemberships.data.length > 0) return null;
 
   async function handlePersonal() {
     setLoading(true);
@@ -94,7 +105,7 @@ export default function OnboardingPage() {
           // could mount ProvisioningStepper while the JWT is still mid-
           // switch between personal and org context — causing the double-
           // provision bug where the same human ends up with two containers.
-          afterCreateOrganizationUrl="/onboarding"
+          afterCreateOrganizationUrl="/chat"
           skipInvitationScreen={false}
         />
         <Button variant="ghost" onClick={() => setMode("choose")}>
