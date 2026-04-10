@@ -19,7 +19,6 @@ import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { GatewayProvider } from "@/hooks/useGateway";
-import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 
 interface BotEntry {
   agent_id: string;
@@ -47,39 +46,13 @@ export function MyChannelsSection() {
   );
 }
 
-// Extract bot handles from channels.status so members can see the actual
-// bot name (e.g. @MyBot) instead of the agent_id placeholder ("main").
-type ChannelStatusAccount = {
-  accountId?: string;
-  name?: string;
-};
-type ChannelStatusResponse = {
-  channelAccounts?: Record<string, ChannelStatusAccount[]>;
-};
-
-function useBotHandles() {
-  const { data } = useGatewayRpc<ChannelStatusResponse>("channels.status", { probe: false });
-  const handles: Record<string, Record<string, string>> = {};
-  if (data?.channelAccounts) {
-    for (const [provider, accounts] of Object.entries(data.channelAccounts)) {
-      handles[provider] = {};
-      for (const acct of accounts) {
-        if (acct.accountId && acct.name) {
-          handles[provider][acct.accountId] = acct.name;
-        }
-      }
-    }
-  }
-  return handles;
-}
-
 function MyChannelsSectionInner() {
   const api = useApi();
+  // bot_username is now populated by the backend via channels.status probe
   const { data, error, isLoading, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
-  const botHandles = useBotHandles();
   const [wizard, setWizard] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinking, setUnlinking] = useState(false);
@@ -157,12 +130,7 @@ function MyChannelsSectionInner() {
                       <AlertCircle className="h-4 w-4 text-amber-500" />
                     )}
                     <div className="flex-1">
-                      <p className="text-sm font-mono">
-                        {formatBotHandle(
-                          provider,
-                          botHandles[provider]?.[bot.agent_id] || bot.bot_username,
-                        )}
-                      </p>
+                      <p className="text-sm font-mono">{formatBotHandle(provider, bot.bot_username)}</p>
                       <p className="text-xs text-[#8a8578]">{bot.agent_id}</p>
                     </div>
                     {bot.linked ? (
