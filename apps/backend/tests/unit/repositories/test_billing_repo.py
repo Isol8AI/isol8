@@ -45,7 +45,7 @@ def dynamodb_table():
 async def test_create_and_get(dynamodb_table):
     from core.repositories import billing_repo
 
-    result = await billing_repo.create("user_1", "cus_abc")
+    result = await billing_repo.create_if_not_exists("user_1", "cus_abc")
     assert result["owner_id"] == "user_1"
     assert result["stripe_customer_id"] == "cus_abc"
     assert result["plan_tier"] == "free"
@@ -69,7 +69,7 @@ async def test_get_by_owner_id_nonexistent(dynamodb_table):
 async def test_get_by_stripe_customer_id(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create("user_2", "cus_def")
+    await billing_repo.create_if_not_exists("user_2", "cus_def")
     item = await billing_repo.get_by_stripe_customer_id("cus_def")
     assert item is not None
     assert item["owner_id"] == "user_2"
@@ -84,28 +84,20 @@ async def test_get_by_stripe_customer_id_nonexistent(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_existing(dynamodb_table):
+async def test_create_if_not_exists_rejects_duplicate(dynamodb_table):
     from core.repositories import billing_repo
+    from core.repositories.billing_repo import AlreadyExistsError
 
-    first = await billing_repo.create("user_3", "cus_ghi")
-    second = await billing_repo.get_or_create("user_3", "cus_ghi")
-    assert second["id"] == first["id"]
-
-
-@pytest.mark.asyncio
-async def test_get_or_create_new(dynamodb_table):
-    from core.repositories import billing_repo
-
-    result = await billing_repo.get_or_create("user_new", "cus_new")
-    assert result["owner_id"] == "user_new"
-    assert result["stripe_customer_id"] == "cus_new"
+    await billing_repo.create_if_not_exists("user_3", "cus_ghi")
+    with pytest.raises(AlreadyExistsError):
+        await billing_repo.create_if_not_exists("user_3", "cus_ghi_dup")
 
 
 @pytest.mark.asyncio
 async def test_update_subscription(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create("user_4", "cus_jkl")
+    await billing_repo.create_if_not_exists("user_4", "cus_jkl")
     result = await billing_repo.update_subscription("user_4", "sub_xyz", "starter")
     assert result is not None
     assert result["stripe_subscription_id"] == "sub_xyz"
@@ -124,7 +116,7 @@ async def test_update_subscription_nonexistent(dynamodb_table):
 async def test_delete(dynamodb_table):
     from core.repositories import billing_repo
 
-    await billing_repo.create("user_5", "cus_mno")
+    await billing_repo.create_if_not_exists("user_5", "cus_mno")
     await billing_repo.delete("user_5")
     item = await billing_repo.get_by_owner_id("user_5")
     assert item is None

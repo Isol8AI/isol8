@@ -1,11 +1,19 @@
 """Billing account repository -- DynamoDB operations for the billing_accounts table."""
 
+import logging
 import uuid
 from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
+from botocore.exceptions import ClientError
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+
+logger = logging.getLogger(__name__)
+
+
+class AlreadyExistsError(Exception):
+    """Raised when a conditional put fails because the item already exists."""
 
 
 def _get_table():
@@ -29,13 +37,21 @@ async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
     return items[0] if items else None
 
 
-async def create(
+async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,
     plan_tier: str = "free",
     markup_multiplier: float = 1.4,
     owner_type: str = "personal",
 ) -> dict:
+    """Atomically create a billing account if one doesn't exist for this owner.
+
+    Uses a DynamoDB conditional put (``attribute_not_exists(owner_id)``)
+    so that concurrent calls are serialized: exactly one wins, the rest
+    raise ``AlreadyExistsError``. This is the single source of truth for
+    preventing duplicate Stripe customers — Stripe's search API is
+    eventually consistent and can't be trusted for dedup.
+    """
     table = _get_table()
     now = utc_now_iso()
     item = {
@@ -48,21 +64,17 @@ async def create(
         "created_at": now,
         "updated_at": now,
     }
-    await run_in_thread(table.put_item, Item=item)
+    try:
+        await run_in_thread(
+            table.put_item,
+            Item=item,
+            ConditionExpression="attribute_not_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise AlreadyExistsError(owner_id) from e
+        raise
     return item
-
-
-async def get_or_create(
-    owner_id: str,
-    stripe_customer_id: str,
-    plan_tier: str = "free",
-    markup_multiplier: float = 1.4,
-    owner_type: str = "personal",
-) -> dict:
-    existing = await get_by_owner_id(owner_id)
-    if existing:
-        return existing
-    return await create(owner_id, stripe_customer_id, plan_tier, markup_multiplier, owner_type=owner_type)
 
 
 async def update_subscription(

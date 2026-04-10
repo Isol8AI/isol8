@@ -58,7 +58,7 @@ class TestGetBillingAccount:
         mock_router_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_auto_created")
         mock_svc_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_svc_repo.get_or_create = AsyncMock(
+        mock_svc_repo.create_if_not_exists = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_auto_created",
