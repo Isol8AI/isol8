@@ -18,6 +18,7 @@ import {
 import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+import { useBilling } from "@/hooks/useBilling";
 
 interface BotEntry {
   agent_id: string;
@@ -38,22 +39,27 @@ interface AgentChannelsSectionProps {
 
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
+  const { planTier } = useBilling();
+  const isFree = planTier === "free";
   const { data, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
-  const [wizardFor, setWizardFor] = useState<Provider | null>(null);
+  const [wizardFor, setWizardFor] = useState<{ provider: Provider; mode: "create" | "link-only" } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Provider | null>(null);
   const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
-    if (!wizardFor) return;
+    if (!wizardFor && !deleteTarget) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setWizardFor(null);
+      if (e.key === "Escape") {
+        setWizardFor(null);
+        setDeleteTarget(null);
+      }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [wizardFor]);
+  }, [wizardFor, deleteTarget]);
 
   if (!data) {
     return <div className="p-4 text-sm text-[#8a8578]">Loading channels…</div>;
@@ -83,7 +89,11 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 {PROVIDER_LABELS[provider]}
               </span>
             </div>
-            {bots.length === 0 ? (
+            {isFree ? (
+              <p className="text-xs text-[#8a8578]">
+                Channels require a paid plan. Upgrade from the Billing page to connect {PROVIDER_LABELS[provider]}.
+              </p>
+            ) : bots.length === 0 ? (
               <p className="text-xs text-[#8a8578]">No bot configured</p>
             ) : (
               bots.map((bot) => (
@@ -95,23 +105,35 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                   )}
                   <span className="font-mono">{formatBotHandle(provider, bot.bot_username)}</span>
                   <div className="flex-1" />
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setDeleteTarget(provider)}
-                    aria-label={`Delete ${provider} bot`}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  {!bot.linked && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setWizardFor({ provider, mode: "link-only" })}
+                      aria-label={`Link your ${PROVIDER_LABELS[provider]} to ${bot.bot_username}`}
+                    >
+                      Link
+                    </Button>
+                  )}
+                  {data.can_create_bots && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setDeleteTarget(provider)}
+                      aria-label={`Delete ${provider} bot`}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  )}
                 </div>
               ))
             )}
-            {data.can_create_bots && bots.length === 0 && (
+            {!isFree && data.can_create_bots && bots.length === 0 && (
               <Button
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => setWizardFor(provider)}
+                onClick={() => setWizardFor({ provider, mode: "create" })}
               >
                 <Plus className="h-3 w-3 mr-1" />
                 Add {PROVIDER_LABELS[provider]} bot
@@ -133,8 +155,8 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
             onClick={(e) => e.stopPropagation()}
           >
             <BotSetupWizard
-              mode="create"
-              provider={wizardFor}
+              mode={wizardFor.mode}
+              provider={wizardFor.provider}
               agentId={agentId}
               onComplete={() => {
                 setWizardFor(null);
