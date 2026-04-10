@@ -303,7 +303,7 @@ export default function Page() {
               </svg>
             </Link>
 
-            <SignUp forceRedirectUrl="/chat" signInForceRedirectUrl="/chat" />
+            <SignUp fallbackRedirectUrl="/chat" signInFallbackRedirectUrl="/chat" />
 
             <div className="auth-footer-links">
               Already have an account?{" "}
