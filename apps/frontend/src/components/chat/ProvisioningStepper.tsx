@@ -30,13 +30,13 @@ type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
-  { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
+  { phase: "container", label: "Container started", activeLabel: "Starting your container (this may take a few minutes)..." },
   { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
 
 const STEPS_FREE: { phase: Phase; label: string; activeLabel: string }[] = [
-  { phase: "container", label: "Container started", activeLabel: "Starting your container..." },
+  { phase: "container", label: "Container started", activeLabel: "Starting your container (this may take a few minutes)..." },
   { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
