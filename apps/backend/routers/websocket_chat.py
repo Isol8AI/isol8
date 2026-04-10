@@ -124,7 +124,11 @@ async def ws_connect(
         pool = get_gateway_pool()
         # Route by owner_id: org_id for org members, user_id for personal
         owner_id = x_org_id or x_user_id
-        pool.add_frontend_connection(owner_id, x_connection_id)
+        # Pass member_id so the pool can route streaming events to the
+        # specific org member who initiated each chat, not broadcast to
+        # all members. For personal users member_id == owner_id so it's
+        # harmless (the filter matches all connections).
+        pool.add_frontend_connection(owner_id, x_connection_id, member_id=x_user_id)
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 

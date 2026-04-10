@@ -40,6 +40,7 @@ class GatewayConnection:
         token: str,
         management_api: Any,
         frontend_connections: Set[str],
+        conn_member_map: Dict[str, str],
         on_activity: Any = None,
     ) -> None:
         self.user_id = user_id
@@ -51,12 +52,11 @@ class GatewayConnection:
         self._reader_task: Optional[asyncio.Task] = None
         self._pending_rpcs: Dict[str, asyncio.Future] = {}
         # Shared reference to the pool's canonical set — NOT a copy.
-        # The pool owns add/remove; the connection reads for fan-out.
-        # This eliminates the race where add_frontend_connection ran
-        # during _create_connection's connect() yield and the new
-        # connection_id never reached the GatewayConnection's internal
-        # copy. Now there's only one set.
         self._frontend_connections = frontend_connections
+        # Shared reference: connection_id → member_user_id. Used to route
+        # streaming events to the specific org member who initiated the chat
+        # instead of broadcasting to all members.
+        self._conn_member_map = conn_member_map
         self._closed = False
         self._grace_task: Optional[asyncio.Task] = None
         self._billing_tasks: Set[asyncio.Task] = set()
@@ -338,13 +338,18 @@ class GatewayConnection:
                     thinking_parts.append(text)
         return "\n\n".join(thinking_parts) if thinking_parts else None
 
-    def _forward_to_frontends(self, message: dict) -> None:
-        """Send a message to all registered frontend connections."""
-        # Don't update activity here — passive gateway events (tick, health)
-        # would prevent idle detection. Activity is tracked only on user-initiated
-        # actions (RPC sends, frontend connection registration).
+    def _forward_to_frontends(self, message: dict, target_member_id: str | None = None) -> None:
+        """Send a message to registered frontend connections.
+
+        When *target_member_id* is set, only connections belonging to that
+        member receive the message (per-member event routing for orgs).
+        When ``None``, broadcast to all connections (status changes, etc.).
+        """
         gone: list[str] = []
         for conn_id in list(self._frontend_connections):
+            if target_member_id is not None:
+                if self._conn_member_map.get(conn_id) != target_member_id:
+                    continue
             try:
                 if not self._management_api.send_message(conn_id, message):
                     gone.append(conn_id)
@@ -552,6 +557,19 @@ class GatewayConnection:
             event_name = data.get("event", "")
             payload = data.get("payload", {})
 
+            # Extract per-member routing target from sessionKey. OpenClaw
+            # includes sessionKey in agent/chat event payloads (set in
+            # server-chat.ts:865). For org webchat sessions the key is
+            # "agent:{agentId}:{userId}" — _parse_session_key extracts
+            # member_id so we can route events to the specific member
+            # who initiated the chat instead of broadcasting to all org
+            # members. Falls back to None (broadcast) for personal
+            # sessions, channel sessions, or missing keys.
+            session_key = ""
+            if isinstance(payload, dict):
+                session_key = payload.get("sessionKey", "")
+            target_member = _parse_session_key(session_key).get("member_id") if session_key else None
+
             # Log all non-agent events for debugging usage pipeline
             if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
@@ -587,7 +605,7 @@ class GatewayConnection:
                     self._record_usage_from_session(payload)
                 transformed = self._transform_agent_event(payload)
                 if transformed:
-                    self._forward_to_frontends(transformed)
+                    self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
                 # Chat events -- only terminal states.
@@ -597,12 +615,12 @@ class GatewayConnection:
                     # Send thinking content if present (before visible text)
                     thinking_text = self._extract_thinking_text(payload)
                     if thinking_text:
-                        self._forward_to_frontends({"type": "thinking", "content": thinking_text})
+                        self._forward_to_frontends({"type": "thinking", "content": thinking_text}, target_member)
                     # Send complete text as safety net before done signal
                     final_text = self._extract_chat_text(payload)
                     if final_text:
-                        self._forward_to_frontends({"type": "chunk", "content": final_text})
-                    self._forward_to_frontends({"type": "done"})
+                        self._forward_to_frontends({"type": "chunk", "content": final_text}, target_member)
+                    self._forward_to_frontends({"type": "done"}, target_member)
                 elif state == "error":
                     err = payload.get("error", {})
                     msg = (
@@ -610,12 +628,12 @@ class GatewayConnection:
                         if isinstance(err, dict)
                         else str(err or "Agent run failed")
                     )
-                    self._forward_to_frontends({"type": "error", "message": msg})
+                    self._forward_to_frontends({"type": "error", "message": msg}, target_member)
                 elif state == "aborted":
-                    self._forward_to_frontends({"type": "error", "message": "Agent run was cancelled"})
+                    self._forward_to_frontends({"type": "error", "message": "Agent run was cancelled"}, target_member)
 
             else:
-                # Forward other events as-is for SWR revalidation
+                # Forward other events as-is for SWR revalidation (broadcast to all)
                 self._forward_to_frontends(data)
             return
 
@@ -688,7 +706,8 @@ class GatewayConnectionPool:
     ) -> None:
         self._management_api = management_api
         self._connections: Dict[str, GatewayConnection] = {}
-        self._frontend_connections: Dict[str, Set[str]] = {}  # user_id -> set of conn_ids
+        self._frontend_connections: Dict[str, Set[str]] = {}  # owner_id -> set of conn_ids
+        self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
         self._last_activity: Dict[str, float] = {}  # user_id -> last activity timestamp
@@ -710,6 +729,7 @@ class GatewayConnectionPool:
             token=token,
             management_api=self._management_api,
             frontend_connections=self._frontend_connections[user_id],
+            conn_member_map=self._conn_member_map,
         )
         await conn.connect()
         self._connections[user_id] = conn
@@ -736,16 +756,25 @@ class GatewayConnectionPool:
         await conn.send_rpc(req_id, method, params)
         return await conn.wait_for_response(req_id)
 
-    def add_frontend_connection(self, user_id: str, connection_id: str) -> None:
+    def add_frontend_connection(
+        self,
+        user_id: str,
+        connection_id: str,
+        member_id: str | None = None,
+    ) -> None:
         """Register a frontend WS connection for event forwarding.
 
-        Writes to the canonical set in ``self._frontend_connections``.
-        The GatewayConnection holds a shared reference to the same set,
-        so the change is visible immediately — no sync step needed.
+        *member_id* is the Clerk user_id of the org member who owns this
+        connection. For personal (non-org) users it can be ``None`` — all
+        events broadcast to all connections. For org members it enables
+        per-member event routing so member A only sees their own chat
+        streaming, not member B's.
         """
         if user_id not in self._frontend_connections:
             self._frontend_connections[user_id] = set()
         self._frontend_connections[user_id].add(connection_id)
+        if member_id:
+            self._conn_member_map[connection_id] = member_id
 
         # Cancel grace period if one is running
         grace = self._grace_tasks.pop(user_id, None)
@@ -757,6 +786,7 @@ class GatewayConnectionPool:
         fcs = self._frontend_connections.get(user_id)
         if fcs:
             fcs.discard(connection_id)
+        self._conn_member_map.pop(connection_id, None)
 
         # Start grace period if no frontend connections remain
         if not fcs and user_id in self._connections:
