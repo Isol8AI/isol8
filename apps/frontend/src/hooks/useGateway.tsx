@@ -11,7 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { WS_URL } from "@/lib/api";
 
 // =============================================================================
@@ -111,6 +111,7 @@ const GatewayContext = createContext<GatewayContextValue | null>(null);
 
 export function GatewayProvider({ children }: { children: ReactNode }) {
   const { getToken } = useAuth();
+  const { user } = useUser();
   const [isConnected, setIsConnected] = useState(false);
   const [nodeConnected, setNodeConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -245,7 +246,11 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__TAURI__;
         if (tauri?.core?.invoke) {
-          tauri.core.invoke("send_auth_token", { token }).catch(() => {});
+          tauri.core.invoke("send_auth_token", {
+            token,
+            displayName: user?.fullName || user?.firstName || "User",
+            userId: user?.id || "",
+          }).catch(() => {});
         }
       }
 
@@ -301,7 +306,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect");
     }
-  }, [getToken, handleMessage, clearPingInterval]);
+  }, [getToken, handleMessage, clearPingInterval, user?.firstName, user?.fullName, user?.id]);
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;
