@@ -1,7 +1,6 @@
 mod exec_approvals;
 mod node_client;
 mod node_invoke;
-mod node_proxy;
 mod tray;
 
 use std::sync::Mutex;
@@ -13,43 +12,47 @@ pub struct AuthState {
     pub token: Mutex<Option<String>>,
 }
 
-/// Node connection status + handles for cleanup
+/// Node connection status
 pub struct NodeState {
     pub status: Mutex<String>,
-    pub proxy_handle: Mutex<Option<node_proxy::ProxyHandle>>,
 }
 
-const PROXY_PORT: u16 = 18790;
+/// File-based logger for macOS GUI apps (stdout not visible).
+pub fn log(msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/isol8-desktop.log") {
+        let _ = writeln!(f, "{}", msg);
+    }
+    println!("{}", msg);
+}
 
 /// Called by the web app to send the Clerk JWT to the Rust backend.
-/// Starts the node-host connection via the local loopback proxy.
+/// Starts the node-host connection directly to the gateway.
 #[tauri::command]
 fn send_auth_token(
     token: String,
+    display_name: String,
+    user_id: String,
     state: State<'_, AuthState>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
     let mut t = state.token.lock().map_err(|e| e.to_string())?;
     let is_first = t.is_none();
     *t = Some(token.clone());
-    println!("[auth] Received Clerk JWT ({} chars)", token.len());
+    log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
 
-    // Only start node-host on the first token. Subsequent tokens are from
-    // WebSocket reconnects — the proxy is already running.
     if !is_first {
-        println!("[auth] Token updated (proxy already running)");
+        log("[auth] Token updated (node client already running)");
         return Ok(());
     }
 
-    // Use the same WebSocket URL as the frontend.
-    // Dev builds point at ws-dev, prod at ws. Controlled by env var at build time.
     let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
 
     let app_handle = app.clone();
     let ws_url = ws_url.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = start_node_host(&app_handle, &ws_url, &token).await {
-            eprintln!("[node] Failed to start: {}", e);
+        if let Err(e) = start_node_host(&app_handle, &ws_url, &token, &display_name).await {
+            log(&format!("[node] Failed to start: {}", e));
             update_node_status(&app_handle, "error");
         }
     });
@@ -61,33 +64,24 @@ async fn start_node_host(
     app: &tauri::AppHandle,
     ws_url: &str,
     clerk_jwt: &str,
+    display_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     update_node_status(app, "connecting");
 
-    // Step 1: Start loopback proxy (injects JWT into API Gateway URL)
-    let proxy_handle = node_proxy::start_proxy(PROXY_PORT, ws_url, clerk_jwt).await?;
-    println!("[node] Proxy started on 127.0.0.1:{}", PROXY_PORT);
-
-    // Step 2: Start node client pointing at local proxy
-    let proxy_url = format!("ws://127.0.0.1:{}", PROXY_PORT);
-    let mut client = node_client::NodeClient::new(&proxy_url, "Isol8 Desktop");
+    let gateway_url = format!("{}?token={}", ws_url, clerk_jwt);
+    log(&format!("[node] Connecting to {}", ws_url));
+    let mut client = node_client::NodeClient::new(&gateway_url, display_name);
     let mut invoke_rx = client.start().await?;
 
     update_node_status(app, "connected");
-    println!("[node] Node client started, listening for invoke requests");
+    log("[node] Node client started, listening for invoke requests");
 
-    // Store proxy handle for cleanup
-    if let Some(state) = app.try_state::<NodeState>() {
-        *state.proxy_handle.lock().unwrap() = Some(proxy_handle);
-    }
-
-    // Step 3: Handle invoke requests in background
     tokio::spawn(async move {
         while let Some(request) = invoke_rx.recv().await {
-            println!("[node] Invoke: {} ({})", request.command, request.id);
+            log(&format!("[node] Invoke: {} ({})", request.command, request.id));
             node_invoke::handle_invoke(&client, request).await;
         }
-        println!("[node] Invoke receiver closed");
+        log("[node] Invoke receiver closed");
     });
 
     Ok(())
@@ -155,7 +149,6 @@ pub fn run() {
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
-            proxy_handle: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             send_auth_token,
@@ -163,16 +156,8 @@ pub fn run() {
             get_node_status,
         ])
         .setup(|app| {
+            log("[setup] Isol8 desktop app starting");
             tray::create_tray(app.handle())?;
-
-            // Debug: check if __TAURI__ is available on the page
-            if let Some(window) = app.get_webview_window("main") {
-                let w = window.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    let _ = w.eval("console.log('[isol8-debug] __TAURI__ exists:', typeof window.__TAURI__); if(window.__TAURI__) { window.__TAURI__.core.invoke('send_auth_token', {token: 'debug-test'}); }");
-                });
-            }
 
             // Override window.open in the WebView so OAuth popups open
             // in the system browser. WKWebView silently blocks popups,

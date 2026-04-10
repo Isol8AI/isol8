@@ -241,7 +241,7 @@ async fn handle_message(
                         "minProtocol": 3,
                         "maxProtocol": 3,
                         "client": {
-                            "id": "isol8-desktop",
+                            "id": "node-host",
                             "displayName": display_name,
                             "version": "1.0.0",
                             "platform": std::env::consts::OS,
