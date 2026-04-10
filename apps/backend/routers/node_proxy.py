@@ -1,11 +1,16 @@
 """
-Node connection proxy.
+Node connection proxy — per-user tracking for local tool execution.
 
 Manages dedicated upstream WebSocket connections for node clients.
-When a node connects (role:"node" in the connect handshake), a separate
-upstream WebSocket is opened to the user's container. All subsequent
-messages are relayed bidirectionally. The container config is patched
-to enable/disable node tools on connect/disconnect.
+Each connected desktop app gets its own NodeUpstreamConnection to the
+shared container. Tracking is per-user (not per-owner) so that in an
+org, Alice's Mac and Bob's Mac are independent.
+
+State:
+  _node_upstreams   connection_id -> NodeUpstreamConnection
+  _user_nodes       user_id -> {nodeId, connection_id, owner_id}
+  _node_count       owner_id -> int (active node connections)
+  _patched_sessions session_key -> nodeId (in-memory cache)
 """
 
 import logging
@@ -17,15 +22,53 @@ from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
-# connectionId -> NodeUpstreamConnection
+# connection_id -> NodeUpstreamConnection
 _node_upstreams: dict[str, NodeUpstreamConnection] = {}
+
+# user_id -> {nodeId: str, connection_id: str, owner_id: str}
+_user_nodes: dict[str, dict] = {}
+
+# owner_id -> count of active node connections (for ref-counted config patching)
+_node_count: dict[str, int] = {}
+
+# session_key -> nodeId (tracks which sessions have been patched with execNode)
+_patched_sessions: dict[str, str] = {}
+
+
+def get_user_node(user_id: str) -> dict | None:
+    """Return the node info for a user, or None if not connected."""
+    return _user_nodes.get(user_id)
+
+
+def get_patched_session(session_key: str) -> str | None:
+    """Return the nodeId a session is patched with, or None."""
+    return _patched_sessions.get(session_key)
+
+
+def set_patched_session(session_key: str, node_id: str) -> None:
+    """Record that a session has been patched with execNode."""
+    _patched_sessions[session_key] = node_id
+
+
+def clear_patched_sessions_for_user(user_id: str) -> list[str]:
+    """Remove all patched-session entries for a user. Returns the cleared session keys."""
+    cleared = []
+    for sk, nid in list(_patched_sessions.items()):
+        # Session keys for org members: agent:<agentId>:<userId>
+        # We match on the userId segment
+        if sk.endswith(f":{user_id}"):
+            del _patched_sessions[sk]
+            cleared.append(sk)
+    return cleared
 
 
 async def handle_node_connect(
     owner_id: str,
+    user_id: str,
     connection_id: str,
     connect_params: dict,
     management_api,
+    display_name: str = "Desktop",
 ) -> dict | None:
     """
     Open a dedicated upstream to the container, complete the node handshake,
@@ -33,6 +76,11 @@ async def handle_node_connect(
     """
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
+
+    # Inject user display name into connect params for node.list identification
+    client_params = connect_params.get("client", {})
+    client_params["displayName"] = f"{display_name} | Isol8 Desktop"
+    connect_params["client"] = client_params
 
     upstream = NodeUpstreamConnection(
         user_id=owner_id,
@@ -52,14 +100,35 @@ async def handle_node_connect(
 
     _node_upstreams[connection_id] = upstream
 
-    # Enable node tools in container config (remove "nodes" from deny list)
-    await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas"]}})
+    # The nodeId in OpenClaw's NodeRegistry is the device.id (SHA-256 hex of
+    # the Ed25519 public key), set during the connect handshake inside
+    # NodeUpstreamConnection.connect(). Read it back from the upstream.
+    node_id = upstream.device_id or connection_id
 
-    # Broadcast status to chat connections
+    # Store per-user mapping
+    _user_nodes[user_id] = {
+        "nodeId": node_id,
+        "connection_id": connection_id,
+        "owner_id": owner_id,
+    }
+
+    # Reference-counted config patching: enable node tools on first connect
+    prev_count = _node_count.get(owner_id, 0)
+    _node_count[owner_id] = prev_count + 1
+    if prev_count == 0:
+        await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas"]}})
+
+    # Per-user broadcast
     pool = get_gateway_pool()
-    await pool.broadcast_to_user(owner_id, {"type": "node_status", "status": "connected"})
+    await pool.broadcast_to_member(
+        owner_id, user_id,
+        {"type": "node_status", "status": "connected"},
+    )
 
-    logger.info("Node proxy established: user=%s conn=%s", owner_id, connection_id)
+    logger.info(
+        "Node proxy established: user=%s owner=%s conn=%s nodeId=%s",
+        user_id, owner_id, connection_id, node_id,
+    )
     return hello
 
 
@@ -72,20 +141,55 @@ async def handle_node_message(connection_id: str, message: dict) -> None:
         logger.warning("No node upstream for connection %s", connection_id)
 
 
-async def handle_node_disconnect(connection_id: str, owner_id: str) -> None:
-    """Close the upstream connection and re-disable node tools."""
+async def handle_node_disconnect(
+    connection_id: str, owner_id: str, user_id: str,
+) -> None:
+    """Close the upstream connection and update per-user tracking."""
     upstream = _node_upstreams.pop(connection_id, None)
     if upstream:
         await upstream.close()
 
-    # Re-disable node tools
-    await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "nodes"]}})
+    # Remove per-user mapping
+    _user_nodes.pop(user_id, None)
 
-    # Broadcast status
+    # Clear patched sessions for this user (we'll clear execNode on them below)
+    cleared_sessions = clear_patched_sessions_for_user(user_id)
+    if cleared_sessions:
+        pool = get_gateway_pool()
+        # Best-effort: clear execNode on sessions. If container is down, skip.
+        for sk in cleared_sessions:
+            try:
+                container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+                await pool.send_rpc(
+                    user_id=owner_id,
+                    req_id=f"clear-exec-{sk}",
+                    method="sessions.patch",
+                    params={"sessionKey": sk, "execNode": None, "execHost": None},
+                    ip=ip,
+                    token=container["gateway_token"],
+                )
+            except Exception:
+                logger.debug("Failed to clear execNode on session %s (container may be down)", sk)
+
+    # Reference-counted config patching: disable node tools on last disconnect
+    count = _node_count.get(owner_id, 1)
+    new_count = max(0, count - 1)
+    _node_count[owner_id] = new_count
+    if new_count == 0:
+        try:
+            await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "nodes"]}})
+        except Exception:
+            logger.debug("Failed to re-disable node tools for %s (container may be down)", owner_id)
+        _node_count.pop(owner_id, None)
+
+    # Per-user broadcast
     pool = get_gateway_pool()
-    await pool.broadcast_to_user(owner_id, {"type": "node_status", "status": "disconnected"})
+    await pool.broadcast_to_member(
+        owner_id, user_id,
+        {"type": "node_status", "status": "disconnected"},
+    )
 
-    logger.info("Node proxy closed: conn=%s", connection_id)
+    logger.info("Node proxy closed: user=%s conn=%s", user_id, connection_id)
 
 
 def is_node_connection(connection_id: str) -> bool:

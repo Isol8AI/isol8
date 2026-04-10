@@ -84,6 +84,7 @@ class NodeUpstreamConnection:
         self.node_connect_params = node_connect_params
         self.efs_mount_path = efs_mount_path
         self.gateway_token = gateway_token
+        self.device_id: str | None = None
         self._ws = None
         self._connected = False
         self._reader_task: asyncio.Task | None = None
@@ -122,6 +123,7 @@ class NodeUpstreamConnection:
         payload = challenge.get("payload", challenge)
         nonce = payload.get("nonce", challenge.get("nonce", ""))
         device = _build_device_identity(private_key, nonce, self.node_connect_params)
+        self.device_id = device["id"]  # SHA-256 hex of Ed25519 public key
 
         # Step 3: send connect with role:node + device identity + token auth.
         # Nodes always require device identity (OpenClaw doesn't allow nodes
