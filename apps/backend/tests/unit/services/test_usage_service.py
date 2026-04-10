@@ -62,7 +62,7 @@ async def test_record_usage_increments_owner_and_member(dynamodb_tables, mock_st
     from core.repositories import billing_repo, usage_repo
     from core.services.usage_service import record_usage
 
-    await billing_repo.create("org_1", "cus_abc", owner_type="org")
+    await billing_repo.create_if_not_exists("org_1", "cus_abc", owner_type="org")
 
     await record_usage(
         owner_id="org_1",
@@ -98,7 +98,7 @@ async def test_check_budget_free_under_limit(dynamodb_tables):
     from core.repositories import billing_repo
     from core.services.usage_service import check_budget
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
 
     result = await check_budget("user_1")
     assert result["allowed"] is True
@@ -110,7 +110,7 @@ async def test_check_budget_free_over_limit(dynamodb_tables):
     from core.repositories import billing_repo, usage_repo
     from core.services.usage_service import check_budget
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
     await usage_repo.increment("user_1", "lifetime", 3_000_000, 0, 0, 0, 0)
 
     result = await check_budget("user_1")
@@ -122,7 +122,7 @@ async def test_check_budget_starter_within_included(dynamodb_tables):
     from core.repositories import billing_repo
     from core.services.usage_service import check_budget
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
     await billing_repo.update_subscription("user_1", "sub_123", "starter")
 
     result = await check_budget("user_1")
@@ -135,7 +135,7 @@ async def test_check_budget_starter_over_included_no_overage(dynamodb_tables):
     from core.repositories import billing_repo, usage_repo
     from core.services.usage_service import check_budget, _current_period
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
     await billing_repo.update_subscription("user_1", "sub_123", "starter")
     await usage_repo.increment("user_1", _current_period(), 11_000_000, 0, 0, 0, 0)
 
@@ -150,7 +150,7 @@ async def test_check_budget_starter_overage_enabled(dynamodb_tables):
     from core.repositories import billing_repo, usage_repo
     from core.services.usage_service import check_budget, _current_period
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
     await billing_repo.update_subscription("user_1", "sub_123", "starter")
 
     # Enable overage
@@ -173,6 +173,6 @@ async def test_record_usage_unknown_model_skips(dynamodb_tables, mock_stripe):
     from core.repositories import billing_repo
     from core.services.usage_service import record_usage
 
-    await billing_repo.create("user_1", "cus_abc")
+    await billing_repo.create_if_not_exists("user_1", "cus_abc")
     await record_usage("user_1", "user_1", "unknown-model", 1000, 500, 0, 0)
     # Should not raise

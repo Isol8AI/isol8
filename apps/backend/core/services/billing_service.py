@@ -35,48 +35,39 @@ class BillingService:
         if existing:
             return existing
 
-        # Before creating a new Stripe customer, search Stripe for an existing one
-        # with matching metadata.owner_id. This prevents duplicate customer creation
-        # when concurrent /users/sync calls all miss the DynamoDB row at the same time.
-        # Note: Stripe search is eventually consistent, so a customer created <1s ago
-        # may not show up. That's OK — billing_repo.get_or_create handles the DB race.
-        customer_id: str | None = None
-        try:
-            search_result = stripe.Customer.search(
-                query=f"metadata['owner_id']:'{owner_id}'",
-                limit=2,
-            )
-            matches = list(getattr(search_result, "data", []) or [])
-            if len(matches) == 1:
-                customer_id = matches[0].id
-                logger.info("Reusing existing Stripe customer for owner_id=%s (%s)", owner_id, customer_id)
-            elif len(matches) > 1:
-                # Pick the oldest (smallest `created` timestamp). Leave cleanup to an admin tool.
-                oldest = min(matches, key=lambda c: getattr(c, "created", 0) or 0)
-                customer_id = oldest.id
-                logger.warning(
-                    "Found %d orphan Stripe customers for owner_id=%s; reusing oldest (%s)",
-                    len(matches),
-                    owner_id,
-                    customer_id,
-                )
-        except Exception as e:
-            # Search API may be disabled on the account, rate-limited, or transiently
-            # unavailable. Never block provisioning — fall through to Customer.create.
-            logger.warning("Stripe customer search failed for owner_id=%s: %s; falling back to create", owner_id, e)
-
-        if customer_id is None:
-            customer = stripe.Customer.create(
-                email=email or None,
-                metadata={"owner_id": owner_id, "owner_type": owner_type},
-            )
-            customer_id = customer.id
-
-        return await billing_repo.get_or_create(
-            owner_id=owner_id,
-            stripe_customer_id=customer_id,
-            owner_type=owner_type,
+        # Create the Stripe customer first, then try to claim the DynamoDB
+        # slot with a conditional write. If another concurrent call already
+        # won the race (webhook + frontend sync fire at the same time), the
+        # conditional put raises AlreadyExistsError — we delete the orphan
+        # Stripe customer and return the winner's record.
+        #
+        # This replaces the previous Stripe search approach which was
+        # eventually consistent and still produced duplicates within the
+        # same second.
+        customer = stripe.Customer.create(
+            email=email or None,
+            metadata={"owner_id": owner_id, "owner_type": owner_type},
         )
+
+        try:
+            return await billing_repo.create_if_not_exists(
+                owner_id=owner_id,
+                stripe_customer_id=customer.id,
+                owner_type=owner_type,
+            )
+        except billing_repo.AlreadyExistsError:
+            # Another call won the race. Delete our orphan Stripe customer
+            # and return the winner's record.
+            logger.info(
+                "Billing account race: owner_id=%s already exists, deleting orphan Stripe customer %s",
+                owner_id,
+                customer.id,
+            )
+            try:
+                stripe.Customer.delete(customer.id)
+            except Exception:
+                logger.warning("Failed to delete orphan Stripe customer %s", customer.id)
+            return await billing_repo.get_by_owner_id(owner_id)
 
     async def create_checkout_session(self, billing_account: dict, tier: str) -> str:
         fixed_price = TIER_PRICES.get(tier)
