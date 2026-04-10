@@ -192,7 +192,9 @@ export function ProvisioningStepper({
     );
     if (anyConnected) return "ready";
 
-    // No channels connected — show onboarding
+    // No channels connected — show onboarding (paid tiers only; free tier
+    // containers scale to zero so bots can't stay connected)
+    if (isFree) return "ready";
     return "channels";
   }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
 
