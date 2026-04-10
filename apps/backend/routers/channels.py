@@ -73,6 +73,43 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
     }
 
     can_create_bots = (not auth.is_org_context) or auth.is_org_admin
+
+    # Try to get live bot usernames from channels.status probe via the
+    # gateway pool. This calls getMe() / /users/@me on each provider and
+    # returns the actual bot handle (e.g. @Isol8DevBot). Falls back to
+    # agent_id if the container isn't reachable or the probe fails.
+    bot_usernames: dict[str, dict[str, str]] = {}  # provider -> accountId -> username
+    try:
+        from core.containers import get_ecs_manager, get_gateway_pool
+
+        ecs_manager = get_ecs_manager()
+        container, ip = await ecs_manager.resolve_running_container(owner_id)
+        if container and ip:
+            pool = get_gateway_pool()
+            status = await pool.send_rpc(
+                user_id=owner_id,
+                req_id=f"links-me-{owner_id}",
+                method="channels.status",
+                params={"probe": True},
+                ip=ip,
+                token=container["gateway_token"],
+            )
+            for prov, accts in (status or {}).get("channelAccounts", {}).items():
+                if not isinstance(accts, list):
+                    continue
+                bot_usernames[prov] = {}
+                for acct in accts:
+                    if not isinstance(acct, dict):
+                        continue
+                    acct_id = acct.get("accountId", "")
+                    probe = acct.get("probe") or {}
+                    bot = probe.get("bot") or {} if isinstance(probe, dict) else {}
+                    username = bot.get("username", "") if isinstance(bot, dict) else ""
+                    if acct_id and username:
+                        bot_usernames[prov][acct_id] = username
+    except Exception as e:
+        logger.debug("channels.status probe failed for links/me (using fallback): %s", e)
+
     result: dict = {"can_create_bots": can_create_bots}
     for provider in ("telegram", "discord", "slack"):
         provider_cfg = channels_cfg.get(provider, {}) if isinstance(channels_cfg, dict) else {}
@@ -81,10 +118,11 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
         if isinstance(accounts, dict):
             for agent_id in accounts.keys():
                 linked = (provider, agent_id) in links_for_owner
+                live_name = bot_usernames.get(provider, {}).get(agent_id, "")
                 bots.append(
                     {
                         "agent_id": agent_id,
-                        "bot_username": agent_id,  # placeholder; live name comes from channels.status later
+                        "bot_username": live_name or agent_id,
                         "linked": linked,
                     }
                 )
