@@ -988,6 +988,36 @@ class GatewayConnectionPool:
         if conn:
             conn._forward_to_frontends(message)
 
+    async def broadcast_to_member(
+        self, owner_id: str, member_user_id: str, message: dict
+    ) -> None:
+        """Send a message to frontend connections for a specific org member.
+
+        For personal accounts (owner_id == member_user_id), this behaves
+        identically to broadcast_to_user. For org accounts, it filters to
+        only the connections belonging to *member_user_id*.
+        """
+        conn = self._connections.get(owner_id)
+        if not conn:
+            return
+        # Personal account — no per-member filtering needed
+        if owner_id == member_user_id:
+            conn._forward_to_frontends(message)
+            return
+        # Org account — filter to this member's connections only
+        gone: list[str] = []
+        for conn_id in list(conn._frontend_connections):
+            member = conn._conn_member_map.get(conn_id, "")
+            if member.lower() != member_user_id.lower():
+                continue
+            try:
+                if not self._management_api.send_message(conn_id, message):
+                    gone.append(conn_id)
+            except Exception:
+                gone.append(conn_id)
+        for conn_id in gone:
+            conn._frontend_connections.discard(conn_id)
+
     async def close_all(self) -> None:
         """Shutdown: close all connections."""
         for user_id in list(self._connections.keys()):
