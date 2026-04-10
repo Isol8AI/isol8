@@ -381,7 +381,7 @@ export default function Page() {
               </p>
             </div>
 
-            <SignIn />
+            <SignIn forceRedirectUrl="/chat" signUpForceRedirectUrl="/chat" />
 
             <p className="auth-footer">
               Don&apos;t have an account?{" "}

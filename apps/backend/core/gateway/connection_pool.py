@@ -601,7 +601,15 @@ class GatewayConnection:
             session_key = ""
             if isinstance(payload, dict):
                 session_key = payload.get("sessionKey", "")
-            target_member = _parse_session_key(session_key).get("member_id") if session_key else None
+            parsed_key = _parse_session_key(session_key) if session_key else {}
+            target_member = parsed_key.get("member_id")
+            # Channel-originated events (Telegram, Discord, Slack DMs, groups,
+            # rooms) don't need to be forwarded to the web UI — OpenClaw's
+            # channel plugin already delivers them directly to the platform.
+            # Without this gate, channel responses leak into the web chat and
+            # overwrite or intermix with the user's web conversation.
+            session_source = parsed_key.get("source", "")
+            is_channel_session = session_source in ("dm", "group", "channel")
 
             # Demote noisy periodic events (health, tick) to DEBUG so they
             # don't drown actual chat/agent signals in the logs. Log
@@ -641,17 +649,24 @@ class GatewayConnection:
                 # Billing: lifecycle/end fires once per completed agent run
                 # for BOTH webchat and channel-driven runs (webchat's chat.final
                 # only fires for webchat, so we use lifecycle/end instead).
+                # Billing runs for ALL sessions (web + channel).
                 if (
                     stream == "lifecycle"
                     and isinstance(payload.get("data"), dict)
                     and payload["data"].get("phase") == "end"
                 ):
                     self._record_usage_from_session(payload)
+                # Skip forwarding channel events to the web UI.
+                if is_channel_session:
+                    return
                 transformed = self._transform_agent_event(payload)
                 if transformed:
                     self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
+                # Skip forwarding channel chat events to the web UI.
+                if is_channel_session:
+                    return
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
