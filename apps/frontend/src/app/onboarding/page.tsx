@@ -2,7 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CreateOrganization, useAuth, useOrganizationList, useUser } from "@clerk/nextjs";
+import {
+  CreateOrganization,
+  useAuth,
+  useOrganization,
+  useOrganizationList,
+  useUser,
+} from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { User, Users } from "lucide-react";
@@ -11,27 +17,51 @@ export default function OnboardingPage() {
   const router = useRouter();
   const { isLoaded } = useAuth();
   const { user } = useUser();
+  const { organization, isLoaded: orgLoaded } = useOrganization();
   const { userMemberships, isLoaded: orgsLoaded, setActive } = useOrganizationList({
-    userMemberships: { infinite: true },
+    userMemberships: true,
   });
   const api = useApi();
   const [mode, setMode] = useState<"choose" | "personal" | "org">("choose");
   const [loading, setLoading] = useState(false);
 
-  // If user already belongs to an org (e.g. accepted an invite), activate it and skip onboarding
+  // Two redirect triggers:
+  //
+  // 1. useOrganization().organization is non-null — Clerk has already set
+  //    this org as active (happens automatically after CreateOrganization
+  //    finishes or after accepting an invite via the Clerk flows). We can
+  //    go straight to /chat because the JWT already has the right org_id.
+  //
+  // 2. userMemberships has entries but no org is active — the user accepted
+  //    an invite but Clerk didn't auto-activate. Call setActive() first,
+  //    then redirect once the JWT is settled.
+  //
+  // Path 1 is the primary fix for the "Finish button does nothing" bug:
+  // the previous version used afterCreateOrganizationUrl="/onboarding"
+  // which navigated to the same URL (no-op), and the useEffect watching
+  // userMemberships (with infinite: true) never re-fired because the
+  // paginated hook didn't revalidate. useOrganization() IS reactive —
+  // Clerk updates it synchronously when the active org changes.
   useEffect(() => {
-    if (!orgsLoaded || !isLoaded || !setActive) return;
+    if (!isLoaded || !orgLoaded || !orgsLoaded) return;
+    // Path 1: org already active
+    if (organization) {
+      router.push("/chat");
+      return;
+    }
+    // Path 2: has memberships but no active org
     const memberships = userMemberships?.data;
-    if (memberships && memberships.length > 0) {
+    if (memberships && memberships.length > 0 && setActive) {
       setActive({ organization: memberships[0].organization.id }).then(() => {
         router.push("/chat");
       });
     }
-  }, [orgsLoaded, isLoaded, userMemberships, setActive, router]);
+  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router]);
 
-  if (!isLoaded || !orgsLoaded) return null;
+  if (!isLoaded || !orgsLoaded || !orgLoaded) return null;
 
-  // If user has org memberships, we're redirecting — show nothing
+  // If user has an active org or memberships, we're redirecting — show nothing
+  if (organization) return null;
   if (userMemberships?.data && userMemberships.data.length > 0) return null;
 
   async function handlePersonal() {
