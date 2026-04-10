@@ -167,10 +167,11 @@ async def ws_disconnect(
         connection = connection_service.get_connection(x_connection_id)
         if connection:
             owner_id = connection.get("org_id") or connection["user_id"]
+            user_id = connection["user_id"]
 
             # Clean up node upstream if this was a node connection
             if is_node_connection(x_connection_id):
-                await handle_node_disconnect(x_connection_id, owner_id)
+                await handle_node_disconnect(x_connection_id, owner_id, user_id)
             else:
                 pool = get_gateway_pool()
                 pool.remove_frontend_connection(owner_id, x_connection_id)
@@ -267,6 +268,7 @@ async def ws_message(
                 try:
                     hello = await handle_node_connect(
                         owner_id=owner_id,
+                        user_id=user_id,
                         connection_id=x_connection_id,
                         connect_params=connect_params,
                         management_api=management_api,
@@ -611,6 +613,33 @@ async def _process_agent_chat_background(
             session_key,
             ip,
         )
+
+        # --- Node binding: pin this session to the user's Mac if connected ---
+        from routers.node_proxy import get_user_node, get_patched_session, set_patched_session
+
+        node_info = get_user_node(user_id)
+        if node_info:
+            node_id = node_info["nodeId"]
+            cached = get_patched_session(session_key)
+            if cached != node_id:
+                # Patch the session to bind exec to this user's node
+                try:
+                    await pool.send_rpc(
+                        user_id=owner_id,
+                        req_id=f"bind-node-{session_key[:40]}",
+                        method="sessions.patch",
+                        params={
+                            "sessionKey": session_key,
+                            "execNode": node_id,
+                            "execHost": "node",
+                        },
+                        ip=ip,
+                        token=container["gateway_token"],
+                    )
+                    set_patched_session(session_key, node_id)
+                    logger.info("Bound session %s to node %s", session_key, node_id[:16])
+                except Exception:
+                    logger.warning("Failed to bind session %s to node", session_key)
 
         result = await pool.send_rpc(
             user_id=owner_id,
