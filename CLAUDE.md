@@ -151,6 +151,58 @@ await fetch('https://api-dev.isol8.co/api/v1/debug/provision', {method:'POST', h
 
 Debug endpoints return 403 in production.
 
+### Clean-Slate Dev Reset
+
+Full wipe of dev state for fresh testing. Requires AWS SSO (`aws sso login --profile isol8-admin`).
+
+**1. Delete ECS containers:** User deletes their OpenClaw ECS services + EFS access points manually from the AWS console (or via `DELETE /debug/provision` per user above).
+
+**2. Wipe EFS user workspaces** (via ECS exec on the backend task):
+```bash
+# Find the backend task
+TASK=$(aws ecs list-tasks --cluster isol8-dev-container-ClusterEB0386A7-Cjwm2mIlW4Aw \
+  --service-name isol8-dev-service-ServiceD69D759B-Va1bdS6qTw9Y \
+  --profile isol8-admin --region us-east-1 \
+  --query 'taskArns[0]' --output text | awk -F'/' '{print $NF}')
+
+# List then wipe all user dirs
+aws ecs execute-command --cluster isol8-dev-container-ClusterEB0386A7-Cjwm2mIlW4Aw \
+  --task $TASK --container backend --interactive \
+  --command "/bin/sh -c 'ls /mnt/efs/users/ && rm -rf /mnt/efs/users/* && ls -la /mnt/efs/users/'" \
+  --profile isol8-admin --region us-east-1
+```
+
+**3. Wipe DynamoDB tables** (all 8 isol8-dev-* tables):
+```bash
+for t in isol8-dev-api-keys isol8-dev-billing-accounts isol8-dev-channel-links \
+         isol8-dev-containers isol8-dev-pending-updates isol8-dev-usage-counters \
+         isol8-dev-users isol8-dev-ws-connections; do
+  keys=$(aws dynamodb describe-table --table-name "$t" --profile isol8-admin \
+    --region us-east-1 --query 'Table.KeySchema[].AttributeName' --output text)
+  count=0
+  while read -r line; do
+    [ -z "$line" ] && continue
+    aws dynamodb delete-item --table-name "$t" --key "$line" \
+      --profile isol8-admin --region us-east-1 >/dev/null 2>&1
+    count=$((count+1))
+  done < <(aws dynamodb scan --table-name "$t" --profile isol8-admin \
+    --region us-east-1 --output json 2>/dev/null | python3 -c "
+import json, sys
+keys = '$keys'.split()
+d = json.load(sys.stdin)
+for item in d.get('Items', []):
+    print(json.dumps({k: item[k] for k in keys}))
+")
+  echo "  $t: $count deleted"
+done
+```
+
+**4. Clean up Stripe:** Delete orphan test customers manually from the [Stripe dashboard](https://dashboard.stripe.com/test/customers) (dev uses test mode keys).
+
+**5. Clean up Clerk:** Delete test users/orgs from the [Clerk dashboard](https://dashboard.clerk.com) if needed.
+
+After all five steps, re-provision starts fresh: new Clerk sign-up → onboarding → container provision → single Stripe customer.
+
 ### Manual dev testing accounts
 
 DO NOT use `isol8-e2e-testing@mailsac.com` for manual dev testing. That Clerk
