@@ -21,6 +21,8 @@ class TestIsConnected:
             ip="10.0.0.1",
             token="t",
             management_api=MagicMock(),
+            frontend_connections=set(),
+            conn_member_map={},
         )
 
     def test_no_ws_returns_false(self):
@@ -179,6 +181,8 @@ class TestHandleMessage:
             ip="10.0.0.1",
             token="test-token",
             management_api=mock_management_api,
+            frontend_connections=set(),
+            conn_member_map={},
         )
         conn._frontend_connections.add("conn-1")
         return conn

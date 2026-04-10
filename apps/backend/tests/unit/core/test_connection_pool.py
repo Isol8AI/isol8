@@ -19,6 +19,8 @@ class TestGatewayConnection:
     @pytest.fixture
     def connection(self, mock_management_api):
         return GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -59,12 +61,13 @@ class TestGatewayConnection:
         connection._handle_message({"type": "event", "event": "health", "payload": {"status": "ok"}})
         assert mock_management_api.send_message.call_count == 2
 
-    def test_add_remove_frontend_connection(self, connection):
-        """Should track frontend connection IDs."""
-        connection.add_frontend_connection("conn-1")
-        connection.add_frontend_connection("conn-2")
+    def test_shared_frontend_connections(self, connection):
+        """Frontend connections are managed via the shared set, not the connection."""
+        # The pool owns the set; GatewayConnection reads it directly.
+        connection._frontend_connections.add("conn-1")
+        connection._frontend_connections.add("conn-2")
         assert len(connection._frontend_connections) == 2
-        connection.remove_frontend_connection("conn-1")
+        connection._frontend_connections.discard("conn-1")
         assert len(connection._frontend_connections) == 1
 
     @pytest.mark.asyncio
@@ -193,6 +196,8 @@ class TestGatewayConnectionHandshake:
     @pytest.fixture
     def connection(self):
         return GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="test-token",
@@ -424,6 +429,8 @@ class TestHandleMessageChatEvents:
     def connection(self):
         mgmt = MagicMock()
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -532,6 +539,8 @@ class TestReaderLoopCrash:
     async def test_reader_crash_rejects_pending_rpcs(self):
         """When the reader loop crashes, all pending RPCs are rejected."""
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -556,6 +565,8 @@ class TestReaderLoopCrash:
     async def test_reader_does_not_reject_rpcs_when_closed(self):
         """If the connection was explicitly closed, reader errors are silently ignored."""
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="test-user",
             ip="10.0.0.1",
             token="tok",
@@ -584,6 +595,8 @@ class TestStatusChangeEvents:
         mock_mgmt.send_message = MagicMock(return_value=True)
 
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -609,6 +622,8 @@ class TestStatusChangeEvents:
         mock_mgmt.send_message = MagicMock(return_value=True)
 
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -627,6 +642,8 @@ class TestStatusChangeEvents:
         mock_mgmt.send_message = MagicMock(side_effect=Exception("gone"))
 
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",
@@ -643,6 +660,8 @@ class TestStatusChangeEvents:
         mock_mgmt = MagicMock()
 
         conn = GatewayConnection(
+            frontend_connections=set(),
+            conn_member_map={},
             user_id="user_123",
             ip="10.0.1.5",
             token="test-token",

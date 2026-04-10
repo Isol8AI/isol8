@@ -12,7 +12,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 def _write_pairing_file(owner_dir: str, channel: str, requests: list[dict]):
-    creds_dir = os.path.join(owner_dir, ".openclaw", "credentials")
+    creds_dir = os.path.join(owner_dir, "credentials")
     os.makedirs(creds_dir, exist_ok=True)
     path = os.path.join(creds_dir, f"{channel}-pairing.json")
     with open(path, "w") as f:
