@@ -111,7 +111,13 @@ async def ws_connect(
     if not x_user_id:
         raise HTTPException(status_code=401, detail="Missing x-user-id header")
 
-    logger.info("WebSocket connect: connection_id=%s, user_id=%s", x_connection_id, x_user_id)
+    logger.info(
+        "WS connect: conn=%s user=%s org=%s owner=%s",
+        x_connection_id[:12],
+        x_user_id,
+        x_org_id or "-",
+        x_org_id or x_user_id,
+    )
 
     connection_service = await get_connection_service()
     connection_service.store_connection(
@@ -214,6 +220,17 @@ async def ws_message(
         management_api = await get_management_api_client()
         management_api.send_message(x_connection_id, {"type": "pong"})
         return Response(status_code=200)
+
+    # Log all non-ping message types so chat/RPC flow is visible at INFO
+    logger.info(
+        "[%s] ws msg type=%s owner=%s conn=%s method=%s agent=%s",
+        user_id,
+        msg_type,
+        owner_id,
+        x_connection_id[:12] if x_connection_id else "?",
+        body.get("method", "-") if msg_type == "req" else "-",
+        body.get("agent_id", "-") if msg_type == "agent_chat" else "-",
+    )
 
     if msg_type == "pong":
         return Response(status_code=200)
@@ -390,6 +407,9 @@ async def _process_rpc_background(
     params: dict,
 ) -> None:
     """Process an OpenClaw RPC request via the gateway connection pool."""
+    # Log non-noisy RPCs at INFO (skip health/channels.status which fire every 3s)
+    if method not in ("health", "channels.status"):
+        logger.info("[%s] rpc %s owner=%s conn=%s", user_id, method, owner_id, connection_id[:12])
     management_api = await get_management_api_client()
 
     try:
@@ -495,11 +515,13 @@ async def _process_agent_chat_background(
     (text_delta, turn_completed, etc.) are handled by the pool's reader
     task and forwarded to the frontend automatically.
     """
-    logger.debug(
-        "Processing agent chat - connection_id=%s, user_id=%s, agent=%s",
-        connection_id,
+    logger.info(
+        "[%s] chat.send START agent=%s owner=%s conn=%s msg_len=%d",
         user_id,
         agent_id,
+        owner_id,
+        connection_id[:12],
+        len(message),
     )
 
     management_api = await get_management_api_client()
@@ -510,6 +532,7 @@ async def _process_agent_chat_background(
         container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
+            logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             management_api.send_message(
                 connection_id,
                 {
@@ -520,6 +543,7 @@ async def _process_agent_chat_background(
             return
 
         if not ip:
+            logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
             management_api.send_message(
                 connection_id,
                 {
@@ -537,6 +561,14 @@ async def _process_agent_chat_background(
         is_org = owner_id != user_id
         session_key = f"agent:{agent_id}:{user_id}" if is_org else f"agent:{agent_id}:main"
 
+        logger.info(
+            "[%s] chat.send RPC agent=%s sessionKey=%s ip=%s",
+            user_id,
+            agent_id,
+            session_key,
+            ip,
+        )
+
         result = await pool.send_rpc(
             user_id=owner_id,
             req_id=req_id,
@@ -549,11 +581,11 @@ async def _process_agent_chat_background(
             ip=ip,
             token=container["gateway_token"],
         )
-        logger.debug("chat.send acked for agent %s: %s", agent_id, result)
+        logger.info("[%s] chat.send ACK agent=%s result=%s", user_id, agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
 
     except Exception as e:
-        logger.error("chat.send failed for agent %s: %s", agent_id, e)
+        logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
         try:
             management_api.send_message(
                 connection_id,
