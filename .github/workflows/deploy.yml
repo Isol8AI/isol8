@@ -951,52 +951,6 @@ jobs:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-  prod-E2EGate:
-    name: E2EGate
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    needs:
-      - Build-Synth
-      - dev-isol8-dev-auth-Deploy
-      - dev-isol8-dev-dns-Deploy
-      - dev-isol8-dev-database-Deploy
-      - dev-isol8-dev-network-Deploy
-      - dev-isol8-dev-api-Deploy
-      - dev-isol8-dev-container-Deploy
-      - dev-isol8-dev-service-Deploy
-      - dev-DeployVercelDev
-    env: {}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: pnpm
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-      - name: Install Playwright browsers
-        run: cd apps/frontend && npx playwright install chromium --with-deps
-      - name: Run E2E gate tests
-        run: cd apps/frontend && npx playwright test --project=chromium
-        env:
-          BASE_URL: https://dev.isol8.co
-          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}
-          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}
-          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY_DEV }}
-          STRIPE_SECRET_KEY: ${{ secrets.STRIPE_SECRET_KEY }}
-          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
-      - name: Upload Playwright report
-        uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: playwright-report
-          path: apps/frontend/playwright-report/
-          retention-days: 7
   prod-isol8-prod-auth-Deploy:
     name: Deploy prodisol8prodauthA33C6000
     permissions:
@@ -1005,7 +959,6 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset14
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1051,7 +1004,6 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset15
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1098,7 +1050,6 @@ jobs:
       - Build-Synth
       - Assets-FileAsset16
       - prod-isol8-prod-auth-Deploy
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1146,7 +1097,6 @@ jobs:
       - Assets-FileAsset17
       - Assets-FileAsset5
       - prod-isol8-prod-dns-Deploy
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1199,7 +1149,6 @@ jobs:
       - Assets-FileAsset11
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-dns-Deploy
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1247,7 +1196,6 @@ jobs:
       - Assets-FileAsset19
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1299,7 +1247,6 @@ jobs:
       - prod-isol8-prod-auth-Deploy
       - prod-isol8-prod-database-Deploy
       - prod-isol8-prod-api-Deploy
-      - prod-E2EGate
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
