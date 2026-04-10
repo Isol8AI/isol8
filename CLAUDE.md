@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw) (reference copy in `openclaw_reference/`). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (EC2), Clerk for authentication, Supabase PostgreSQL for metadata, AWS Bedrock for LLM inference, Stripe for billing, and EFS for per-user agent workspaces.
+Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw) (reference copy in `openclaw_reference/`). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (EC2), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, api-keys, usage counters, pending updates), AWS Bedrock for LLM inference, Stripe for billing, and EFS for per-user agent workspaces. Infrastructure is managed via **AWS CDK** in `apps/infra/` (the `apps/terraform/` directory is legacy/empty). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory.
 
 Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
 
