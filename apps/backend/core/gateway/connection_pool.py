@@ -360,7 +360,12 @@ class GatewayConnection:
         skipped = 0
         for conn_id in all_conns:
             if target_member_id is not None:
-                if self._conn_member_map.get(conn_id) != target_member_id:
+                # Case-insensitive: OpenClaw lowercases sessionKeys
+                # internally, so the member_id parsed from the event is
+                # lowercase, but conn_member_map stores the original
+                # Clerk user_id (mixed case).
+                member = self._conn_member_map.get(conn_id, "")
+                if member.lower() != target_member_id.lower():
                     skipped += 1
                     continue
             try:
