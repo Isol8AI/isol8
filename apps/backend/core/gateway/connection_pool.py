@@ -345,20 +345,48 @@ class GatewayConnection:
         member receive the message (per-member event routing for orgs).
         When ``None``, broadcast to all connections (status changes, etc.).
         """
+        all_conns = list(self._frontend_connections)
+        if not all_conns:
+            msg_type = message.get("type", "?")
+            logger.warning(
+                "[%s] forward: no frontend connections for msg type=%s target=%s",
+                self.user_id,
+                msg_type,
+                target_member_id or "broadcast",
+            )
+            return
         gone: list[str] = []
-        for conn_id in list(self._frontend_connections):
+        delivered = 0
+        skipped = 0
+        for conn_id in all_conns:
             if target_member_id is not None:
                 if self._conn_member_map.get(conn_id) != target_member_id:
+                    skipped += 1
                     continue
             try:
                 if not self._management_api.send_message(conn_id, message):
                     gone.append(conn_id)
+                else:
+                    delivered += 1
             except Exception:
                 logger.warning("Failed to forward message to %s", conn_id)
                 gone.append(conn_id)
         for conn_id in gone:
             self._frontend_connections.discard(conn_id)
             logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
+        # Log delivery summary for non-chunk messages (chunks are too frequent)
+        msg_type = message.get("type", "?")
+        if msg_type not in ("chunk",):
+            logger.info(
+                "[%s] forward type=%s target=%s delivered=%d skipped=%d gone=%d total=%d",
+                self.user_id,
+                msg_type,
+                target_member_id or "broadcast",
+                delivered,
+                skipped,
+                len(gone),
+                len(all_conns),
+            )
 
     def _record_usage_from_session(self, payload: dict) -> None:
         """Record usage after a billable event by resolving the session key
@@ -570,14 +598,25 @@ class GatewayConnection:
                 session_key = payload.get("sessionKey", "")
             target_member = _parse_session_key(session_key).get("member_id") if session_key else None
 
-            # Log all non-agent events for debugging usage pipeline
-            if event_name != "agent":
+            # Demote noisy periodic events (health, tick) to DEBUG so they
+            # don't drown actual chat/agent signals in the logs. Log
+            # meaningful non-agent events (chat state changes, sessions,
+            # etc.) at INFO.
+            if event_name in ("health", "tick"):
+                logger.debug(
+                    "Gateway heartbeat for %s: event=%s",
+                    self.user_id,
+                    event_name,
+                )
+            elif event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
                 logger.info(
-                    "Gateway event for user %s: event=%s state=%s",
+                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
                     self.user_id,
                     event_name,
                     state,
+                    session_key[:60] if session_key else "-",
+                    target_member or "broadcast",
                 )
 
             if event_name == "agent":
@@ -611,6 +650,14 @@ class GatewayConnection:
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
+                if state in ("final", "error", "aborted"):
+                    logger.info(
+                        "[%s] chat %s sessionKey=%s target=%s",
+                        self.user_id,
+                        state,
+                        session_key[:60] if session_key else "-",
+                        target_member or "broadcast",
+                    )
                 if state == "final":
                     # Send thinking content if present (before visible text)
                     thinking_text = self._extract_thinking_text(payload)
