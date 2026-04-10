@@ -381,7 +381,7 @@ export default function Page() {
               </p>
             </div>
 
-            <SignIn forceRedirectUrl="/chat" signUpForceRedirectUrl="/chat" />
+            <SignIn fallbackRedirectUrl="/chat" signUpFallbackRedirectUrl="/chat" />
 
             <p className="auth-footer">
               Don&apos;t have an account?{" "}
