@@ -285,3 +285,96 @@ class TestChownLocalEnvironment:
         ws = Workspace(mount_path=str(tmp_path))
         ws.write_file("test-user", "test.json", '{"test": true}')
         assert (tmp_path / "test-user" / "test.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Cleanup agent dirs (post agents.delete reconciliation)
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupAgentDirs:
+    """`cleanup_agent_dirs` is the backend's reconciliation step after
+    `agents.delete`. OpenClaw's `moveToTrashBestEffort` silently fails on
+    Linux containers (cross-device rename from EFS to local overlay), so we
+    `rm -rf` the same dirs from the backend.
+    """
+
+    def test_removes_agents_subdir(self, workspace, user_id, tmp_path):
+        agents_dir = tmp_path / user_id / "agents" / "research-assistant"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "agent").mkdir()
+        (agents_dir / "sessions").mkdir()
+        (agents_dir / "agent" / "state.json").write_text("{}")
+
+        workspace.cleanup_agent_dirs(user_id, "research-assistant")
+
+        assert not agents_dir.exists()
+
+    def test_removes_workspaces_subdir(self, workspace, user_id, tmp_path):
+        ws_dir = tmp_path / user_id / "workspaces" / "research-assistant"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "AGENTS.md").write_text("# Hello")
+
+        workspace.cleanup_agent_dirs(user_id, "research-assistant")
+
+        assert not ws_dir.exists()
+
+    def test_removes_both_when_both_exist(self, workspace, user_id, tmp_path):
+        agents_dir = tmp_path / user_id / "agents" / "ra"
+        ws_dir = tmp_path / user_id / "workspaces" / "ra"
+        agents_dir.mkdir(parents=True)
+        ws_dir.mkdir(parents=True)
+        (agents_dir / "x").write_text("x")
+        (ws_dir / "y").write_text("y")
+
+        workspace.cleanup_agent_dirs(user_id, "ra")
+
+        assert not agents_dir.exists()
+        assert not ws_dir.exists()
+
+    def test_idempotent_when_dirs_missing(self, workspace, user_id):
+        # Neither directory exists — must not raise.
+        workspace.cleanup_agent_dirs(user_id, "ghost")
+
+    def test_does_not_touch_other_agents(self, workspace, user_id, tmp_path):
+        keep = tmp_path / user_id / "agents" / "main"
+        keep.mkdir(parents=True)
+        (keep / "agent").mkdir()
+        delete = tmp_path / user_id / "agents" / "doomed"
+        delete.mkdir(parents=True)
+
+        workspace.cleanup_agent_dirs(user_id, "doomed")
+
+        assert keep.exists()
+        assert not delete.exists()
+
+    def test_rejects_path_traversal_in_agent_id(self, workspace, user_id, tmp_path):
+        # Sibling dir we must NOT delete.
+        sibling = tmp_path / "other_user" / "agents" / "main"
+        sibling.mkdir(parents=True)
+        (sibling / "secret").write_text("don't touch")
+
+        # Attempt to escape via `..` — should refuse and not touch the sibling.
+        workspace.cleanup_agent_dirs(user_id, "../../other_user/agents/main")
+
+        assert sibling.exists()
+        assert (sibling / "secret").exists()
+
+    def test_rejects_slash_in_agent_id(self, workspace, user_id, tmp_path):
+        target = tmp_path / user_id / "agents" / "ra" / "agent"
+        target.mkdir(parents=True)
+
+        workspace.cleanup_agent_dirs(user_id, "ra/agent")
+
+        # Slashes in agent_id are refused — the dir survives.
+        assert target.exists()
+
+    def test_rejects_empty_agent_id(self, workspace, user_id, tmp_path):
+        agents_root = tmp_path / user_id / "agents"
+        agents_root.mkdir(parents=True)
+        (agents_root / "main").mkdir()
+
+        workspace.cleanup_agent_dirs(user_id, "")
+
+        # Empty agent_id must not nuke the entire agents/ dir.
+        assert (agents_root / "main").exists()

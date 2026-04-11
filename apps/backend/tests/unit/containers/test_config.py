@@ -172,6 +172,11 @@ class TestWriteOpenclawConfig:
         mem = config["agents"]["defaults"]["memorySearch"]
         assert mem["enabled"] is True
 
+    def test_agents_defaults_workspace_routes_to_efs(self):
+        """New agent workspaces must land under `.openclaw/` so they live on EFS."""
+        config = json.loads(write_openclaw_config())
+        assert config["agents"]["defaults"]["workspace"] == ".openclaw/workspaces"
+
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
         config = json.loads(write_openclaw_config())

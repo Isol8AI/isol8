@@ -459,6 +459,29 @@ async def _process_rpc_background(
             },
         )
 
+        # Reconcile EFS after a successful agents.delete: OpenClaw's
+        # moveToTrashBestEffort silently fails on Linux containers (cross-device
+        # rename from EFS to the local overlay's $HOME/.Trash), leaking the
+        # agent's on-EFS dirs forever. Clean them up from the backend.
+        #
+        # `cleanup_agent_dirs` is sync (`shutil.rmtree`) and EFS-backed dirs
+        # can be large enough to block the event loop and stall unrelated
+        # WS chat traffic, so it runs on a worker thread via `to_thread`.
+        if method == "agents.delete":
+            agent_id = (params or {}).get("agentId")
+            if isinstance(agent_id, str) and agent_id:
+                try:
+                    from core.containers import get_workspace
+
+                    await asyncio.to_thread(get_workspace().cleanup_agent_dirs, owner_id, agent_id)
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "[%s] post-delete cleanup failed for agent=%s: %s",
+                        owner_id,
+                        agent_id,
+                        cleanup_exc,
+                    )
+
     except RuntimeError as e:
         # RuntimeError comes from OpenClaw rejecting the RPC — forward full error object.
         # connection_pool serializes the gateway error dict as JSON in the message.

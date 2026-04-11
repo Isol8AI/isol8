@@ -349,6 +349,7 @@ def write_openclaw_config(
                     "primary": primary_model,
                 },
                 "models": agent_models,
+                "workspace": ".openclaw/workspaces",
                 "memorySearch": {
                     "enabled": True,
                 },

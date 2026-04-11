@@ -479,3 +479,44 @@ class Workspace:
                 f"Failed to delete {path!r} for {user_id}: {exc}",
                 user_id=user_id,
             ) from exc
+
+    def cleanup_agent_dirs(self, user_id: str, agent_id: str) -> None:
+        """Best-effort `rm -rf` for an agent's on-EFS directories after delete.
+
+        OpenClaw's `agents.delete` calls `movePathToTrash`, which on Linux
+        Fargate falls back to renaming into `$HOME/.Trash` — a cross-device
+        rename from EFS to the container overlay, which fails with EXDEV and
+        is silently swallowed. Result: the agent's on-EFS directories leak
+        on every delete. We reconcile by removing them from the backend.
+
+        Idempotent and best-effort: missing dirs are ignored, failures are
+        logged but never raised — the user's delete already succeeded on the
+        OpenClaw side.
+        """
+        import shutil
+
+        if not agent_id or "/" in agent_id or ".." in agent_id:
+            logger.warning("cleanup_agent_dirs: refusing unsafe agent_id %r", agent_id)
+            return
+
+        user_root = self.user_path(user_id)
+        # On-EFS roots OpenClaw writes to per agent:
+        #   agents/{id}/      — agent/ + sessions/ subdirs (internal state)
+        #   workspaces/{id}/  — workspace files (per agents.defaults.workspace)
+        targets = [
+            user_root / "agents" / agent_id,
+            user_root / "workspaces" / agent_id,
+        ]
+        for target in targets:
+            if not target.exists():
+                continue
+            try:
+                shutil.rmtree(target)
+                logger.info("Cleaned up agent dir %s for user %s", target, user_id)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to clean up agent dir %s for user %s: %s",
+                    target,
+                    user_id,
+                    exc,
+                )

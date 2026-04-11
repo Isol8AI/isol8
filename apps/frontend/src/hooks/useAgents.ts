@@ -46,7 +46,7 @@ export function useAgents() {
   const defaultId = data?.defaultId;
 
   const createAgent = useCallback(
-    async (params: { name: string; workspace: string; emoji?: string }) => {
+    async (params: { name: string }) => {
       await callRpc("agents.create", params);
       mutate();
     },
@@ -62,7 +62,7 @@ export function useAgents() {
   );
 
   const updateAgent = useCallback(
-    async (agentId: string, updates: { model?: string }) => {
+    async (agentId: string, updates: { model?: string; name?: string }) => {
       await callRpc("agents.update", { agentId, ...updates });
       mutate();
     },
