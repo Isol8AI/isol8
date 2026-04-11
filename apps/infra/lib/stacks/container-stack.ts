@@ -268,6 +268,8 @@ export class ContainerStack extends cdk.Stack {
       environment: {
         HOME: "/home/node",
         CHOKIDAR_USEPOLLING: "true",
+        PAPERCLIP_BASE_URL: "http://localhost:3100",
+        PAPERCLIP_BOARD_KEY_PATH: "/home/node/.openclaw/.paperclip/board-key",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({

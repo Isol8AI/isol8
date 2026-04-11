@@ -10,9 +10,11 @@ API.
 import asyncio
 import hashlib
 import logging
+import os
 import re
 import secrets
 import socket
+from pathlib import Path
 
 import boto3
 
@@ -319,6 +321,14 @@ class EcsManager:
             },
         )
 
+        # Clear the stale board-key file so a downgraded tier can't retain
+        # a credential that the DB has already revoked.
+        key_path = Path(settings.EFS_MOUNT_PATH) / owner_id / ".paperclip" / "board-key"
+        try:
+            key_path.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Failed to remove stale board key file for %s: %s", owner_id, exc)
+
         return {"status": "disabling", "task_definition_arn": task_def_arn}
 
     async def provision_paperclip_board_key(self, owner_id: str) -> str:
@@ -389,6 +399,12 @@ class EcsManager:
             },
         )
 
+        # Mount the board key into the OpenClaw container via shared EFS.
+        # The container sees this at /home/node/.openclaw/.paperclip/board-key
+        # (per container-stack.ts PAPERCLIP_BOARD_KEY_PATH). Agents like Nexus
+        # read from that path to call Paperclip at localhost:3100.
+        self._write_paperclip_board_key_to_efs(owner_id, board_key)
+
         # Auto-create default company
         async with httpx.AsyncClient(timeout=15.0) as client:
             await client.post(
@@ -399,6 +415,38 @@ class EcsManager:
 
         logger.info("Provisioned Paperclip board key for %s", owner_id)
         return board_key
+
+    def _write_paperclip_board_key_to_efs(self, owner_id: str, board_key: str) -> None:
+        """Write the Paperclip Board API Key to the user's EFS workspace.
+
+        ECS task env vars are fixed at task-definition time, and the board key
+        is provisioned asynchronously after container start — so the only
+        delivery mechanism compatible with the existing async-provision flow
+        is a shared-file drop on the EFS volume that's already mounted into
+        both the backend and the OpenClaw container.
+
+        The file is chmodded 0600 and (in non-local env) chowned to
+        UID 1000 so the per-user EFS access point can read it.
+        """
+        key_path = Path(settings.EFS_MOUNT_PATH) / owner_id / ".paperclip" / "board-key"
+        try:
+            key_path.parent.mkdir(parents=True, exist_ok=True)
+            key_path.write_text(board_key, encoding="utf-8")
+            os.chmod(key_path, 0o600)
+            os.chmod(key_path.parent, 0o700)
+            if settings.ENVIRONMENT != "local":
+                os.chown(key_path, 1000, 1000)
+                os.chown(key_path.parent, 1000, 1000)
+        except OSError as exc:
+            logger.error(
+                "Failed to write Paperclip board key to EFS for %s: %s",
+                owner_id,
+                exc,
+            )
+            raise EcsManagerError(
+                f"Failed to write board key to EFS: {exc}",
+                user_id=owner_id,
+            ) from exc
 
     def _deregister_task_definition(self, task_definition_arn: str) -> None:
         """Deregister a per-user task definition revision. Idempotent."""
