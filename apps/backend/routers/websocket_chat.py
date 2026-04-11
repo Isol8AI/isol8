@@ -463,13 +463,17 @@ async def _process_rpc_background(
         # moveToTrashBestEffort silently fails on Linux containers (cross-device
         # rename from EFS to the local overlay's $HOME/.Trash), leaking the
         # agent's on-EFS dirs forever. Clean them up from the backend.
+        #
+        # `cleanup_agent_dirs` is sync (`shutil.rmtree`) and EFS-backed dirs
+        # can be large enough to block the event loop and stall unrelated
+        # WS chat traffic, so it runs on a worker thread via `to_thread`.
         if method == "agents.delete":
             agent_id = (params or {}).get("agentId")
             if isinstance(agent_id, str) and agent_id:
                 try:
                     from core.containers import get_workspace
 
-                    get_workspace().cleanup_agent_dirs(owner_id, agent_id)
+                    await asyncio.to_thread(get_workspace().cleanup_agent_dirs, owner_id, agent_id)
                 except Exception as cleanup_exc:
                     logger.warning(
                         "[%s] post-delete cleanup failed for agent=%s: %s",
