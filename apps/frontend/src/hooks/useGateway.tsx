@@ -12,6 +12,7 @@ import {
   type ReactNode,
 } from "react";
 import { useAuth } from "@clerk/nextjs";
+import { WS_URL } from "@/lib/api";
 
 // =============================================================================
 // Constants
@@ -22,19 +23,6 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000, 16000, 16000, 16000, 16
 const PING_INTERVAL_MS = 30000;
 const CONNECTION_TIMEOUT_MS = 10000;
 const RPC_TIMEOUT_MS = 30000;
-
-function getWebSocketUrl(): string {
-  if (process.env.NEXT_PUBLIC_WS_URL) {
-    return process.env.NEXT_PUBLIC_WS_URL;
-  }
-  const apiUrl =
-    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-  return apiUrl
-    .replace(/^https:\/\//, "wss://")
-    .replace(/^http:\/\//, "ws://")
-    .replace("api-", "ws-")
-    .replace(/\/api\/v1$/, "");
-}
 
 // =============================================================================
 // Types
@@ -232,8 +220,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const wsUrl = getWebSocketUrl();
-      const ws = new WebSocket(`${wsUrl}?token=${token}`);
+      const ws = new WebSocket(`${WS_URL}?token=${token}`);
 
       ws.onopen = () => {
         reconnectAttemptRef.current = 0;

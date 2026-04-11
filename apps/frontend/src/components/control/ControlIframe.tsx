@@ -3,21 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAuth } from "@clerk/nextjs";
 import { Loader2 } from "lucide-react";
-import { BACKEND_URL } from "@/lib/api";
-
-function getWsUrl(): string {
-  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
-  // Derive from API URL, same logic as useGateway.tsx
-  const apiUrl =
-    process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
-  return apiUrl
-    .replace(/^https:\/\//, "wss://")
-    .replace(/^http:\/\//, "ws://")
-    .replace("api-", "ws-")
-    .replace(/\/api\/v1$/, "");
-}
-
-const WS_URL = getWsUrl();
+import { BACKEND_URL, WS_URL } from "@/lib/api";
 
 export function ControlIframe() {
   const { getToken } = useAuth();
