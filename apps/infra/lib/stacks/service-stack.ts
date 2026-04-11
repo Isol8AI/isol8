@@ -538,6 +538,7 @@ export class ServiceStack extends cdk.Stack {
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
         ECS_TASK_DEFINITION: `isol8-${env}-openclaw`,
+        ECS_PRO_TASK_DEFINITION: `isol8-${env}-openclaw-pro`,
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,

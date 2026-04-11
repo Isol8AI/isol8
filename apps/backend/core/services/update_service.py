@@ -4,7 +4,7 @@ import asyncio
 import logging
 
 from core.config import TIER_CONFIG
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
 from core.containers.config import _models_for_tier
 from core.services.config_patcher import patch_openclaw_config
 
@@ -86,6 +86,21 @@ async def queue_tier_change(owner_id: str, old_tier: str, new_tier: str) -> dict
             new_mem,
             owner_id,
         )
+
+    # Track 3: disable Paperclip sidecar if downgrading from eligible tier
+    old_paperclip = old_config.get("paperclip_enabled", False)
+    new_paperclip = new_config.get("paperclip_enabled", False)
+    if old_paperclip and not new_paperclip:
+        container = await container_repo.get_by_owner_id(owner_id)
+        if container and container.get("paperclip_enabled"):
+            try:
+                from core.containers import get_ecs_manager
+
+                ecs = get_ecs_manager()
+                await ecs.disable_paperclip(owner_id)
+                logger.info("Disabled Paperclip for %s due to tier downgrade", owner_id)
+            except Exception:
+                logger.exception("Failed to disable Paperclip for %s during tier downgrade", owner_id)
 
     return pending_update
 

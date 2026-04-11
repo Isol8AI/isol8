@@ -6,6 +6,7 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
@@ -237,6 +238,86 @@ export class ContainerStack extends cdk.Stack {
 
     // Add EFS volume — the backend replaces the access point per user
     openclawTaskDef.addVolume({
+      name: "openclaw-workspace",
+      efsVolumeConfiguration: {
+        fileSystemId: this.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
+
+    // -----------------------------------------------------------------------
+    // Pro/Enterprise task definition — OpenClaw + Paperclip sidecar
+    // The backend clones from this family for users with Paperclip enabled.
+    // CPU/memory are pro-tier defaults; the backend adjusts per-user.
+    // -----------------------------------------------------------------------
+
+    const paperclipLogGroup = new cdk.aws_logs.LogGroup(this, "PaperclipLogGroup", {
+      logGroupName: `/isol8/${env}/paperclip`,
+      retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const proTaskDef = new ecs.FargateTaskDefinition(this, "ProTaskDef", {
+      family: `isol8-${env}-openclaw-pro`,
+      cpu: 1536,
+      memoryLimitMiB: 3072,
+      taskRole: this.taskRole,
+      executionRole: this.taskExecutionRole,
+    });
+
+    // Same OpenClaw container as the standard task def
+    const proOpenclawContainer = proTaskDef.addContainer("openclaw", {
+      image: ecs.ContainerImage.fromRegistry("alpine/openclaw:2026.3.24"),
+      essential: true,
+      command: ["sh", "-c", startupCommand],
+      user: "0:0",
+      workingDirectory: "/home/node",
+      environment: {
+        HOME: "/home/node",
+        CHOKIDAR_USEPOLLING: "true",
+      },
+      portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup: openclawLogGroup,
+        streamPrefix: "openclaw",
+      }),
+    });
+
+    proOpenclawContainer.addMountPoints({
+      containerPath: "/home/node/.openclaw",
+      sourceVolume: "openclaw-workspace",
+      readOnly: false,
+    });
+
+    // Paperclip sidecar — non-essential (crash doesn't kill OpenClaw)
+    const betterAuthSecret = secretsmanager.Secret.fromSecretNameV2(
+      this, "BetterAuthSecret", `isol8/${env}/better-auth-secret`,
+    );
+
+    proTaskDef.addContainer("paperclip", {
+      image: ecs.ContainerImage.fromRegistry("ghcr.io/paperclipai/paperclip:latest"),
+      essential: false,
+      cpu: 512,
+      memoryLimitMiB: 1024,
+      environment: {
+        PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
+        PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",
+        HOST: "0.0.0.0",
+        PORT: "3100",
+      },
+      secrets: {
+        BETTER_AUTH_SECRET: ecs.Secret.fromSecretsManager(betterAuthSecret),
+      },
+      portMappings: [{ containerPort: 3100, protocol: ecs.Protocol.TCP }],
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup: paperclipLogGroup,
+        streamPrefix: "paperclip",
+      }),
+    });
+
+    // Shared EFS volume for pro task def
+    proTaskDef.addVolume({
       name: "openclaw-workspace",
       efsVolumeConfiguration: {
         fileSystemId: this.efsFileSystem.fileSystemId,

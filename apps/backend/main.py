@@ -28,6 +28,7 @@ from routers import (
     debug,
     desktop_auth,
     integrations,
+    paperclip_api,
     proxy,
     settings_keys,
     updates,
@@ -235,6 +236,9 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
 app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
+
+# Paperclip sidecar API proxy (pro/enterprise only)
+app.include_router(paperclip_api.router, prefix="/api/v1/paperclip", tags=["paperclip"])
 
 
 @app.get(
