@@ -240,7 +240,16 @@ async def create_checkout(
     if not account:
         owner_id = resolve_owner_id(auth)
         owner_type = get_owner_type(auth)
-        account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
+        # Pass the caller's email so the new Stripe customer is born
+        # identifiable. For org context this is the admin who clicked
+        # Subscribe (the org's first paying admin); for personal context
+        # it's the user themselves. Requires the Clerk session token
+        # template to include `"email": "{{user.primary_email_address}}"`.
+        account = await billing_service.create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type=owner_type,
+            email=auth.email,
+        )
 
     url = await billing_service.create_checkout_session(account, request.tier.value)
     return CheckoutResponse(checkout_url=url)

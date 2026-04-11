@@ -216,6 +216,66 @@ class TestCheckout:
         assert response.status_code == 200
         assert "checkout_url" in response.json()
 
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("core.services.billing_service.TIER_PRICES", {"starter": "price_starter"})
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_checkout_passes_email_to_stripe_when_customer_is_new(
+        self,
+        mock_stripe,
+        mock_svc_repo,
+        mock_router_repo,
+        async_client,
+    ):
+        """When the caller has no billing row yet, /billing/checkout creates a
+        new Stripe customer and the AuthContext.email must be passed through
+        so the customer is born identifiable in the Stripe dashboard.
+
+        Regression: previously the email parameter wasn't plumbed through, so
+        every customer created on a Subscribe click had `email=None` until
+        Stripe Checkout's form back-filled it (and only if the user actually
+        completed Checkout — bail-outs were anonymous orphans forever).
+        """
+        from core.auth import AuthContext, get_current_user
+        from main import app
+
+        # Override get_current_user to inject an email-bearing AuthContext.
+        # The default conftest fixture sets email=None, which would just
+        # pass an empty string through and tell us nothing.
+        async def auth_with_email() -> AuthContext:
+            return AuthContext(user_id="user_test_123", email="prabu@example.com")
+
+        app.dependency_overrides[get_current_user] = auth_with_email
+        try:
+            # No existing billing row → checkout will create one.
+            mock_router_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_svc_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_svc_repo.create_if_not_exists = AsyncMock(
+                return_value={
+                    "owner_id": "user_test_123",
+                    "stripe_customer_id": "cus_new_with_email",
+                    "plan_tier": "free",
+                    "stripe_subscription_id": None,
+                }
+            )
+            mock_stripe.Customer.create.return_value = MagicMock(id="cus_new_with_email")
+            mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test_session")
+
+            response = await async_client.post(
+                "/api/v1/billing/checkout",
+                json={"tier": "starter"},
+            )
+
+            assert response.status_code == 200
+            # The critical assertion: Stripe.Customer.create was called with
+            # the email from AuthContext, not None / not empty.
+            mock_stripe.Customer.create.assert_called_once()
+            call_kwargs = mock_stripe.Customer.create.call_args.kwargs
+            assert call_kwargs["email"] == "prabu@example.com"
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
 
 class TestOverageToggle:
     """Test PUT /api/v1/billing/overage."""

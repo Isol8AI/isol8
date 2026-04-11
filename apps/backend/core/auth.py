@@ -61,6 +61,14 @@ class AuthContext:
     org_role: str | None = None
     org_slug: str | None = None
     org_permissions: list[str] = field(default_factory=list)
+    # Caller's primary email, populated from the Clerk JWT `email` claim.
+    # Requires the Clerk JWT template to include
+    # `"email": "{{user.primary_email_address}}"`. Optional — older tokens
+    # issued before that template change won't have it. Used by billing to
+    # attach the email to newly-created Stripe customers so the dashboard
+    # surfaces who each customer belongs to (including bail-outs who clicked
+    # Subscribe but never completed Checkout).
+    email: str | None = None
 
     @property
     def is_org_context(self) -> bool:
@@ -171,6 +179,7 @@ async def get_current_user(
             org_role=org["org_role"],
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
+            email=payload.get("email"),
         )
 
     except jwt.ExpiredSignatureError:
@@ -208,6 +217,7 @@ async def get_optional_user(
             org_role=org["org_role"],
             org_slug=org["org_slug"],
             org_permissions=org["org_permissions"],
+            email=payload.get("email"),
         )
     except Exception:
         return None
