@@ -36,15 +36,12 @@ export default function OnboardingPage() {
   //    an invite but Clerk didn't auto-activate. Call setActive() first,
   //    then redirect once the JWT is settled.
   //
-  // Path 1 is the primary fix for the "Finish button does nothing" bug:
-  // the previous version used afterCreateOrganizationUrl="/onboarding"
-  // which navigated to the same URL (no-op), and the useEffect watching
-  // userMemberships (with infinite: true) never re-fired because the
-  // paginated hook didn't revalidate. useOrganization() IS reactive —
-  // Clerk updates it synchronously when the active org changes.
-  // Auto-redirect when the user already has an org (e.g. accepted an
-  // invite and landed here, or returning to /onboarding after the
-  // CreateOrganization flow finishes via afterCreateOrganizationUrl).
+  // In BOTH paths we also write `unsafeMetadata.onboarded = true`, matching
+  // the personal-flow behavior below. The flag is the durable, user-scoped
+  // source of truth for "has this user completed onboarding" — Clerk's
+  // active-org state is session-scoped and doesn't persist across fresh
+  // logins, so without the flag a user would bounce to /onboarding every
+  // time they log in on a new browser.
   //
   // IMPORTANT: skip when mode === "org" — the user is actively inside
   // Clerk's CreateOrganization component (which includes the invitation
@@ -54,19 +51,31 @@ export default function OnboardingPage() {
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
     if (mode === "org") return; // let CreateOrganization handle its flow
+
+    const markOnboardedAndRedirect = async () => {
+      try {
+        await user?.update({ unsafeMetadata: { onboarded: true } });
+      } catch {
+        // Best-effort — failure to write the flag shouldn't block the
+        // redirect; ChatLayout's auto-activate fallback will still get the
+        // user into /chat on subsequent loads.
+      }
+      router.push("/chat");
+    };
+
     // Path 1: org already active
     if (organization) {
-      router.push("/chat");
+      markOnboardedAndRedirect();
       return;
     }
     // Path 2: has memberships but no active org
     const memberships = userMemberships?.data;
     if (memberships && memberships.length > 0 && setActive) {
-      setActive({ organization: memberships[0].organization.id }).then(() => {
-        router.push("/chat");
-      });
+      setActive({ organization: memberships[0].organization.id }).then(
+        markOnboardedAndRedirect,
+      );
     }
-  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router, mode]);
+  }, [isLoaded, orgLoaded, orgsLoaded, organization, userMemberships, setActive, router, mode, user]);
 
   if (!isLoaded || !orgsLoaded || !orgLoaded) return null;
 

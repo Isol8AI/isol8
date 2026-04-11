@@ -51,21 +51,19 @@ class TestGetBillingAccount:
     @patch("routers.billing.billing_repo")
     @patch("core.services.billing_service.stripe")
     @patch("core.services.billing_service.billing_repo")
-    async def test_get_billing_account_auto_creates(
+    async def test_get_billing_account_returns_free_defaults_without_creating(
         self, mock_svc_repo, mock_stripe, mock_router_repo, mock_check_budget, mock_usage_repo, async_client
     ):
-        """Should auto-create billing account when none exists."""
+        """GET /billing/account returns synthetic free-tier defaults when no
+        row exists — it must NOT auto-create a Stripe customer or billing row.
+
+        Regression: previously GET /billing/account called
+        create_customer_for_owner on miss, which created a phantom
+        personal-context row for every user whose ChatLayout mounted before
+        their org was active. After the fix, the row is only created by
+        POST /billing/checkout (the explicit subscribe intent, admin-gated).
+        """
         mock_router_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_stripe.Customer.create.return_value = MagicMock(id="cus_auto_created")
-        mock_svc_repo.get_by_owner_id = AsyncMock(return_value=None)
-        mock_svc_repo.create_if_not_exists = AsyncMock(
-            return_value={
-                "owner_id": "user_test_123",
-                "stripe_customer_id": "cus_auto_created",
-                "plan_tier": "free",
-                "stripe_subscription_id": None,
-            }
-        )
         mock_check_budget.return_value = {
             "allowed": True,
             "within_included": True,
@@ -79,11 +77,18 @@ class TestGetBillingAccount:
         mock_usage_repo.get_period_usage = AsyncMock(return_value=None)
 
         response = await async_client.get("/api/v1/billing/account")
+
         assert response.status_code == 200
         data = response.json()
         assert data["tier"] == "free"
         assert data["is_subscribed"] is False
         assert data["budget_percent"] == 0.0
+        assert data["overage_limit"] is None
+
+        # Most important assertion: NO auto-create happened. Neither a Stripe
+        # Customer nor a billing_repo write was issued.
+        mock_stripe.Customer.create.assert_not_called()
+        mock_svc_repo.create_if_not_exists.assert_not_called()
 
 
 class TestGetUsage:
