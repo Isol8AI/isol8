@@ -21,9 +21,14 @@ Do not proceed past Step 1 until the board key file is readable.
 Hit `${PAPERCLIP_BASE_URL}/api/health` with the Board API Key. Expect 200 OK. If you get 502, 503, or timeout, the sidecar is not up yet. Retry once after 30 seconds. If still down, block setup and tell the user:
 > The Paperclip sidecar isn't responding at ${PAPERCLIP_BASE_URL}. It's provisioned as a non-essential container, so if it crashed, the main agent runtime stayed up but coordination is offline. Ask the platform team to check the Paperclip task logs.
 
-## Step 3 — Verify org and board key scope
+## Step 3 — Verify org scope and resolve companyId
 
-Call `paperclip-org-read.js` to confirm the Board API Key can read the org chart. This validates that provisioning completed correctly and you have at least read-output and write-task scope. If the call returns 401 or 403, the key is wrong — stop and tell the user.
+Call `paperclip-org-read.js` in `mode: "agents"`. This makes Nexus's first authenticated call to Paperclip via `paperclip-http.js`, which implicitly:
+- Reads the board key from `PAPERCLIP_BOARD_KEY_PATH`
+- Calls `GET /api/companies` to resolve the default company ID and caches it for the script's lifetime
+- Calls `GET /api/companies/:companyId/agents` to list the roster
+
+If the call returns 401 or 403, the board key is wrong — stop and tell the user to retry provisioning. If `/api/companies` returns empty, the backend's default-company creation step failed — stop and tell the user to file a platform issue.
 
 ## Step 4 — Strategic context document
 
@@ -67,13 +72,13 @@ Call `paperclip-org-read.js` and list every specialist currently deployed in the
 
 Build an in-memory routing map: `domain → specialist ID`. This is the delegation decision layer — when a user request arrives, you match intent against this map first. Persist the map to `fast-io` at `nexus-state/routing-map` so you do not have to rebuild it every heartbeat.
 
-## Step 7 — Agentgate inventory
+## Step 7 — Pending approvals baseline
 
-Call `paperclip-governance.js list` to retrieve every active agentgate across every specialist. Build a second in-memory map: `(agent_id, task_classification) → gate config`. This is what `nexus-agentgate-check.js` reads from. Persist to `fast-io` at `nexus-state/agentgate-map`.
+Paperclip's governance model is approval-based, not gate-based. There are no per-agent gate configurations to inventory. Instead, call `paperclip-governance.js` in `mode: "pending"` to retrieve any approvals currently awaiting user decision. On a fresh bootstrap this is typically empty, but if Paperclip was already running before Nexus came online there may be a backlog. Persist the list to `fast-io` at `nexus-state/pending-approvals-baseline` so the 5-minute heartbeat can diff against it and only surface newly-created approvals. For each item in the baseline, surface it to the user in the Step 14 readiness message so they can decide whether to act on the backlog.
 
 ## Step 8 — Budget snapshot
 
-Call `paperclip-budget-read.js` for every specialist. Record the current allocations and utilization to `fast-io` at `nexus-state/budget-baseline`. This is the reference point for the budget ceiling alerts fired by `nexus-budget-check.js`.
+Call `paperclip-budget-read.js` in `mode: "by_agent"` (current-cycle consumed spend across all specialists) and `mode: "overview"` (company-level budget rollup). For each specialist, also call `mode: "agent_allocation"` to capture their `budgetMonthlyCents`. Record the combined snapshot to `fast-io` at `nexus-state/budget-baseline`. This is the reference point for the budget ceiling alerts fired by `nexus-budget-check.js` on every task creation.
 
 ## Step 9 — Fallback routing table
 
@@ -100,9 +105,10 @@ Run `skill-vetter` against every skill in the Nexus stack. Heightened attention 
 
 Run `nexus-activation-check.js`. It validates:
 - Every step above completed
-- The board key file is readable
-- Paperclip health is OK
-- The routing map, agentgate map, budget baseline, and notify channel are all persisted to fast-io
+- The board key file is readable and non-empty
+- Paperclip sidecar health is OK at `${PAPERCLIP_BASE_URL}/api/health`
+- The companyId resolves from `GET /api/companies`
+- The routing map, pending-approvals baseline, budget baseline, and notify channel are all persisted to fast-io
 - The fallback routing table has no dangling specialist references
 - All three cron jobs are registered
 
