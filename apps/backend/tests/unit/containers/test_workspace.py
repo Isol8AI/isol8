@@ -319,19 +319,6 @@ class TestCleanupAgentDirs:
 
         assert not ws_dir.exists()
 
-    def test_removes_legacy_workspace_dash_dir(self, workspace, user_id, tmp_path):
-        # Containers provisioned BEFORE we set `agents.defaults.workspace`
-        # use OpenClaw's fallback path: `{stateDir}/workspace-{id}`. Cleanup
-        # must handle that shape too so existing dev/prod containers don't
-        # leak when their owners delete an agent.
-        legacy_dir = tmp_path / user_id / "workspace-research-assistant"
-        legacy_dir.mkdir(parents=True)
-        (legacy_dir / "AGENTS.md").write_text("# Hello")
-
-        workspace.cleanup_agent_dirs(user_id, "research-assistant")
-
-        assert not legacy_dir.exists()
-
     def test_removes_both_when_both_exist(self, workspace, user_id, tmp_path):
         agents_dir = tmp_path / user_id / "agents" / "ra"
         ws_dir = tmp_path / user_id / "workspaces" / "ra"

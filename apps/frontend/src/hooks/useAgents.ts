@@ -47,9 +47,6 @@ export function useAgents() {
 
   const createAgent = useCallback(
     async (params: { name: string }) => {
-      // No `workspace` param — OpenClaw computes it from `agents.defaults.workspace`
-      // in openclaw.json (set to `.openclaw/workspaces` by the backend so new
-      // agents land on EFS).
       await callRpc("agents.create", params);
       mutate();
     },

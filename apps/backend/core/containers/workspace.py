@@ -486,17 +486,12 @@ class Workspace:
         OpenClaw's `agents.delete` calls `movePathToTrash`, which on Linux
         Fargate falls back to renaming into `$HOME/.Trash` — a cross-device
         rename from EFS to the container overlay, which fails with EXDEV and
-        is silently swallowed. Result: the agent's `agent/` and `sessions/`
-        dirs (and post-Fix-A its workspace) leak on every delete.
+        is silently swallowed. Result: the agent's on-EFS directories leak
+        on every delete. We reconcile by removing them from the backend.
 
-        We reconcile by recursively removing the same dirs from the backend
-        side, where we can write directly to EFS. Idempotent and best-effort:
-        anything missing is ignored, anything that fails is logged but does
-        not raise — the user's delete already succeeded on the OpenClaw side.
-
-        Args:
-            user_id: Container owner (the EFS access point owner).
-            agent_id: Agent ID as accepted by OpenClaw (already normalized).
+        Idempotent and best-effort: missing dirs are ignored, failures are
+        logged but never raised — the user's delete already succeeded on the
+        OpenClaw side.
         """
         import shutil
 
@@ -505,21 +500,12 @@ class Workspace:
             return
 
         user_root = self.user_path(user_id)
-        # On-EFS roots OpenClaw writes to per agent. We try every shape we
-        # might find on-disk:
-        #   agents/{id}/                  — agent/ + sessions/ subdirs (always)
-        #   workspaces/{id}/              — workspace files when the container
-        #                                   was provisioned with our new
-        #                                   `agents.defaults.workspace` value
-        #   workspace-{id}/               — workspace files for containers
-        #                                   provisioned BEFORE that change,
-        #                                   where OpenClaw falls back to
-        #                                   `resolveStateDir + workspace-{id}`
-        #                                   (openclaw `agent-scope.ts:282-283`)
+        # On-EFS roots OpenClaw writes to per agent:
+        #   agents/{id}/      — agent/ + sessions/ subdirs (internal state)
+        #   workspaces/{id}/  — workspace files (per agents.defaults.workspace)
         targets = [
             user_root / "agents" / agent_id,
             user_root / "workspaces" / agent_id,
-            user_root / f"workspace-{agent_id}",
         ]
         for target in targets:
             if not target.exists():
