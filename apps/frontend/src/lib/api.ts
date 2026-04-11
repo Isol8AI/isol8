@@ -4,6 +4,39 @@ import { useAuth } from "@clerk/nextjs";
 // Use environment variable for production, fallback to localhost for development
 export const BACKEND_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api/v1";
 
+/**
+ * Derive the WebSocket gateway URL from `apiUrl`.
+ *
+ * Hostname rewrite:
+ *   api.isol8.co       → ws.isol8.co
+ *   api-dev.isol8.co   → ws-dev.isol8.co
+ *   api-staging.isol8.co → ws-staging.isol8.co
+ *   localhost:8000     → localhost:8000   (untouched — local dev hits the same host)
+ *
+ * Protocol: http → ws, https → wss. Path `/api/v1` is stripped so callers get
+ * the bare WebSocket origin (they append their own path, e.g. `/control-ui/`).
+ *
+ * An explicit `NEXT_PUBLIC_WS_URL` env var takes precedence over derivation so
+ * bespoke environments (e.g. a PR preview against a non-standard gateway) can
+ * override without code changes.
+ */
+export function deriveWebSocketUrl(apiUrl: string): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    return process.env.NEXT_PUBLIC_WS_URL;
+  }
+  return apiUrl
+    .replace(/^https:\/\//, "wss://")
+    .replace(/^http:\/\//, "ws://")
+    // Rewrite the HOSTNAME only. `\/\/` anchors us right after the scheme so a
+    // path segment like `/api/v1` can't accidentally match; lookahead `(?=[-.])`
+    // requires `-` or `.` after `api` so "apiary.com" wouldn't match and
+    // localhost (which doesn't start with "api") is left alone.
+    .replace(/\/\/api(?=[-.])/, "//ws")
+    .replace(/\/api\/v1$/, "");
+}
+
+export const WS_URL = deriveWebSocketUrl(BACKEND_URL);
+
 interface UploadedFile {
   filename: string;
   path: string;
