@@ -2,7 +2,7 @@
 
 import "./ChatLayout.css";
 import { useEffect, useRef, useState } from "react";
-import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
+import { useAuth, useOrganization, useOrganizationList, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2 } from "lucide-react";
 import Link from "next/link";
@@ -53,6 +53,13 @@ export function ChatLayout({
   const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
+  // Watch all of the user's org memberships so we can auto-activate the
+  // first one on fresh logins — Clerk doesn't persist active-org state
+  // across sessions, so without this a user who created an org on laptop A
+  // would land on /onboarding on laptop B despite already being a member.
+  const { userMemberships, setActive, isLoaded: orgListLoaded } = useOrganizationList({
+    userMemberships: true,
+  });
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
@@ -82,18 +89,34 @@ export function ChatLayout({
     .slice(0, 2)
     .toUpperCase();
 
-  // Onboarding gate: a single Clerk user must pick personal-vs-org exactly
-  // ONCE, before any container is provisioned. We block rendering until both
-  // Clerk hooks have finished loading AND the user has either marked
-  // themselves onboarded (personal choice stored in unsafeMetadata) or has
-  // an active Clerk organization in their session (org choice — either
-  // invited-via-link or picked via <CreateOrganization/>). Doing the gate
-  // here as an early return (NOT a useEffect) means ProvisioningStepper
-  // literally never mounts until the decision is settled, so it can't fire
-  // a speculative provision with a loading-state JWT.
-  const clerkLoaded = userLoaded && orgLoaded;
+  // Onboarding / context gate. Three orthogonal states, in priority order:
+  //
+  // 1. Needs onboarding: never signed the "personal or org" picker. Send
+  //    them to /onboarding.
+  // 2. Needs auto-activate: already completed onboarding (personal or org)
+  //    AND has at least one org membership BUT no org is active in this
+  //    Clerk session. Fresh login on a new device lands here. We call
+  //    setActive to pick the first membership, which flips `organization`
+  //    on the next render and we continue into /chat.
+  // 3. Ready: either personal (no memberships, onboarded=true) or org
+  //    (organization is non-null).
+  //
+  // Both the onboarding redirect AND the auto-activate branch BLOCK the
+  // main render (early return below). This is critical: we must not let
+  // useAgents / useBilling / useContainerStatus / api.syncUser run while
+  // the JWT is in a transient personal-context state, or those calls
+  // resolve owner_id to the user_id and create phantom personal billing
+  // rows. The 3 orphan billing rows we see in prod today came from exactly
+  // this race.
+  const clerkLoaded = userLoaded && orgLoaded && orgListLoaded;
   const isOnboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded === true;
-  const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !organization;
+  const hasMemberships = (userMemberships?.data?.length ?? 0) > 0;
+
+  // A user needs onboarding if they have neither the flag nor any org
+  // memberships. If they have memberships they're effectively already past
+  // the personal/org decision — we just need to activate one.
+  const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && !organization;
+  const needsAutoActivate = clerkLoaded && isSignedIn === true && !organization && hasMemberships;
 
   useEffect(() => {
     if (needsOnboarding) {
@@ -102,10 +125,24 @@ export function ChatLayout({
   }, [needsOnboarding, router]);
 
   useEffect(() => {
-    if (!isSignedIn) return;
+    if (!needsAutoActivate || !setActive) return;
+    const first = userMemberships?.data?.[0];
+    if (!first) return;
+    setActive({ organization: first.organization.id }).catch((err: unknown) => {
+      console.error("Auto-activate first org membership failed:", err);
+    });
+  }, [needsAutoActivate, setActive, userMemberships]);
 
+  useEffect(() => {
+    if (!isSignedIn) return;
+    // Skip /users/sync while we're still resolving the user's org context.
+    // Firing sync with a pre-activation JWT used to create phantom personal
+    // billing rows — the backend no longer does that write, but we gate
+    // here too so other context-sensitive endpoints called from sync
+    // paths (future-proofing) don't misresolve owner_id either.
+    if (needsAutoActivate || needsOnboarding) return;
     api.syncUser().catch((err: unknown) => console.error("User sync failed:", err));
-  }, [isSignedIn, api]);
+  }, [isSignedIn, api, needsAutoActivate, needsOnboarding]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
   const lastDispatchedRef = useRef<string | null>(null);
@@ -138,11 +175,13 @@ export function ChatLayout({
   }
 
   // Block the whole chat shell until Clerk hydration + onboarding state are
-  // settled. This is the hinge for the personal/org race fix: if we render
-  // ProvisioningStepper before the JWT has finished flipping into its final
-  // context, it fires POST /container/provision with the stale JWT and we
-  // end up with two containers for the same human.
-  if (!clerkLoaded || isSignedIn !== true || needsOnboarding) {
+  // settled AND any pending org auto-activation has landed. This is the
+  // hinge for the personal/org race fix: if we render ProvisioningStepper
+  // (or any owner_id-aware hook) before the JWT has finished flipping into
+  // its final context, it fires POST /container/provision and /billing
+  // reads with a stale JWT and we end up with orphan personal rows for a
+  // user who was always meant to be an org member.
+  if (!clerkLoaded || isSignedIn !== true || needsOnboarding || needsAutoActivate) {
     return (
       <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
         <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>

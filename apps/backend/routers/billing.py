@@ -70,13 +70,14 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
 async def get_billing_account(
     auth: AuthContext = Depends(get_current_user),
 ):
+    # Read-only endpoint. We intentionally do NOT auto-create a billing row
+    # when the caller has no account — check_budget handles `None` by falling
+    # through to free-tier defaults (see core/services/usage_service.py:128),
+    # and the response shape is identical to a free-tier real account.
+    # Billing rows are only written by POST /billing/checkout (explicit
+    # subscribe intent, admin-gated for orgs).
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
-    if not account:
-        # Auto-create for users who signed up before billing existed
-        billing_service = BillingService()
-        owner_type = get_owner_type(auth)
-        account = await billing_service.create_customer_for_owner(owner_id=owner_id, owner_type=owner_type)
 
     budget = await check_budget(owner_id)
 
@@ -86,6 +87,10 @@ async def get_billing_account(
 
     budget_percent = (budget["current_spend"] / budget["included_budget"] * 100) if budget["included_budget"] > 0 else 0
 
+    # overage_limit only exists on real paid-tier rows; synthetic free-tier
+    # response (account is None) always reports None.
+    overage_limit = float(account["overage_limit"]) / 1_000_000 if account and account.get("overage_limit") else None
+
     return BillingAccountResponse(
         tier=budget["tier"],
         is_subscribed=budget["is_subscribed"],
@@ -94,7 +99,7 @@ async def get_billing_account(
         budget_percent=round(budget_percent, 1),
         lifetime_spend=lifetime_spend,
         overage_enabled=budget["overage_enabled"],
-        overage_limit=float(account.get("overage_limit", 0)) / 1_000_000 if account.get("overage_limit") else None,
+        overage_limit=overage_limit,
         within_included=budget["within_included"],
     )
 
