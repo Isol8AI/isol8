@@ -22,7 +22,6 @@ function normalizeToId(name: string): string {
 
 export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreateFormProps) {
   const [name, setName] = useState("");
-  const [emoji, setEmoji] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const callRpc = useGatewayRpcMutation();
@@ -39,18 +38,14 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     setError(null);
 
     try {
-      await callRpc("agents.create", {
-        name: name.trim(),
-        workspace: `agents/${normalizedId}`,
-        ...(emoji.trim() ? { emoji: emoji.trim() } : {}),
-      });
+      await callRpc("agents.create", { name: name.trim() });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, normalizedId, emoji, onCreated]);
+  }, [canCreate, callRpc, name, onCreated]);
 
   const clientError = isDuplicate
     ? "An agent with this name already exists"
@@ -71,45 +66,29 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
         </button>
       </div>
 
-      <div className="flex gap-3">
-        {/* Emoji input */}
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">Emoji</label>
-          <input
-            type="text"
-            value={emoji}
-            onChange={(e) => setEmoji(e.target.value.slice(0, 2))}
-            placeholder="🤖"
-            disabled={creating}
-            className="w-14 rounded-md border border-border bg-background px-2 py-1.5 text-center text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
-          />
-        </div>
-
-        {/* Name input */}
-        <div className="flex-1 space-y-1">
-          <label className="text-xs text-muted-foreground">Name</label>
-          <input
-            type="text"
-            value={name}
-            onChange={(e) => {
-              setName(e.target.value);
-              setError(null);
-            }}
-            placeholder="e.g. Research Assistant"
-            disabled={creating}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") handleCreate();
-              if (e.key === "Escape") onCancel();
-            }}
-            autoFocus
-            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
-          />
-          {normalizedId && !clientError && (
-            <p className="text-[10px] text-muted-foreground">
-              ID: {normalizedId}
-            </p>
-          )}
-        </div>
+      <div className="space-y-1">
+        <label className="text-xs text-muted-foreground">Name</label>
+        <input
+          type="text"
+          value={name}
+          onChange={(e) => {
+            setName(e.target.value);
+            setError(null);
+          }}
+          placeholder="e.g. Research Assistant"
+          disabled={creating}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") handleCreate();
+            if (e.key === "Escape") onCancel();
+          }}
+          autoFocus
+          className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+        />
+        {normalizedId && !clientError && (
+          <p className="text-[10px] text-muted-foreground">
+            ID: {normalizedId}
+          </p>
+        )}
       </div>
 
       {/* Error display */}

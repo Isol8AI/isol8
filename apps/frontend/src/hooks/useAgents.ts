@@ -46,7 +46,10 @@ export function useAgents() {
   const defaultId = data?.defaultId;
 
   const createAgent = useCallback(
-    async (params: { name: string; workspace: string; emoji?: string }) => {
+    async (params: { name: string }) => {
+      // No `workspace` param — OpenClaw computes it from `agents.defaults.workspace`
+      // in openclaw.json (set to `.openclaw/workspaces` by the backend so new
+      // agents land on EFS).
       await callRpc("agents.create", params);
       mutate();
     },
@@ -62,7 +65,7 @@ export function useAgents() {
   );
 
   const updateAgent = useCallback(
-    async (agentId: string, updates: { model?: string }) => {
+    async (agentId: string, updates: { model?: string; name?: string }) => {
       await callRpc("agents.update", { agentId, ...updates });
       mutate();
     },

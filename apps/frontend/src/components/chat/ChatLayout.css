@@ -154,6 +154,37 @@
   background: #2d8a4e;
   flex-shrink: 0;
 }
+.agent-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.agent-item:hover .agent-row-actions {
+  opacity: 1;
+}
+.agent-row-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  background: transparent;
+  color: #8a8578;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.agent-row-action:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: #1a1a1a;
+}
+.agent-row-action--danger:hover {
+  color: #dc2626;
+}
 .sidebar-footer {
   border-top: 1px solid #e0dbd0;
   padding: 12px 16px;

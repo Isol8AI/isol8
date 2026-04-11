@@ -479,3 +479,58 @@ class Workspace:
                 f"Failed to delete {path!r} for {user_id}: {exc}",
                 user_id=user_id,
             ) from exc
+
+    def cleanup_agent_dirs(self, user_id: str, agent_id: str) -> None:
+        """Best-effort `rm -rf` for an agent's on-EFS directories after delete.
+
+        OpenClaw's `agents.delete` calls `movePathToTrash`, which on Linux
+        Fargate falls back to renaming into `$HOME/.Trash` — a cross-device
+        rename from EFS to the container overlay, which fails with EXDEV and
+        is silently swallowed. Result: the agent's `agent/` and `sessions/`
+        dirs (and post-Fix-A its workspace) leak on every delete.
+
+        We reconcile by recursively removing the same dirs from the backend
+        side, where we can write directly to EFS. Idempotent and best-effort:
+        anything missing is ignored, anything that fails is logged but does
+        not raise — the user's delete already succeeded on the OpenClaw side.
+
+        Args:
+            user_id: Container owner (the EFS access point owner).
+            agent_id: Agent ID as accepted by OpenClaw (already normalized).
+        """
+        import shutil
+
+        if not agent_id or "/" in agent_id or ".." in agent_id:
+            logger.warning("cleanup_agent_dirs: refusing unsafe agent_id %r", agent_id)
+            return
+
+        user_root = self.user_path(user_id)
+        # On-EFS roots OpenClaw writes to per agent. We try every shape we
+        # might find on-disk:
+        #   agents/{id}/                  — agent/ + sessions/ subdirs (always)
+        #   workspaces/{id}/              — workspace files when the container
+        #                                   was provisioned with our new
+        #                                   `agents.defaults.workspace` value
+        #   workspace-{id}/               — workspace files for containers
+        #                                   provisioned BEFORE that change,
+        #                                   where OpenClaw falls back to
+        #                                   `resolveStateDir + workspace-{id}`
+        #                                   (openclaw `agent-scope.ts:282-283`)
+        targets = [
+            user_root / "agents" / agent_id,
+            user_root / "workspaces" / agent_id,
+            user_root / f"workspace-{agent_id}",
+        ]
+        for target in targets:
+            if not target.exists():
+                continue
+            try:
+                shutil.rmtree(target)
+                logger.info("Cleaned up agent dir %s for user %s", target, user_id)
+            except OSError as exc:
+                logger.warning(
+                    "Failed to clean up agent dir %s for user %s: %s",
+                    target,
+                    user_id,
+                    exc,
+                )

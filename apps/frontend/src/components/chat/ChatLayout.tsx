@@ -4,7 +4,7 @@ import "./ChatLayout.css";
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useOrganization, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2 } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -15,6 +15,7 @@ import { useAgents, getAgentModelString, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
+import { AgentCreateDialog, AgentRenameDialog, AgentDeleteDialog } from "@/components/chat/AgentDialogs";
 
 interface ChatLayoutProps {
   children: React.ReactNode;
@@ -54,7 +55,7 @@ export function ChatLayout({
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const router = useRouter();
   const api = useApi();
-  const { agents, defaultId, createAgent } = useAgents();
+  const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
@@ -65,6 +66,9 @@ export function ChatLayout({
   );
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [createFormOpen, setCreateFormOpen] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<Agent | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Agent | null>(null);
 
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
@@ -130,8 +134,7 @@ export function ChatLayout({
   }
 
   async function handleCreateAgent(): Promise<void> {
-    const name = "Agent " + (agents.length + 1);
-    await createAgent({ name, workspace: name.toLowerCase().replace(/\s+/g, "-") });
+    setCreateFormOpen(true);
   }
 
   // Block the whole chat shell until Clerk hydration + onboarding state are
@@ -218,33 +221,56 @@ export function ChatLayout({
 
               {/* Agent List */}
               <div className="agent-list">
-                {agents.map((agent) => (
-                  <div
-                    key={agent.id}
-                    className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
-                    onClick={() => handleSelectAgent(agent.id)}
-                  >
-                    <div className="agent-avatar">
-                      <Bot />
+                {agents.map((agent) => {
+                  const isDefault = agent.id === defaultId;
+                  return (
+                    <div
+                      key={agent.id}
+                      className={`agent-item${currentAgentId === agent.id ? " active" : ""}`}
+                      onClick={() => handleSelectAgent(agent.id)}
+                    >
+                      <div className="agent-avatar">
+                        <Bot />
+                      </div>
+                      <div className="agent-info">
+                        <div className="agent-name">{agentDisplayName(agent)}</div>
+                        {(() => {
+                          // `agent.model` can be a string OR a
+                          // `{primary, fallbacks}` object (OpenClaw 4.5
+                          // returns the structured shape from agents.list).
+                          // Direct `.split` calls here used to crash the
+                          // chat UI with `TypeError: e.model.split is not a
+                          // function` after sign-in.
+                          const modelStr = getAgentModelString(agent);
+                          if (!modelStr) return null;
+                          const display = modelStr.split("/").pop()?.replace(/-v\d+:\d+$/, "") || modelStr;
+                          return <div className="agent-model">{display}</div>;
+                        })()}
+                      </div>
+                      <div className="agent-row-actions">
+                        <button
+                          type="button"
+                          className="agent-row-action"
+                          aria-label={`Rename ${agentDisplayName(agent)}`}
+                          onClick={(e) => { e.stopPropagation(); setRenameTarget(agent); }}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        {!isDefault && (
+                          <button
+                            type="button"
+                            className="agent-row-action agent-row-action--danger"
+                            aria-label={`Delete ${agentDisplayName(agent)}`}
+                            onClick={(e) => { e.stopPropagation(); setDeleteTarget(agent); }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="agent-status-dot" />
                     </div>
-                    <div className="agent-info">
-                      <div className="agent-name">{agentDisplayName(agent)}</div>
-                      {(() => {
-                        // `agent.model` can be a string OR a
-                        // `{primary, fallbacks}` object (OpenClaw 4.5
-                        // returns the structured shape from agents.list).
-                        // Direct `.split` calls here used to crash the
-                        // chat UI with `TypeError: e.model.split is not a
-                        // function` after sign-in.
-                        const modelStr = getAgentModelString(agent);
-                        if (!modelStr) return null;
-                        const display = modelStr.split("/").pop()?.replace(/-v\d+:\d+$/, "") || modelStr;
-                        return <div className="agent-model">{display}</div>;
-                      })()}
-                    </div>
-                    <div className="agent-status-dot" />
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           ) : (
@@ -314,6 +340,43 @@ export function ChatLayout({
             onClose={() => onCloseFileViewer?.()}
           />
         )}
+
+        {/* Each dialog is keyed on its open/target so it remounts (and
+            re-initializes its internal state) on each open, instead of
+            using useEffect to reset on close — see AgentDialogs.tsx. */}
+        <AgentCreateDialog
+          key={createFormOpen ? "create-open" : "create-closed"}
+          open={createFormOpen}
+          existingIds={agents.map((a) => a.id)}
+          onCancel={() => setCreateFormOpen(false)}
+          onCreate={async (name) => {
+            await createAgent({ name });
+            setCreateFormOpen(false);
+          }}
+        />
+
+        <AgentRenameDialog
+          key={`rename-${renameTarget?.id ?? "closed"}`}
+          agent={renameTarget}
+          onCancel={() => setRenameTarget(null)}
+          onRename={async (name) => {
+            if (!renameTarget) return;
+            await updateAgent(renameTarget.id, { name });
+            setRenameTarget(null);
+          }}
+        />
+
+        <AgentDeleteDialog
+          key={`delete-${deleteTarget?.id ?? "closed"}`}
+          agent={deleteTarget}
+          onCancel={() => setDeleteTarget(null)}
+          onDelete={async () => {
+            if (!deleteTarget) return;
+            await deleteAgent(deleteTarget.id);
+            if (userSelectedId === deleteTarget.id) setUserSelectedId(null);
+            setDeleteTarget(null);
+          }}
+        />
       </div>
     </>
   );
