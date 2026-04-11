@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import useSWR from "swr";
 import {
   Loader2,
   Zap,
@@ -18,15 +19,45 @@ import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 
-// Legacy localStorage key — preserved so existing users who dismissed the old
-// channel cards don't re-see the onboarding wizard after upgrade.
-const CHANNEL_CARDS_DISMISS_KEY = "isol8:channel-cards-dismissed";
-function isChannelCardsDismissed(): boolean {
-  if (typeof window === "undefined") return true;
-  return localStorage.getItem(CHANNEL_CARDS_DISMISS_KEY) === "true";
+type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
+
+type Provider = "telegram" | "discord" | "slack";
+const PROVIDER_PRIORITY: readonly Provider[] = ["telegram", "discord", "slack"];
+
+interface BotEntry {
+  agent_id: string;
+  bot_username: string;
+  linked: boolean;
+}
+interface LinksMeResponse {
+  telegram: BotEntry[];
+  discord: BotEntry[];
+  slack: BotEntry[];
+  can_create_bots: boolean;
 }
 
-type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
+/**
+ * Channel onboarding is always scoped to the `main` agent — additional bots
+ * on user-created agents are managed in Settings, not here. Returns the first
+ * provider (in PROVIDER_PRIORITY order) where a main-agent bot exists that
+ * the current member has not yet paired their identity with. Returns null
+ * when there's nothing to link (either no main bot configured at all, or the
+ * member is already linked to every main bot).
+ */
+function findFirstUnlinkedMainProvider(links: LinksMeResponse): Provider | null {
+  for (const provider of PROVIDER_PRIORITY) {
+    const mainBot = links[provider]?.find((b) => b.agent_id === "main");
+    if (mainBot && !mainBot.linked) return provider;
+  }
+  return null;
+}
+
+/** True if any provider has a configured main-agent bot. */
+function hasMainBot(links: LinksMeResponse): boolean {
+  return PROVIDER_PRIORITY.some((p) =>
+    links[p]?.some((b) => b.agent_id === "main"),
+  );
+}
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
@@ -106,8 +137,11 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const { organization, isLoaded: orgLoaded } = useOrganization();
+  const { organization, membership, isLoaded: orgLoaded } = useOrganization();
   const isOrg = !!organization;
+  // Personal accounts (no org) and explicit org admins manage channels.
+  // Plain members see link-only flows or get sent straight to ready.
+  const isAdmin = !isOrg || membership?.role === "org:admin";
   const api = useApi();
   const { isLoading: billingLoading, isSubscribed, planTier, createCheckout } = useBilling();
   const isFree = planTier === "free";
@@ -115,10 +149,10 @@ export function ProvisioningStepper({
   const [startTime] = useState(() => Date.now());
   const [timedOut, setTimedOut] = useState(false);
   const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
-  // Lazy initializer reads localStorage once on mount. isChannelCardsDismissed()
-  // guards SSR (returns true when window is undefined) so this is SSR-safe.
-  // eslint-config-next blocks setState-in-effect, so useEffect is not an option here.
-  const [onboardingComplete, setOnboardingComplete] = useState(() => isChannelCardsDismissed());
+  // In-memory only — `channels.status` / `/channels/links/me` is the source
+  // of truth for "is the channel onboarding step needed for this user". Cancel
+  // hides the wizard for the current session; next mount re-checks the data.
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
 
   // Poll container status every 3s once subscribed or on free tier (auto-provisioned)
   const shouldPollContainer = isSubscribed || isFree;
@@ -159,14 +193,23 @@ export function ProvisioningStepper({
     { refreshInterval: 3000, dedupingInterval: 2000 },
   );
 
-  // Check channels status once when gateway is healthy — used to detect first-time users
-  const { data: channelsData, error: channelsError } = useGatewayRpc<{
-    channelAccounts: Record<string, { connected?: boolean; configured?: boolean; running?: boolean; linked?: boolean }[]>;
-  }>(
-    gatewayHealth && !onboardingComplete ? "channels.status" : null,
-    undefined,
-    { refreshInterval: 0 },
+  // Once the gateway is healthy, fetch the caller's channel-link state.
+  // `/channels/links/me` returns every bot configured in the org's
+  // openclaw.json plus a per-member `linked` flag — exactly what we need to
+  // decide whether to show the create wizard (admin), the link-only wizard
+  // (member needs to pair), or skip channel onboarding entirely.
+  const { data: linksData, error: linksError } = useSWR<LinksMeResponse>(
+    gatewayHealth && !onboardingComplete ? "/channels/links/me" : null,
+    () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
+
+  // For members, the wizard target is the first main-agent bot they haven't
+  // linked yet. Computed once so the phase derivation and the channels-phase
+  // render below stay in sync.
+  const memberLinkTarget: Provider | null = useMemo(() => {
+    if (isAdmin || !linksData) return null;
+    return findFirstUnlinkedMainProvider(linksData);
+  }, [isAdmin, linksData]);
 
   // Derive phase purely from data
   const phase: Phase = useMemo(() => {
@@ -180,23 +223,29 @@ export function ProvisioningStepper({
     // Onboarding already dismissed by user
     if (onboardingComplete) return "ready";
 
-    // channels.status errored — don't block the user, go straight to ready
-    if (channelsError) return "ready";
+    // /links/me errored — don't block the user, go straight to ready
+    if (linksError) return "ready";
 
-    // Still waiting for channels.status to load
-    if (!channelsData) return "gateway";
+    // Still waiting for /links/me to load
+    if (!linksData) return "gateway";
 
-    // Check if any channel is already connected/configured
-    const anyConnected = Object.values(channelsData.channelAccounts ?? {}).some(
-      (accounts) => accounts.some((a) => a.connected || a.configured || a.running || a.linked),
-    );
-    if (anyConnected) return "ready";
-
-    // No channels connected — show onboarding (paid tiers only; free tier
-    // containers scale to zero so bots can't stay connected)
+    // Free-tier containers scale to zero, so bots can't stay connected —
+    // skip channel onboarding entirely. Members in free orgs are also
+    // covered by this branch (free orgs can't have bots configured).
     if (isFree) return "ready";
-    return "channels";
-  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, channelsData, channelsError, onboardingComplete]);
+
+    if (isAdmin) {
+      // Admin: if no main-agent bot exists yet, show the create wizard.
+      // Otherwise the org is already past channel setup → ready.
+      return hasMainBot(linksData) ? "ready" : "channels";
+    }
+
+    // Member: only show the link-only wizard if there's actually a main bot
+    // they haven't paired with. If main has no bot OR they're fully linked,
+    // skip channel onboarding entirely — they'll see the linking UX in
+    // Settings → My Channels later if they want it.
+    return memberLinkTarget !== null ? "channels" : "ready";
+  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {
@@ -214,15 +263,27 @@ export function ProvisioningStepper({
     return <>{children}</>;
   }
 
-  // Channel onboarding — shown after gateway is connected for users with no channels
+  // Channel onboarding — admins set up the first main-agent bot, members
+  // pair their identity with an existing one. Always scoped to `main`.
   if (phase === "channels") {
+    const wizardMode = isAdmin ? "create" : "link-only";
+    // Admin creates always default to telegram; member link-only uses
+    // whichever main-agent provider they haven't paired with yet.
+    const wizardProvider: Provider = isAdmin ? "telegram" : (memberLinkTarget ?? "telegram");
+    // Look up the actual bot handle so the link-only pair step can tell the
+    // member which bot to DM. linksData is guaranteed loaded here because
+    // we only enter the channels phase after it resolves.
+    const wizardBotUsername = !isAdmin
+      ? linksData?.[wizardProvider]?.find((b) => b.agent_id === "main")?.bot_username
+      : undefined;
     return (
       <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
         <div className="w-full max-w-md">
           <BotSetupWizard
-            mode="create"
-            provider="telegram"
+            mode={wizardMode}
+            provider={wizardProvider}
             agentId="main"
+            botUsername={wizardBotUsername}
             onComplete={() => setOnboardingComplete(true)}
             onCancel={() => setOnboardingComplete(true)}
           />

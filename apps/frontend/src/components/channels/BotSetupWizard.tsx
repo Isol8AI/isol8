@@ -21,6 +21,13 @@ export interface BotSetupWizardProps {
   mode: Mode;
   provider: Provider;
   agentId: string;
+  /**
+   * Optional bot handle to surface on the pair step. Required for the
+   * link-only flow because members didn't create the bot themselves and
+   * have no other way to know which bot to DM. Ignored when absent — the
+   * pair step falls back to generic instructions.
+   */
+  botUsername?: string;
   onComplete: (result: { peer_id: string }) => void;
   onCancel: () => void;
 }
@@ -210,6 +217,7 @@ export function BotSetupWizard({
   mode,
   provider,
   agentId,
+  botUsername,
   onComplete,
   onCancel,
 }: BotSetupWizardProps) {
@@ -708,21 +716,49 @@ export function BotSetupWizard({
   );
 
   const renderPair = () => {
+    // For link-only mode (members pairing to a bot they didn't create), the
+    // username is essential — there's no other way for them to know which
+    // bot to DM. Surface it as a copyable @handle when known. For create
+    // mode the user just typed the username into BotFather so it's
+    // optional context.
+    const handle = botUsername
+      ? botUsername.startsWith("@") ? botUsername : `@${botUsername}`
+      : null;
+    const handleNode = handle ? (
+      <span className="font-mono font-semibold text-[#1a1a1a]">{handle}</span>
+    ) : null;
+
     const dmInstructions: Record<Provider, React.ReactNode> = {
-      telegram: (
+      telegram: handleNode ? (
+        <>
+          Open Telegram, search for {handleNode}, and send it any message. It will reply with an
+          8-character pairing code.
+        </>
+      ) : (
         <>
           Open Telegram on your phone, find your new bot by its username (the one you set in
           BotFather), and send it any message. It will reply with an 8-character pairing code.
         </>
       ),
-      discord: (
+      discord: handleNode ? (
+        <>
+          Open Discord, find {handleNode} in the server it was added to, right-click and choose{" "}
+          <span className="font-semibold">Message</span>. Send any message — it will reply with an
+          8-character pairing code.
+        </>
+      ) : (
         <>
           Open Discord, find your bot in the server you invited it to, right-click its name, and
           choose <span className="font-semibold">Message</span>. Send any message — it will reply
           with an 8-character pairing code.
         </>
       ),
-      slack: (
+      slack: handleNode ? (
+        <>
+          Open Slack, find {handleNode} under <span className="font-semibold">Apps</span> in the
+          sidebar, and send it any direct message. It will reply with an 8-character pairing code.
+        </>
+      ) : (
         <>
           Open Slack, find your bot under <span className="font-semibold">Apps</span> in the
           sidebar, and send it any direct message. It will reply with an 8-character pairing code.
