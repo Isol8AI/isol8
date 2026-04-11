@@ -1,0 +1,143 @@
+{
+  "$schema": "https://openclaw.dev/schemas/agent-config.json",
+  "agents": {
+    "defaults": {
+      "workspace": "~/.openclaw/agents/nexus/workspace",
+      "timeoutSeconds": 600,
+      "streaming": true
+    },
+    "list": [
+      {
+        "id": "nexus",
+        "workspace": "~/.openclaw/agents/nexus/workspace",
+        "model": "qwen/qwen3.5-plus",
+        "thinkingDefault": "low",
+        "skills": [
+          "fast-io",
+          "taskr",
+          "summarize",
+          "n8n-workflow",
+          "capability-evolver",
+          "skill-vetter",
+          "sona-security-audit",
+          "slack"
+        ],
+        "tools": {
+          "profile": "coordinator",
+          "alsoAllow": ["lobster", "llm-task", "message", "exec"]
+        }
+      }
+    ]
+  },
+  "plugins": {
+    "entries": {
+      "lobster": {
+        "enabled": true
+      },
+      "llm-task": {
+        "enabled": true,
+        "config": {
+          "defaultProvider": "qwen",
+          "defaultModel": "qwen3.5-plus",
+          "maxTokens": 1200,
+          "timeoutMs": 45000
+        }
+      }
+    }
+  },
+  "skills": {
+    "entries": {
+      "fast-io": {
+        "enabled": true
+      },
+      "taskr": {
+        "enabled": true
+      },
+      "summarize": {
+        "enabled": true
+      },
+      "n8n-workflow": {
+        "enabled": true
+      },
+      "capability-evolver": {
+        "enabled": true
+      },
+      "skill-vetter": {
+        "enabled": true
+      },
+      "sona-security-audit": {
+        "enabled": true
+      },
+      "slack": {
+        "enabled": true
+      }
+    }
+  },
+  "tools": {
+    "deny": [
+      "foxreach-io",
+      "campaign-orchestrator",
+      "phone-caller",
+      "linkedin-automation",
+      "crm-write",
+      "email-send",
+      "calendar-write",
+      "hris-write",
+      "ledger-write",
+      "meeting-transcribe",
+      "support-ticket-write",
+      "research-deep-dive",
+      "marketing-publish",
+      "file-edit",
+      "shell-write"
+    ]
+  },
+  "cron": {
+    "enabled": true,
+    "jobStore": "~/.openclaw/agents/nexus/workspace/.cron",
+    "maxConcurrent": 2,
+    "retry": {
+      "attempts": 3,
+      "backoffSeconds": [60, 120, 300]
+    },
+    "retentionHours": 24,
+    "jobs": [
+      {
+        "id": "nexus-heartbeat",
+        "schedule": "*/5 * * * *",
+        "pipeline": "heartbeat-5min.lobster",
+        "description": "5-minute sweep: activity feed, budgets, gates, dependencies, circuit breaker, goal drift"
+      },
+      {
+        "id": "nexus-daily-digest",
+        "schedule": "0 8 * * 1-5",
+        "pipeline": "daily-digest.lobster",
+        "description": "Weekday 8am business summary"
+      },
+      {
+        "id": "nexus-weekly-review",
+        "schedule": "0 8 * * 1",
+        "pipeline": "weekly-review.lobster",
+        "description": "Monday 8am comprehensive weekly review"
+      }
+    ]
+  },
+  "hooks": {
+    "enabled": true,
+    "path": "/hooks"
+  },
+  "channels": {
+    "slack": {
+      "enabled": true
+    }
+  },
+  "env": {
+    "required": [
+      "PAPERCLIP_BOARD_KEY_PATH"
+    ],
+    "optional": [
+      "PAPERCLIP_BASE_URL",
+      "NEXUS_NOTIFY_CHANNEL"
+    ]
+  }
+}
