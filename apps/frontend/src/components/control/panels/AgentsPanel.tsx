@@ -130,20 +130,23 @@ export function AgentsPanel() {
                   <span className="text-[10px] text-[#8a8578] ml-1">(default)</span>
                 )}
               </span>
-              <button
-                className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-[#dc2626]"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleDelete(agent.id);
-                }}
-                disabled={deleting === agent.id}
-              >
-                {deleting === agent.id ? (
-                  <Loader2 className="h-3 w-3 animate-spin" />
-                ) : (
-                  <Trash2 className="h-3 w-3" />
-                )}
-              </button>
+              {agent.id !== defaultId && (
+                <button
+                  className="opacity-0 group-hover:opacity-100 transition-opacity p-0.5 hover:text-[#dc2626]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDelete(agent.id);
+                  }}
+                  disabled={deleting === agent.id}
+                  aria-label={`Delete ${agent.name || agent.id}`}
+                >
+                  {deleting === agent.id ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Trash2 className="h-3 w-3" />
+                  )}
+                </button>
+              )}
             </button>
           ))}
         </div>
