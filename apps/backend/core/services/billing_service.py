@@ -30,7 +30,9 @@ class BillingServiceError(Exception):
 
 
 class BillingService:
-    async def create_customer_for_owner(self, owner_id: str, owner_type: str = "personal", email: str = "") -> dict:
+    async def create_customer_for_owner(
+        self, owner_id: str, owner_type: str = "personal", email: str | None = None
+    ) -> dict:
         existing = await billing_repo.get_by_owner_id(owner_id)
         if existing:
             return existing
@@ -45,7 +47,7 @@ class BillingService:
         # eventually consistent and still produced duplicates within the
         # same second.
         customer = stripe.Customer.create(
-            email=email or None,
+            email=email,
             metadata={"owner_id": owner_id, "owner_type": owner_type},
         )
 
