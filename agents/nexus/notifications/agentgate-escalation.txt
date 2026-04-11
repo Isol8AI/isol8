@@ -1,0 +1,9 @@
+⚠️ *Approval required*
+
+Paperclip has flagged {{new_count|default:1}} issue(s) that need your decision before the assigned specialist can proceed.
+
+{{new_approvals|join:\n}}
+
+These are domain safety gates set by each specialist's configuration — they exist for documented reasons (termination risk, first-touch outreach, financial thresholds, etc.). I won't attempt to reframe any task to avoid them.
+
+Approve, modify, or reject each one in the Paperclip UI, or reply here with the approval ID and decision.

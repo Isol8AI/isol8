@@ -1,0 +1,15 @@
+📊 *Daily digest — {{headline}}*
+
+*On track* ({{on_track|join:, |default:—}})
+
+*At risk* ({{at_risk|join:, |default:—}})
+
+*Blocked* ({{blocked|join:, |default:—}})
+
+*Budget notes*
+{{budget_notes|default:No budget concerns flagged.}}
+
+*What I'd do next*
+{{recommended_actions|join:\n• |default:Nothing specific — keep going.}}
+
+_Confidence: {{confidence}}_ — reply for more depth on any section.

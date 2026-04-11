@@ -1,0 +1,13 @@
+🚨 *Circuit breaker tripped*
+
+Agent *{{agent}}* has been paused after {{failures}} consecutive failures within the last hour.
+
+Last failure: {{last_failure_reason|default:unknown}}
+Last failure ID: {{last_failure_id|default:—}}
+
+Suggested next steps:
+• Check the agent's health via `agents/{{agent}}/runtime-state`
+• Review its recent config revisions
+• Restart the agent if the failures look environmental
+
+Delegation to {{agent}} is paused until you clear the pause or I observe successful issues on the next heartbeat.

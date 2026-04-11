@@ -1,0 +1,12 @@
+📉 *Goal drift detected*
+
+{{drifted_count|default:0}} active issue(s) do not trace back to an active goal in Paperclip:
+
+{{drifted|join:\n}}
+
+Drift is the "activity without value" pattern — work that doesn't connect to anything you're trying to accomplish. Options:
+• Assign each drifted issue to the relevant goal
+• Create a new goal if one doesn't exist
+• Close the issue if it's no longer relevant
+
+I won't touch any of these without your say-so.

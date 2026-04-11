@@ -1,0 +1,23 @@
+📈 *Weekly review — {{headline}}*
+
+*Goal progress*
+{{goal_progress|join:\n• |default:No active goals.}}
+
+*Agent status*
+On track: {{on_track_agents|join:, |default:—}}
+At risk: {{at_risk_agents|join:, |default:—}}
+Blocked: {{blocked_agents|join:, |default:—}}
+
+*Cross-agent conflicts*
+{{cross_agent_conflicts|join:\n• |default:None detected.}}
+
+*Budget*
+{{budget_utilization|default:Utilization within expected ranges.}}
+
+*Recommended reallocations*
+{{recommended_reallocations|join:\n• |default:None.}}
+
+*Recommended org changes*
+{{recommended_org_changes|join:\n• |default:None.}}
+
+_Confidence: {{confidence}}_ — every recommendation cites the data point that justifies it; reply to drill into any of them.

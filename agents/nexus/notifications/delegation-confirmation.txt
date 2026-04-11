@@ -1,0 +1,7 @@
+✓ Routed to *{{agent}}*{{priority|default:}}.
+
+Issue: {{issue_title}}
+ID: {{issue_id}}
+Expected completion: ~{{eta|default:next heartbeat}}{{blocked_by|default:}}
+
+I'll surface the result when it lands or flag a blocker if one comes up.

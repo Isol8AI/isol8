@@ -126,12 +126,20 @@ steps:
       }'
 
   # ──────────────────────────────────────────────
-  # Step 5 — fire the review notification
+  # Step 5 — render + post the review via the template
   # ──────────────────────────────────────────────
-  - id: notify-review
+  - id: render-review
     command: >
       exec --json --shell 'node scripts/nexus-notify.js'
     stdin: '{"template": "weekly-review", "data": $draft-review.json}'
+
+  - id: post-review
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{NEXUS_NOTIFY_CHANNEL}}",
+        "text": "$render-review.json.text"
+      }'
+    condition: $render-review.json.text
 
   # ──────────────────────────────────────────────
   # Step 6 — snapshot current costs for next week's comparison

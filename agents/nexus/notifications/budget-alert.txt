@@ -1,0 +1,15 @@
+💰 *Budget alert — {{agent}}*
+
+Agent *{{agent}}* would exceed its monthly budget with this task:
+
+• Budget: {{budget_cents}}¢
+• Already consumed: {{consumed_cents}}¢
+• Remaining: {{remaining_cents}}¢
+• This task estimated at: {{estimated_cost_cents}}¢
+
+I blocked the delegation rather than letting Paperclip reject it. Options:
+• Reallocate from an underutilized peer: {{alternatives|join:, |default:no underutilized peers right now}}
+• Defer the task until next cycle
+• Reduce the scope so it fits the remaining balance
+
+Tell me which and I'll retry the delegation.

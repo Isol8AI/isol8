@@ -97,12 +97,20 @@ steps:
       }'
 
   # ──────────────────────────────────────────────
-  # Step 4 — fire the digest notification via the template
+  # Step 4 — render + post the digest via the template
   # ──────────────────────────────────────────────
-  - id: notify-digest
+  - id: render-digest
     command: >
       exec --json --shell 'node scripts/nexus-notify.js'
     stdin: '{"template": "daily-digest", "data": $draft-digest.json}'
+
+  - id: post-digest
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{NEXUS_NOTIFY_CHANNEL}}",
+        "text": "$render-digest.json.text"
+      }'
+    condition: $render-digest.json.text
 
   # ──────────────────────────────────────────────
   # Step 5 — audit log

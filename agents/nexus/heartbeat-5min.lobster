@@ -45,25 +45,51 @@ steps:
     stdin: '{"current_approvals": $pending-approvals.json.approvals, "notified_ids": $load-notified-approvals.json}'
 
   # ──────────────────────────────────────────────
-  # Step 3 — fire template notifications (conditional, deterministic)
+  # Step 3 — render + post template notifications (conditional, deterministic)
+  #   Split into two steps so nexus-notify.js stays a pure template renderer
+  #   with no network access — slack posting lives in the openclaw tool layer.
   # ──────────────────────────────────────────────
-  - id: notify-circuit-breaker
+  - id: render-circuit-breaker
     command: >
       exec --json --shell 'node scripts/nexus-notify.js'
     stdin: '{"template": "circuit-breaker", "data": $circuit-breaker.json.new_pauses}'
     condition: $circuit-breaker.json.new_pauses.length > 0
 
-  - id: notify-goal-drift
+  - id: post-circuit-breaker
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{NEXUS_NOTIFY_CHANNEL}}",
+        "text": "$render-circuit-breaker.json.text"
+      }'
+    condition: $render-circuit-breaker.json.text
+
+  - id: render-goal-drift
     command: >
       exec --json --shell 'node scripts/nexus-notify.js'
-    stdin: '{"template": "goal-drift", "data": $goal-drift.json.drifted}'
+    stdin: '{"template": "goal-drift", "data": {"drifted_count": $goal-drift.json.drifted_count, "drifted": $goal-drift.json.drifted}}'
     condition: $goal-drift.json.drifted_count > 0
 
-  - id: notify-new-approvals
+  - id: post-goal-drift
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{NEXUS_NOTIFY_CHANNEL}}",
+        "text": "$render-goal-drift.json.text"
+      }'
+    condition: $render-goal-drift.json.text
+
+  - id: render-new-approvals
     command: >
       exec --json --shell 'node scripts/nexus-notify.js'
-    stdin: '{"template": "agentgate-escalation", "data": $approval-diff.json.new_approvals}'
+    stdin: '{"template": "agentgate-escalation", "data": {"new_count": $approval-diff.json.new_count, "new_approvals": $approval-diff.json.new_approvals}}'
     condition: $approval-diff.json.new_count > 0
+
+  - id: post-new-approvals
+    command: >
+      openclaw.invoke --tool slack --action post --args-json '{
+        "channel": "{{NEXUS_NOTIFY_CHANNEL}}",
+        "text": "$render-new-approvals.json.text"
+      }'
+    condition: $render-new-approvals.json.text
 
   # ──────────────────────────────────────────────
   # Step 4 — persist updated state back to fast-io

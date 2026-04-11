@@ -1,0 +1,4 @@
+✅ *{{agent}}* completed: {{issue_title}}
+
+{{summary|default:}}
+{{next_actions|join:\n- |default:}}
