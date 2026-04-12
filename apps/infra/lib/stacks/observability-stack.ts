@@ -2021,7 +2021,7 @@ const synthetics = require('Synthetics');
 const log = require('SyntheticsLogger');
 
 exports.handler = async () => {
-  const hostname = 'api-${this.envName}.isol8.co';
+  const hostname = '${this.envName}' === 'prod' ? 'api.isol8.co' : 'api-${this.envName}.isol8.co';
   log.info('Health check: ' + hostname);
 
   await synthetics.executeHttpStep('Health check', {
@@ -2081,8 +2081,8 @@ exports.handler = async () => {
         }),
         runtime: synthetics.Runtime.SYNTHETICS_NODEJS_PUPPETEER_9_1,
         environmentVariables: {
-          CANARY_API_BASE: `https://api-${this.envName}.isol8.co`,
-          CANARY_WS_URL: `wss://ws-${this.envName}.isol8.co/`,
+          CANARY_API_BASE: this.envName === "prod" ? "https://api.isol8.co" : `https://api-${this.envName}.isol8.co`,
+          CANARY_WS_URL: this.envName === "prod" ? "wss://ws.isol8.co/" : `wss://ws-${this.envName}.isol8.co/`,
           CANARY_CREDENTIALS_SECRET: `isol8/${this.envName}/canary/credentials`,
         },
       },

@@ -20,13 +20,26 @@ logger.setLevel(logging.INFO)
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
 CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
 
-# WebSocket Origin allow-list
+# WebSocket Origin allow-list — configurable via env var, with sensible defaults.
+# Includes production, dev, and Vercel preview deployment patterns.
+_EXTRA_ORIGINS = os.environ.get("WS_ALLOWED_ORIGINS", "")
 ALLOWED_ORIGINS = [
-    "https://app.isol8.co",
-    "https://dev.isol8.co",
-    "https://app-dev.isol8.co",
-    "http://localhost:3000",  # local dev
-]
+    "https://isol8.co",          # production
+    "https://app.isol8.co",      # production alt
+    "https://dev.isol8.co",      # dev
+    "https://app-dev.isol8.co",  # dev alt
+    "http://localhost:3000",     # local dev
+] + [o.strip() for o in _EXTRA_ORIGINS.split(",") if o.strip()]
+
+
+def _is_allowed_origin(origin: str) -> bool:
+    """Check if origin is allowed — supports exact match + Vercel preview pattern."""
+    if origin in ALLOWED_ORIGINS:
+        return True
+    # Allow Vercel preview deployments (*.vercel.app)
+    if origin.startswith("https://") and origin.endswith(".vercel.app"):
+        return True
+    return False
 
 # Cache JWKS client (reused across invocations)
 _jwks_client = None
@@ -89,7 +102,7 @@ def handler(event: dict, context: Any) -> dict:
     # Origin validation — reject connections from disallowed origins
     headers = event.get("headers") or {}
     origin = headers.get("Origin") or headers.get("origin")
-    if origin and origin not in ALLOWED_ORIGINS:
+    if origin and not _is_allowed_origin(origin):
         logger.warning("WebSocket connection denied: origin %s not in allow-list", origin)
         return generate_policy("unauthorized", "Deny", method_arn)
 
