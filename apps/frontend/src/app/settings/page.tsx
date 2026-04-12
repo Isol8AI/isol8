@@ -534,7 +534,8 @@ export default function SettingsPage() {
       </header>
 
       {/* Main layout */}
-      <div className="settings-layout" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif", background: "#faf7f2" }}>
+      <div className="settings-page-wrap" style={{ fontFamily: "var(--font-dm-sans), 'DM Sans', sans-serif" }}>
+      <div className="settings-layout">
         <nav className="settings-nav" aria-label="Settings navigation">
           {NAV_SECTIONS.map((section) => (
             <div key={section.label}>
@@ -564,6 +565,7 @@ export default function SettingsPage() {
         <main className="settings-main">
           <ActivePanelComponent key={activePanel} />
         </main>
+      </div>
       </div>
     </>
   );

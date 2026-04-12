@@ -57,16 +57,20 @@
 }
 .settings-btn-back-chat:hover { background: #054d33; }
 
+.settings-page-wrap {
+  background: #faf7f2;
+  min-height: calc(100vh - 65px);
+}
 .settings-layout {
   display: grid;
   grid-template-columns: 240px 1fr;
-  max-width: 1100px;
+  max-width: 1200px;
   margin: 0 auto;
   min-height: calc(100vh - 65px);
 }
 
 .settings-nav {
-  padding: 32px 0 32px 32px;
+  padding: 40px 20px 32px 32px;
   border-right: 1px solid #e0dbd0;
   position: sticky;
   top: 65px;
@@ -116,11 +120,12 @@
 .settings-nav-item.active svg { opacity: 1; }
 
 .settings-main {
-  padding: 40px 48px;
+  padding: 48px 56px;
   font-family: var(--font-dm-sans), 'DM Sans', sans-serif;
   background: #faf7f2;
   color: #1c1917;
   line-height: 1.5;
+  min-width: 0;
 }
 .settings-page-title {
   font-family: var(--font-lora-serif), 'Lora', serif;
@@ -382,38 +387,50 @@
 
 .settings-tier-grid {
   display: grid;
-  gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  margin-bottom: 24px;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 8px;
+  align-items: stretch;
 }
 .settings-tier-card {
   position: relative;
+  display: flex;
+  flex-direction: column;
   background: white;
   border: 1px solid #e0dbd0;
   border-radius: 16px;
-  padding: 24px;
-  transition: border-color 200ms ease-out;
+  padding: 28px 24px;
+  transition: border-color 200ms ease-out, box-shadow 200ms ease-out, transform 200ms ease-out;
 }
-.settings-tier-card:hover { border-color: #c5bfb6; }
+.settings-tier-card:hover {
+  border-color: #c5bfb6;
+  box-shadow: 0 4px 16px rgba(6,64,43,.04);
+}
 .settings-tier-card.current {
   border-color: rgba(6,64,43,.4);
   background: rgba(6,64,43,.02);
 }
 .settings-tier-card.popular {
-  border-color: rgba(6,64,43,.25);
+  border-color: rgba(6,64,43,.3);
+  box-shadow: 0 2px 12px rgba(6,64,43,.06);
 }
 .settings-tier-name {
   font-size: 16px;
   font-weight: 600;
   color: #1c1917;
-  margin-bottom: 4px;
+  margin-bottom: 6px;
 }
 .settings-tier-price {
   font-family: var(--font-lora-serif), 'Lora', serif;
-  font-size: 28px;
+  font-size: 30px;
   font-weight: 400;
   color: #1c1917;
-  margin-bottom: 16px;
+  margin-bottom: 20px;
+  line-height: 1.1;
+  min-height: 40px;
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
 }
 .settings-tier-price span {
   font-family: var(--font-dm-sans), sans-serif;
@@ -423,10 +440,11 @@
 .settings-tier-features {
   list-style: none;
   padding: 0;
-  margin: 0 0 20px;
+  margin: 0 0 24px;
   font-size: 13px;
   color: #59534d;
   line-height: 1.6;
+  flex: 1 1 auto;
 }
 .settings-tier-features li {
   padding: 3px 0;
@@ -550,6 +568,7 @@
 @media (max-width: 768px) {
   .settings-topbar { padding: 12px 16px; }
   .settings-btn-back-chat span { display: none; }
+  .settings-page-wrap { min-height: auto; }
   .settings-layout {
     grid-template-columns: 1fr;
     min-height: auto;
