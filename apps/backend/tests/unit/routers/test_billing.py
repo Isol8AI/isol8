@@ -472,11 +472,13 @@ class TestStripeWebhook:
     """Test POST /api/v1/billing/webhooks/stripe."""
 
     @pytest.mark.asyncio
+    @patch("routers.billing._check_webhook_dedup", new_callable=AsyncMock, return_value=False)
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, mock_dedup, async_client):
         """Should update billing account on subscription.created — NO container provisioning."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_test_1",
             "type": "customer.subscription.created",
             "data": {
                 "object": {
@@ -512,11 +514,13 @@ class TestStripeWebhook:
         mock_billing_svc.update_subscription.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("routers.billing._check_webhook_dedup", new_callable=AsyncMock, return_value=False)
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, mock_dedup, async_client):
         """Should cancel subscription and disable overage — NO container stop."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_test_2",
             "type": "customer.subscription.deleted",
             "data": {
                 "object": {

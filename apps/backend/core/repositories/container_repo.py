@@ -4,22 +4,27 @@ import uuid
 
 from boto3.dynamodb.conditions import Key
 
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.dynamodb import get_table, utc_now_iso
+from core.services.dynamodb_helper import call_with_metrics
+
+_TABLE_SHORT = "containers"
 
 
 def _get_table():
-    return get_table("containers")
+    return get_table(_TABLE_SHORT)
 
 
 async def get_by_owner_id(owner_id: str) -> dict | None:
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
+    response = await call_with_metrics(table.name, "get", table.get_item, Key={"owner_id": owner_id})
     return response.get("Item")
 
 
 async def get_by_gateway_token(token: str) -> dict | None:
     table = _get_table()
-    response = await run_in_thread(
+    response = await call_with_metrics(
+        table.name,
+        "query",
         table.query,
         IndexName="gateway-token-index",
         KeyConditionExpression=Key("gateway_token").eq(token),
@@ -30,7 +35,9 @@ async def get_by_gateway_token(token: str) -> dict | None:
 
 async def get_by_status(status: str) -> list[dict]:
     table = _get_table()
-    response = await run_in_thread(
+    response = await call_with_metrics(
+        table.name,
+        "query",
         table.query,
         IndexName="status-index",
         KeyConditionExpression=Key("status").eq(status),
@@ -54,7 +61,7 @@ async def upsert(owner_id: str, fields: dict) -> dict:
     # Ensure owner_id is not overridden by fields
     item["owner_id"] = owner_id
 
-    await run_in_thread(table.put_item, Item=item)
+    await call_with_metrics(table.name, "put", table.put_item, Item=item)
     return item
 
 
@@ -72,7 +79,7 @@ async def update_fields(owner_id: str, fields: dict) -> dict | None:
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
+    await call_with_metrics(table.name, "put", table.put_item, Item=existing)
     return existing
 
 
@@ -89,4 +96,4 @@ async def update_error(owner_id: str, error: str) -> dict | None:
 
 async def delete(owner_id: str) -> None:
     table = _get_table()
-    await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+    await call_with_metrics(table.name, "delete", table.delete_item, Key={"owner_id": owner_id})

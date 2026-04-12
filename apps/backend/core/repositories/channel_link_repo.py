@@ -8,10 +8,13 @@ querying all links for one Clerk member across all their orgs.
 from boto3.dynamodb.conditions import Key
 
 from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.services.dynamodb_helper import call_with_metrics
+
+_TABLE_SHORT = "channel-links"
 
 
 def _get_table():
-    return get_table("channel-links")
+    return get_table(_TABLE_SHORT)
 
 
 def _sk(provider: str, agent_id: str, peer_id: str) -> str:
@@ -74,7 +77,7 @@ async def put(
         "owner_provider_agent": _owner_provider_agent(owner_id, provider, agent_id),
     }
     table = _get_table()
-    await run_in_thread(table.put_item, Item=item)
+    await call_with_metrics(table.name, "put", table.put_item, Item=item)
     return item
 
 
@@ -87,8 +90,8 @@ async def get_by_peer(
 ) -> dict | None:
     """Look up a single link row by its full primary key."""
     table = _get_table()
-    response = await run_in_thread(
-        table.get_item,
+    response = await call_with_metrics(
+        table.name, "get", table.get_item,
         Key={"owner_id": owner_id, "sk": _sk(provider, agent_id, peer_id)},
     )
     return response.get("Item")
@@ -102,8 +105,8 @@ async def query_by_member(member_id: str) -> list[dict]:
     each, so the result set fits in a single 1MB query page.
     """
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         IndexName="by-member",
         KeyConditionExpression=Key("member_id").eq(member_id),
     )
@@ -118,8 +121,8 @@ async def query_by_owner(owner_id: str) -> list[dict]:
     of bots × number of members linked).
     """
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
     )
     return response.get("Items", [])
@@ -134,8 +137,8 @@ async def delete(
 ) -> None:
     """Delete a single link row."""
     table = _get_table()
-    await run_in_thread(
-        table.delete_item,
+    await call_with_metrics(
+        table.name, "delete", table.delete_item,
         Key={"owner_id": owner_id, "sk": _sk(provider, agent_id, peer_id)},
     )
 
@@ -159,8 +162,8 @@ async def sweep_by_owner_provider_agent(
     """
     table = _get_table()
     prefix = f"{provider}#{agent_id}#"
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("sk").begins_with(prefix),
     )
     items = response.get("Items", [])
