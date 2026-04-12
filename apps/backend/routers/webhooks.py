@@ -17,7 +17,6 @@ import json
 import logging
 import time
 
-from botocore.exceptions import ClientError
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings

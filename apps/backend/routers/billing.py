@@ -7,7 +7,6 @@ import time
 
 import httpx
 import stripe
-from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
