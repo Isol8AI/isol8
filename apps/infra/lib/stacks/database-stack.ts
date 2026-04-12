@@ -21,6 +21,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly usageCountersTable: dynamodb.Table;
   public readonly pendingUpdatesTable: dynamodb.Table;
   public readonly channelLinksTable: dynamodb.Table;
+  public readonly webhookDedupTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -127,6 +128,24 @@ export class DatabaseStack extends cdk.Stack {
       indexName: "by-member",
       partitionKey: { name: "member_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "owner_provider_agent", type: dynamodb.AttributeType.STRING },
+    });
+
+    // Webhook event dedup table — shared by Stripe and Clerk webhooks
+    // PK: event_id (prefixed: "stripe:{id}" or "clerk:{id}")
+    // TTL: 30-day auto-expiry via "ttl" attribute
+    this.webhookDedupTable = new dynamodb.Table(this, "WebhookEventDedup", {
+      tableName: `isol8-${env}-webhook-event-dedup`,
+      partitionKey: { name: "event_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: "ttl",
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    new cdk.CfnOutput(this, "WebhookDedupTableName", {
+      value: this.webhookDedupTable.tableName,
+      exportName: `${this.stackName}-webhook-dedup-table`,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
