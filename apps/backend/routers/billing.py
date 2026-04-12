@@ -12,9 +12,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
-from core.observability.metrics import put_metric, timing
-from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
+from core.dynamodb import get_table, run_in_thread
 from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService, BillingServiceError
 from core.services.usage_service import check_budget, get_usage_summary

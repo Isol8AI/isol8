@@ -4,7 +4,6 @@ Covers CRITICAL items 1-6, HIGH items 7-9/11-13, MEDIUM items 15-17,
 plus Stripe/Clerk webhook idempotency and DynamoDB throttle wrapper.
 """
 
-import json
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -353,7 +352,7 @@ class TestHealthRateLimit:
 
         _health_buckets.clear()
 
-        with patch("core.dynamodb.get_table") as mock_table, patch(
+        with patch("core.dynamodb.get_table"), patch(
             "core.dynamodb.run_in_thread", new_callable=AsyncMock
         ) as mock_run:
             mock_run.return_value = None

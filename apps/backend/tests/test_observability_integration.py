@@ -1,6 +1,5 @@
 """Integration test: verify observability wiring in the live FastAPI app."""
 
-from fastapi.testclient import TestClient
 
 
 def test_health_returns_request_id(client):

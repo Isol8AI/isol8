@@ -4,11 +4,9 @@ import sys
 
 from core.observability.logging import (
     JsonFormatter,
-    configure_logging,
     bind_request_context,
     request_id_var,
     user_id_var,
-    container_id_var,
 )
 
 
