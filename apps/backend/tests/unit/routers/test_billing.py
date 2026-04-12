@@ -197,9 +197,18 @@ class TestCheckout:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("core.services.billing_service.TIER_PRICES", {"starter": "price_starter"})
+    @patch("core.services.billing_service.METERED_PRICE_ID", "price_metered_test")
     @patch("core.services.billing_service.stripe")
-    async def test_create_checkout(self, mock_stripe, mock_repo, async_client):
-        """Should return Stripe checkout URL."""
+    async def test_create_checkout_only_attaches_fixed_tier_item(self, mock_stripe, mock_repo, async_client):
+        """Initial checkout must include ONLY the fixed-price tier line item.
+
+        Regression: previously the metered overage line item
+        (STRIPE_METERED_PRICE_ID) was always attached at checkout time, which
+        produced a confusing two-line Stripe Checkout page where users thought
+        they were subscribing to two products. The metered item is now only
+        attached when the user explicitly toggles overage on via PUT
+        /billing/overage — see `set_metered_overage_item` in billing_service.
+        """
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
@@ -215,6 +224,13 @@ class TestCheckout:
         )
         assert response.status_code == 200
         assert "checkout_url" in response.json()
+
+        # Critical assertion: exactly one line item, the fixed-price tier.
+        # No metered overage line item, even though METERED_PRICE_ID is
+        # configured (patched to "price_metered_test" above).
+        mock_stripe.checkout.Session.create.assert_called_once()
+        call_kwargs = mock_stripe.checkout.Session.create.call_args.kwargs
+        assert call_kwargs["line_items"] == [{"price": "price_starter", "quantity": 1}]
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
@@ -278,47 +294,166 @@ class TestCheckout:
 
 
 class TestOverageToggle:
-    """Test PUT /api/v1/billing/overage."""
+    """Test PUT /api/v1/billing/overage.
+
+    The toggle now does TWO things in sequence:
+      1. Stripe: attach (or detach) the metered overage line item on the
+         user's active subscription via `Subscription.modify`.
+      2. DynamoDB: flip the `overage_enabled` flag.
+
+    Stripe-first ordering matters: if the Stripe write fails the DB stays
+    untouched, so we never end up in a state where the DB says "overage on"
+    but the subscription has no metered item (which would silently drop
+    meter events and the customer wouldn't get billed for usage).
+    """
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
-    async def test_toggle_overage_on(self, mock_repo, async_client):
-        """Should enable overage with limit."""
+    @patch("core.services.billing_service.METERED_PRICE_ID", "price_metered_test")
+    @patch("core.services.billing_service.stripe")
+    async def test_toggle_overage_on_attaches_metered_item_to_subscription(self, mock_stripe, mock_repo, async_client):
+        """Toggling overage ON adds the metered line item to the existing
+        Stripe subscription AND flips the DynamoDB flag."""
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_test",
+                "stripe_subscription_id": "sub_test_123",
                 "plan_tier": "starter",
             }
         )
         mock_repo.set_overage_enabled = AsyncMock(return_value={})
+        # Subscription currently has only the fixed tier item (the new
+        # post-checkout state), no metered item yet.
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {"id": "si_fixed", "price": {"id": "price_starter"}},
+                ]
+            }
+        }
 
         response = await async_client.put(
             "/api/v1/billing/overage",
             json={"enabled": True, "limit_dollars": 50.0},
         )
         assert response.status_code == 200
+
+        # Stripe: metered item ADDED to the existing subscription
+        mock_stripe.Subscription.modify.assert_called_once_with(
+            "sub_test_123",
+            items=[{"price": "price_metered_test"}],
+        )
+        # DynamoDB: flag flipped on
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", True, overage_limit=50_000_000)
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
-    async def test_toggle_overage_off(self, mock_repo, async_client):
-        """Should disable overage."""
+    @patch("core.services.billing_service.METERED_PRICE_ID", "price_metered_test")
+    @patch("core.services.billing_service.stripe")
+    async def test_toggle_overage_off_removes_metered_item_from_subscription(
+        self, mock_stripe, mock_repo, async_client
+    ):
+        """Toggling overage OFF removes the metered line item from the
+        existing Stripe subscription AND flips the DynamoDB flag."""
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_test_123",
                 "stripe_customer_id": "cus_test",
+                "stripe_subscription_id": "sub_test_123",
                 "plan_tier": "starter",
             }
         )
         mock_repo.set_overage_enabled = AsyncMock(return_value={})
+        # Subscription has BOTH the fixed item AND the metered item.
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {"id": "si_fixed", "price": {"id": "price_starter"}},
+                    {"id": "si_metered", "price": {"id": "price_metered_test"}},
+                ]
+            }
+        }
 
         response = await async_client.put(
             "/api/v1/billing/overage",
             json={"enabled": False},
         )
         assert response.status_code == 200
+
+        # Stripe: metered item REMOVED via deleted=true on its item id
+        mock_stripe.Subscription.modify.assert_called_once_with(
+            "sub_test_123",
+            items=[{"id": "si_metered", "deleted": True}],
+        )
+        # DynamoDB: flag flipped off
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", False, overage_limit=None)
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("core.services.billing_service.METERED_PRICE_ID", "price_metered_test")
+    @patch("core.services.billing_service.stripe")
+    async def test_toggle_overage_on_is_idempotent_when_item_already_present(
+        self, mock_stripe, mock_repo, async_client
+    ):
+        """Toggling on when the metered item is already attached must be a
+        no-op on Stripe (no Subscription.modify call) but still update the
+        DynamoDB row (e.g. limit change without a state change)."""
+        mock_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "stripe_customer_id": "cus_test",
+                "stripe_subscription_id": "sub_test_123",
+                "plan_tier": "starter",
+            }
+        )
+        mock_repo.set_overage_enabled = AsyncMock(return_value={})
+        mock_stripe.Subscription.retrieve.return_value = {
+            "items": {
+                "data": [
+                    {"id": "si_fixed", "price": {"id": "price_starter"}},
+                    {"id": "si_metered", "price": {"id": "price_metered_test"}},
+                ]
+            }
+        }
+
+        response = await async_client.put(
+            "/api/v1/billing/overage",
+            json={"enabled": True, "limit_dollars": 100.0},
+        )
+        assert response.status_code == 200
+
+        # No Stripe modify call — already in desired state
+        mock_stripe.Subscription.modify.assert_not_called()
+        # DynamoDB still updated with the new limit
+        mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", True, overage_limit=100_000_000)
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("core.services.billing_service.METERED_PRICE_ID", "price_metered_test")
+    @patch("core.services.billing_service.stripe")
+    async def test_toggle_overage_400_when_no_active_subscription(self, mock_stripe, mock_repo, async_client):
+        """Toggling overage on a free-tier (or canceled) account must 400 —
+        you can't have overage without a subscription to attach it to."""
+        mock_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "stripe_customer_id": "cus_test",
+                "stripe_subscription_id": None,  # ← no active sub
+                "plan_tier": "free",
+            }
+        )
+        mock_repo.set_overage_enabled = AsyncMock(return_value={})
+
+        response = await async_client.put(
+            "/api/v1/billing/overage",
+            json={"enabled": True},
+        )
+        assert response.status_code == 400
+
+        # Neither Stripe nor the DB was touched after the validation failed
+        mock_stripe.Subscription.modify.assert_not_called()
+        mock_repo.set_overage_enabled.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")

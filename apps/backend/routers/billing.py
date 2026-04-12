@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
 from core.repositories import billing_repo, usage_repo
-from core.services.billing_service import BillingService
+from core.services.billing_service import BillingService, BillingServiceError
 from core.services.usage_service import check_budget, get_usage_summary
 from core.services.bedrock_pricing import get_all_prices
 from core.services.update_service import queue_tier_change
@@ -294,6 +294,18 @@ async def toggle_overage(
     account = await billing_repo.get_by_owner_id(owner_id)
     if not account:
         raise HTTPException(status_code=404, detail="Billing account not found")
+
+    # Attach or detach the metered line item on the live Stripe subscription
+    # FIRST. We only flip the DynamoDB flag if the Stripe write succeeds —
+    # otherwise the two diverge and `record_usage` could try to report meter
+    # events against a subscription that doesn't have the metered item
+    # (Stripe would silently drop them and the customer would never be billed
+    # for usage they actually consumed).
+    billing_service = BillingService()
+    try:
+        await billing_service.set_metered_overage_item(account, request.enabled)
+    except BillingServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     limit_microdollars = int(request.limit_dollars * 1_000_000) if request.limit_dollars is not None else None
     await billing_repo.set_overage_enabled(owner_id, request.enabled, overage_limit=limit_microdollars)
