@@ -477,6 +477,7 @@ class TestStripeWebhook:
     async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client):
         """Should update billing account on subscription.created — NO container provisioning."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_test_created_001",
             "type": "customer.subscription.created",
             "data": {
                 "object": {
@@ -517,6 +518,7 @@ class TestStripeWebhook:
     async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client):
         """Should cancel subscription and disable overage — NO container stop."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_test_deleted_001",
             "type": "customer.subscription.deleted",
             "data": {
                 "object": {
