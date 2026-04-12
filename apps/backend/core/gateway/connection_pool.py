@@ -616,18 +616,18 @@ class GatewayConnection:
             # overwrite or intermix with the user's web conversation.
             session_source = parsed_key.get("source", "")
             is_channel_session = session_source in ("dm", "group", "channel")
+            is_cron_session = session_source == "cron"
 
-            # Demote noisy periodic events (health, tick) to DEBUG so they
-            # don't drown actual chat/agent signals in the logs. Log
-            # meaningful non-agent events (chat state changes, sessions,
-            # etc.) at INFO.
+            # Drop noisy periodic events (health, tick) entirely — they are
+            # OpenClaw-internal keep-alives and should never reach frontends.
             if event_name in ("health", "tick"):
                 logger.debug(
                     "Gateway heartbeat for %s: event=%s",
                     self.user_id,
                     event_name,
                 )
-            elif event_name != "agent":
+                return
+            if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
                 logger.info(
                     "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
@@ -662,16 +662,19 @@ class GatewayConnection:
                     and payload["data"].get("phase") == "end"
                 ):
                     self._record_usage_from_session(payload)
-                # Skip forwarding channel events to the web UI.
-                if is_channel_session:
+                # Skip forwarding channel and cron events to the web UI.
+                # Cron jobs run in isolated sessions inside OpenClaw — their
+                # streaming events must not leak into a user's active web chat
+                # (a cron "done" would terminate the user's streaming session).
+                if is_channel_session or is_cron_session:
                     return
                 transformed = self._transform_agent_event(payload)
                 if transformed:
                     self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
-                # Skip forwarding channel chat events to the web UI.
-                if is_channel_session:
+                # Skip forwarding channel and cron chat events to the web UI.
+                if is_channel_session or is_cron_session:
                     return
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
@@ -714,27 +717,90 @@ class GatewayConnection:
             return
 
     async def _reader_loop(self) -> None:
-        """Background task: read all messages from gateway WebSocket."""
-        try:
-            async for raw in self._ws:
-                try:
-                    data = json.loads(raw)
-                    self._handle_message(data)
-                except json.JSONDecodeError:
-                    logger.warning("Non-JSON message from gateway for user %s", self.user_id)
-        except asyncio.CancelledError:
-            return
-        except Exception as e:
-            if self._closed:
+        """Background task: read all messages from gateway WebSocket.
+
+        On transient disconnects (e.g. code 1012 service restart from cron or
+        config reload), automatically reconnects with exponential backoff so
+        chat doesn't permanently die.
+        """
+        max_reconnect_attempts = 5
+        reconnect_delay = 3  # seconds, doubles each attempt
+
+        for attempt in range(max_reconnect_attempts + 1):
+            try:
+                async for raw in self._ws:
+                    try:
+                        data = json.loads(raw)
+                        self._handle_message(data)
+                    except json.JSONDecodeError:
+                        logger.warning("Non-JSON message from gateway for user %s", self.user_id)
+                # WebSocket closed cleanly — try reconnect if not shutting down
+                if self._closed:
+                    return
+                logger.warning(
+                    "Gateway WebSocket closed for user %s (attempt %d/%d), reconnecting in %ds",
+                    self.user_id,
+                    attempt + 1,
+                    max_reconnect_attempts,
+                    reconnect_delay,
+                )
+            except asyncio.CancelledError:
                 return
-            put_metric("gateway.connection", dimensions={"event": "error"})
-            logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
-            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
-            # Reject all pending RPCs
+            except Exception as e:
+                if self._closed:
+                    return
+                put_metric("gateway.connection", dimensions={"event": "error"})
+                logger.error(
+                    "Gateway reader loop error for user %s (attempt %d/%d): %s",
+                    self.user_id,
+                    attempt + 1,
+                    max_reconnect_attempts,
+                    e,
+                )
+
+            # Reject pending RPCs from the broken connection — callers will
+            # retry on the next send_rpc which creates a fresh connection.
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
-                    future.set_exception(RuntimeError("Gateway connection lost"))
+                    future.set_exception(RuntimeError("Gateway connection lost — reconnecting"))
             self._pending_rpcs.clear()
+
+            if attempt >= max_reconnect_attempts:
+                break
+
+            # Exponential backoff reconnection
+            self._emit_status_change("RECONNECTING", "Gateway reconnecting...")
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, 30)
+
+            try:
+                uri = f"ws://{self.ip}:{GATEWAY_PORT}"
+                self._ws = await ws_connect(
+                    uri,
+                    open_timeout=_HANDSHAKE_TIMEOUT,
+                    close_timeout=5,
+                )
+                await self._handshake()
+                await self._verify_health()
+                self._emit_status_change("HEALTHY", "Gateway reconnected")
+                logger.info("Gateway reconnected for user %s (attempt %d)", self.user_id, attempt + 1)
+                reconnect_delay = 3
+                continue  # re-enter the reader loop
+            except Exception as reconnect_err:
+                logger.warning(
+                    "Gateway reconnect failed for user %s (attempt %d/%d): %s",
+                    self.user_id,
+                    attempt + 1,
+                    max_reconnect_attempts,
+                    reconnect_err,
+                )
+
+        # All reconnect attempts exhausted
+        if not self._closed:
+            logger.error(
+                "Gateway permanently lost for user %s after %d reconnect attempts", self.user_id, max_reconnect_attempts
+            )
+            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
 
     @property
     def has_frontend_connections(self) -> bool:
@@ -970,6 +1036,8 @@ def _parse_session_key(session_key: str) -> dict:
     Shapes (from openclaw/src/routing/session-key.ts with dmScope=per-account-channel-peer):
       Personal webchat:  agent:<agentId>:main
       Org webchat:       agent:<agentId>:<clerk_user_id>
+      Cron chat:         agent:<agentId>:cron:<cronId>
+      Cron run event:    agent:<agentId>:cron:<cronId>:run:<runId>
       Channel DM:        agent:<agentId>:<channel>:<accountId>:direct:<peerId>
       Channel group:     agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
       Channel room:      agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
@@ -978,6 +1046,7 @@ def _parse_session_key(session_key: str) -> dict:
       - empty {} for malformed input
       - {agent_id, source} for webchat personal
       - {agent_id, source, member_id} for org webchat (member_id is the clerk user_id)
+      - {agent_id, source, cron_id} for cron sessions (source="cron")
       - {agent_id, source, channel, peer_id} for channel DMs (source="dm")
       - {agent_id, source, channel, group_id} for channel groups (source="group")
       - {agent_id, source, channel, channel_id} for channel rooms (source="channel")
@@ -986,6 +1055,18 @@ def _parse_session_key(session_key: str) -> dict:
     if len(parts) < 3 or parts[0] != "agent":
         return {}
     agent_id = parts[1]
+
+    # Cron sessions: agent:<agentId>:cron:<cronId>(:run:<runId>)?
+    # Must check BEFORE webchat since 4-part cron keys would otherwise
+    # fall through to channel parsing.
+    if parts[2] == "cron":
+        result = {
+            "agent_id": agent_id,
+            "source": "cron",
+        }
+        if len(parts) >= 4:
+            result["cron_id"] = parts[3]
+        return result
 
     # Webchat: 3 parts (agent:<agentId>:<sessionName>)
     if len(parts) == 3:
