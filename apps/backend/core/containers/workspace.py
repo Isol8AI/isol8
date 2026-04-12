@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from core.config import settings
+from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,10 @@ class Workspace:
         """
         user_dir = self.user_path(user_id).resolve()
         resolved = (user_dir / path).resolve()
-        if resolved != user_dir and not str(resolved).startswith(str(user_dir) + "/"):
+        try:
+            resolved.relative_to(user_dir)
+        except ValueError:
+            put_metric("workspace.path_traversal.attempt")
             raise WorkspaceError(
                 f"Path traversal denied: {path!r}",
                 user_id=user_id,
@@ -159,6 +163,7 @@ class Workspace:
             try:
                 mcporter_path.parent.mkdir(parents=True, exist_ok=True)
                 mcporter_path.write_text('{\n  "servers": {}\n}\n', encoding="utf-8")
+                os.chmod(mcporter_path, 0o600)
             except OSError as exc:
                 logger.warning("Failed to write default mcporter.json for %s: %s", user_id, exc)
 
@@ -423,6 +428,7 @@ class Workspace:
             resolved.write_text(content, encoding="utf-8")
             self._chown_for_access_point(resolved, user_id)
         except OSError as exc:
+            put_metric("workspace.file.write.error")
             logger.error("Failed to write %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
                 f"Failed to write {path!r} for {user_id}: {exc}",
@@ -449,6 +455,7 @@ class Workspace:
             resolved.write_bytes(data)
             self._chown_for_access_point(resolved, user_id)
         except OSError as exc:
+            put_metric("workspace.file.write.error")
             logger.error("Failed to write %r for %s: %s", path, user_id, exc)
             raise WorkspaceError(
                 f"Failed to write {path!r} for {user_id}: {exc}",
