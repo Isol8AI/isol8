@@ -15,12 +15,10 @@ import hashlib
 import hmac
 import json
 import logging
-import time
 
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
-from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import channel_link_repo
 
@@ -74,37 +72,6 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
-async def _is_clerk_webhook_duplicate(event_id: str) -> bool:
-    """Check if this Clerk event was already successfully processed."""
-    table = get_table("webhook-event-dedup")
-
-    def _get():
-        return table.get_item(Key={"event_id": f"clerk:{event_id}"}).get("Item")
-
-    try:
-        return (await run_in_thread(_get)) is not None
-    except Exception:
-        return False
-
-
-async def _mark_clerk_webhook_processed(event_id: str) -> None:
-    """Mark a Clerk event as processed AFTER success."""
-    table = get_table("webhook-event-dedup")
-
-    def _put():
-        table.put_item(
-            Item={
-                "event_id": f"clerk:{event_id}",
-                "ttl": int(time.time()) + 30 * 86400,
-            }
-        )
-
-    try:
-        await run_in_thread(_put)
-    except Exception:
-        logger.warning("Failed to mark Clerk webhook %s as processed", event_id)
-
-
 @router.post(
     "/clerk",
     summary="Handle Clerk webhooks",
@@ -121,17 +88,6 @@ async def handle_clerk_webhook(request: Request):
         payload = json.loads(body)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
-
-    # Idempotency check — svix-id is the unique event identifier
-    svix_id = request.headers.get("svix-id", "")
-    if svix_id:
-        try:
-            if await _is_clerk_webhook_duplicate(svix_id):
-                put_metric("webhook.clerk.duplicate")
-                logger.info("Duplicate Clerk webhook event %s, skipping", svix_id)
-                return {"status": "ok"}
-        except Exception:
-            logger.warning("Clerk webhook dedup check failed for %s, processing anyway", svix_id)
 
     event_type = payload.get("type", "")
     data = payload.get("data", {})
@@ -160,9 +116,5 @@ async def handle_clerk_webhook(request: Request):
 
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)
-
-    # Mark as processed AFTER all side effects succeed
-    if svix_id:
-        await _mark_clerk_webhook_processed(svix_id)
 
     return {"status": "ok"}

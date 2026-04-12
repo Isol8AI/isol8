@@ -2,8 +2,6 @@
 
 import asyncio
 import logging
-import os
-import time
 
 import httpx
 import stripe
@@ -12,7 +10,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
 from core.observability.metrics import put_metric
-from core.dynamodb import get_table, run_in_thread
 from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService, BillingServiceError
 from core.services.usage_service import check_budget, get_usage_summary
@@ -35,41 +32,6 @@ from schemas.billing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-_DEDUP_TABLE_NAME = os.getenv("WEBHOOK_DEDUP_TABLE", f"{settings.DYNAMODB_TABLE_PREFIX}webhook-event-dedup")
-
-
-async def _is_webhook_duplicate(event_id: str) -> bool:
-    """Check if this event was already successfully processed (without claiming it)."""
-    table = get_table("webhook-event-dedup")
-
-    def _get():
-        resp = table.get_item(Key={"event_id": f"stripe:{event_id}"})
-        return resp.get("Item")
-
-    try:
-        item = await run_in_thread(_get)
-        return item is not None
-    except Exception:
-        return False  # If check fails, process the event (safe — processing is idempotent-ish)
-
-
-async def _mark_webhook_processed(event_id: str) -> None:
-    """Mark an event as successfully processed AFTER processing completes."""
-    table = get_table("webhook-event-dedup")
-
-    def _put():
-        table.put_item(
-            Item={
-                "event_id": f"stripe:{event_id}",
-                "ttl": int(time.time()) + 30 * 86400,
-            }
-        )
-
-    try:
-        await run_in_thread(_put)
-    except Exception:
-        logger.warning("Failed to mark webhook event %s as processed", event_id)
 
 
 async def _resolve_clerk_user(user_id: str) -> dict:
@@ -372,18 +334,9 @@ async def handle_stripe_webhook(
         logger.error("Stripe webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
-    # Idempotency check — skip if already successfully processed
-    try:
-        if await _is_webhook_duplicate(event["id"]):
-            put_metric("stripe.webhook.duplicate")
-            logger.info("Duplicate Stripe webhook event %s, skipping", event["id"])
-            return {"status": "ok"}
-    except Exception:
-        logger.warning("Webhook dedup check failed for event %s, processing anyway", event["id"])
-
     event_type = event["type"]
-    event_data = event["data"]["object"]
     put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
+    event_data = event["data"]["object"]
 
     billing_service = BillingService()
 
@@ -449,10 +402,5 @@ async def handle_stripe_webhook(
 
     elif event_type == "invoice.paid":
         logger.info("Payment succeeded for customer %s", event_data.get("customer"))
-
-    # Mark as processed AFTER all side effects succeed.
-    # If processing failed above (exception), this line is never reached,
-    # so Stripe retries will re-process the event correctly.
-    await _mark_webhook_processed(event["id"])
 
     return {"status": "ok"}
