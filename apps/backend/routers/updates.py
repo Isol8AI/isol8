@@ -157,10 +157,14 @@ async def patch_single_config(
     if auth.is_org_context:
         require_org_admin(auth)
 
-        # Cross-tenant scoping: caller's org must own the target user
-        target_user = await user_repo.get(owner_id)
-        if not target_user or target_user.get("org_id") != auth.org_id:
-            raise HTTPException(403, "Cannot patch user outside your organization")
+        # Cross-tenant scoping: verify caller's org owns the target.
+        # owner_id can be an org_id (for org-owned containers) or a user_id.
+        # If owner_id IS the caller's org, it's an org-owned container — allow.
+        # Otherwise, look up the user and verify org membership.
+        if owner_id != auth.org_id:
+            target_user = await user_repo.get(owner_id)
+            if not target_user or target_user.get("org_id") != auth.org_id:
+                raise HTTPException(403, "Cannot patch user outside your organization")
 
     try:
         await patch_openclaw_config(owner_id, body.patch)

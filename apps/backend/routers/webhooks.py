@@ -75,26 +75,33 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
-async def _check_clerk_webhook_dedup(event_id: str) -> bool:
-    """Returns True if this Clerk webhook event was already processed."""
+async def _is_clerk_webhook_duplicate(event_id: str) -> bool:
+    """Check if this Clerk event was already successfully processed."""
+    table = get_table("webhook-event-dedup")
+
+    def _get():
+        return table.get_item(Key={"event_id": f"clerk:{event_id}"}).get("Item")
+
+    try:
+        return (await run_in_thread(_get)) is not None
+    except Exception:
+        return False
+
+
+async def _mark_clerk_webhook_processed(event_id: str) -> None:
+    """Mark a Clerk event as processed AFTER success."""
     table = get_table("webhook-event-dedup")
 
     def _put():
-        table.put_item(
-            Item={
-                "event_id": f"clerk:{event_id}",
-                "ttl": int(time.time()) + 30 * 86400,
-            },
-            ConditionExpression="attribute_not_exists(event_id)",
-        )
+        table.put_item(Item={
+            "event_id": f"clerk:{event_id}",
+            "ttl": int(time.time()) + 30 * 86400,
+        })
 
     try:
         await run_in_thread(_put)
-        return False
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return True
-        raise
+    except Exception:
+        logger.warning("Failed to mark Clerk webhook %s as processed", event_id)
 
 
 @router.post(
@@ -118,7 +125,7 @@ async def handle_clerk_webhook(request: Request):
     svix_id = request.headers.get("svix-id", "")
     if svix_id:
         try:
-            if await _check_clerk_webhook_dedup(svix_id):
+            if await _is_clerk_webhook_duplicate(svix_id):
                 put_metric("webhook.clerk.duplicate")
                 logger.info("Duplicate Clerk webhook event %s, skipping", svix_id)
                 return {"status": "ok"}
@@ -152,5 +159,9 @@ async def handle_clerk_webhook(request: Request):
 
     else:
         logger.debug("Clerk webhook: unhandled event type %s", event_type)
+
+    # Mark as processed AFTER all side effects succeed
+    if svix_id:
+        await _mark_clerk_webhook_processed(svix_id)
 
     return {"status": "ok"}
