@@ -76,9 +76,15 @@ class BillingService:
         if not fixed_price:
             raise BillingServiceError(f"Unknown tier: {tier}")
 
+        # Initial subscription includes ONLY the fixed-price tier line item.
+        # The metered overage line item (STRIPE_METERED_PRICE_ID) is attached
+        # later, and only if the user explicitly opts in via PUT /billing/overage.
+        # See `set_metered_overage_item` below.
+        #
+        # This keeps the Stripe Checkout page clean (one line item, one price)
+        # and prevents the confusing "you're subscribing to Starter AND 1 more"
+        # display where the metered item appears as a second product.
         line_items = [{"price": fixed_price, "quantity": 1}]
-        if METERED_PRICE_ID:
-            line_items.append({"price": METERED_PRICE_ID})
 
         session = stripe.checkout.Session.create(
             customer=billing_account["stripe_customer_id"],
@@ -90,6 +96,52 @@ class BillingService:
             cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
         )
         return session.url
+
+    async def set_metered_overage_item(self, billing_account: dict, enabled: bool) -> None:
+        """Attach or detach the metered overage line item on the user's active
+        Stripe subscription.
+
+        Called from PUT /billing/overage when the user toggles the overage
+        setting. Idempotent — if the line item is already in the desired state,
+        no Stripe write happens beyond the lookup.
+
+        Raises:
+            BillingServiceError: when the account has no active subscription
+                (free tier or canceled), or when STRIPE_METERED_PRICE_ID is
+                unconfigured. Caller is expected to surface this as a 400.
+        """
+        if not METERED_PRICE_ID:
+            raise BillingServiceError("Metered price ID not configured")
+
+        sub_id = billing_account.get("stripe_subscription_id")
+        if not sub_id:
+            raise BillingServiceError("No active subscription to modify")
+
+        subscription = stripe.Subscription.retrieve(sub_id)
+        existing_metered_item = None
+        for item in subscription["items"]["data"]:
+            if item["price"]["id"] == METERED_PRICE_ID:
+                existing_metered_item = item
+                break
+
+        if enabled and existing_metered_item is None:
+            # Add the metered line item to the existing subscription. The
+            # user's card auth from initial checkout covers this — Stripe
+            # doesn't require a new authorization to add a metered usage
+            # component.
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"price": METERED_PRICE_ID}],
+            )
+        elif not enabled and existing_metered_item is not None:
+            # Remove the metered line item. Stripe's `deleted: true` flag on
+            # an existing item id removes that item without affecting the
+            # rest of the subscription.
+            stripe.Subscription.modify(
+                sub_id,
+                items=[{"id": existing_metered_item["id"], "deleted": True}],
+            )
+        # else: already in the desired state — no-op.
 
     async def create_portal_session(self, billing_account: dict) -> str:
         session = stripe.billing_portal.Session.create(
