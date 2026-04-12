@@ -291,21 +291,19 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                     : msg.role === "assistant" && msg.content
                       ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
                       : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
-                          <span className="inline-flex gap-1 items-center h-5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
+                          <span className="inline-flex items-center h-5">
+                            <svg width="24" height="12" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
+                              <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                            </svg>
                           </span>
                         ) : null)}
                 </div>
 
                 {isTyping && isLastAssistant && msg.content && (
                   <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
-                    <span className="inline-flex gap-1 items-center">
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </span>
+                    <svg width="18" height="10" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
+                      <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                    </svg>
                     <span>Agent is working</span>
                   </div>
                 )}
