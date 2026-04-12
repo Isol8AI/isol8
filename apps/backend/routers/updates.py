@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
@@ -157,6 +158,7 @@ async def patch_single_config(
     except ConfigPatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
 
+    put_metric("update.config_patch.applied", dimensions={"scope": "single"})
     return {"status": "patched", "owner_id": owner_id, "keys": list(body.patch.keys())}
 
 
@@ -172,6 +174,8 @@ async def patch_fleet_config(
 ):
     if auth.is_org_context:
         require_org_admin(auth)
+
+    put_metric("update.fleet_patch.invoked")
 
     # Scan all owners from billing-accounts
     from core.dynamodb import get_table, run_in_thread

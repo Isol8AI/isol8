@@ -19,6 +19,7 @@ import logging
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
+from core.observability.metrics import put_metric
 from core.repositories import channel_link_repo
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
             if hmac.compare_digest(expected_b64, candidate):
                 return
 
+    put_metric("webhook.clerk.sig_fail")
     raise HTTPException(status_code=400, detail="Invalid svix signature")
 
 
@@ -88,6 +90,7 @@ async def handle_clerk_webhook(request: Request):
 
     event_type = payload.get("type", "")
     data = payload.get("data", {})
+    put_metric("webhook.clerk.received", dimensions={"event_type": event_type})
 
     if event_type == "user.created":
         user_id = data.get("id", "")

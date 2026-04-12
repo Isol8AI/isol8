@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
+from core.observability.metrics import put_metric
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.repositories import container_repo
@@ -23,6 +24,7 @@ router = APIRouter()
 async def require_non_production() -> None:
     """Dependency that blocks access in production environments."""
     if settings.ENVIRONMENT == "prod":
+        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "debug"})
         raise HTTPException(status_code=403, detail="Not available in production")
 
 

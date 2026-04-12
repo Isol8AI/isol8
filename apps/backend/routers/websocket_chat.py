@@ -19,6 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
 from routers.node_proxy import (
@@ -555,6 +556,7 @@ async def _process_agent_chat_background(
         container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
+            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             management_api.send_message(
                 connection_id,
@@ -566,6 +568,7 @@ async def _process_agent_chat_background(
             return
 
         if not ip:
+            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
             management_api.send_message(
                 connection_id,
@@ -607,12 +610,30 @@ async def _process_agent_chat_background(
         logger.info("[%s] chat.send ACK agent=%s result=%s", user_id, agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
 
+    except asyncio.TimeoutError:
+        chat_err = "RPC timed out"
+        put_metric("chat.error", dimensions={"reason": "timeout"})
+        logger.error("[%s] chat.send TIMEOUT agent=%s", user_id, agent_id)
+    except ConnectionError as e:
+        chat_err = str(e)
+        put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+        logger.error("[%s] chat.send CONNECT FAIL agent=%s: %s", user_id, agent_id, e)
+    except RuntimeError as e:
+        chat_err = str(e)
+        put_metric("chat.error", dimensions={"reason": "gateway_error"})
+        logger.error("[%s] chat.send GATEWAY ERROR agent=%s: %s", user_id, agent_id, e)
     except Exception as e:
+        chat_err = str(e)
+        put_metric("chat.error", dimensions={"reason": "unknown"})
         logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
-        try:
-            management_api.send_message(
-                connection_id,
-                {"type": "error", "message": f"Failed to send message: {e}"},
-            )
-        except Exception:
-            pass
+    else:
+        return  # success — no error to report
+
+    # All error branches fall through here to notify the client
+    try:
+        management_api.send_message(
+            connection_id,
+            {"type": "error", "message": f"Failed to send message: {chat_err}"},
+        )
+    except Exception:
+        pass

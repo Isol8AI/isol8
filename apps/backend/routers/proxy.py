@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
+from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo, billing_repo
 
 logger = logging.getLogger(__name__)
@@ -111,16 +112,19 @@ async def proxy_request(
             pass
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            upstream_resp = await client.request(
-                method=request.method,
-                url=upstream_url,
-                content=body,
-                headers={
-                    "Authorization": f"Bearer {upstream_key}",
-                    "Content-Type": request.headers.get("content-type", "application/json"),
-                },
-            )
+        with timing("proxy.upstream.latency", {"host": service}):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                upstream_resp = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    content=body,
+                    headers={
+                        "Authorization": f"Bearer {upstream_key}",
+                        "Content-Type": request.headers.get("content-type", "application/json"),
+                    },
+                )
+        status_class = f"{upstream_resp.status_code // 100}xx"
+        put_metric("proxy.upstream", dimensions={"host": service, "status": status_class})
         logger.info(
             "Proxy upstream response: %s %s for user %s, upstream_headers=%s, body_len=%d",
             upstream_resp.status_code,

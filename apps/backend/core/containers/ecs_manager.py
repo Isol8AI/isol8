@@ -17,6 +17,7 @@ import socket
 import boto3
 
 from core.config import settings
+from core.observability.metrics import put_metric, timing
 from core.containers.config import (
     build_device_paired_json,
     generate_node_device_identity,
@@ -105,9 +106,11 @@ class EcsManager:
                 ],
             )
             access_point_id = resp["AccessPointId"]
+            put_metric("container.efs.access_point", dimensions={"op": "create", "status": "ok"})
             logger.info("Created EFS access point %s for user %s", access_point_id, user_id)
             return access_point_id
         except Exception as e:
+            put_metric("container.efs.access_point", dimensions={"op": "create", "status": "error"})
             raise EcsManagerError(
                 f"Failed to create EFS access point for user {user_id}: {e}",
                 user_id,
@@ -117,10 +120,12 @@ class EcsManager:
         """Delete an EFS access point. Idempotent (ignores not-found)."""
         try:
             self._efs.delete_access_point(AccessPointId=access_point_id)
+            put_metric("container.efs.access_point", dimensions={"op": "delete", "status": "ok"})
             logger.info("Deleted EFS access point %s", access_point_id)
         except self._efs.exceptions.AccessPointNotFound:
             logger.warning("Access point %s already deleted", access_point_id)
         except Exception as e:
+            put_metric("container.efs.access_point", dimensions={"op": "delete", "status": "error"})
             logger.error("Failed to delete access point %s: %s", access_point_id, e)
 
     # ------------------------------------------------------------------
@@ -179,9 +184,11 @@ class EcsManager:
 
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            put_metric("container.task_def.register", dimensions={"status": "ok"})
             logger.info("Registered per-user task definition %s", task_def_arn)
             return task_def_arn
         except Exception as e:
+            put_metric("container.task_def.register", dimensions={"status": "error"})
             raise EcsManagerError(
                 f"Failed to register per-user task definition: {e}",
                 user_id="",
@@ -284,6 +291,7 @@ class EcsManager:
             self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
         except EcsManagerError:
+            put_metric("container.error_state")
             # Mark container as error in DB
             try:
                 await self._update_container(user_id, status="error", substatus=None)
@@ -296,6 +304,7 @@ class EcsManager:
                 self._delete_access_point(access_point_id)
             raise
         except Exception as e:
+            put_metric("container.error_state")
             # Mark container as error in DB
             try:
                 await self._update_container(user_id, status="error", substatus=None)
@@ -327,13 +336,15 @@ class EcsManager:
             EcsManagerError: If the ECS update_service call fails.
         """
         service_name = self._service_name(user_id)
+        put_metric("container.lifecycle.state_change", dimensions={"state": "stopping"})
 
         try:
-            self._ecs.update_service(
-                cluster=self._cluster,
-                service=service_name,
-                desiredCount=0,
-            )
+            with timing("container.lifecycle.latency", {"op": "stop"}):
+                self._ecs.update_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    desiredCount=0,
+                )
         except Exception as e:
             logger.error(
                 "Failed to stop ECS service %s for user %s: %s",
@@ -359,14 +370,16 @@ class EcsManager:
             EcsManagerError: If the ECS update_service call fails.
         """
         service_name = self._service_name(user_id)
+        put_metric("container.lifecycle.state_change", dimensions={"state": "starting"})
 
         try:
-            self._ecs.update_service(
-                cluster=self._cluster,
-                service=service_name,
-                desiredCount=1,
-                forceNewDeployment=True,
-            )
+            with timing("container.lifecycle.latency", {"op": "start"}):
+                self._ecs.update_service(
+                    cluster=self._cluster,
+                    service=service_name,
+                    desiredCount=1,
+                    forceNewDeployment=True,
+                )
         except Exception as e:
             logger.error(
                 "Failed to start ECS service %s for user %s: %s",
@@ -753,9 +766,12 @@ class EcsManager:
                 try:
                     await self.start_user_service(user_id)
                 except EcsManagerError:
+                    put_metric("container.provision", dimensions={"status": "error"})
+                    put_metric("container.error_state")
                     await self._update_container(user_id, status="error", substatus=None)
                     raise
 
+                put_metric("container.provision", dimensions={"status": "ok"})
                 return service_name
 
             elif running > 0:
@@ -781,9 +797,12 @@ class EcsManager:
                         forceNewDeployment=True,
                     )
                 except Exception as e:
+                    put_metric("container.provision", dimensions={"status": "error"})
+                    put_metric("container.error_state")
                     await self._update_container(user_id, status="error", substatus=None)
                     raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
 
+                put_metric("container.provision", dimensions={"status": "ok"})
                 return service_name
 
             else:
@@ -834,6 +853,8 @@ class EcsManager:
         try:
             await self.write_user_configs(user_id, gateway_token, tier=tier)
         except Exception as e:
+            put_metric("container.provision", dimensions={"status": "error"})
+            put_metric("container.error_state")
             await self._update_container(user_id, status="error", substatus=None)
             raise EcsManagerError(f"Failed to write configs for user {user_id}: {e}", user_id)
 
@@ -841,9 +862,12 @@ class EcsManager:
         try:
             await self.start_user_service(user_id)
         except EcsManagerError:
+            put_metric("container.provision", dimensions={"status": "error"})
+            put_metric("container.error_state")
             await self._update_container(user_id, status="error", substatus=None)
             raise
 
+        put_metric("container.provision", dimensions={"status": "ok"})
         logger.info("Provisioned container %s for user %s", service_name, user_id)
 
         # Step 5: Eagerly drive the provisioning → running transition. The

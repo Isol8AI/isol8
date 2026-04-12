@@ -6,6 +6,7 @@ import os
 import stripe
 
 from core.config import settings
+from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo
 
 logger = logging.getLogger(__name__)
@@ -46,10 +47,11 @@ class BillingService:
         # This replaces the previous Stripe search approach which was
         # eventually consistent and still produced duplicates within the
         # same second.
-        customer = stripe.Customer.create(
-            email=email,
-            metadata={"owner_id": owner_id, "owner_type": owner_type},
-        )
+        with timing("stripe.api.latency", {"op": "customers.create"}):
+            customer = stripe.Customer.create(
+                email=email,
+                metadata={"owner_id": owner_id, "owner_type": owner_type},
+            )
 
         try:
             return await billing_repo.create_if_not_exists(
@@ -66,8 +68,10 @@ class BillingService:
                 customer.id,
             )
             try:
-                stripe.Customer.delete(customer.id)
+                with timing("stripe.api.latency", {"op": "customers.delete"}):
+                    stripe.Customer.delete(customer.id)
             except Exception:
+                put_metric("stripe.api.error", dimensions={"op": "customers.delete", "error_code": "unknown"})
                 logger.warning("Failed to delete orphan Stripe customer %s", customer.id)
             return await billing_repo.get_by_owner_id(owner_id)
 
@@ -86,15 +90,16 @@ class BillingService:
         # display where the metered item appears as a second product.
         line_items = [{"price": fixed_price, "quantity": 1}]
 
-        session = stripe.checkout.Session.create(
-            customer=billing_account["stripe_customer_id"],
-            mode="subscription",
-            line_items=line_items,
-            subscription_data={"metadata": {"plan_tier": tier}},
-            allow_promotion_codes=True,
-            success_url=f"{FRONTEND_URL}/chat?subscription=success",
-            cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
-        )
+        with timing("stripe.api.latency", {"op": "checkout.session.create"}):
+            session = stripe.checkout.Session.create(
+                customer=billing_account["stripe_customer_id"],
+                mode="subscription",
+                line_items=line_items,
+                subscription_data={"metadata": {"plan_tier": tier}},
+                allow_promotion_codes=True,
+                success_url=f"{FRONTEND_URL}/chat?subscription=success",
+                cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
+            )
         return session.url
 
     async def set_metered_overage_item(self, billing_account: dict, enabled: bool) -> None:
@@ -144,10 +149,11 @@ class BillingService:
         # else: already in the desired state — no-op.
 
     async def create_portal_session(self, billing_account: dict) -> str:
-        session = stripe.billing_portal.Session.create(
-            customer=billing_account["stripe_customer_id"],
-            return_url=f"{FRONTEND_URL}/settings/billing",
-        )
+        with timing("stripe.api.latency", {"op": "billing_portal.session.create"}):
+            session = stripe.billing_portal.Session.create(
+                customer=billing_account["stripe_customer_id"],
+                return_url=f"{FRONTEND_URL}/settings/billing",
+            )
         return session.url
 
     async def update_subscription(self, billing_account: dict, subscription_id: str, tier: str) -> None:
