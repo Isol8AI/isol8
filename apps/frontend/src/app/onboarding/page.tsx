@@ -11,19 +11,29 @@ import {
 } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { User, Users } from "lucide-react";
+import { User, Users, Mail } from "lucide-react";
 
 export default function OnboardingPage() {
   const router = useRouter();
   const { isLoaded } = useAuth();
   const { user } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
-  const { userMemberships, isLoaded: orgsLoaded, setActive } = useOrganizationList({
+  const { userMemberships, userInvitations, isLoaded: orgsLoaded, setActive } = useOrganizationList({
     userMemberships: true,
+    userInvitations: true,
   });
   const api = useApi();
-  const [mode, setMode] = useState<"choose" | "personal" | "org">("choose");
   const [loading, setLoading] = useState(false);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+
+  const pendingInvitations = userInvitations?.data ?? [];
+
+  // Derive initial mode: show invitations if any exist, otherwise "choose".
+  // User can navigate away with setExplicitMode; once they do, we stop
+  // auto-detecting invitations.
+  const [explicitMode, setExplicitMode] = useState<"choose" | "personal" | "org" | "invitations" | null>(null);
+  const mode = explicitMode ?? (isLoaded && orgsLoaded && pendingInvitations.length > 0 ? "invitations" : "choose");
+  const setMode = setExplicitMode;
 
   // Two redirect triggers:
   //
@@ -84,6 +94,29 @@ export default function OnboardingPage() {
   if (mode !== "org" && organization) return null;
   if (mode !== "org" && userMemberships?.data && userMemberships.data.length > 0) return null;
 
+  async function handleAcceptInvitation(invitationId: string) {
+    setAcceptingId(invitationId);
+    try {
+      const inv = pendingInvitations.find((i) => i.id === invitationId);
+      if (inv && typeof (inv as unknown as { accept?: () => Promise<void> }).accept === "function") {
+        await (inv as unknown as { accept: () => Promise<void> }).accept();
+      }
+      await user?.update({ unsafeMetadata: { onboarded: true } });
+      // Small delay for Clerk to propagate the membership
+      await new Promise((r) => setTimeout(r, 500));
+      await userInvitations?.revalidate?.();
+      await userMemberships?.revalidate?.();
+      const memberships = userMemberships?.data;
+      if (memberships && memberships.length > 0 && setActive) {
+        await setActive({ organization: memberships[0].organization.id });
+      }
+      router.push("/chat");
+    } catch (err) {
+      console.error("Failed to accept invitation:", err);
+      setAcceptingId(null);
+    }
+  }
+
   async function handlePersonal() {
     setLoading(true);
     try {
@@ -94,6 +127,53 @@ export default function OnboardingPage() {
     } catch {
       setLoading(false);
     }
+  }
+
+  if (mode === "invitations") {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-screen gap-6 bg-background">
+        <div className="text-center mb-4">
+          <Mail className="h-10 w-10 mx-auto mb-3 text-primary" />
+          <h1 className="text-2xl font-bold">You have been invited</h1>
+          <p className="text-muted-foreground mt-2">
+            Accept an invitation to join an organization on Isol8.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-3 w-full max-w-md px-4">
+          {pendingInvitations.map((invitation) => (
+            <div
+              key={invitation.id}
+              className="flex items-center justify-between p-4 rounded-lg border border-border bg-card"
+            >
+              <div className="flex items-center gap-3">
+                <Users className="h-5 w-5 text-muted-foreground" />
+                <div>
+                  <div className="font-medium">
+                    {(invitation as unknown as { publicOrganizationData?: { name?: string } }).publicOrganizationData?.name || "Organization"}
+                  </div>
+                  <div className="text-sm text-muted-foreground">Pending invitation</div>
+                </div>
+              </div>
+              <Button
+                onClick={() => handleAcceptInvitation(invitation.id)}
+                disabled={acceptingId !== null}
+                size="sm"
+              >
+                {acceptingId === invitation.id ? "Accepting..." : "Accept"}
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-col items-center gap-2 mt-4">
+          <p className="text-sm text-muted-foreground">Or set up your own workspace instead</p>
+          <Button variant="ghost" onClick={() => setMode("choose")}>
+            Skip invitations
+          </Button>
+        </div>
+      </div>
+    );
   }
 
   if (mode === "org") {
@@ -158,6 +238,15 @@ export default function OnboardingPage() {
           </span>
         </button>
       </div>
+
+      {pendingInvitations.length > 0 && (
+        <button
+          onClick={() => setMode("invitations")}
+          className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
+        >
+          You have {pendingInvitations.length} pending invitation{pendingInvitations.length > 1 ? "s" : ""}
+        </button>
+      )}
     </div>
   );
 }

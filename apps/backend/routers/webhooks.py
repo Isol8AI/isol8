@@ -53,6 +53,7 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
     msg_signature = headers.get("svix-signature", "")
 
     if not msg_id or not msg_timestamp or not msg_signature:
+        put_metric("webhook.clerk.sig_fail")
         raise HTTPException(status_code=400, detail="Missing svix signature headers")
 
     signed_content = f"{msg_id}.{msg_timestamp}.".encode() + body

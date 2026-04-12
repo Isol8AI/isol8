@@ -57,8 +57,9 @@ export function ChatLayout({
   // first one on fresh logins — Clerk doesn't persist active-org state
   // across sessions, so without this a user who created an org on laptop A
   // would land on /onboarding on laptop B despite already being a member.
-  const { userMemberships, setActive, isLoaded: orgListLoaded } = useOrganizationList({
+  const { userMemberships, userInvitations, setActive, isLoaded: orgListLoaded } = useOrganizationList({
     userMemberships: true,
+    userInvitations: true,
   });
   const router = useRouter();
   const api = useApi();
@@ -111,18 +112,24 @@ export function ChatLayout({
   const clerkLoaded = userLoaded && orgLoaded && orgListLoaded;
   const isOnboarded = (user?.unsafeMetadata as Record<string, unknown> | undefined)?.onboarded === true;
   const hasMemberships = (userMemberships?.data?.length ?? 0) > 0;
+  const hasPendingInvitations = (userInvitations?.data?.length ?? 0) > 0;
 
   // A user needs onboarding if they have neither the flag nor any org
-  // memberships. If they have memberships they're effectively already past
-  // the personal/org decision — we just need to activate one.
-  const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && !organization;
+  // memberships AND no pending invitations. If they have memberships they're
+  // effectively already past the personal/org decision — we just need to
+  // activate one. If they have pending invitations, send them to onboarding
+  // where they can accept.
+  const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && !hasPendingInvitations && !organization;
   const needsAutoActivate = clerkLoaded && isSignedIn === true && !organization && hasMemberships;
+  // Users with pending invitations who haven't onboarded should also go to
+  // /onboarding where they'll see the invitation acceptance UI.
+  const needsInvitationFlow = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && hasPendingInvitations && !organization;
 
   useEffect(() => {
-    if (needsOnboarding) {
+    if (needsOnboarding || needsInvitationFlow) {
       router.replace("/onboarding");
     }
-  }, [needsOnboarding, router]);
+  }, [needsOnboarding, needsInvitationFlow, router]);
 
   useEffect(() => {
     if (!needsAutoActivate || !setActive) return;
@@ -140,9 +147,9 @@ export function ChatLayout({
     // billing rows — the backend no longer does that write, but we gate
     // here too so other context-sensitive endpoints called from sync
     // paths (future-proofing) don't misresolve owner_id either.
-    if (needsAutoActivate || needsOnboarding) return;
+    if (needsAutoActivate || needsOnboarding || needsInvitationFlow) return;
     api.syncUser().catch((err: unknown) => console.error("User sync failed:", err));
-  }, [isSignedIn, api, needsAutoActivate, needsOnboarding]);
+  }, [isSignedIn, api, needsAutoActivate, needsOnboarding, needsInvitationFlow]);
 
   // Dispatch DOM event so page.tsx picks up the current agent (external system sync)
   const lastDispatchedRef = useRef<string | null>(null);
@@ -181,7 +188,7 @@ export function ChatLayout({
   // its final context, it fires POST /container/provision and /billing
   // reads with a stale JWT and we end up with orphan personal rows for a
   // user who was always meant to be an org member.
-  if (!clerkLoaded || isSignedIn !== true || needsOnboarding || needsAutoActivate) {
+  if (!clerkLoaded || isSignedIn !== true || needsOnboarding || needsInvitationFlow || needsAutoActivate) {
     return (
       <div className="app-shell" style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "100vh" }}>
         <div style={{ color: "#6b6b6b", fontSize: 14 }}>Loading…</div>
@@ -389,7 +396,8 @@ export function ChatLayout({
           existingIds={agents.map((a) => a.id)}
           onCancel={() => setCreateFormOpen(false)}
           onCreate={async (name) => {
-            await createAgent({ name });
+            const normalizedId = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+            await createAgent({ name, workspace: "agents/" + normalizedId });
             setCreateFormOpen(false);
           }}
         />
