@@ -59,6 +59,8 @@ export interface ServiceStackProps extends cdk.StackProps {
   connectionsTableName: string;
   wsApiId: string;
   wsStage: string;
+  /** Optional: page topic ARN from ObservabilityStack (set via env var import). */
+  alertPageTopicArn?: string;
 }
 
 export class ServiceStack extends cdk.Stack {
@@ -278,18 +280,28 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
-    // Cloud Map (service discovery)
+    // Cloud Map (service discovery) — constrained to namespace + service
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "CloudMapAccess",
         actions: [
           "servicediscovery:RegisterInstance",
           "servicediscovery:DeregisterInstance",
-          "servicediscovery:DiscoverInstances",
           "servicediscovery:GetNamespace",
           "servicediscovery:GetService",
           "servicediscovery:ListInstances",
         ],
+        resources: [
+          props.container.cloudMapNamespace.namespaceArn,
+          props.container.cloudMapService.serviceArn,
+        ],
+      }),
+    );
+    // DiscoverInstances is not resource-scoped — it requires "*"
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudMapDiscover",
+        actions: ["servicediscovery:DiscoverInstances"],
         resources: ["*"],
       }),
     );
@@ -359,6 +371,12 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // S3 (OpenClaw config bucket)
+    // Per-user path scoping via IAM policy variables (${aws:userid}) is not
+    // feasible: aws:userid resolves to the IAM role unique ID, not the app-
+    // level Clerk user ID that keys the S3 paths. The bucket is already
+    // constrained to isol8-${env}-openclaw-configs so the blast radius is
+    // limited to this bucket. Application-level authorization enforces per-
+    // user access.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "S3Access",
@@ -385,6 +403,17 @@ export class ServiceStack extends cdk.Stack {
         ],
       }),
     );
+
+    // SNS (page topic — for backend-initiated alerts like fleet patch audits)
+    if (props.alertPageTopicArn) {
+      this.taskRole.addToPolicy(
+        new iam.PolicyStatement({
+          sid: "SnsPublishPageTopic",
+          actions: ["sns:Publish"],
+          resources: [props.alertPageTopicArn],
+        }),
+      );
+    }
 
     // DynamoDB CRUD on connections table
     this.taskRole.addToPolicy(
@@ -546,6 +575,11 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
+        // Observability: page topic ARN for backend-initiated SNS alerts.
+        // Populated after first deploy via Fn.importValue from ObservabilityStack.
+        ...(props.alertPageTopicArn
+          ? { ALERT_PAGE_TOPIC_ARN: props.alertPageTopicArn }
+          : {}),
       },
       secrets: {
         // Import secrets by name (NOT cross-stack ISecret) to avoid CDK

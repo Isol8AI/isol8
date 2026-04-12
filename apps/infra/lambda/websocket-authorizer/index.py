@@ -20,6 +20,14 @@ logger.setLevel(logging.INFO)
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
 CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
 
+# WebSocket Origin allow-list
+ALLOWED_ORIGINS = [
+    "https://app.isol8.co",
+    "https://dev.isol8.co",
+    "https://app-dev.isol8.co",
+    "http://localhost:3000",  # local dev
+]
+
 # Cache JWKS client (reused across invocations)
 _jwks_client = None
 
@@ -77,6 +85,13 @@ def handler(event: dict, context: Any) -> dict:
 
     # methodArn is used as the resource in the policy
     method_arn = event.get("methodArn", "*")
+
+    # Origin validation — reject connections from disallowed origins
+    headers = event.get("headers") or {}
+    origin = headers.get("Origin") or headers.get("origin")
+    if origin and origin not in ALLOWED_ORIGINS:
+        logger.warning("WebSocket connection denied: origin %s not in allow-list", origin)
+        return generate_policy("unauthorized", "Deny", method_arn)
 
     # Extract token from query parameters
     query_params = event.get("queryStringParameters") or {}
