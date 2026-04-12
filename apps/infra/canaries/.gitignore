@@ -1,0 +1,6 @@
+# Allow node_modules directories under canaries — these are required by
+# CloudWatch Synthetics runtime which expects handler at:
+#   nodejs/node_modules/<handler>.js
+!nodejs/
+!nodejs/node_modules/
+!nodejs/node_modules/*.js
