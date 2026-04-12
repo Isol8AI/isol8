@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 security = HTTPBearer()
 security_optional = HTTPBearer(auto_error=False)
 
-# JWKS cache with TTL
-_jwks_cache: dict = {"data": None, "expires_at": None}  # TODO: Change this to an actual cache backend
-JWKS_CACHE_TTL = timedelta(hours=1)
+# JWKS cache with TTL — 5 min refresh, 15 min max stale before fail-closed
+_jwks_cache: dict = {"data": None, "expires_at": None}
+JWKS_CACHE_TTL = timedelta(minutes=5)
+_JWKS_MAX_STALE = timedelta(minutes=15)
 
 
 async def _get_cached_jwks(jwks_url: str) -> dict:
@@ -43,10 +44,13 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
         return jwks
     except httpx.HTTPError as e:
         put_metric("auth.jwks.refresh", dimensions={"status": "error"})
-        # If fetch fails but we have stale cached data, use it as fallback
-        if _jwks_cache["data"]:
-            logger.warning(f"JWKS fetch failed, using stale cache: {e}")
-            return _jwks_cache["data"]
+        # Serve stale cache up to _JWKS_MAX_STALE, then fail closed
+        if _jwks_cache["data"] and _jwks_cache["expires_at"]:
+            staleness = now - _jwks_cache["expires_at"]
+            if staleness < _JWKS_MAX_STALE:
+                logger.warning("JWKS fetch failed, using stale cache (age %s): %s", staleness, e)
+                return _jwks_cache["data"]
+        logger.error("JWKS fetch failed and cache too stale (or empty): %s", e)
         raise
 
 
@@ -142,6 +146,7 @@ async def _decode_token(token: str) -> dict:
         algorithms=["RS256"],
         audience=settings.CLERK_AUDIENCE,
         issuer=settings.CLERK_ISSUER,
+        leeway=30,  # tolerate 30s clock skew
     )
 
 
