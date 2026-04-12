@@ -6,7 +6,9 @@ load_dotenv()
 import logging
 from contextlib import asynccontextmanager
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+from core.observability.logging import configure_logging
+
+configure_logging(level="INFO")
 
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -144,6 +146,12 @@ app = FastAPI(
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
+
+# Request-ID middleware — generates/propagates X-Request-ID for log correlation.
+# Added first so it runs innermost (after CORS and ProxyHeaders).
+from core.observability.middleware import RequestContextMiddleware
+
+app.add_middleware(RequestContextMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
 # Without this, FastAPI generates http:// URLs in redirects (e.g. redirect_slashes),
