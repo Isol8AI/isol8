@@ -4,8 +4,7 @@ import * as cloudwatch_actions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as subs from "aws-cdk-lib/aws-sns-subscriptions";
 // synthetics import deferred until canary PR
-import * as guardduty from "aws-cdk-lib/aws-guardduty";
-import * as accessanalyzer from "aws-cdk-lib/aws-accessanalyzer";
+// GuardDuty + Access Analyzer already enabled at account level — not managed by CDK
 import * as budgets from "aws-cdk-lib/aws-budgets";
 import * as events from "aws-cdk-lib/aws-events";
 import * as events_targets from "aws-cdk-lib/aws-events-targets";
@@ -2047,11 +2046,9 @@ def handler(event, context):
   private createAccountHardening(
     props: ObservabilityStackProps,
   ): void {
-    // GuardDuty detector
-    new guardduty.CfnDetector(this, "GuardDuty", {
-      enable: true,
-      findingPublishingFrequency: "FIFTEEN_MINUTES",
-    });
+    // GuardDuty and Access Analyzer are already enabled at the account level
+    // (prod has them pre-configured). We only create EventBridge rules to
+    // route their findings to our SNS warn topic.
 
     // GuardDuty findings → warn SNS via EventBridge
     const guardDutyRule = new events.Rule(this, "GuardDutyFindings", {
@@ -2063,12 +2060,6 @@ def handler(event, context):
       },
     });
     guardDutyRule.addTarget(new events_targets.SnsTopic(this.warnTopic));
-
-    // IAM Access Analyzer
-    new accessanalyzer.CfnAnalyzer(this, "AccessAnalyzer", {
-      type: "ACCOUNT",
-      analyzerName: `isol8-${this.envName}-access-analyzer`,
-    });
 
     // Access Analyzer findings → warn SNS via EventBridge
     const accessAnalyzerRule = new events.Rule(

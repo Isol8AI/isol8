@@ -111,12 +111,10 @@ describe("ObservabilityStack", () => {
 
   // Canary count test deferred — canaries not in this PR
 
-  test("creates GuardDuty detector", () => {
-    template.resourceCountIs("AWS::GuardDuty::Detector", 1);
-  });
-
-  test("creates IAM Access Analyzer", () => {
-    template.resourceCountIs("AWS::AccessAnalyzer::Analyzer", 1);
+  // GuardDuty + Access Analyzer already exist at account level — not created by CDK.
+  // We only create EventBridge rules to route their findings to SNS.
+  test("creates EventBridge rules for security findings", () => {
+    template.resourceCountIs("AWS::Events::Rule", 3); // GuardDuty + Access Analyzer + ECS TaskStopped
   });
 
   test("creates AWS Budget", () => {
