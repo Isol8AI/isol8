@@ -15,7 +15,6 @@ class TestIsConnected:
     """Tests for is_connected property (websockets v16 compat)."""
 
     def _make_conn(self):
-
         return GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",
@@ -175,7 +174,6 @@ class TestHandleMessage:
 
     @pytest.fixture
     def connection(self, mock_management_api):
-
         conn = GatewayConnection(
             user_id="test-user",
             ip="10.0.0.1",

@@ -25,6 +25,7 @@ def decrypt_gateway_token(blob: str) -> str:
         return blob  # plaintext (pre-migration)
     return decrypt(blob[4:])
 
+
 SUPPORTED_TOOLS = {
     "elevenlabs": {
         "display_name": "ElevenLabs TTS",

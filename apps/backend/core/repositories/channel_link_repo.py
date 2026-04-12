@@ -91,7 +91,9 @@ async def get_by_peer(
     """Look up a single link row by its full primary key."""
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "get", table.get_item,
+        table.name,
+        "get",
+        table.get_item,
         Key={"owner_id": owner_id, "sk": _sk(provider, agent_id, peer_id)},
     )
     return response.get("Item")
@@ -106,7 +108,9 @@ async def query_by_member(member_id: str) -> list[dict]:
     """
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         IndexName="by-member",
         KeyConditionExpression=Key("member_id").eq(member_id),
     )
@@ -122,7 +126,9 @@ async def query_by_owner(owner_id: str) -> list[dict]:
     """
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
     )
     return response.get("Items", [])
@@ -138,7 +144,9 @@ async def delete(
     """Delete a single link row."""
     table = _get_table()
     await call_with_metrics(
-        table.name, "delete", table.delete_item,
+        table.name,
+        "delete",
+        table.delete_item,
         Key={"owner_id": owner_id, "sk": _sk(provider, agent_id, peer_id)},
     )
 
@@ -163,7 +171,9 @@ async def sweep_by_owner_provider_agent(
     table = _get_table()
     prefix = f"{provider}#{agent_id}#"
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id) & Key("sk").begins_with(prefix),
     )
     items = response.get("Items", [])

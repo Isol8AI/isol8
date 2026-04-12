@@ -12,10 +12,28 @@ container_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("c
 
 # Fields from LogRecord that are standard/internal and should not be forwarded as extras
 _STANDARD_FIELDS = {
-    "name", "msg", "args", "created", "relativeCreated", "exc_info", "exc_text",
-    "stack_info", "lineno", "funcName", "pathname", "filename", "module",
-    "levelno", "levelname", "thread", "threadName", "process", "processName",
-    "msecs", "message", "taskName",
+    "name",
+    "msg",
+    "args",
+    "created",
+    "relativeCreated",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "pathname",
+    "filename",
+    "module",
+    "levelno",
+    "levelname",
+    "thread",
+    "threadName",
+    "process",
+    "processName",
+    "msecs",
+    "message",
+    "taskName",
 }
 
 

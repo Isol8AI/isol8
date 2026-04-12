@@ -58,7 +58,9 @@ async def get_pending(owner_id: str) -> list[dict]:
     """Get all pending or scheduled updates for an owner."""
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
         FilterExpression=Attr("status").is_in(["pending", "scheduled"]),
     )
@@ -84,7 +86,9 @@ async def set_status_conditional(
 
     try:
         await call_with_metrics(
-            table.name, "update", table.update_item,
+            table.name,
+            "update",
+            table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :new_status, updated_at = :now",
             ExpressionAttributeNames={"#s": "status"},
@@ -108,7 +112,9 @@ async def set_scheduled(
 
     try:
         await call_with_metrics(
-            table.name, "update", table.update_item,
+            table.name,
+            "update",
+            table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :status, scheduled_at = :sat, updated_at = :now",
             ExpressionAttributeNames={"#s": "status"},
@@ -131,7 +137,9 @@ async def set_snoozed(owner_id: str, update_id: str) -> bool:
 
     try:
         await call_with_metrics(
-            table.name, "update", table.update_item,
+            table.name,
+            "update",
+            table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET last_snoozed_at = :now, updated_at = :now2",
             ExpressionAttributeValues={":now": now, ":now2": now},
@@ -147,7 +155,9 @@ async def get_due_scheduled() -> list[dict]:
     table = _get_table()
     now = utc_now_iso()
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         IndexName="status-index",
         KeyConditionExpression=(Key("status").eq("scheduled") & Key("scheduled_at").lte(now)),
     )
@@ -162,7 +172,9 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
 
     try:
         await call_with_metrics(
-            table.name, "update", table.update_item,
+            table.name,
+            "update",
+            table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :status, applied_at = :now, updated_at = :now2, #t = :ttl",
             ExpressionAttributeNames={"#s": "status", "#t": "ttl"},

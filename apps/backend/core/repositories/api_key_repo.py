@@ -18,7 +18,9 @@ def _get_table():
 async def get_key(user_id: str, tool_id: str) -> dict | None:
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "get", table.get_item,
+        table.name,
+        "get",
+        table.get_item,
         Key={"user_id": user_id, "tool_id": tool_id},
     )
     return response.get("Item")
@@ -42,7 +44,9 @@ async def list_keys(user_id: str) -> list[dict]:
     """List all keys for a user, excluding encrypted_key from results."""
     table = _get_table()
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         KeyConditionExpression=Key("user_id").eq(user_id),
         ProjectionExpression="user_id, tool_id, created_at, updated_at",
     )
@@ -57,7 +61,9 @@ async def delete_key(user_id: str, tool_id: str) -> bool:
 
     table = _get_table()
     await call_with_metrics(
-        table.name, "delete", table.delete_item,
+        table.name,
+        "delete",
+        table.delete_item,
         Key={"user_id": user_id, "tool_id": tool_id},
     )
     return True

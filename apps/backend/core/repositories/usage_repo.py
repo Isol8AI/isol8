@@ -93,7 +93,9 @@ async def get_member_usage(owner_id: str, period: str) -> list[dict]:
     prefix = "member:"
     suffix = f":{period}"
     response = await call_with_metrics(
-        table.name, "query", table.query,
+        table.name,
+        "query",
+        table.query,
         KeyConditionExpression=(Key("owner_id").eq(owner_id) & Key("period").begins_with(prefix)),
     )
     results = []

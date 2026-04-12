@@ -22,8 +22,10 @@ def test_put_metric_auto_injects_env_and_service(capsys):
     """env and service dimensions should be auto-injected."""
     from unittest.mock import patch
 
-    with patch("core.observability.metrics._get_env", return_value="dev"), \
-         patch("core.observability.metrics._get_service", return_value="isol8-backend"):
+    with (
+        patch("core.observability.metrics._get_env", return_value="dev"),
+        patch("core.observability.metrics._get_service", return_value="isol8-backend"),
+    ):
         put_metric("test.metric")
     data = json.loads(capsys.readouterr().out.strip())
     assert data["env"] == "dev"

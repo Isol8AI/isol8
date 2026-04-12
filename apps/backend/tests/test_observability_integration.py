@@ -1,7 +1,6 @@
 """Integration test: verify observability wiring in the live FastAPI app."""
 
 
-
 def test_health_returns_request_id(client):
     """Health endpoint should return X-Request-ID header."""
     resp = client.get("/health")

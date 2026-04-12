@@ -62,7 +62,6 @@ def admin_client(app, org_admin_context):
 
 
 class TestFleetPatchConfirmationHeader:
-
     @patch("routers.updates.run_in_thread", new_callable=AsyncMock)
     @patch("routers.updates.get_table")
     def test_fleet_patch_requires_confirmation_header(self, mock_table, mock_run, admin_client):
@@ -107,7 +106,6 @@ class TestFleetPatchConfirmationHeader:
 
 
 class TestCrossTenantConfigPatch:
-
     @patch("routers.updates.patch_openclaw_config", new_callable=AsyncMock)
     @patch("routers.updates.user_repo")
     def test_single_patch_blocks_cross_tenant(self, mock_user_repo, mock_patch, admin_client):
@@ -135,7 +133,6 @@ class TestCrossTenantConfigPatch:
 
 
 class TestDebugEndpointAllowList:
-
     @pytest.mark.parametrize("env_value", ["prod", "production", "staging"])
     def test_debug_endpoints_blocked_in_prod(self, env_value, app):
         from core.auth import get_current_user
@@ -158,7 +155,6 @@ class TestDebugEndpointAllowList:
 
 
 class TestPathTraversalFix:
-
     @pytest.mark.parametrize(
         "malicious_path",
         [
@@ -202,7 +198,6 @@ class TestPathTraversalFix:
 
 
 class TestJWKSSecurity:
-
     def test_jwks_ttl_is_5_minutes(self):
         from core.auth import JWKS_CACHE_TTL
 
@@ -261,7 +256,6 @@ class TestJWKSSecurity:
 
 
 class TestGatewayTokenEncryption:
-
     def test_encrypt_gateway_token_prefixed(self):
         from core.services.key_service import decrypt_gateway_token, encrypt_gateway_token
 
@@ -282,13 +276,18 @@ class TestGatewayTokenEncryption:
 
 
 class TestWSOriginValidation:
-
     def test_origin_allow_list_defined(self):
         authorizer_path = Path(
             os.path.join(
                 os.path.dirname(__file__),
-                "..", "..", "..", "..",
-                "infra", "lambda", "websocket-authorizer", "index.py",
+                "..",
+                "..",
+                "..",
+                "..",
+                "infra",
+                "lambda",
+                "websocket-authorizer",
+                "index.py",
             )
         )
         # Fallback for worktree layout
@@ -309,7 +308,6 @@ class TestWSOriginValidation:
 
 
 class TestControlUIRefererStrip:
-
     def test_referer_handling_in_proxy(self):
         proxy_path = Path(
             "/Users/prasiddhaparthsarthy/Desktop/isol8.nosync/.claude/worktrees/orr-specs"
@@ -325,7 +323,6 @@ class TestControlUIRefererStrip:
 
 
 class TestMcporterFilePermissions:
-
     def test_mcporter_file_mode(self, tmp_path):
         from core.containers.workspace import Workspace
 
@@ -346,15 +343,12 @@ class TestMcporterFilePermissions:
 
 
 class TestHealthRateLimit:
-
     def test_health_rate_limited(self, app):
         from main import _health_buckets
 
         _health_buckets.clear()
 
-        with patch("core.dynamodb.get_table"), patch(
-            "core.dynamodb.run_in_thread", new_callable=AsyncMock
-        ) as mock_run:
+        with patch("core.dynamodb.get_table"), patch("core.dynamodb.run_in_thread", new_callable=AsyncMock) as mock_run:
             mock_run.return_value = None
             with TestClient(app) as client:
                 for i in range(100):
@@ -370,7 +364,6 @@ class TestHealthRateLimit:
 
 
 class TestDynamoDBThrottleWrapper:
-
     @pytest.mark.asyncio
     async def test_throttle_retry_and_metric(self):
         from botocore.exceptions import ClientError
@@ -385,9 +378,7 @@ class TestDynamoDBThrottleWrapper:
         with patch("core.services.dynamodb_helper.put_metric") as mock_metric:
             result = await call_with_metrics("test-table", "get", fn)
         assert result == {"Item": {"id": "1"}}
-        mock_metric.assert_called_with(
-            "dynamodb.throttle", dimensions={"table": "test-table", "op": "get"}
-        )
+        mock_metric.assert_called_with("dynamodb.throttle", dimensions={"table": "test-table", "op": "get"})
 
     @pytest.mark.asyncio
     async def test_non_throttle_error_emits_error_metric(self):

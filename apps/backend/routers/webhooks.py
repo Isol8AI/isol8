@@ -92,10 +92,12 @@ async def _mark_clerk_webhook_processed(event_id: str) -> None:
     table = get_table("webhook-event-dedup")
 
     def _put():
-        table.put_item(Item={
-            "event_id": f"clerk:{event_id}",
-            "ttl": int(time.time()) + 30 * 86400,
-        })
+        table.put_item(
+            Item={
+                "event_id": f"clerk:{event_id}",
+                "ttl": int(time.time()) + 30 * 86400,
+            }
+        )
 
     try:
         await run_in_thread(_put)
