@@ -19,6 +19,7 @@ from uuid import uuid4
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Response
 
 from core.containers import get_ecs_manager, get_gateway_pool
+from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
 from routers.node_proxy import (
@@ -555,6 +556,7 @@ async def _process_agent_chat_background(
         container, ip = await ecs_manager.resolve_running_container(owner_id)
 
         if not container:
+            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no container for owner=%s", user_id, owner_id)
             management_api.send_message(
                 connection_id,
@@ -566,6 +568,7 @@ async def _process_agent_chat_background(
             return
 
         if not ip:
+            put_metric("chat.error", dimensions={"reason": "container_unreachable"})
             logger.warning("[%s] chat.send FAIL: no IP for owner=%s (container starting)", user_id, owner_id)
             management_api.send_message(
                 connection_id,
@@ -608,6 +611,7 @@ async def _process_agent_chat_background(
         # Streaming response events are forwarded by the connection pool's reader task
 
     except Exception as e:
+        put_metric("chat.error", dimensions={"reason": "container_unreachable"})
         logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
         try:
             management_api.send_message(

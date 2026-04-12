@@ -18,6 +18,7 @@ from core.auth import (
     require_org_admin,
     resolve_owner_id,
 )
+from core.observability.metrics import put_metric
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import channel_link_repo
 from core.services import channel_link_service
@@ -108,6 +109,7 @@ async def get_links_me(auth: AuthContext = Depends(get_current_user)):
                     if acct_id and username:
                         bot_usernames[prov][acct_id] = username
     except Exception as e:
+        put_metric("channel.rpc", dimensions={"provider": "all", "status": "error"})
         logger.debug("channels.status probe failed for links/me (using fallback): %s", e)
 
     result: dict = {"can_create_bots": can_create_bots}
@@ -166,9 +168,12 @@ async def link_complete(
             linked_via=body.linked_via,
         )
     except channel_link_service.PairingCodeNotFoundError as e:
+        put_metric("channel.configure", dimensions={"provider": provider, "status": "error"})
         raise HTTPException(status_code=404, detail=str(e))
     except channel_link_service.PeerAlreadyLinkedError as e:
+        put_metric("channel.configure", dimensions={"provider": provider, "status": "error"})
         raise HTTPException(status_code=409, detail=str(e))
+    put_metric("channel.configure", dimensions={"provider": provider, "status": "ok"})
     return result
 
 
