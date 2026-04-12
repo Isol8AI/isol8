@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService, BillingServiceError
 from core.services.usage_service import check_budget, get_usage_summary
@@ -329,15 +330,18 @@ async def handle_stripe_webhook(
     try:
         event = stripe.Webhook.construct_event(body, sig, settings.STRIPE_WEBHOOK_SECRET)
     except Exception as e:
+        put_metric("stripe.webhook.sig_fail")
         logger.error("Stripe webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
     event_type = event["type"]
+    put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
     event_data = event["data"]["object"]
 
     billing_service = BillingService()
 
     if event_type == "customer.subscription.created":
+        put_metric("stripe.subscription", dimensions={"event": "created"})
         customer_id = event_data["customer"]
         subscription_id = event_data["id"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
@@ -357,6 +361,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.updated":
+        put_metric("stripe.subscription", dimensions={"event": "updated"})
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
@@ -374,6 +379,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.deleted":
+        put_metric("stripe.subscription", dimensions={"event": "deleted"})
         customer_id = event_data["customer"]
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
@@ -391,6 +397,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "invoice.payment_failed":
+        put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
         logger.warning("Payment failed for customer %s", event_data.get("customer"))
 
     elif event_type == "invoice.paid":

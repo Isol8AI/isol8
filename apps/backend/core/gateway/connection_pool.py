@@ -17,6 +17,7 @@ from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 
 GATEWAY_PORT = 18789  # OpenClaw gateway port (avoid circular import with containers/)
@@ -85,6 +86,7 @@ class GatewayConnection:
                 gone.append(conn_id)
         for conn_id in gone:
             self._frontend_connections.discard(conn_id)
+            put_metric("gateway.frontend.prune")
             logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
 
     @property
@@ -115,6 +117,7 @@ class GatewayConnection:
         await self._handshake()
         await self._verify_health()
         self._reader_task = asyncio.create_task(self._reader_loop())
+        put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
         logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
 
@@ -238,6 +241,7 @@ class GatewayConnection:
         while True:
             remaining = deadline - asyncio.get_event_loop().time()
             if remaining <= 0:
+                put_metric("gateway.health_check.timeout")
                 raise RuntimeError("Gateway health check timed out")
 
             raw = await asyncio.wait_for(self._ws.recv(), timeout=remaining)
@@ -378,6 +382,7 @@ class GatewayConnection:
                 gone.append(conn_id)
         for conn_id in gone:
             self._frontend_connections.discard(conn_id)
+            put_metric("gateway.frontend.prune")
             logger.info("Pruned gone frontend connection %s for user %s", conn_id, self.user_id)
         # Log delivery summary for non-chunk messages (chunks are too frequent)
         msg_type = message.get("type", "?")
@@ -555,6 +560,7 @@ class GatewayConnection:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
         except Exception:
+            put_metric("chat.session_usage.fetch.error")
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
 
     def _handle_message(self, data: dict) -> None:
@@ -679,6 +685,7 @@ class GatewayConnection:
                         target_member or "broadcast",
                     )
                 if state == "final":
+                    put_metric("chat.message.count")
                     # Send thinking content if present (before visible text)
                     thinking_text = self._extract_thinking_text(payload)
                     if thinking_text:
@@ -689,6 +696,7 @@ class GatewayConnection:
                         self._forward_to_frontends({"type": "chunk", "content": final_text}, target_member)
                     self._forward_to_frontends({"type": "done"}, target_member)
                 elif state == "error":
+                    put_metric("chat.error", dimensions={"reason": "agent_error"})
                     err = payload.get("error", {})
                     msg = (
                         err.get("message", "Agent run failed")
@@ -697,6 +705,7 @@ class GatewayConnection:
                     )
                     self._forward_to_frontends({"type": "error", "message": msg}, target_member)
                 elif state == "aborted":
+                    put_metric("chat.error", dimensions={"reason": "aborted"})
                     self._forward_to_frontends({"type": "error", "message": "Agent run was cancelled"}, target_member)
 
             else:
@@ -718,6 +727,7 @@ class GatewayConnection:
         except Exception as e:
             if self._closed:
                 return
+            put_metric("gateway.connection", dimensions={"event": "error"})
             logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
             self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
             # Reject all pending RPCs
@@ -821,7 +831,11 @@ class GatewayConnectionPool:
                 conn = await self._create_connection(user_id, ip, token)
 
         await conn.send_rpc(req_id, method, params)
-        return await conn.wait_for_response(req_id)
+        try:
+            return await conn.wait_for_response(req_id)
+        except Exception:
+            put_metric("gateway.rpc.error", dimensions={"method": method})
+            raise
 
     def add_frontend_connection(
         self,
@@ -873,6 +887,7 @@ class GatewayConnectionPool:
         """Close gateway connection for a user."""
         conn = self._connections.pop(user_id, None)
         if conn:
+            put_metric("gateway.connection", dimensions={"event": "disconnect"})
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
@@ -906,6 +921,11 @@ class GatewayConnectionPool:
         try:
             while True:
                 await asyncio.sleep(_IDLE_CHECK_INTERVAL)
+                # Emit open-connection gauge every cycle
+                try:
+                    gauge("gateway.connection.open", len(self._connections))
+                except Exception:
+                    pass
                 now = time.time()
 
                 # Snapshot user_ids with active connections
@@ -931,6 +951,7 @@ class GatewayConnectionPool:
                     try:
                         from core.containers import get_ecs_manager
 
+                        put_metric("gateway.idle.scale_to_zero")
                         await get_ecs_manager().stop_user_service(user_id)
                         await self.close_user(user_id)
                         logger.info("Scale-to-zero: stopped container for idle free user %s", user_id)
