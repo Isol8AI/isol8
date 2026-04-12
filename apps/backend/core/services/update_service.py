@@ -4,6 +4,7 @@ import asyncio
 import logging
 
 from core.config import TIER_CONFIG
+from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.containers.config import _models_for_tier
 from core.services.config_patcher import patch_openclaw_config
@@ -225,6 +226,7 @@ async def run_scheduled_worker() -> None:
     logger.info("Scheduled update worker started")
     while True:
         try:
+            put_metric("update.scheduled_worker.heartbeat")
             due_updates = await update_repo.get_due_scheduled()
             if due_updates:
                 logger.info("Found %d due scheduled updates", len(due_updates))
@@ -236,6 +238,7 @@ async def run_scheduled_worker() -> None:
                 except Exception:
                     logger.exception("Error applying scheduled update %s (owner=%s)", update_id, owner_id)
         except Exception:
+            put_metric("update.scheduled_worker.error")
             logger.exception("Error in scheduled update worker loop")
 
         await asyncio.sleep(60)

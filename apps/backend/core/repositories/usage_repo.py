@@ -4,11 +4,14 @@ from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
 
-from core.dynamodb import get_table, run_in_thread
+from core.dynamodb import get_table
+from core.services.dynamodb_helper import call_with_metrics
+
+_TABLE_SHORT = "usage-counters"
 
 
 def _get_table():
-    return get_table("usage-counters")
+    return get_table(_TABLE_SHORT)
 
 
 async def increment(
@@ -49,7 +52,7 @@ async def increment(
     if return_new:
         kwargs["ReturnValues"] = "ALL_NEW"
 
-    response = await run_in_thread(table.update_item, **kwargs)
+    response = await call_with_metrics(table.name, "update", table.update_item, **kwargs)
 
     if return_new:
         attrs = response.get("Attributes", {})
@@ -67,7 +70,7 @@ async def increment(
 async def get_period_usage(owner_id: str, period: str) -> dict | None:
     """Get usage counters for an owner+period. Returns None if no usage."""
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id, "period": period})
+    response = await call_with_metrics(table.name, "get", table.get_item, Key={"owner_id": owner_id, "period": period})
     item = response.get("Item")
     if item is None:
         return None
@@ -89,8 +92,8 @@ async def get_member_usage(owner_id: str, period: str) -> list[dict]:
     table = _get_table()
     prefix = "member:"
     suffix = f":{period}"
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         KeyConditionExpression=(Key("owner_id").eq(owner_id) & Key("period").begins_with(prefix)),
     )
     results = []

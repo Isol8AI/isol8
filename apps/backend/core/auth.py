@@ -8,14 +8,19 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from core.config import settings
+from core.observability.metrics import put_metric
+from core.observability.logging import bind_request_context, request_id_var
 
 logger = logging.getLogger(__name__)
 security = HTTPBearer()
 security_optional = HTTPBearer(auto_error=False)
 
-# JWKS cache with TTL
-_jwks_cache: dict = {"data": None, "expires_at": None}  # TODO: Change this to an actual cache backend
-JWKS_CACHE_TTL = timedelta(hours=1)
+# JWKS cache with TTL — lowered from 1h to 5min for faster key rotation
+_jwks_cache: dict = {"data": None, "expires_at": None}
+JWKS_CACHE_TTL = timedelta(minutes=5)
+
+# Maximum staleness before we fail closed (15 minutes)
+_JWKS_MAX_STALE = timedelta(minutes=15)
 
 
 async def _get_cached_jwks(jwks_url: str) -> dict:
@@ -36,13 +41,19 @@ async def _get_cached_jwks(jwks_url: str) -> dict:
         # Update cache
         _jwks_cache["data"] = jwks
         _jwks_cache["expires_at"] = now + JWKS_CACHE_TTL
+        put_metric("auth.jwks.refresh", dimensions={"status": "ok"})
         logger.info("JWKS cache refreshed")
         return jwks
     except httpx.HTTPError as e:
-        # If fetch fails but we have stale cached data, use it as fallback
-        if _jwks_cache["data"]:
-            logger.warning(f"JWKS fetch failed, using stale cache: {e}")
-            return _jwks_cache["data"]
+        put_metric("auth.jwks.refresh", dimensions={"status": "error"})
+        # If fetch fails but we have stale cached data, use it — up to 15 min
+        if _jwks_cache["data"] and _jwks_cache["expires_at"]:
+            staleness = now - _jwks_cache["expires_at"]
+            if staleness < _JWKS_MAX_STALE:
+                logger.warning("JWKS fetch failed, using stale cache (age %s): %s", staleness, e)
+                return _jwks_cache["data"]
+        # Fail closed — stale cache too old or no cache at all
+        logger.error("JWKS fetch failed and no usable cache: %s", e)
         raise
 
 
@@ -99,6 +110,7 @@ def get_owner_type(auth: AuthContext) -> str:
 def require_org_admin(auth: AuthContext) -> AuthContext:
     """Raise 403 if user is in an org but not an admin. Personal context passes through."""
     if auth.is_org_context and not auth.is_org_admin:
+        put_metric("auth.org_admin.denied")
         raise HTTPException(status_code=403, detail="Organization admin access required")
     return auth
 
@@ -137,6 +149,7 @@ async def _decode_token(token: str) -> dict:
         algorithms=["RS256"],
         audience=settings.CLERK_AUDIENCE,
         issuer=settings.CLERK_ISSUER,
+        leeway=30,  # tolerate 30s clock skew
     )
 
 
@@ -173,7 +186,7 @@ async def get_current_user(
         payload = await _decode_token(token)
         org = _extract_org_claims(payload)
 
-        return AuthContext(
+        ctx = AuthContext(
             user_id=payload["sub"],
             org_id=org["org_id"],
             org_role=org["org_role"],
@@ -181,19 +194,25 @@ async def get_current_user(
             org_permissions=org["org_permissions"],
             email=payload.get("email"),
         )
+        bind_request_context(request_id_var.get() or "", payload["sub"])
+        return ctx
 
     except jwt.ExpiredSignatureError:
+        put_metric("auth.jwt.fail", dimensions={"reason": "expired"})
         logger.warning("AUTH FAIL: JWT expired")
         raise HTTPException(status_code=401, detail="Token expired")
     except (jwt.InvalidAudienceError, jwt.InvalidIssuerError, jwt.MissingRequiredClaimError) as e:
+        put_metric("auth.jwt.fail", dimensions={"reason": "claims"})
         logger.warning("AUTH FAIL: JWT claims error: %s", e)
         raise HTTPException(status_code=401, detail="Invalid claims")
     except httpx.HTTPError as e:
+        put_metric("auth.jwt.fail", dimensions={"reason": "jwks_unavailable"})
         logger.error(f"Failed to fetch JWKS: {e}")
         raise HTTPException(status_code=503, detail="Authentication service unavailable")
     except HTTPException:
         raise
     except Exception as e:
+        put_metric("auth.jwt.fail", dimensions={"reason": "unknown"})
         logger.error(f"JWT validation error: {e}")
         raise HTTPException(status_code=401, detail="Could not validate credentials")
 

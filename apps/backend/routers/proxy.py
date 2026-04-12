@@ -13,7 +13,9 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
 
 from core.config import settings
+from core.observability.metrics import put_metric, timing
 from core.repositories import container_repo, billing_repo
+from core.services.usage_service import check_budget
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -47,16 +49,20 @@ async def _authenticate_and_check_budget(
 
     container = await container_repo.get_by_gateway_token(token)
     if not container:
+        put_metric("proxy.auth.fail")
         raise HTTPException(status_code=401, detail="Invalid gateway token")
 
     account = await billing_repo.get_by_owner_id(container["owner_id"])
     if not account:
         raise HTTPException(status_code=403, detail="No billing account")
 
-    # Enforce budget: block requests when monthly usage exceeds plan budget.
-    # Budget enforcement is simplified during DynamoDB migration — usage tracking
-    # will be re-implemented. For now, allow all requests for paying users.
-    # Free tier users are still gated by the existence of a billing account.
+    # Enforce budget for free tier users
+    tier = account.get("plan_tier", "free")
+    if tier == "free":
+        budget = await check_budget(container["owner_id"])
+        if not budget.get("allowed", True):
+            put_metric("proxy.budget_check.fail")
+            raise HTTPException(status_code=429, detail="Free tier proxy budget exceeded")
 
     return container, account
 
@@ -111,16 +117,19 @@ async def proxy_request(
             pass
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            upstream_resp = await client.request(
-                method=request.method,
-                url=upstream_url,
-                content=body,
-                headers={
-                    "Authorization": f"Bearer {upstream_key}",
-                    "Content-Type": request.headers.get("content-type", "application/json"),
-                },
-            )
+        with timing("proxy.upstream.latency", {"host": service}):
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                upstream_resp = await client.request(
+                    method=request.method,
+                    url=upstream_url,
+                    content=body,
+                    headers={
+                        "Authorization": f"Bearer {upstream_key}",
+                        "Content-Type": request.headers.get("content-type", "application/json"),
+                    },
+                )
+        status_class = f"{upstream_resp.status_code // 100}xx"
+        put_metric("proxy.upstream", dimensions={"host": service, "status": status_class})
         logger.info(
             "Proxy upstream response: %s %s for user %s, upstream_headers=%s, body_len=%d",
             upstream_resp.status_code,
@@ -135,6 +144,7 @@ async def proxy_request(
             upstream_resp.text,
         )
     except Exception as e:
+        put_metric("proxy.upstream", dimensions={"host": service, "status": "error"})
         logger.error("Proxy upstream error for user %s: %s — %s", container["owner_id"], upstream_url, e)
         raise
 

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import stripe
 
 from core.config import settings, TIER_CONFIG
+from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
 from core.services.bedrock_pricing import get_model_price
 
@@ -32,6 +33,7 @@ async def record_usage(
     """Record a single LLM usage event."""
     pricing = get_model_price(model)
     if pricing is None:
+        put_metric("billing.pricing.missing_model")
         logger.warning("No pricing for model %s — skipping for owner %s", model, owner_id)
         return
 
@@ -122,6 +124,7 @@ async def record_usage(
                     identifier=f"{owner_id}_{int(time.time() * 1000)}",
                 )
     except Exception as e:
+        put_metric("stripe.meter_event.fail")
         logger.warning("Failed to report usage to Stripe for %s: %s", owner_id, e)
 
 

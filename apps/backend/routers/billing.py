@@ -2,13 +2,18 @@
 
 import asyncio
 import logging
+import os
+import time
 
 import httpx
 import stripe
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
+from core.observability.metrics import put_metric
+from core.dynamodb import get_table, run_in_thread
 from core.repositories import billing_repo, usage_repo
 from core.services.billing_service import BillingService, BillingServiceError
 from core.services.usage_service import check_budget, get_usage_summary
@@ -31,6 +36,30 @@ from schemas.billing import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_DEDUP_TABLE_NAME = os.getenv("WEBHOOK_DEDUP_TABLE", f"{settings.DYNAMODB_TABLE_PREFIX}webhook-event-dedup")
+
+
+async def _check_webhook_dedup(event_id: str) -> bool:
+    """Returns True if this is a duplicate (already processed)."""
+    table = get_table("webhook-event-dedup")
+
+    def _put():
+        table.put_item(
+            Item={
+                "event_id": f"stripe:{event_id}",
+                "ttl": int(time.time()) + 30 * 86400,
+            },
+            ConditionExpression="attribute_not_exists(event_id)",
+        )
+
+    try:
+        await run_in_thread(_put)
+        return False  # New event
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return True  # Duplicate
+        raise
 
 
 async def _resolve_clerk_user(user_id: str) -> dict:
@@ -329,15 +358,28 @@ async def handle_stripe_webhook(
     try:
         event = stripe.Webhook.construct_event(body, sig, settings.STRIPE_WEBHOOK_SECRET)
     except Exception as e:
+        put_metric("stripe.webhook.sig_fail")
         logger.error("Stripe webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Idempotency check — skip if already processed
+    try:
+        if await _check_webhook_dedup(event["id"]):
+            put_metric("stripe.webhook.duplicate")
+            logger.info("Duplicate Stripe webhook event %s, skipping", event["id"])
+            return {"status": "ok"}
+    except Exception:
+        # If dedup check fails (e.g. table not yet deployed), log and continue processing
+        logger.warning("Webhook dedup check failed for event %s, processing anyway", event["id"])
+
     event_type = event["type"]
     event_data = event["data"]["object"]
+    put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
 
     billing_service = BillingService()
 
     if event_type == "customer.subscription.created":
+        put_metric("stripe.subscription", dimensions={"event": "created"})
         customer_id = event_data["customer"]
         subscription_id = event_data["id"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
@@ -357,6 +399,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.updated":
+        put_metric("stripe.subscription", dimensions={"event": "updated"})
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
@@ -374,6 +417,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.deleted":
+        put_metric("stripe.subscription", dimensions={"event": "deleted"})
         customer_id = event_data["customer"]
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
@@ -391,6 +435,7 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "invoice.payment_failed":
+        put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
         logger.warning("Payment failed for customer %s", event_data.get("customer"))
 
     elif event_type == "invoice.paid":

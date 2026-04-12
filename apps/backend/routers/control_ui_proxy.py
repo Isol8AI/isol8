@@ -145,11 +145,11 @@ async def proxy_root(
         gateway_token=container["gateway_token"],
     )
 
-    # Fetch root page from gateway
+    # Fetch root page from gateway — strip Referer to prevent token leakage
     upstream_url = f"http://{ip}:{GATEWAY_PORT}/"
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         try:
-            resp = await client.get(upstream_url)
+            resp = await client.get(upstream_url, headers={"Referer": ""})
         except httpx.ConnectError:
             raise HTTPException(status_code=502, detail="Gateway not reachable")
         except httpx.TimeoutException:
@@ -203,9 +203,14 @@ async def proxy_static(session_id: str, path: str):
 
     upstream_url = f"http://{session.ip}:{GATEWAY_PORT}/{path}" if path else f"http://{session.ip}:{GATEWAY_PORT}/"
 
+    # Strip Referer and other sensitive headers before proxying upstream
+    proxy_headers = {}
+    for key, val in [("Accept", "text/html,*/*")]:
+        proxy_headers[key] = val
+
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
         try:
-            resp = await client.get(upstream_url)
+            resp = await client.get(upstream_url, headers=proxy_headers)
         except httpx.ConnectError:
             raise HTTPException(status_code=502, detail="Gateway not reachable")
         except httpx.TimeoutException:

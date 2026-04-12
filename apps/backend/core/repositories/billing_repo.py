@@ -7,7 +7,8 @@ from decimal import Decimal
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.dynamodb import get_table, utc_now_iso
+from core.services.dynamodb_helper import call_with_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -16,19 +17,24 @@ class AlreadyExistsError(Exception):
     """Raised when a conditional put fails because the item already exists."""
 
 
+_TABLE_SHORT = "billing-accounts"
+
+
 def _get_table():
-    return get_table("billing-accounts")
+    return get_table(_TABLE_SHORT)
 
 
 async def get_by_owner_id(owner_id: str) -> dict | None:
     table = _get_table()
-    response = await run_in_thread(table.get_item, Key={"owner_id": owner_id})
+    response = await call_with_metrics(table.name, "get", table.get_item, Key={"owner_id": owner_id})
     return response.get("Item")
 
 
 async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
     table = _get_table()
-    response = await run_in_thread(
+    response = await call_with_metrics(
+        table.name,
+        "query",
         table.query,
         IndexName="stripe-customer-index",
         KeyConditionExpression=Key("stripe_customer_id").eq(stripe_customer_id),
@@ -65,7 +71,9 @@ async def create_if_not_exists(
         "updated_at": now,
     }
     try:
-        await run_in_thread(
+        await call_with_metrics(
+            table.name,
+            "put",
             table.put_item,
             Item=item,
             ConditionExpression="attribute_not_exists(owner_id)",
@@ -91,13 +99,13 @@ async def update_subscription(
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
+    await call_with_metrics(table.name, "put", table.put_item, Item=existing)
     return existing
 
 
 async def delete(owner_id: str) -> None:
     table = _get_table()
-    await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+    await call_with_metrics(table.name, "delete", table.delete_item, Key={"owner_id": owner_id})
 
 
 async def set_overage_enabled(owner_id: str, enabled: bool, overage_limit: int | None = None) -> dict | None:
@@ -114,5 +122,5 @@ async def set_overage_enabled(owner_id: str, enabled: bool, overage_limit: int |
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
+    await call_with_metrics(table.name, "put", table.put_item, Item=existing)
     return existing

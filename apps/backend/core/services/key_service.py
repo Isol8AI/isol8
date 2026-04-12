@@ -8,6 +8,23 @@ from core.repositories import api_key_repo
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Gateway token encryption (uses same Fernet key as BYOK)
+# ---------------------------------------------------------------------------
+
+
+def encrypt_gateway_token(token: str) -> str:
+    """Encrypt gateway token. Returns 'enc:' prefixed ciphertext."""
+    return f"enc:{encrypt(token)}"
+
+
+def decrypt_gateway_token(blob: str) -> str:
+    """Decrypt gateway token. Passes through plaintext (pre-migration)."""
+    if not blob.startswith("enc:"):
+        return blob  # plaintext (pre-migration)
+    return decrypt(blob[4:])
+
 SUPPORTED_TOOLS = {
     "elevenlabs": {
         "display_name": "ElevenLabs TTS",
@@ -59,4 +76,10 @@ class KeyService:
 
     async def get_key(self, user_id: str, tool_id: str) -> Optional[str]:
         item = await api_key_repo.get_key(user_id, tool_id)
-        return decrypt(item["encrypted_key"]) if item else None
+        if item:
+            logger.info(
+                "BYOK key decrypted",
+                extra={"action": "byok_decrypt", "actor_id": user_id, "key_id": tool_id},
+            )
+            return decrypt(item["encrypted_key"])
+        return None

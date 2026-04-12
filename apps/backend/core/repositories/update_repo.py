@@ -5,11 +5,14 @@ import uuid
 
 from boto3.dynamodb.conditions import Attr, Key
 
-from core.dynamodb import get_table, run_in_thread, utc_now_iso
+from core.dynamodb import get_table, utc_now_iso
+from core.services.dynamodb_helper import call_with_metrics
+
+_TABLE_SHORT = "pending-updates"
 
 
 def _get_table():
-    return get_table("pending-updates")
+    return get_table(_TABLE_SHORT)
 
 
 def _generate_ulid_like() -> str:
@@ -47,15 +50,15 @@ async def create(
     }
     if force_by is not None:
         item["force_by"] = force_by
-    await run_in_thread(table.put_item, Item=item)
+    await call_with_metrics(table.name, "put", table.put_item, Item=item)
     return item
 
 
 async def get_pending(owner_id: str) -> list[dict]:
     """Get all pending or scheduled updates for an owner."""
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         KeyConditionExpression=Key("owner_id").eq(owner_id),
         FilterExpression=Attr("status").is_in(["pending", "scheduled"]),
     )
@@ -80,8 +83,8 @@ async def set_status_conditional(
         condition = condition | Attr("status").eq(s)
 
     try:
-        await run_in_thread(
-            table.update_item,
+        await call_with_metrics(
+            table.name, "update", table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :new_status, updated_at = :now",
             ExpressionAttributeNames={"#s": "status"},
@@ -104,8 +107,8 @@ async def set_scheduled(
     condition = Attr("status").eq("pending")
 
     try:
-        await run_in_thread(
-            table.update_item,
+        await call_with_metrics(
+            table.name, "update", table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :status, scheduled_at = :sat, updated_at = :now",
             ExpressionAttributeNames={"#s": "status"},
@@ -127,8 +130,8 @@ async def set_snoozed(owner_id: str, update_id: str) -> bool:
     now = utc_now_iso()
 
     try:
-        await run_in_thread(
-            table.update_item,
+        await call_with_metrics(
+            table.name, "update", table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET last_snoozed_at = :now, updated_at = :now2",
             ExpressionAttributeValues={":now": now, ":now2": now},
@@ -143,8 +146,8 @@ async def get_due_scheduled() -> list[dict]:
     """Query GSI for scheduled updates that are due (scheduled_at <= now)."""
     table = _get_table()
     now = utc_now_iso()
-    response = await run_in_thread(
-        table.query,
+    response = await call_with_metrics(
+        table.name, "query", table.query,
         IndexName="status-index",
         KeyConditionExpression=(Key("status").eq("scheduled") & Key("scheduled_at").lte(now)),
     )
@@ -158,8 +161,8 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
     ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)  # 30 days
 
     try:
-        await run_in_thread(
-            table.update_item,
+        await call_with_metrics(
+            table.name, "update", table.update_item,
             Key={"owner_id": owner_id, "update_id": update_id},
             UpdateExpression="SET #s = :status, applied_at = :now, updated_at = :now2, #t = :ttl",
             ExpressionAttributeNames={"#s": "status", "#t": "ttl"},
