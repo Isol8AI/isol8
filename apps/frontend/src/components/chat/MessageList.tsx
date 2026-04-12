@@ -1,7 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
-import { Copy, RefreshCw, Share2, Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import ReactMarkdown from "react-markdown";
@@ -184,7 +184,6 @@ function MessageToolbar({ modelName }: { modelName?: string }) {
     return (
         <div className="flex items-center gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="text-xs font-medium text-[#8a8578] mr-2 flex items-center gap-1">
-                <Bot className="h-3 w-3" />
                 {modelName || "Assistant"}
             </span>
             <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
@@ -254,7 +253,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               {/* Assistant avatar */}
               {msg.role === "assistant" && (
                 <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
-                  <Bot className="h-4 w-4 text-white" />
+                  <svg width="14" height="8" viewBox="0 0 24 12" fill="none">
+                    <path d="M12 6C9.5 2 7 1 5 3C3 5 3 7 5 9C7 11 9.5 10 12 6C14.5 2 17 1 19 3C21 5 21 7 19 9C17 11 14.5 10 12 6Z" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
               )}
 
