@@ -398,6 +398,9 @@ export class ObservabilityStack extends cdk.Stack {
     // -- Container & gateway (W1-W8) --
 
     // W1: container-provision-error-rate (metric math)
+    // Backend emits container.provision with status="ok" or status="error" dimension.
+    // CloudWatch EMF creates separate streams per dimension set, so we must
+    // query each status value explicitly and sum for the total.
     const provisionErrors = new cloudwatch.Metric({
       namespace: "Isol8",
       metricName: "container.provision",
@@ -405,16 +408,16 @@ export class ObservabilityStack extends cdk.Stack {
       period: cdk.Duration.minutes(10),
       dimensionsMap: { ...dims, status: "error" },
     });
-    const provisionTotal = new cloudwatch.Metric({
+    const provisionOk = new cloudwatch.Metric({
       namespace: "Isol8",
       metricName: "container.provision",
       statistic: "Sum",
       period: cdk.Duration.minutes(10),
-      dimensionsMap: { ...dims },
+      dimensionsMap: { ...dims, status: "ok" },
     });
     const provisionRate = new cloudwatch.MathExpression({
-      expression: "100 * errors / IF(total > 0, total, 1)",
-      usingMetrics: { errors: provisionErrors, total: provisionTotal },
+      expression: "100 * errors / IF((errors + ok) > 0, errors + ok, 1)",
+      usingMetrics: { errors: provisionErrors, ok: provisionOk },
       period: cdk.Duration.minutes(10),
     });
     const w1 = new cloudwatch.Alarm(this, "W1", {
@@ -1119,17 +1122,31 @@ export class ObservabilityStack extends cdk.Stack {
     });
     w36.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W37: ECS cluster CPUUtilization
+    // W37: ECS cluster CPU utilization (percentage via metric math)
+    // CpuUtilized and CpuReserved are absolute values (MHz); divide for percentage
+    const cpuPct = new cloudwatch.MathExpression({
+      expression: "100 * utilized / reserved",
+      usingMetrics: {
+        utilized: new cloudwatch.Metric({
+          namespace: "ECS/ContainerInsights",
+          metricName: "CpuUtilized",
+          statistic: "Average",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ClusterName: clusterName },
+        }),
+        reserved: new cloudwatch.Metric({
+          namespace: "ECS/ContainerInsights",
+          metricName: "CpuReserved",
+          statistic: "Average",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ClusterName: clusterName },
+        }),
+      },
+    });
     const w37 = new cloudwatch.Alarm(this, "W37", {
       alarmName: `isol8-${this.envName}-W37-ecs-cpu-utilization`,
       alarmDescription: "ECS cluster CPU utilization exceeds 80%",
-      metric: new cloudwatch.Metric({
-        namespace: "ECS/ContainerInsights",
-        metricName: "CpuUtilized",
-        statistic: "Average",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ClusterName: clusterName },
-      }),
+      metric: cpuPct,
       threshold: 80,
       evaluationPeriods: 3,
       comparisonOperator:
@@ -1138,17 +1155,30 @@ export class ObservabilityStack extends cdk.Stack {
     });
     w37.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W38: ECS cluster MemoryUtilization
+    // W38: ECS cluster Memory utilization (percentage via metric math)
+    const memPct = new cloudwatch.MathExpression({
+      expression: "100 * utilized / reserved",
+      usingMetrics: {
+        utilized: new cloudwatch.Metric({
+          namespace: "ECS/ContainerInsights",
+          metricName: "MemoryUtilized",
+          statistic: "Average",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ClusterName: clusterName },
+        }),
+        reserved: new cloudwatch.Metric({
+          namespace: "ECS/ContainerInsights",
+          metricName: "MemoryReserved",
+          statistic: "Average",
+          period: cdk.Duration.minutes(5),
+          dimensionsMap: { ClusterName: clusterName },
+        }),
+      },
+    });
     const w38 = new cloudwatch.Alarm(this, "W38", {
       alarmName: `isol8-${this.envName}-W38-ecs-memory-utilization`,
       alarmDescription: "ECS cluster memory utilization exceeds 80%",
-      metric: new cloudwatch.Metric({
-        namespace: "ECS/ContainerInsights",
-        metricName: "MemoryUtilized",
-        statistic: "Average",
-        period: cdk.Duration.minutes(5),
-        dimensionsMap: { ClusterName: clusterName },
-      }),
+      metric: memPct,
       threshold: 80,
       evaluationPeriods: 3,
       comparisonOperator:
