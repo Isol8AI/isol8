@@ -610,13 +610,30 @@ async def _process_agent_chat_background(
         logger.info("[%s] chat.send ACK agent=%s result=%s", user_id, agent_id, result)
         # Streaming response events are forwarded by the connection pool's reader task
 
-    except Exception as e:
+    except asyncio.TimeoutError:
+        chat_err = "RPC timed out"
+        put_metric("chat.error", dimensions={"reason": "timeout"})
+        logger.error("[%s] chat.send TIMEOUT agent=%s", user_id, agent_id)
+    except ConnectionError as e:
+        chat_err = str(e)
         put_metric("chat.error", dimensions={"reason": "container_unreachable"})
+        logger.error("[%s] chat.send CONNECT FAIL agent=%s: %s", user_id, agent_id, e)
+    except RuntimeError as e:
+        chat_err = str(e)
+        put_metric("chat.error", dimensions={"reason": "gateway_error"})
+        logger.error("[%s] chat.send GATEWAY ERROR agent=%s: %s", user_id, agent_id, e)
+    except Exception as e:
+        chat_err = str(e)
+        put_metric("chat.error", dimensions={"reason": "unknown"})
         logger.error("[%s] chat.send FAIL agent=%s: %s", user_id, agent_id, e)
-        try:
-            management_api.send_message(
-                connection_id,
-                {"type": "error", "message": f"Failed to send message: {e}"},
-            )
-        except Exception:
-            pass
+    else:
+        return  # success — no error to report
+
+    # All error branches fall through here to notify the client
+    try:
+        management_api.send_message(
+            connection_id,
+            {"type": "error", "message": f"Failed to send message: {chat_err}"},
+        )
+    except Exception:
+        pass
