@@ -6,6 +6,7 @@ import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
+import { ObservabilityStack } from "./stacks/observability-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
@@ -60,7 +61,7 @@ export class Isol8Stage extends cdk.Stage {
     });
 
     // ServiceStack replaces ComputeStack
-    new ServiceStack(this, `isol8-${env}-service`, {
+    const service = new ServiceStack(this, `isol8-${env}-service`, {
       stackName: `isol8-${env}-service`,
       environment: env,
       vpc: network.vpc,
@@ -100,6 +101,29 @@ export class Isol8Stage extends cdk.Stage {
       connectionsTableName: api.connectionsTableName,
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
+    });
+
+    // ObservabilityStack — alarms, dashboard, canaries, account hardening
+    new ObservabilityStack(this, `isol8-${env}-observability`, {
+      stackName: `isol8-${env}-observability`,
+      envName: env,
+      backendService: service.service,
+      backendLogGroupName: `/ecs/isol8-${env}`,
+      alb: network.alb,
+      wsApiId: api.wsApiId,
+      cluster: container.cluster,
+      efsFileSystem: container.efsFileSystem,
+      databaseTables: {
+        usersTable: database.usersTable,
+        containersTable: database.containersTable,
+        billingTable: database.billingTable,
+        apiKeysTable: database.apiKeysTable,
+        usageCountersTable: database.usageCountersTable,
+        pendingUpdatesTable: database.pendingUpdatesTable,
+        channelLinksTable: database.channelLinksTable,
+      },
+      connectionsTableName: api.connectionsTableName,
+      authorizerFunctionName: `isol8-${env}-ws-authorizer`,
     });
 
     // --- Tags ---
