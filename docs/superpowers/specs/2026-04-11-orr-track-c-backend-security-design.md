@@ -68,7 +68,7 @@ Each fix below cites the #190 §3 item number, the file/lines, the change, and t
 4. **Confirmation header:** require an `X-Confirm-Fleet-Patch: yes-i-am-sure` header. Reject 400 if absent.
 5. **Metric:** Track A emits `update.fleet_patch.invoked` from this same site. This track ensures the emit happens AFTER all checks pass (not before — we don't want the metric/alarm firing for rejected attempts).
 
-**Test:** `test_updates.py::test_fleet_patch_requires_confirmation_header` — POST without header, assert 400. `test_fleet_patch_rate_limited` — invoke twice in <1h, assert 429. `test_fleet_patch_writes_audit_log` — invoke once, assert audit_logs row exists.
+**Test:** `test_updates.py::test_fleet_patch_requires_confirmation_header` — POST without header, assert 400. `test_fleet_patch_rate_limited` — invoke twice in <1h, assert 429. `test_fleet_patch_writes_audit_log` — invoke once, assert structured log line with `action="fleet_patch"` appears in captured log output (use `caplog` — there is no audit_logs table).
 
 #### Item 2 — Single-user config patch trusts org admin across users
 

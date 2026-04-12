@@ -29,19 +29,23 @@ aws secretsmanager update-secret \
 
 ### 3. Re-encrypt All BYOK Keys
 
-Run the re-encryption script with both old and new keys:
+**TODO:** A re-encryption script does not exist yet. Until one is written, re-encrypt manually:
 
-```bash
-cd apps/backend
-OLD_KEY=<old-key> NEW_KEY=<new-key> uv run python scripts/rotate_encryption_key.py
+1. Scan the `api-keys` DynamoDB table for all rows
+2. For each row: decrypt `encrypted_key` with the OLD Fernet key, re-encrypt with the NEW key, write back
+3. This is safe to run multiple times (idempotent — re-encrypting an already-migrated key produces the same result)
+
+```python
+# One-off re-encryption snippet (run via uv run python -c "...")
+from cryptography.fernet import Fernet
+old_f = Fernet(b"<old-key>")
+new_f = Fernet(b"<new-key>")
+# For each row: new_f.encrypt(old_f.decrypt(row["encrypted_key"].encode()))
 ```
 
-### 4. Re-encrypt Gateway Tokens
+### 4. Gateway Tokens
 
-```bash
-cd apps/backend
-OLD_KEY=<old-key> NEW_KEY=<new-key> uv run python scripts/backfill_gateway_token_encryption.py
-```
+Gateway tokens are not currently encrypted at rest (deferred to a future PR using hash-based storage). No re-encryption needed for gateway tokens during key rotation.
 
 ### 5. Deploy
 
