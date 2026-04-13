@@ -11,21 +11,25 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
-from core.observability.metrics import put_metric
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
+from core.observability.metrics import put_metric
 from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+# Environments where debug endpoints MUST be disabled
+_PROD_ENVIRONMENTS = {"prod", "production", "staging"}
+
 
 async def require_non_production() -> None:
     """Dependency that blocks access in production environments."""
-    if settings.ENVIRONMENT == "prod":
+    env = (settings.ENVIRONMENT or "").lower().strip()
+    if env in _PROD_ENVIRONMENTS:
         put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "debug"})
-        raise HTTPException(status_code=403, detail="Not available in production")
+        raise HTTPException(status_code=403, detail="Debug endpoints disabled in production")
 
 
 @router.post(
