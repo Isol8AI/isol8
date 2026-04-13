@@ -616,18 +616,18 @@ class GatewayConnection:
             # overwrite or intermix with the user's web conversation.
             session_source = parsed_key.get("source", "")
             is_channel_session = session_source in ("dm", "group", "channel")
+            is_cron_session = session_source == "cron"
 
-            # Demote noisy periodic events (health, tick) to DEBUG so they
-            # don't drown actual chat/agent signals in the logs. Log
-            # meaningful non-agent events (chat state changes, sessions,
-            # etc.) at INFO.
+            # Drop noisy periodic events (health, tick) entirely — they are
+            # OpenClaw-internal keep-alives and should never reach frontends.
             if event_name in ("health", "tick"):
                 logger.debug(
                     "Gateway heartbeat for %s: event=%s",
                     self.user_id,
                     event_name,
                 )
-            elif event_name != "agent":
+                return
+            if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
                 logger.info(
                     "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
@@ -662,16 +662,19 @@ class GatewayConnection:
                     and payload["data"].get("phase") == "end"
                 ):
                     self._record_usage_from_session(payload)
-                # Skip forwarding channel events to the web UI.
-                if is_channel_session:
+                # Skip forwarding channel and cron events to the web UI.
+                # Cron jobs run in isolated sessions inside OpenClaw — their
+                # streaming events must not leak into a user's active web chat
+                # (a cron "done" would terminate the user's streaming session).
+                if is_channel_session or is_cron_session:
                     return
                 transformed = self._transform_agent_event(payload)
                 if transformed:
                     self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
-                # Skip forwarding channel chat events to the web UI.
-                if is_channel_session:
+                # Skip forwarding channel and cron chat events to the web UI.
+                if is_channel_session or is_cron_session:
                     return
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
@@ -970,6 +973,8 @@ def _parse_session_key(session_key: str) -> dict:
     Shapes (from openclaw/src/routing/session-key.ts with dmScope=per-account-channel-peer):
       Personal webchat:  agent:<agentId>:main
       Org webchat:       agent:<agentId>:<clerk_user_id>
+      Cron chat:         agent:<agentId>:cron:<cronId>
+      Cron run event:    agent:<agentId>:cron:<cronId>:run:<runId>
       Channel DM:        agent:<agentId>:<channel>:<accountId>:direct:<peerId>
       Channel group:     agent:<agentId>:<channel>:group:<id>(:topic:<topicId>)?
       Channel room:      agent:<agentId>:<channel>:channel:<id>(:thread:<threadId>)?
@@ -978,6 +983,7 @@ def _parse_session_key(session_key: str) -> dict:
       - empty {} for malformed input
       - {agent_id, source} for webchat personal
       - {agent_id, source, member_id} for org webchat (member_id is the clerk user_id)
+      - {agent_id, source, cron_id} for cron sessions (source="cron")
       - {agent_id, source, channel, peer_id} for channel DMs (source="dm")
       - {agent_id, source, channel, group_id} for channel groups (source="group")
       - {agent_id, source, channel, channel_id} for channel rooms (source="channel")
@@ -986,6 +992,18 @@ def _parse_session_key(session_key: str) -> dict:
     if len(parts) < 3 or parts[0] != "agent":
         return {}
     agent_id = parts[1]
+
+    # Cron sessions: agent:<agentId>:cron:<cronId>(:run:<runId>)?
+    # Must check BEFORE webchat since 4-part cron keys would otherwise
+    # fall through to channel parsing.
+    if parts[2] == "cron":
+        result = {
+            "agent_id": agent_id,
+            "source": "cron",
+        }
+        if len(parts) >= 4:
+            result["cron_id"] = parts[3]
+        return result
 
     # Webchat: 3 parts (agent:<agentId>:<sessionName>)
     if len(parts) == 3:

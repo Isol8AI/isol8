@@ -72,6 +72,21 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
                 "channel_id": "C123ABC",
             },
         ),
+        # Cron chat session
+        (
+            "agent:main:cron:dfb80362-1cdb-4089-b778-27a5f51d765a",
+            {"agent_id": "main", "source": "cron", "cron_id": "dfb80362-1cdb-4089-b778-27a5f51d765a"},
+        ),
+        # Cron run event (longer key)
+        (
+            "agent:main:cron:dfb80362-1cdb-4089-b778-27a5f51d765a:run:d89",
+            {"agent_id": "main", "source": "cron", "cron_id": "dfb80362-1cdb-4089-b778-27a5f51d765a"},
+        ),
+        # Cron with no ID (just "cron" at position 2)
+        (
+            "agent:sales:cron",
+            {"agent_id": "sales", "source": "cron"},
+        ),
         # Malformed
         ("garbage", {}),
         ("", {}),
@@ -82,6 +97,16 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
 def test_parse_session_key(session_key, expected):
     result = _parse_session_key(session_key)
     assert result == expected
+
+
+def test_cron_session_is_not_webchat():
+    """Cron sessions must not be classified as webchat — their events should
+    not be forwarded to frontends (a cron chat.final would terminate an
+    active user's streaming session)."""
+    result = _parse_session_key("agent:main:cron:dfb80362-1cdb-4089-b778-27a5f51d765a")
+    assert result["source"] == "cron"
+    assert result["source"] not in ("webchat", "dm", "group", "channel")
+    assert "member_id" not in result
 
 
 def test_group_key_does_not_return_literal_channel_as_member_id():

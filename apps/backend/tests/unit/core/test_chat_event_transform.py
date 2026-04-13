@@ -327,9 +327,15 @@ class TestHandleMessage:
     # -- Other events (forwarded as-is) --
 
     def test_non_chat_non_agent_event_forwarded_as_is(self, connection, mock_management_api):
-        raw_event = {"type": "event", "event": "health", "payload": {"status": "ok"}}
+        raw_event = {"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}}
         connection._handle_message(raw_event)
         mock_management_api.send_message.assert_called_once_with("conn-1", raw_event)
+
+    def test_health_tick_events_dropped(self, connection, mock_management_api):
+        """Health/tick heartbeat events should never reach frontends."""
+        connection._handle_message({"type": "event", "event": "health", "payload": {}})
+        connection._handle_message({"type": "event", "event": "tick", "payload": {}})
+        mock_management_api.send_message.assert_not_called()
 
     # -- Multi-connection forwarding --
 
