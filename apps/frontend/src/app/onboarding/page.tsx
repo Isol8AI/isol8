@@ -101,16 +101,12 @@ export default function OnboardingPage() {
       if (inv && typeof (inv as unknown as { accept?: () => Promise<void> }).accept === "function") {
         await (inv as unknown as { accept: () => Promise<void> }).accept();
       }
-      await user?.update({ unsafeMetadata: { onboarded: true } });
-      // Small delay for Clerk to propagate the membership
-      await new Promise((r) => setTimeout(r, 500));
+      // Don't redirect or mark onboarded here — the useEffect at the top
+      // watches userMemberships and handles setActive + onboarded + redirect
+      // once Clerk propagates the membership. This avoids racing with Clerk's
+      // eventual consistency.
       await userInvitations?.revalidate?.();
       await userMemberships?.revalidate?.();
-      const memberships = userMemberships?.data;
-      if (memberships && memberships.length > 0 && setActive) {
-        await setActive({ organization: memberships[0].organization.id });
-      }
-      router.push("/chat");
     } catch (err) {
       console.error("Failed to accept invitation:", err);
       setAcceptingId(null);
