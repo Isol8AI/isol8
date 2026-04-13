@@ -7,18 +7,14 @@ import logging
 from contextlib import asynccontextmanager
 
 from core.observability.logging import configure_logging
-from core.observability.middleware import RequestContextMiddleware
 
 configure_logging(level="INFO")
 
-from fastapi import FastAPI, Depends, HTTPException, Request
+from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
-
-import time
-from collections import defaultdict
 
 from core.auth import get_current_user
 from core.config import settings
@@ -152,6 +148,9 @@ app = FastAPI(
 )
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.
+# Added first so it runs innermost (after CORS and ProxyHeaders).
+from core.observability.middleware import RequestContextMiddleware
+
 app.add_middleware(RequestContextMiddleware)
 
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
@@ -245,9 +244,6 @@ app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
 app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 
-# Health endpoint rate-limit bucket: per-IP, 100 req/min
-_health_buckets: dict[str, list] = defaultdict(list)
-
 
 @app.get(
     "/",
@@ -273,16 +269,8 @@ async def root():
         503: {"description": "DynamoDB connection failed"},
     },
 )
-async def health_check(request: Request):
+async def health_check():
     """Health check for ALB — validates DynamoDB connectivity."""
-    # Rate limit: 100 req/min per IP
-    ip = request.client.host if request.client else "unknown"
-    now = time.time()
-    _health_buckets[ip] = [t for t in _health_buckets[ip] if now - t < 60]
-    if len(_health_buckets[ip]) >= 100:
-        raise HTTPException(status_code=429, detail="Rate limited")
-    _health_buckets[ip].append(now)
-
     try:
         from core.dynamodb import get_table, run_in_thread
 

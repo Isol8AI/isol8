@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
-from core.repositories import update_repo, user_repo
+from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
 
@@ -157,14 +157,10 @@ async def patch_single_config(
     if auth.is_org_context:
         require_org_admin(auth)
 
-        # Cross-tenant scoping: verify caller's org owns the target.
-        # owner_id can be an org_id (for org-owned containers) or a user_id.
-        # If owner_id IS the caller's org, it's an org-owned container — allow.
-        # Otherwise, look up the user and verify org membership.
+        # Cross-tenant scoping: in org context, containers are owned by the org
+        # (owner_id == org_id). An org admin can only patch their own org's container.
         if owner_id != auth.org_id:
-            target_user = await user_repo.get(owner_id)
-            if not target_user or target_user.get("org_id") != auth.org_id:
-                raise HTTPException(403, "Cannot patch user outside your organization")
+            raise HTTPException(403, "Cannot patch container outside your organization")
 
     try:
         await patch_openclaw_config(owner_id, body.patch)
