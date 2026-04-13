@@ -1,13 +1,17 @@
 """Container updates router -- pending updates, apply/schedule, admin config patches."""
 
+import hashlib
+import json as json_mod
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
+from core.dynamodb import get_table, run_in_thread
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
@@ -153,6 +157,11 @@ async def patch_single_config(
     if auth.is_org_context:
         require_org_admin(auth)
 
+        # Cross-tenant scoping: in org context, containers are owned by the org
+        # (owner_id == org_id). An org admin can only patch their own org's container.
+        if owner_id != auth.org_id:
+            raise HTTPException(403, "Cannot patch container outside your organization")
+
     try:
         await patch_openclaw_config(owner_id, body.patch)
     except ConfigPatchError as e:
@@ -169,17 +178,48 @@ async def patch_single_config(
     "Runs in the request — for large fleets, consider using the async update system instead.",
 )
 async def patch_fleet_config(
+    request: Request,
     body: ConfigPatchRequest,
     auth: AuthContext = Depends(get_current_user),
 ):
     if auth.is_org_context:
         require_org_admin(auth)
 
+    # Require explicit confirmation header
+    confirm = request.headers.get("X-Confirm-Fleet-Patch")
+    if confirm != "yes-i-am-sure":
+        raise HTTPException(400, "Fleet patch requires X-Confirm-Fleet-Patch: yes-i-am-sure header")
+
+    # Audit log
+    payload_hash = hashlib.sha256(json_mod.dumps(body.patch, sort_keys=True).encode()).hexdigest()
+    logger.warning(
+        "Fleet config patch invoked",
+        extra={
+            "action": "fleet_patch",
+            "actor_id": auth.user_id,
+            "payload_hash": payload_hash,
+        },
+    )
+
+    # Emit metric
     put_metric("update.fleet_patch.invoked")
 
-    # Scan all owners from billing-accounts
-    from core.dynamodb import get_table, run_in_thread
+    # SNS notification
+    topic_arn = os.getenv("ALERT_PAGE_TOPIC_ARN")
+    if topic_arn:
+        try:
+            import boto3
 
+            sns = boto3.client("sns")
+            sns.publish(
+                TopicArn=topic_arn,
+                Subject="Fleet Config Patch Invoked",
+                Message=f"Fleet config patch by {auth.user_id}, payload_hash={payload_hash}",
+            )
+        except Exception:
+            logger.exception("Failed to publish fleet patch SNS alert")
+
+    # Scan all owners from billing-accounts
     table = get_table("billing-accounts")
     owners = []
     last_key = None
@@ -198,6 +238,7 @@ async def patch_fleet_config(
     for oid in owners:
         try:
             await patch_openclaw_config(oid, body.patch)
+            put_metric("update.config_patch.applied", dimensions={"scope": "fleet"})
             patched += 1
         except ConfigPatchError:
             failed += 1
