@@ -58,7 +58,8 @@ class TestGatewayConnection:
         """_handle_message with type=event should forward to all frontend connections."""
         connection._frontend_connections.add("conn-abc")
         connection._frontend_connections.add("conn-def")
-        connection._handle_message({"type": "event", "event": "health", "payload": {"status": "ok"}})
+        # Use sessions.updated — health/tick events are now intentionally dropped.
+        connection._handle_message({"type": "event", "event": "sessions.updated", "payload": {"status": "ok"}})
         assert mock_management_api.send_message.call_count == 2
 
     def test_shared_frontend_connections(self, connection):
