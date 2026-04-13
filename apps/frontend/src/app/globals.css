@@ -155,6 +155,31 @@
 }
 
 /* ═══════════════════════════════════════════════
+   AVATAR INFINITY ↔ 8 FLIP
+   ═══════════════════════════════════════════════ */
+
+.avatar-flip .avatar-symbol {
+  transform: rotate(0deg) scale(1);
+}
+
+.avatar-flip.is-thinking .avatar-symbol {
+  animation: none;
+  transform: rotate(0deg) scale(1);
+}
+
+.avatar-flip.is-done .avatar-symbol {
+  animation: avatar-settle 0.7s cubic-bezier(.22,1.2,.36,1) forwards;
+}
+
+@keyframes avatar-settle {
+  0%   { transform: rotate(0deg) scale(1); }
+  30%  { transform: rotate(50deg) scale(1.15); }
+  60%  { transform: rotate(97deg) scale(1.05); }
+  80%  { transform: rotate(87deg) scale(1); }
+  100% { transform: rotate(90deg) scale(1); }
+}
+
+/* ═══════════════════════════════════════════════
    LANDING PAGE STYLES
    ═══════════════════════════════════════════════ */
 

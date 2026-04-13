@@ -250,11 +250,14 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 msg.role === "user" ? "justify-end" : "justify-start gap-3"
               )}
             >
-              {/* Assistant avatar */}
+              {/* Assistant avatar — infinity while typing, flips to 8 when done */}
               {msg.role === "assistant" && (
-                <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
-                  <svg width="14" height="8" viewBox="0 0 24 12" fill="none">
-                    <path d="M12 6C9.5 2 7 1 5 3C3 5 3 7 5 9C7 11 9.5 10 12 6C14.5 2 17 1 19 3C21 5 21 7 19 9C17 11 14.5 10 12 6Z" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                <div className={cn(
+                  "w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1 avatar-flip",
+                  isTyping && isLastAssistant ? "is-thinking" : "is-done"
+                )}>
+                  <svg width="14" height="8" viewBox="0 0 24 12" fill="none" className="avatar-symbol">
+                    <path className="avatar-path" d="M12 6C9.5 2 7 1 5 3C3 5 3 7 5 9C7 11 9.5 10 12 6C14.5 2 17 1 19 3C21 5 21 7 19 9C17 11 14.5 10 12 6Z" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
                   </svg>
                 </div>
               )}
