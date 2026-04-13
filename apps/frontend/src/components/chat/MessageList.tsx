@@ -294,7 +294,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                       : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
                           <span className="inline-flex items-center h-5">
                             <svg width="24" height="12" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
-                              <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                              <path className="infinity-base" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                              <path className="infinity-tracer" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#5a5549" strokeWidth="1.3" fill="none" />
                             </svg>
                           </span>
                         ) : null)}
@@ -303,7 +304,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 {isTyping && isLastAssistant && msg.content && (
                   <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
                     <svg width="18" height="10" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
-                      <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                      <path className="infinity-base" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                      <path className="infinity-tracer" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#5a5549" strokeWidth="1.3" fill="none" />
                     </svg>
                     <span>Agent is working</span>
                   </div>
