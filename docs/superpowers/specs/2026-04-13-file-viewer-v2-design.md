@@ -63,7 +63,7 @@ The file viewer header contains two tabs that switch the entire tree + content c
   - `AGENTS.md` — sub-agent configuration
   - `HEARTBEAT.md` — heartbeat configuration
 - **Excluded:** `sessions/` directory, dotfiles, any other internal OpenClaw state
-- Read-only in V2 (editing via the existing AgentFilesTab in the control panel)
+- Editable inline (see Inline Editing below)
 - Empty state: "No config files found. Agent config files will appear here once the agent is initialized."
 
 **Tab behavior:**
@@ -93,6 +93,34 @@ Changes required:
 - Rejected files show a toast/inline error: `"{filename}" exceeds the 10MB file size limit`
 - Valid files in the same batch still proceed
 - The pending file chip already shows file size — files over 10MB get a red highlight
+
+### Inline Editing
+
+Both tabs support inline editing. The file content viewer doubles as an editor.
+
+**UX:**
+- When a file is selected, its content renders in a `textarea` (monospace, full height) instead of the read-only rendered view
+- For text files (markdown, code, config): the textarea is immediately editable — no "edit mode" toggle needed
+- An "unsaved" indicator appears in the header when content has been modified
+- **Save:** Cmd/Ctrl+S saves, or a Save button in the file header. Save writes directly to EFS via a new backend endpoint.
+- **Discard:** Clicking a different file or switching tabs discards unsaved changes (with a confirmation if dirty)
+- Binary files and images remain read-only (no textarea)
+
+**Write mechanism — direct EFS, no gateway RPC:**
+- All saves go through the backend's new `PUT /container/workspace/{agent_id}/file` endpoint
+- Backend writes to the correct EFS path (`workspaces/{agent_id}/` for Workspace tab, `agents/{agent_id}/` for Config tab)
+- Backend `chown`s to 1000:1000 after write
+- OpenClaw's Chokidar file watcher (`CHOKIDAR_USEPOLLING=true`) detects the change and reloads
+- This replaces the `agents.files.set` gateway RPC for config file editing — direct EFS writes are more reliable (work when container is stopped, no gateway dependency)
+
+**Config tab writes:**
+- Only the 8 allowlisted files can be written (400 for anything else)
+- The endpoint validates the filename against the allowlist before writing
+
+**Deprecation of AgentFilesTab:**
+- The existing `AgentFilesTab` in the control panel (`panels/AgentFilesTab.tsx`) uses `agents.files.set` RPC
+- Once the file viewer editing is live, `AgentFilesTab` becomes redundant
+- Remove it in a follow-up (not in this PR) to avoid scope creep
 
 ### File Path Detection Update
 
@@ -142,6 +170,25 @@ Returns content for a single allowlisted config file from `agents/{agent_id}/`.
 - Uses the same `read_file_info()` method as the workspace file endpoint
 - Same response format as `GET .../file`
 
+### New: `PUT /api/v1/container/workspace/{agent_id}/file`
+
+Writes a file to the agent's workspace or config directory.
+
+**Request body:**
+```json
+{
+  "path": "plan.md",
+  "content": "# My Plan\n...",
+  "tab": "workspace"
+}
+```
+
+- `tab` is `"workspace"` or `"config"`
+- When `tab=workspace`: writes to `workspaces/{agent_id}/{path}`. Path validated against traversal. Directories created as needed.
+- When `tab=config`: writes to `agents/{agent_id}/{path}`. `path` must be one of the 8 allowlisted filenames (400 otherwise).
+- File is `chown`ed to 1000:1000 after write (Chokidar picks up the change)
+- Returns `{ "status": "ok", "path": "<written_path>" }`
+
 ## Frontend Changes
 
 ### ChatLayout.tsx
@@ -160,6 +207,16 @@ Returns content for a single allowlisted config file from `agents/{agent_id}/`.
   - Workspace: existing `useWorkspaceTree(agentId)` + `useWorkspaceFile(agentId, path)`
   - Config: new `useConfigFiles(agentId)` + `useConfigFile(agentId, path)`
 - Selected file resets on tab switch
+
+### FileContentViewer.tsx
+
+- Text files render in an editable `textarea` (monospace) instead of read-only rendered view
+- Track dirty state (content !== original)
+- Header shows "unsaved" badge when dirty
+- Save button + Cmd/Ctrl+S keyboard shortcut
+- Save calls new `api.saveWorkspaceFile(agentId, path, content, tab)` method
+- Confirmation dialog on navigate-away when dirty
+- Binary/image files remain read-only
 
 ### useWorkspaceFiles.ts
 
@@ -182,6 +239,7 @@ export function useConfigFile(agentId: string | null, filePath: string | null)
 ### api.ts
 
 - `uploadFiles(files, agentId)` — add `agentId` param, append as query string
+- `saveWorkspaceFile(agentId, path, content, tab)` — new method, `PUT /container/workspace/{agentId}/file`
 
 ### AgentChatWindow.tsx
 
@@ -192,9 +250,10 @@ export function useConfigFile(agentId: string | null, filePath: string | null)
 | File | Change |
 |------|--------|
 | `apps/backend/routers/container_rpc.py` | Add `agent_id` param to upload endpoint, change dest path |
-| `apps/backend/routers/workspace_files.py` | Add config-files and config-file endpoints |
+| `apps/backend/routers/workspace_files.py` | Add config-files, config-file, and file write endpoints |
 | `apps/frontend/src/components/chat/ChatLayout.tsx` | Animated grid transition, hide sidebar |
 | `apps/frontend/src/components/chat/FileViewer.tsx` | Two tabs (Workspace/Config), tab state |
+| `apps/frontend/src/components/chat/FileContentViewer.tsx` | Inline editing with save, dirty state, Cmd+S |
 | `apps/frontend/src/components/chat/ChatInput.tsx` | Client-side 10MB validation |
 | `apps/frontend/src/hooks/useWorkspaceFiles.ts` | Add useConfigFiles, useConfigFile hooks |
 | `apps/frontend/src/lib/api.ts` | Add agentId to uploadFiles |
@@ -202,8 +261,8 @@ export function useConfigFile(agentId: string | null, filePath: string | null)
 
 ## Not in This Version
 
-- File editing in the viewer (use AgentFilesTab in control panel)
 - Real-time file change push (manual refresh button)
 - File download
 - Search within files
 - Drag-to-resize the chat/viewer split
+- Removing AgentFilesTab from control panel (follow-up after this ships)
