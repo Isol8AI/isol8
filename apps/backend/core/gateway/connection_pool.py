@@ -722,11 +722,16 @@ class GatewayConnection:
         On transient disconnects (e.g. code 1012 service restart from cron or
         config reload), automatically reconnects with exponential backoff so
         chat doesn't permanently die.
+
+        The reconnect budget resets after each successful reconnect so that
+        long-lived sessions can survive more than ``max_reconnect_attempts``
+        transient drops over their lifetime.
         """
         max_reconnect_attempts = 5
         reconnect_delay = 3  # seconds, doubles each attempt
+        attempt = 0
 
-        for attempt in range(max_reconnect_attempts + 1):
+        while attempt <= max_reconnect_attempts:
             try:
                 async for raw in self._ws:
                     try:
@@ -773,20 +778,43 @@ class GatewayConnection:
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, 30)
 
+            # Connect to a local variable first — don't assign to self._ws
+            # until handshake + health check succeed. Otherwise an RPC
+            # arriving via send_rpc sees is_connected=True and sends on
+            # an unauthenticated socket.
+            new_ws = None
             try:
                 uri = f"ws://{self.ip}:{GATEWAY_PORT}"
-                self._ws = await ws_connect(
+                new_ws = await ws_connect(
                     uri,
                     open_timeout=_HANDSHAKE_TIMEOUT,
                     close_timeout=5,
                 )
+                # Temporarily assign so _handshake/_verify_health can
+                # use self._ws.send/recv.
+                old_ws = self._ws
+                self._ws = new_ws
                 await self._handshake()
                 await self._verify_health()
                 self._emit_status_change("HEALTHY", "Gateway reconnected")
                 logger.info("Gateway reconnected for user %s (attempt %d)", self.user_id, attempt + 1)
+                # Reset budget and backoff after a successful reconnect so
+                # long-lived sessions survive more than max_reconnect_attempts
+                # total transient drops.
+                attempt = 0
                 reconnect_delay = 3
                 continue  # re-enter the reader loop
             except Exception as reconnect_err:
+                # Handshake or health check failed — close the new socket
+                # so the next iteration doesn't read from a half-initialized
+                # connection, and restore the old (dead) ws reference.
+                if new_ws is not None:
+                    try:
+                        await new_ws.close()
+                    except Exception:
+                        pass
+                    # Don't leave self._ws pointing at the failed socket
+                    self._ws = None
                 logger.warning(
                     "Gateway reconnect failed for user %s (attempt %d/%d): %s",
                     self.user_id,
@@ -794,6 +822,8 @@ class GatewayConnection:
                     max_reconnect_attempts,
                     reconnect_err,
                 )
+
+            attempt += 1
 
         # All reconnect attempts exhausted
         if not self._closed:
