@@ -7,7 +7,7 @@ import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useOrganization } from "@clerk/nextjs";
+import { useAuth, useOrganization } from "@clerk/nextjs";
 import { Loader2, AlertTriangle, ArrowDownCircle, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
@@ -400,6 +400,10 @@ export function AgentChatWindow({
   agentId,
   onOpenFile,
 }: AgentChatWindowProps): React.ReactElement {
+  const { userId } = useAuth();
+  // Every user gets their own session — isolates chat history from cron,
+  // channels, and other system activity. Matches backend (websocket_chat.py).
+  const sessionName = userId ?? "main";
   const {
     messages: chatMessages,
     isStreaming,
@@ -410,7 +414,7 @@ export function AgentChatWindow({
     clearMessages,
     isLoadingHistory,
     needsBootstrap,
-  } = useAgentChat(agentId);
+  } = useAgentChat(agentId, sessionName);
 
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);

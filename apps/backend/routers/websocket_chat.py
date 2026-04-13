@@ -582,10 +582,10 @@ async def _process_agent_chat_background(
         pool = get_gateway_pool()
         req_id = str(uuid4())
 
-        # Session key format: agent:{agentId}:{sessionName}
-        # Org members get per-user sessions; personal users keep :main (no history breakage)
-        is_org = owner_id != user_id
-        session_key = f"agent:{agent_id}:{user_id}" if is_org else f"agent:{agent_id}:main"
+        # Session key format: agent:{agentId}:{userId}
+        # Every user gets their own session, isolating their chat history
+        # from cron jobs, channels, and other system activity.
+        session_key = f"agent:{agent_id}:{user_id}"
 
         logger.info(
             "[%s] chat.send RPC agent=%s sessionKey=%s ip=%s",
