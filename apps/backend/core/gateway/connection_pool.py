@@ -717,120 +717,27 @@ class GatewayConnection:
             return
 
     async def _reader_loop(self) -> None:
-        """Background task: read all messages from gateway WebSocket.
-
-        On transient disconnects (e.g. code 1012 service restart from cron or
-        config reload), automatically reconnects with exponential backoff so
-        chat doesn't permanently die.
-
-        The reconnect budget resets after each successful reconnect so that
-        long-lived sessions can survive more than ``max_reconnect_attempts``
-        transient drops over their lifetime.
-        """
-        max_reconnect_attempts = 5
-        reconnect_delay = 3  # seconds, doubles each attempt
-        attempt = 0
-
-        while attempt <= max_reconnect_attempts:
-            try:
-                async for raw in self._ws:
-                    try:
-                        data = json.loads(raw)
-                        self._handle_message(data)
-                    except json.JSONDecodeError:
-                        logger.warning("Non-JSON message from gateway for user %s", self.user_id)
-                # WebSocket closed cleanly — try reconnect if not shutting down
-                if self._closed:
-                    return
-                logger.warning(
-                    "Gateway WebSocket closed for user %s (attempt %d/%d), reconnecting in %ds",
-                    self.user_id,
-                    attempt + 1,
-                    max_reconnect_attempts,
-                    reconnect_delay,
-                )
-            except asyncio.CancelledError:
+        """Background task: read all messages from gateway WebSocket."""
+        try:
+            async for raw in self._ws:
+                try:
+                    data = json.loads(raw)
+                    self._handle_message(data)
+                except json.JSONDecodeError:
+                    logger.warning("Non-JSON message from gateway for user %s", self.user_id)
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            if self._closed:
                 return
-            except Exception as e:
-                if self._closed:
-                    return
-                put_metric("gateway.connection", dimensions={"event": "error"})
-                logger.error(
-                    "Gateway reader loop error for user %s (attempt %d/%d): %s",
-                    self.user_id,
-                    attempt + 1,
-                    max_reconnect_attempts,
-                    e,
-                )
-
-            # Reject pending RPCs from the broken connection — callers will
-            # retry on the next send_rpc which creates a fresh connection.
+            put_metric("gateway.connection", dimensions={"event": "error"})
+            logger.error("Gateway reader loop error for user %s: %s", self.user_id, e)
+            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
+            # Reject all pending RPCs
             for req_id, future in list(self._pending_rpcs.items()):
                 if not future.done():
-                    future.set_exception(RuntimeError("Gateway connection lost — reconnecting"))
+                    future.set_exception(RuntimeError("Gateway connection lost"))
             self._pending_rpcs.clear()
-
-            if attempt >= max_reconnect_attempts:
-                break
-
-            # Exponential backoff reconnection
-            self._emit_status_change("RECONNECTING", "Gateway reconnecting...")
-            await asyncio.sleep(reconnect_delay)
-            reconnect_delay = min(reconnect_delay * 2, 30)
-
-            # Connect to a local variable first — don't assign to self._ws
-            # until handshake + health check succeed. Otherwise an RPC
-            # arriving via send_rpc sees is_connected=True and sends on
-            # an unauthenticated socket.
-            new_ws = None
-            try:
-                uri = f"ws://{self.ip}:{GATEWAY_PORT}"
-                new_ws = await ws_connect(
-                    uri,
-                    open_timeout=_HANDSHAKE_TIMEOUT,
-                    close_timeout=5,
-                )
-                # Temporarily assign so _handshake/_verify_health can
-                # use self._ws.send/recv.
-                old_ws = self._ws
-                self._ws = new_ws
-                await self._handshake()
-                await self._verify_health()
-                self._emit_status_change("HEALTHY", "Gateway reconnected")
-                logger.info("Gateway reconnected for user %s (attempt %d)", self.user_id, attempt + 1)
-                # Reset budget and backoff after a successful reconnect so
-                # long-lived sessions survive more than max_reconnect_attempts
-                # total transient drops.
-                attempt = 0
-                reconnect_delay = 3
-                continue  # re-enter the reader loop
-            except Exception as reconnect_err:
-                # Handshake or health check failed — close the new socket
-                # so the next iteration doesn't read from a half-initialized
-                # connection, and restore the old (dead) ws reference.
-                if new_ws is not None:
-                    try:
-                        await new_ws.close()
-                    except Exception:
-                        pass
-                    # Don't leave self._ws pointing at the failed socket
-                    self._ws = None
-                logger.warning(
-                    "Gateway reconnect failed for user %s (attempt %d/%d): %s",
-                    self.user_id,
-                    attempt + 1,
-                    max_reconnect_attempts,
-                    reconnect_err,
-                )
-
-            attempt += 1
-
-        # All reconnect attempts exhausted
-        if not self._closed:
-            logger.error(
-                "Gateway permanently lost for user %s after %d reconnect attempts", self.user_id, max_reconnect_attempts
-            )
-            self._emit_status_change("GATEWAY_DOWN", "Gateway connection lost")
 
     @property
     def has_frontend_connections(self) -> bool:
