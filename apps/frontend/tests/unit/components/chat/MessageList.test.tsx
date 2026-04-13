@@ -82,8 +82,8 @@ describe('MessageList', () => {
         />
       );
 
-      const dots = document.querySelectorAll('.animate-bounce');
-      expect(dots.length).toBe(3);
+      const infinity = document.querySelectorAll('.thinking-infinity');
+      expect(infinity.length).toBe(1);
     });
 
     it('hides when not typing', () => {
@@ -94,8 +94,8 @@ describe('MessageList', () => {
         />
       );
 
-      const dots = document.querySelectorAll('.animate-bounce');
-      expect(dots.length).toBe(0);
+      const infinity = document.querySelectorAll('.thinking-infinity');
+      expect(infinity.length).toBe(0);
     });
 
     it('never shows for user messages', () => {
@@ -106,8 +106,8 @@ describe('MessageList', () => {
         />
       );
 
-      const dots = document.querySelectorAll('.animate-bounce');
-      expect(dots.length).toBe(0);
+      const infinity = document.querySelectorAll('.thinking-infinity');
+      expect(infinity.length).toBe(0);
     });
   });
 

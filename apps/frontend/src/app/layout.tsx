@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Host_Grotesk, DM_Sans, Lora, Press_Start_2P } from "next/font/google";
+import { Geist, Geist_Mono, Host_Grotesk, DM_Sans, Lora, Press_Start_2P, Epilogue } from "next/font/google";
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
@@ -40,6 +40,12 @@ const pressStart2P = Press_Start_2P({
   weight: ["400"],
 });
 
+const epilogue = Epilogue({
+  variable: "--font-epilogue",
+  subsets: ["latin"],
+  weight: ["300", "400", "500"],
+});
+
 export const metadata: Metadata = {
   title: "isol8 - Your AI Pod",
   description: "Your own isolated AI pod with persistent memory, custom personality, and skills that grow with you.",
@@ -54,7 +60,7 @@ export default function RootLayout({
     <ClerkProvider>
       <html lang="en">
         <body
-          className={`${geistSans.variable} ${geistMono.variable} ${hostGrotesk.variable} ${dmSans.variable} ${lora.variable} ${pressStart2P.variable} antialiased`}
+          className={`${geistSans.variable} ${geistMono.variable} ${hostGrotesk.variable} ${dmSans.variable} ${lora.variable} ${pressStart2P.variable} ${epilogue.variable} antialiased`}
         >
           <ErrorBoundary>
             <DesktopAuthListener />

@@ -69,7 +69,7 @@ export function Navbar() {
   return (
     <nav className="landing-nav" aria-label="Main navigation">
       <Link href="/" className="nav-logo">
-        8
+        isol8
       </Link>
       <div className={`nav-links${mobileOpen ? " mobile-open" : ""}`} ref={linksRef}>
         <Link href="/" data-section="home" className="active">

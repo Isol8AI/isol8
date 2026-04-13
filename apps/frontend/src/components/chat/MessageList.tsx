@@ -1,7 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
-import { Copy, RefreshCw, Share2, Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import ReactMarkdown from "react-markdown";
@@ -184,7 +184,6 @@ function MessageToolbar({ modelName }: { modelName?: string }) {
     return (
         <div className="flex items-center gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
             <span className="text-xs font-medium text-[#8a8578] mr-2 flex items-center gap-1">
-                <Bot className="h-3 w-3" />
                 {modelName || "Assistant"}
             </span>
             <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
@@ -254,7 +253,9 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               {/* Assistant avatar */}
               {msg.role === "assistant" && (
                 <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
-                  <Bot className="h-4 w-4 text-white" />
+                  <svg width="14" height="8" viewBox="0 0 24 12" fill="none">
+                    <path d="M12 6C9.5 2 7 1 5 3C3 5 3 7 5 9C7 11 9.5 10 12 6C14.5 2 17 1 19 3C21 5 21 7 19 9C17 11 14.5 10 12 6Z" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
               )}
 
@@ -291,21 +292,19 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                     : msg.role === "assistant" && msg.content
                       ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
                       : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
-                          <span className="inline-flex gap-1 items-center h-5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
+                          <span className="inline-flex items-center h-5">
+                            <svg width="24" height="12" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
+                              <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                            </svg>
                           </span>
                         ) : null)}
                 </div>
 
                 {isTyping && isLastAssistant && msg.content && (
                   <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
-                    <span className="inline-flex gap-1 items-center">
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </span>
+                    <svg width="18" height="10" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
+                      <path d="M6 6C6 4 7.2 2.5 8.8 2.5C10 2.5 10.8 3.3 11.2 4.2C11.6 3.3 12.4 2.5 13.6 2.5C15.2 2.5 16.4 4 16.4 6C16.4 8 15.2 9.5 13.6 9.5C12.4 9.5 11.6 8.7 11.2 7.8C10.8 8.7 10 9.5 8.8 9.5C7.2 9.5 6 8 6 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
+                    </svg>
                     <span>Agent is working</span>
                   </div>
                 )}
