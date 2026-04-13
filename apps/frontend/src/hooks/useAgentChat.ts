@@ -125,11 +125,14 @@ const _needsBootstrap = new Set<string>();
 // this by rendering a single AgentChatWindow.
 // =============================================================================
 
-export function useAgentChat(agentId: string | null): UseAgentChatReturn {
+export function useAgentChat(agentId: string | null, sessionName: string = "main"): UseAgentChatReturn {
   const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
+  // Cache key includes session name so org members don't share history cache
+  const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
+
   const [messages, setMessages] = useState<InternalMessage[]>(
-    () => (agentId ? _messageCache.get(agentId) ?? [] : []),
+    () => (cacheKey ? _messageCache.get(cacheKey) ?? [] : []),
   );
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,24 +149,26 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
 
   // ---- Sync messages to module-level cache ----
   useEffect(() => {
-    if (agentId && messages.length > 0) {
-      _messageCache.set(agentId, messages);
+    if (cacheKey && messages.length > 0) {
+      _messageCache.set(cacheKey, messages);
     }
-  }, [agentId, messages]);
+  }, [cacheKey, messages]);
 
   // ---- Fetch history on mount / agent change ----
   const historyLoadedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!agentId || !isConnected) return;
-    if (historyLoadedRef.current.has(agentId)) return;
+    if (!agentId || !cacheKey || !isConnected) return;
+    if (historyLoadedRef.current.has(cacheKey)) return;
     // Don't fetch if we already have cached messages
-    if (_messageCache.has(agentId)) {
-      historyLoadedRef.current.add(agentId);
+    if (_messageCache.has(cacheKey)) {
+      historyLoadedRef.current.add(cacheKey);
       return;
     }
 
-    const sessionKey = `agent:${agentId}:main`;
+    // Session key must match the backend's convention (websocket_chat.py:588):
+    // org members get agent:{agentId}:{userId}, personal users get agent:{agentId}:main
+    const sessionKey = `agent:${agentId}:${sessionName}`;
 
     // Use Promise.resolve to move setState into a callback (satisfies react-hooks/set-state-in-effect)
     Promise.resolve().then(() => setHistoryLoadState("loading"));
@@ -173,12 +178,12 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
         const historyResult = result as {
           messages?: Array<{ role: string; content: Array<{ type: string; text?: string }> }>;
         };
-        historyLoadedRef.current.add(agentId);
+        historyLoadedRef.current.add(cacheKey);
         setHistoryLoadState("done");
 
         if (!historyResult?.messages?.length) {
           // No history = first time. Flag for bootstrap suggestion in chat input.
-          _needsBootstrap.add(agentId);
+          _needsBootstrap.add(cacheKey);
           return;
         }
 
@@ -199,15 +204,15 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
 
         if (loaded.length > 0) {
           setMessages(loaded);
-          _messageCache.set(agentId, loaded);
+          _messageCache.set(cacheKey, loaded);
         }
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch chat history:", err);
-        historyLoadedRef.current.add(agentId);
+        historyLoadedRef.current.add(cacheKey);
         setHistoryLoadState("done");
       });
-  }, [agentId, isConnected, sendReq]);
+  }, [agentId, cacheKey, sessionName, isConnected, sendReq]);
 
   // ---- Chat message handler ----
   // Dependencies are intentionally minimal ([onChatMessage]) because all
@@ -363,7 +368,8 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
       setBudgetError(null);
 
       // Clear bootstrap flag once user sends their first message
-      if (agentIdRef.current) _needsBootstrap.delete(agentIdRef.current);
+      const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+      if (key) _needsBootstrap.delete(key);
 
       const userMsgId = `user-${crypto.randomUUID()}`;
       const assistantMsgId = `assistant-${crypto.randomUUID()}`;
@@ -397,7 +403,7 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
         streamContentRef.current = "";
       }
     },
-    [sendChat, isConnected],
+    [sendChat, isConnected, sessionName],
   );
 
   // ---- Cancel / stop agent ----
@@ -445,8 +451,8 @@ export function useAgentChat(agentId: string | null): UseAgentChatReturn {
   );
 
   const needsBootstrap = !!(
-    agentId &&
-    _needsBootstrap.has(agentId) &&
+    cacheKey &&
+    _needsBootstrap.has(cacheKey) &&
     messages.length === 0 &&
     historyLoadState === "done"
   );
