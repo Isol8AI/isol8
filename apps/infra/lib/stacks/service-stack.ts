@@ -23,7 +23,6 @@ export interface SecretNames {
   clerkSecretKey: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
-  perplexityApiKey: string;
   encryptionKey: string;
 }
 
@@ -597,9 +596,6 @@ export class ServiceStack extends cdk.Stack {
         ),
         STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
-        ),
-        PERPLEXITY_API_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportPerplexityApiKey", props.secretNames.perplexityApiKey),
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
