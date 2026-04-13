@@ -125,7 +125,7 @@ const _needsBootstrap = new Set<string>();
 // this by rendering a single AgentChatWindow.
 // =============================================================================
 
-export function useAgentChat(agentId: string | null, sessionName: string = "main"): UseAgentChatReturn {
+export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
   const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
@@ -167,7 +167,7 @@ export function useAgentChat(agentId: string | null, sessionName: string = "main
     }
 
     // Session key must match the backend's convention (websocket_chat.py:588):
-    // org members get agent:{agentId}:{userId}, personal users get agent:{agentId}:main
+    // all users get agent:{agentId}:{userId} to isolate from cron/system activity
     const sessionKey = `agent:${agentId}:${sessionName}`;
 
     // Use Promise.resolve to move setState into a callback (satisfies react-hooks/set-state-in-effect)
@@ -411,7 +411,7 @@ export function useAgentChat(agentId: string | null, sessionName: string = "main
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
 
-    const sessionKey = `agent:${agentIdRef.current}:main`;
+    const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
     try {
       await sendReq("chat.abort", { sessionKey });
     } catch (err) {
@@ -422,20 +422,21 @@ export function useAgentChat(agentId: string | null, sessionName: string = "main
     setIsStreaming(false);
     currentAssistantIdRef.current = null;
     streamContentRef.current = "";
-  }, [isStreaming, sendReq]);
+  }, [isStreaming, sendReq, sessionName]);
 
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
     setMessages([]);
-    if (agentIdRef.current) {
-      _messageCache.delete(agentIdRef.current);
+    const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
+    if (key) {
+      _messageCache.delete(key);
     }
     setError(null);
     setIsStreaming(false);
     currentAssistantIdRef.current = null;
     streamContentRef.current = "";
-  }, []);
+  }, [sessionName]);
 
   // ---- External interface ----
 
