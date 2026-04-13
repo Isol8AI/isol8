@@ -17,7 +17,7 @@ def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     """Build the relative path to an agent's workspace within the user dir."""
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
-    return f"agents/{agent_id}"
+    return f"workspaces/{agent_id}"
 
 
 def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):

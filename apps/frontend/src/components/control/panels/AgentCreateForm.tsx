@@ -38,7 +38,7 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     setError(null);
 
     try {
-      await callRpc("agents.create", { name: name.trim() });
+      await callRpc("agents.create", { name: name.trim(), workspace: "agents/" + normalizedId });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
