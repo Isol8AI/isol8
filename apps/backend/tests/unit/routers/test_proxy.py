@@ -60,7 +60,9 @@ class TestProxyRouter:
     @patch("routers.proxy.httpx.AsyncClient")
     @patch("routers.proxy.billing_repo")
     @patch("routers.proxy.container_repo")
-    async def test_proxy_forwards_to_upstream(self, mock_container_repo, mock_billing_repo, mock_httpx_client_cls, mock_check_budget, app):
+    async def test_proxy_forwards_to_upstream(
+        self, mock_container_repo, mock_billing_repo, mock_httpx_client_cls, mock_check_budget, app
+    ):
         """Proxy forwards valid request to upstream."""
         mock_container_repo.get_by_gateway_token = AsyncMock(
             return_value={
