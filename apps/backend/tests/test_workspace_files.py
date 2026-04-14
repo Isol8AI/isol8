@@ -442,11 +442,11 @@ class TestWriteFileEndpoint:
     """Tests for the _write_file helper used by the PUT endpoint."""
 
     def test_write_workspace_file(self, tmp_path):
-        """Writing a workspace file creates it on disk."""
+        """Writing a workspace file for a custom agent creates it under agents/{id}/."""
         ws = _make_workspace(tmp_path)
         user_root = tmp_path / USER_ID
         user_root.mkdir(parents=True)
-        ws_dir = user_root / "workspaces" / AGENT_ID
+        ws_dir = user_root / "agents" / AGENT_ID
         ws_dir.mkdir(parents=True)
 
         from routers.workspace_files import _write_file
@@ -478,12 +478,12 @@ class TestWriteFileEndpoint:
     def test_write_creates_parent_dirs(self, tmp_path):
         """Writing to a nested path creates intermediate directories."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         _write_file(ws, USER_ID, AGENT_ID, "deep/nested/file.txt", "hello", "workspace")
-        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "file.txt").read_text() == "hello"
+        assert (tmp_path / USER_ID / "agents" / AGENT_ID / "deep" / "nested" / "file.txt").read_text() == "hello"
 
     @pytest.mark.asyncio
     async def test_endpoint_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
@@ -527,7 +527,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_traversal_in_path(self, tmp_path):
         """`..` in path raises ValueError (regression for allowlist bypass)."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -544,7 +544,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_absolute_path(self, tmp_path):
         """Absolute paths are rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -554,7 +554,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_empty_path(self, tmp_path):
         """Empty path is rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -564,7 +564,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_dot_only_path(self, tmp_path):
         """Dot-only paths (., ./, .) are rejected with ValueError."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -575,7 +575,7 @@ class TestWriteFileEndpoint:
     def test_write_rejects_oversized_content(self, tmp_path):
         """Content over 10MB is rejected."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
@@ -601,29 +601,25 @@ class TestWriteFileEndpoint:
         assert exc.value.status_code == 400
 
     def test_write_rejects_symlink_escape_workspace(self, tmp_path):
-        """Symlink in workspaces/{id}/ pointing outside must be rejected."""
+        """Symlink in the custom agent's workspace dir pointing outside must be rejected."""
         import os
 
         ws = _make_workspace(tmp_path)
-        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
-        ws_dir.mkdir(parents=True)
         agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
         agent_dir.mkdir(parents=True)
-        (agent_dir / "SOUL.md").write_text("original", encoding="utf-8")
+        target = tmp_path / USER_ID / "elsewhere.txt"
+        target.write_text("original", encoding="utf-8")
 
-        # Symlink workspaces/{id}/evil -> ../../agents/{id}/SOUL.md
-        os.symlink(
-            "../../agents/" + AGENT_ID + "/SOUL.md",
-            ws_dir / "evil",
-        )
+        # Symlink agents/{id}/evil -> ../../elsewhere.txt
+        os.symlink("../../elsewhere.txt", agent_dir / "evil")
 
         from routers.workspace_files import _write_file
 
         with pytest.raises(ValueError, match="escapes"):
             _write_file(ws, USER_ID, AGENT_ID, "evil", "hacked", "workspace")
 
-        # SOUL.md must be untouched
-        assert (agent_dir / "SOUL.md").read_text() == "original"
+        # target must be untouched
+        assert target.read_text() == "original"
 
     def test_write_rejects_symlink_escape_config(self, tmp_path):
         """Symlink in agents/{id}/ pointing outside must be rejected."""
@@ -648,13 +644,13 @@ class TestWriteFileEndpoint:
     def test_write_allows_nested_dirs_within_workspace(self, tmp_path):
         """Subtree check allows legitimate nested paths inside the workspace."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         written = _write_file(ws, USER_ID, AGENT_ID, "deep/nested/notes.md", "ok", "workspace")
-        assert written == f"workspaces/{AGENT_ID}/deep/nested/notes.md"
-        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "notes.md").read_text() == "ok"
+        assert written == f"agents/{AGENT_ID}/deep/nested/notes.md"
+        assert (tmp_path / USER_ID / "agents" / AGENT_ID / "deep" / "nested" / "notes.md").read_text() == "ok"
 
 
 # ===========================================================================
@@ -665,23 +661,48 @@ class TestWriteFileEndpoint:
 class TestUploadPath:
     """Verify upload destination path construction."""
 
-    def test_upload_writes_to_agent_workspace(self, tmp_path):
-        """Uploads should go to workspaces/{agent_id}/uploads/."""
+    def test_upload_writes_to_custom_agent_workspace(self, tmp_path):
+        """Uploads for a custom agent should go to agents/{agent_id}/uploads/."""
+        from routers.workspace_files import _agent_workspace_dir
+
         ws = _make_workspace(tmp_path)
-        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID / "uploads"
+        ws_dir = tmp_path / USER_ID / "agents" / AGENT_ID / "uploads"
         (tmp_path / USER_ID).mkdir(parents=True)
 
-        dest_path = f"workspaces/{AGENT_ID}/uploads/test.pdf"
+        dest_path = f"{_agent_workspace_dir(AGENT_ID)}/uploads/test.pdf"
         ws.write_bytes(USER_ID, dest_path, b"fake pdf content")
         assert (ws_dir / "test.pdf").read_bytes() == b"fake pdf content"
 
-    def test_agent_visible_path(self):
-        """Agent-visible path should include workspaces/{agent_id}."""
+    def test_upload_writes_to_main_agent_workspace(self, tmp_path):
+        """Uploads for the main agent should go to workspaces/uploads/ (user root)."""
+        from routers.workspace_files import _agent_workspace_dir
+
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / "uploads"
+        (tmp_path / USER_ID).mkdir(parents=True)
+
+        dest_path = f"{_agent_workspace_dir('main')}/uploads/test.pdf"
+        ws.write_bytes(USER_ID, dest_path, b"fake pdf content")
+        assert (ws_dir / "test.pdf").read_bytes() == b"fake pdf content"
+
+    def test_agent_visible_path_custom(self):
+        """Agent-visible path for a custom agent should include agents/{agent_id}."""
+        from routers.workspace_files import _agent_workspace_dir
+
         agent_id = "my-agent"
         filename = "data.csv"
-        dest_path = f"workspaces/{agent_id}/uploads/{filename}"
+        dest_path = f"{_agent_workspace_dir(agent_id)}/uploads/{filename}"
         agent_path = f".openclaw/{dest_path}"
-        assert agent_path == f".openclaw/workspaces/{agent_id}/uploads/{filename}"
+        assert agent_path == f".openclaw/agents/{agent_id}/uploads/{filename}"
+
+    def test_agent_visible_path_main(self):
+        """Agent-visible path for the main agent should use workspaces/ at user root."""
+        from routers.workspace_files import _agent_workspace_dir
+
+        filename = "data.csv"
+        dest_path = f"{_agent_workspace_dir('main')}/uploads/{filename}"
+        agent_path = f".openclaw/{dest_path}"
+        assert agent_path == f".openclaw/workspaces/uploads/{filename}"
 
 
 # ===========================================================================
@@ -696,7 +717,7 @@ class TestWorkspaceTreeRoundTrip:
     async def test_tree_path_feeds_back_to_read(self, workspace, monkeypatch):
         """A path returned by the tree endpoint reads successfully via the file endpoint."""
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
-        ws_dir = workspace._mount / USER_ID / "workspaces" / AGENT_ID
+        ws_dir = workspace._mount / USER_ID / "agents" / AGENT_ID
         ws_dir.mkdir(parents=True)
         (ws_dir / "plan.md").write_text("# Plan\nstep 1", encoding="utf-8")
         (ws_dir / "uploads").mkdir()
@@ -711,10 +732,11 @@ class TestWorkspaceTreeRoundTrip:
             auth=_auth(),
         )
         paths = {f["path"] for f in tree["files"]}
-        # Paths must be agent-relative (no `workspaces/{agent_id}/` prefix)
+        # Paths must be agent-relative (no `agents/{agent_id}/` prefix)
         assert "plan.md" in paths
         assert "uploads" in paths
         assert "uploads/data.csv" in paths
+        assert not any(p.startswith("agents/") for p in paths if p)
         assert not any(p.startswith("workspaces/") for p in paths if p)
 
         # Every file path should read successfully via the file endpoint
@@ -732,7 +754,7 @@ class TestWorkspaceTreeRoundTrip:
     async def test_write_then_tree_then_read(self, workspace, monkeypatch):
         """After saveWorkspaceFile writes a workspace file, tree lists it and read returns content."""
         monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
-        (workspace._mount / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+        (workspace._mount / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import (
             WriteFileRequest,
@@ -745,7 +767,7 @@ class TestWorkspaceTreeRoundTrip:
         result = await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert result["status"] == "ok"
         # Backend returned path is user-root-relative; tree will show agent-relative
-        assert result["path"] == f"workspaces/{AGENT_ID}/notes.txt"
+        assert result["path"] == f"agents/{AGENT_ID}/notes.txt"
 
         tree = await list_workspace_tree(
             agent_id=AGENT_ID,
@@ -757,3 +779,177 @@ class TestWorkspaceTreeRoundTrip:
 
         info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
         assert info["content"] == "hello world"
+
+
+# ===========================================================================
+# TestMainAgentLayout
+#
+# The `main` agent inherits OpenClaw's default workspace setting, which points
+# at the user-root `workspaces/` directory — NOT a per-agent subdir. Custom
+# agents, by contrast, override workspace to `agents/{id}/`. This class covers
+# the main-agent branch of `_agent_workspace_dir`.
+# ===========================================================================
+
+
+class TestMainAgentLayout:
+    """Tests verifying main agent's workspace resolves to user-root workspaces/."""
+
+    def test_agent_workspace_dir_main(self):
+        """Main agent maps to the user-root workspaces/ directory."""
+        from routers.workspace_files import _agent_workspace_dir
+
+        assert _agent_workspace_dir("main") == "workspaces"
+
+    def test_agent_workspace_dir_custom(self):
+        """Custom agent maps to agents/{id}/."""
+        from routers.workspace_files import _agent_workspace_dir
+
+        assert _agent_workspace_dir("ember") == "agents/ember"
+        assert _agent_workspace_dir(AGENT_ID) == f"agents/{AGENT_ID}"
+
+    def test_list_config_files_main(self, tmp_path):
+        """Config files for main agent are read from workspaces/ at user root."""
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "SOUL.md").write_text("I am main", encoding="utf-8")
+        (ws_dir / "MEMORY.md").write_text("Remember", encoding="utf-8")
+        (ws_dir / "IDENTITY.md").write_text("Me", encoding="utf-8")
+        (ws_dir / "TOOLS.md").write_text("Tools", encoding="utf-8")
+        (ws_dir / "USER.md").write_text("User", encoding="utf-8")
+        (ws_dir / "HEARTBEAT.md").write_text("Heartbeat", encoding="utf-8")
+        # Non-allowlisted file should not appear
+        (ws_dir / "random.json").write_text("{}", encoding="utf-8")
+
+        from routers.workspace_files import _list_config_files
+
+        result = _list_config_files(ws, USER_ID, "main")
+        names = {f["name"] for f in result}
+        assert names == {"SOUL.md", "MEMORY.md", "IDENTITY.md", "TOOLS.md", "USER.md", "HEARTBEAT.md"}
+        assert all(f["type"] == "file" for f in result)
+
+    def test_list_config_files_main_empty_when_no_workspaces_dir(self, tmp_path):
+        """No workspaces/ dir yet -> empty config list for main (not an error)."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _list_config_files
+
+        assert _list_config_files(ws, USER_ID, "main") == []
+
+    @pytest.mark.asyncio
+    async def test_read_workspace_file_main(self, workspace, monkeypatch):
+        """Reading a workspace file for main reads from workspaces/ at user root."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        ws_dir = workspace._mount / USER_ID / "workspaces"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "SOUL.md").write_text("main soul", encoding="utf-8")
+
+        from routers.workspace_files import read_workspace_file
+
+        info = await read_workspace_file(agent_id="main", path="SOUL.md", auth=_auth())
+        assert info["name"] == "SOUL.md"
+        assert info["content"] == "main soul"
+
+    @pytest.mark.asyncio
+    async def test_write_workspace_file_main_config_tab(self, workspace, monkeypatch):
+        """Writing SOUL.md for main via tab=config lands in workspaces/SOUL.md."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        (workspace._mount / USER_ID / "workspaces").mkdir(parents=True)
+
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        body = WriteFileRequest(path="SOUL.md", content="I am main", tab="config")
+        result = await write_workspace_file(agent_id="main", body=body, auth=_auth())
+        assert result["status"] == "ok"
+        assert result["path"] == "workspaces/SOUL.md"
+
+        on_disk = workspace._mount / USER_ID / "workspaces" / "SOUL.md"
+        assert on_disk.read_text() == "I am main"
+
+    @pytest.mark.asyncio
+    async def test_write_workspace_file_main_workspace_tab(self, workspace, monkeypatch):
+        """Writing an arbitrary workspace file for main lands under workspaces/."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        (workspace._mount / USER_ID / "workspaces").mkdir(parents=True)
+
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        body = WriteFileRequest(path="plan.md", content="plan text", tab="workspace")
+        result = await write_workspace_file(agent_id="main", body=body, auth=_auth())
+        assert result["status"] == "ok"
+        assert result["path"] == "workspaces/plan.md"
+
+        assert (workspace._mount / USER_ID / "workspaces" / "plan.md").read_text() == "plan text"
+
+    @pytest.mark.asyncio
+    async def test_list_workspace_tree_main(self, workspace, monkeypatch):
+        """list_workspace_tree for main returns entries from workspaces/ at user root."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        ws_dir = workspace._mount / USER_ID / "workspaces"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "SOUL.md").write_text("soul", encoding="utf-8")
+        (ws_dir / "notes").mkdir()
+        (ws_dir / "notes" / "plan.md").write_text("plan", encoding="utf-8")
+
+        from routers.workspace_files import list_workspace_tree
+
+        tree = await list_workspace_tree(
+            agent_id="main",
+            path="",
+            recursive=True,
+            auth=_auth(),
+        )
+        paths = {f["path"] for f in tree["files"]}
+        # Paths returned must be relative to workspaces/, not including workspaces/ prefix
+        assert "SOUL.md" in paths
+        assert "notes" in paths
+        assert "notes/plan.md" in paths
+        assert not any(p.startswith("workspaces/") for p in paths if p)
+
+    def test_strip_agent_prefix_main(self):
+        """_strip_agent_prefix strips workspaces/ prefix when agent_id=main."""
+        from routers.workspace_files import _strip_agent_prefix
+
+        entries = [
+            {"name": "workspaces", "type": "dir", "path": "workspaces"},
+            {"name": "SOUL.md", "type": "file", "path": "workspaces/SOUL.md"},
+            {"name": "plan.md", "type": "file", "path": "workspaces/notes/plan.md"},
+        ]
+        out = _strip_agent_prefix(entries, "main")
+        out_paths = [e["path"] for e in out]
+        assert "" in out_paths  # the root itself
+        assert "SOUL.md" in out_paths
+        assert "notes/plan.md" in out_paths
+
+    def test_strip_agent_prefix_custom(self):
+        """_strip_agent_prefix strips agents/{id}/ prefix for custom agents."""
+        from routers.workspace_files import _strip_agent_prefix
+
+        entries = [
+            {"name": AGENT_ID, "type": "dir", "path": f"agents/{AGENT_ID}"},
+            {"name": "SOUL.md", "type": "file", "path": f"agents/{AGENT_ID}/SOUL.md"},
+        ]
+        out = _strip_agent_prefix(entries, AGENT_ID)
+        out_paths = [e["path"] for e in out]
+        assert "" in out_paths
+        assert "SOUL.md" in out_paths
+
+    def test_write_main_with_symlink_escape_rejected(self, tmp_path):
+        """Symlink in workspaces/ pointing outside must be rejected for main agent."""
+        import os
+
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces"
+        ws_dir.mkdir(parents=True)
+        target = tmp_path / USER_ID / "elsewhere.txt"
+        target.write_text("original", encoding="utf-8")
+
+        os.symlink("../elsewhere.txt", ws_dir / "evil")
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="escapes"):
+            _write_file(ws, USER_ID, "main", "evil", "hacked", "workspace")
+
+        assert target.read_text() == "original"

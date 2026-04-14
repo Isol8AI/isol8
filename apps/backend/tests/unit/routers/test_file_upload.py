@@ -58,11 +58,42 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
             body = resp.json()
             assert len(body["uploaded"]) == 1
             assert body["uploaded"][0]["filename"] == "test.txt"
-            assert body["uploaded"][0]["path"] == f".openclaw/workspaces/{AGENT_ID}/uploads/test.txt"
+            # Custom agent uploads resolve under agents/{id}/uploads/
+            assert body["uploaded"][0]["path"] == f".openclaw/agents/{AGENT_ID}/uploads/test.txt"
             assert body["uploaded"][0]["size"] == 11
 
             mock_workspace.write_bytes.assert_called_once_with(
-                "user_123", f"workspaces/{AGENT_ID}/uploads/test.txt", b"hello world"
+                "user_123", f"agents/{AGENT_ID}/uploads/test.txt", b"hello world"
+            )
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_upload_main_agent_writes_to_user_root_workspaces(app, auth_override, mock_container, mock_workspace):
+    """Upload for agent_id=main writes to workspaces/uploads/ at the user root."""
+    app.dependency_overrides[get_current_user] = auth_override
+    try:
+        with (
+            patch("routers.container_rpc.get_ecs_manager") as mock_ecs,
+            patch("routers.container_rpc.get_workspace", return_value=mock_workspace),
+        ):
+            mock_ecs.return_value.get_service_status = AsyncMock(return_value=mock_container)
+
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/container/files?agent_id=main",
+                    files=[("files", ("test.txt", b"hello world", "text/plain"))],
+                )
+
+            assert resp.status_code == 200
+            body = resp.json()
+            assert len(body["uploaded"]) == 1
+            # Main agent uploads resolve under workspaces/uploads/ (user root)
+            assert body["uploaded"][0]["path"] == ".openclaw/workspaces/uploads/test.txt"
+
+            mock_workspace.write_bytes.assert_called_once_with(
+                "user_123", "workspaces/uploads/test.txt", b"hello world"
             )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
