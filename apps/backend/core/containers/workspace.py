@@ -22,7 +22,10 @@ from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
 
-# System files/dirs to hide from directory listings.
+# System files/dirs to hide from every directory listing, regardless of depth.
+# Anything that could legitimately exist as a user file at a deeper path (e.g.,
+# a `state/` subdir inside a project) does NOT belong here — see
+# routers/workspace_files.py for root-only exclusions.
 _EXCLUDED_NAMES: set[str] = {
     "openclaw.json",
     ".openclaw",
@@ -30,12 +33,6 @@ _EXCLUDED_NAMES: set[str] = {
     "__pycache__",
     ".mcporter",
     ".git",
-    # OpenClaw runtime dirs inside an agent's workspace. memory/ is NOT
-    # excluded — it's the user-visible QMD memory index.
-    "state",
-    "skills",
-    "canvas",
-    "identity",
 }
 
 # File extensions treated as plain text (returned as UTF-8 strings).

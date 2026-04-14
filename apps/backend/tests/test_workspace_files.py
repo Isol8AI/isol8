@@ -134,12 +134,14 @@ class TestListDirectory:
         assert "node_modules" not in names
         assert "__pycache__" not in names
 
-    def test_list_excludes_openclaw_runtime_dirs(self, tmp_path):
-        """state/, skills/, canvas/, identity/ are excluded from listings.
+    def test_list_shows_openclaw_runtime_dirs(self, tmp_path):
+        """OpenClaw runtime dirs (state/, skills/, canvas/, identity/, memory/)
+        are visible in the tree — we don't proactively hide them.
 
-        OpenClaw creates these inside each agent's workspace for its own
-        runtime state. Users shouldn't see or edit them from the file viewer.
-        memory/ is NOT excluded — it's user-facing via QMD.
+        Rationale: hiding only at the workspace root would create a
+        depth-dependent exclusion that's easy to misapply. Users seeing
+        OpenClaw's runtime dirs isn't harmful; if clutter becomes a real
+        problem, revisit.
         """
         ws = _make_workspace(tmp_path)
         root = tmp_path / USER_ID / "workspaces" / "main"
@@ -154,11 +156,11 @@ class TestListDirectory:
         entries = ws.list_directory(USER_ID, "workspaces/main")
         names = {e["name"] for e in entries}
         assert "SOUL.md" in names
-        assert "memory" in names  # kept — user-visible via QMD
-        assert "state" not in names
-        assert "skills" not in names
-        assert "canvas" not in names
-        assert "identity" not in names
+        assert "memory" in names
+        assert "state" in names
+        assert "skills" in names
+        assert "canvas" in names
+        assert "identity" in names
 
     def test_list_subdirectory(self, populated_workspace):
         """list_directory on a sub-path works correctly."""
