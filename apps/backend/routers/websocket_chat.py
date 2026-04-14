@@ -330,6 +330,13 @@ async def ws_message(
         )
         return Response(status_code=200)
 
+    if msg_type == "user_active":
+        try:
+            await get_gateway_pool().record_activity(owner_id)
+        except Exception:
+            pass  # Pool may not be initialized in tests
+        return Response(status_code=200)
+
     if msg_type == "agent_chat":
         agent_id = body.get("agent_id")
         message = body.get("message")
@@ -344,7 +351,7 @@ async def ws_message(
 
         # Track chat activity for idle detection (scale-to-zero)
         try:
-            get_gateway_pool().touch_activity(owner_id)
+            await get_gateway_pool().record_activity(owner_id)
         except Exception:
             pass  # Pool may not be initialized in tests
 

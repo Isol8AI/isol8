@@ -400,3 +400,87 @@ class TestReqMessageRouting:
         assert sent_msg["type"] == "res"
         assert sent_msg["id"] == "req-uuid-2"
         assert sent_msg["ok"] is False
+
+
+class TestActivityTracking:
+    """Tests for activity tracking dispatch (scale-to-zero idle detection)."""
+
+    @pytest.mark.asyncio
+    async def test_user_active_dispatch_calls_record_activity(
+        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
+    ):
+        """user_active message should call pool.record_activity(owner_id) exactly once and return 200."""
+        from unittest.mock import AsyncMock
+
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+        mock_gateway_pool.record_activity = AsyncMock()
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-abc"},
+                json={"type": "user_active"},
+            )
+
+        assert response.status_code == 200
+        mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")
+        mock_management_api.send_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_user_active_dispatch_uses_org_owner_id(
+        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
+    ):
+        """user_active should record activity under org_id when connection has one."""
+        from unittest.mock import AsyncMock
+
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": "test-org-789",
+        }
+        mock_gateway_pool.record_activity = AsyncMock()
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "conn-abc"},
+                json={"type": "user_active"},
+            )
+
+        assert response.status_code == 200
+        mock_gateway_pool.record_activity.assert_awaited_once_with("test-org-789")
+
+    @pytest.mark.asyncio
+    async def test_agent_chat_dispatch_calls_record_activity(
+        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
+    ):
+        """agent_chat should route through record_activity (not touch_activity)."""
+        from unittest.mock import AsyncMock
+
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+        mock_gateway_pool.record_activity = AsyncMock()
+        # Guard: if agent_chat still calls touch_activity, fail loudly (None is not callable).
+        mock_gateway_pool.touch_activity = None
+
+        with (
+            patch(
+                "core.services.usage_service.check_budget",
+                new_callable=AsyncMock,
+                return_value={"allowed": True},
+            ),
+            patch("routers.websocket_chat._process_agent_chat_background"),
+        ):
+            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+                response = await client.post(
+                    "/ws/message",
+                    headers={"x-connection-id": "conn-abc"},
+                    json={"type": "agent_chat", "agent_id": "a1", "message": "hello"},
+                )
+
+        assert response.status_code == 200
+        mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")
