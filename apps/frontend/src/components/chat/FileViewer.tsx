@@ -47,6 +47,7 @@ function formatDate(timestamp: number): string {
 export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProps) {
   const [activeTab, setActiveTab] = React.useState<ViewerTab>("workspace");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialFilePath ?? null);
+  const [editorDirty, setEditorDirty] = React.useState(false);
 
   const relativeFilePath = selectedPath;
 
@@ -90,11 +91,31 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
     [agentId, relativeFilePath, activeTab, api, refresh],
   );
 
+  const confirmDiscardIfDirty = React.useCallback((): boolean => {
+    if (!editorDirty) return true;
+    return window.confirm("You have unsaved changes. Discard them?");
+  }, [editorDirty]);
+
+  const handleSelectFile = React.useCallback(
+    (path: string) => {
+      if (path === selectedPath) return;
+      if (!confirmDiscardIfDirty()) return;
+      setSelectedPath(path);
+    },
+    [selectedPath, confirmDiscardIfDirty],
+  );
+
   function handleTabChange(tab: ViewerTab) {
     if (tab === activeTab) return;
+    if (!confirmDiscardIfDirty()) return;
     setActiveTab(tab);
     setSelectedPath(null);
   }
+
+  const handleCloseRequested = React.useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    onClose();
+  }, [confirmDiscardIfDirty, onClose]);
 
   function handleCopyContent() {
     if (file?.content) {
@@ -193,7 +214,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
         )}
 
         <button
-          onClick={onClose}
+          onClick={handleCloseRequested}
           className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
           title="Close file viewer"
         >
@@ -215,7 +236,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
           <FileTree
             files={files}
             selectedPath={selectedPath}
-            onSelect={setSelectedPath}
+            onSelect={handleSelectFile}
             onRefresh={() => refresh()}
             isLoading={treeLoading}
             emptyMessage={
@@ -231,6 +252,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             isLoading={fileLoading}
             error={fileError ?? null}
             onSave={selectedPath ? handleSave : undefined}
+            onDirtyChange={setEditorDirty}
           />
         </div>
       </div>

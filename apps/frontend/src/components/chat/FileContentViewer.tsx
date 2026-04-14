@@ -9,9 +9,10 @@ interface FileContentViewerProps {
   isLoading: boolean;
   error: Error | null;
   onSave?: (content: string) => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-export function FileContentViewer({ file, isLoading, error, onSave }: FileContentViewerProps) {
+export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChange }: FileContentViewerProps) {
   const [editContent, setEditContent] = React.useState("");
   const [originalContent, setOriginalContent] = React.useState("");
   const [saving, setSaving] = React.useState(false);
@@ -20,34 +21,19 @@ export function FileContentViewer({ file, isLoading, error, onSave }: FileConten
 
   const dirty = editContent !== originalContent;
 
-  // Sync editor content when a new file loads; warn if unsaved changes.
-  // Use a ref to read the latest dirty state without re-subscribing the effect.
-  const dirtyRef = React.useRef(false);
-  dirtyRef.current = editContent !== originalContent;
-
-  const previousPathRef = React.useRef<string | null>(null);
-
+  // Report dirty state to parent so it can guard selection changes
   React.useEffect(() => {
-    if (file?.content == null || file.binary) {
-      previousPathRef.current = file?.path ?? null;
-      return;
-    }
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
 
-    const samePath = previousPathRef.current === file.path;
-    if (!samePath && dirtyRef.current) {
-      const proceed = window.confirm(
-        "You have unsaved changes. Discard them and load the new file?",
-      );
-      if (!proceed) {
-        // Keep editing the previous file — do not sync.
-        return;
-      }
+  // Sync editor content when a new file loads. Parent is responsible for
+  // prompting the user about unsaved changes BEFORE changing the file prop.
+  React.useEffect(() => {
+    if (file?.content != null && !file.binary) {
+      setEditContent(file.content);
+      setOriginalContent(file.content);
+      setSaveError(null);
     }
-
-    setEditContent(file.content);
-    setOriginalContent(file.content);
-    setSaveError(null);
-    previousPathRef.current = file.path;
   }, [file?.path, file?.content, file?.binary]);
 
   const handleSave = React.useCallback(async () => {
