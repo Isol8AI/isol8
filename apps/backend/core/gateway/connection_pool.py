@@ -29,6 +29,11 @@ _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 _IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
 _IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
+_DDB_WRITE_COOLDOWN = 30.0  # seconds between per-owner last_active_at writes
+
+# Per-owner cooldown map. Module-level so it survives pool reconstruction in tests
+# and across pool singletons. Values are the last epoch-seconds we wrote to DDB.
+_LAST_DDB_WRITE: Dict[str, float] = {}
 
 
 class GatewayConnection:
@@ -795,6 +800,28 @@ class GatewayConnectionPool:
     def touch_activity(self, user_id: str) -> None:
         """Update last activity timestamp for a user. Called on agent_chat."""
         self._last_activity[user_id] = time.time()
+
+    async def record_activity(self, owner_id: str) -> None:
+        """Record a user-interaction event.
+
+        Throttles DDB writes to at most one per owner per _DDB_WRITE_COOLDOWN
+        seconds. Callers are not expected to throttle; fire for every event.
+        """
+        now = time.time()
+        last = _LAST_DDB_WRITE.get(owner_id, 0.0)
+        if now - last < _DDB_WRITE_COOLDOWN:
+            return
+        _LAST_DDB_WRITE[owner_id] = now
+
+        from core.dynamodb import utc_now_iso
+        from core.repositories import container_repo
+
+        try:
+            await container_repo.update_last_active(owner_id, utc_now_iso())
+        except Exception:
+            # Don't let DDB flakiness break the hot path; let the next ping retry.
+            logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
+            _LAST_DDB_WRITE.pop(owner_id, None)
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
