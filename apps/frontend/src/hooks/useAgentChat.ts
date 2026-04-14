@@ -135,7 +135,6 @@ const _needsBootstrap = new Set<string>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-
   const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
