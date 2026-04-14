@@ -67,7 +67,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
   }
 
   const isSelected = selectedPath === entry.path;
-  const isMissing = Boolean((entry as FileEntry & { missing?: boolean }).missing);
+  const isMissing = Boolean(entry.missing);
 
   return (
     <button
@@ -79,7 +79,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
             ? "text-[#8a8578] hover:bg-[#e8e3d9]"
             : "text-[#1a1a1a] hover:bg-[#e8e3d9]"
       }`}
-      title={isMissing ? "Click to create this file" : undefined}
+      title={isMissing ? "This file does not exist yet" : undefined}
     >
       <span className="w-3.5 flex-shrink-0" />
       {isMissing ? (
