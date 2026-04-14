@@ -8,6 +8,7 @@ expected value from helpers in core/containers/config.py.
 import copy
 from typing import Any, Literal, TypedDict
 
+from core.config import TIER_CONFIG
 from core.containers.config import (
     _TIER_ALLOWED_MODEL_IDS,
     _models_for_tier,
@@ -31,6 +32,8 @@ class PolicyViolation(TypedDict):
 def _expected_providers(tier: str) -> dict:
     """The one provider block this tier is allowed to run: amazon-bedrock
     with exactly the tier's model list. No other providers permitted."""
+    # NOTE: hardcodes us-east-1 because Isol8 is single-region (see CLAUDE.md).
+    # If we go multi-region, thread `region` through from caller.
     return {
         "amazon-bedrock": {
             "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
@@ -44,6 +47,10 @@ def _expected_providers(tier: str) -> dict:
 def _providers_match(actual: Any, expected: dict) -> bool:
     """Strict equality check. Providers block must match exactly — any extra
     provider, any extra/missing model, any changed field is a violation."""
+    # NOTE: strict `==` is order-sensitive for the `models` list. Both
+    # `write_openclaw_config` and `_expected_providers` derive the list from
+    # `_models_for_tier` so order is shared. If either side re-orders, every
+    # clean config will flip to a violation.
     return actual == expected
 
 
@@ -68,6 +75,22 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
                 "reason": f"providers block for tier={effective_tier} must match the tier's allowlist",
                 "expected": expected_providers,
                 "actual": actual_providers,
+            }
+        )
+
+    # 2. agents.defaults.model.primary — must be in tier allowlist
+    primary = config.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "")
+    bare_primary = primary.removeprefix("amazon-bedrock/")
+    if bare_primary not in _TIER_ALLOWED_MODEL_IDS[effective_tier]:
+        expected_primary = (
+            f"amazon-bedrock/{TIER_CONFIG[effective_tier]['primary_model'].removeprefix('amazon-bedrock/')}"
+        )
+        violations.append(
+            {
+                "field": "agents.defaults.model.primary",
+                "reason": f"primary model {primary!r} is not allowed for tier={effective_tier}",
+                "expected": expected_primary,
+                "actual": primary,
             }
         )
 

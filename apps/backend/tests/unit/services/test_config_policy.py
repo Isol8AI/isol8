@@ -84,3 +84,26 @@ class TestEvaluate:
         )
         violations = config_policy.evaluate(config, "bogus-tier")
         assert any(v["field"] == "models.providers" for v in violations)
+
+    def test_free_tier_primary_changed_to_qwen_is_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+        violations = config_policy.evaluate(config, "free")
+        assert any(v["field"] == "agents.defaults.model.primary" for v in violations)
+
+    def test_paid_tier_primary_allowed_model_no_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="pro")
+        config = json.loads(raw)
+        # Pro tier's primary is already Qwen from write_openclaw_config, but
+        # swapping to MiniMax (also allowed on pro) should not be a violation.
+        config["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/minimax.minimax-m2.5"
+        violations = config_policy.evaluate(config, "pro")
+        assert not any(v["field"] == "agents.defaults.model.primary" for v in violations)
+
+    def test_paid_tier_primary_unknown_model_is_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="pro")
+        config = json.loads(raw)
+        config["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/claude-opus-4"
+        violations = config_policy.evaluate(config, "pro")
+        assert any(v["field"] == "agents.defaults.model.primary" for v in violations)
