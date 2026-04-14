@@ -3,6 +3,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_workspace
@@ -35,8 +36,14 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
 
 
 CONFIG_ALLOWLIST: set[str] = {
-    "SOUL.md", "MEMORY.md", "TOOLS.md", "IDENTITY.md",
-    "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "AGENTS.md",
+    "SOUL.md",
+    "MEMORY.md",
+    "TOOLS.md",
+    "IDENTITY.md",
+    "USER.md",
+    "HEARTBEAT.md",
+    "BOOTSTRAP.md",
+    "AGENTS.md",
 }
 
 
@@ -53,13 +60,15 @@ def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
         fpath = agent_dir / name
         if fpath.exists() and fpath.is_file():
             stat = fpath.stat()
-            results.append({
-                "name": name,
-                "path": name,
-                "type": "file",
-                "size": stat.st_size,
-                "modified_at": stat.st_mtime,
-            })
+            results.append(
+                {
+                    "name": name,
+                    "path": name,
+                    "type": "file",
+                    "size": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                }
+            )
     return results
 
 
@@ -153,3 +162,52 @@ async def read_config_file(
             raise HTTPException(status_code=404, detail=str(exc))
         raise HTTPException(status_code=500, detail=str(exc))
     return info
+
+
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
+    tab: str  # "workspace" or "config"
+
+
+def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
+    """Write a file to workspace or config directory. Returns the written path."""
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise ValueError(f"Invalid agent_id: {agent_id!r}")
+
+    if tab == "config":
+        if path not in CONFIG_ALLOWLIST:
+            raise ValueError(f"File not in allowlist: {path}")
+        full_path = f"agents/{agent_id}/{path}"
+    elif tab == "workspace":
+        full_path = f"workspaces/{agent_id}/{path}"
+    else:
+        raise ValueError(f"Invalid tab: {tab!r}")
+
+    workspace.write_file(owner_id, full_path, content)
+    return full_path
+
+
+@router.put("/workspace/{agent_id}/file")
+async def write_workspace_file(
+    agent_id: str,
+    body: WriteFileRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Write a file to the agent's workspace or config directory."""
+    owner_id = resolve_owner_id(auth)
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    if body.tab not in ("workspace", "config"):
+        raise HTTPException(status_code=400, detail="tab must be 'workspace' or 'config'")
+
+    workspace = get_workspace()
+    try:
+        written_path = _write_file(workspace, owner_id, agent_id, body.path, body.content, body.tab)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except WorkspaceError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    logger.info("Wrote %s for user %s (tab=%s)", written_path, owner_id, body.tab)
+    return {"status": "ok", "path": written_path}

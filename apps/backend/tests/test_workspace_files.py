@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 from core.auth import AuthContext
+from core.config import settings
 from core.containers.workspace import Workspace, WorkspaceError
 
 USER_ID = "user_test_abc"
@@ -58,6 +59,12 @@ def _minimal_png() -> bytes:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _local_environment(monkeypatch):
+    """Force ENVIRONMENT=local so os.chown is skipped on macOS during tests."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "local")
 
 
 @pytest.fixture()
@@ -334,6 +341,7 @@ class TestConfigFilesEndpoint:
         (agent_dir / "secret.json").write_text("{}", encoding="utf-8")  # not allowlisted
 
         from routers.workspace_files import _list_config_files
+
         result = _list_config_files(ws, USER_ID, AGENT_ID)
         names = {f["name"] for f in result}
         assert names == {"SOUL.md", "MEMORY.md"}
@@ -344,6 +352,7 @@ class TestConfigFilesEndpoint:
         ws = _make_workspace(tmp_path)
         (tmp_path / USER_ID).mkdir(parents=True)
         from routers.workspace_files import _list_config_files
+
         result = _list_config_files(ws, USER_ID, AGENT_ID)
         assert result == []
 
@@ -354,6 +363,7 @@ class TestConfigFilesEndpoint:
         agent_dir.mkdir(parents=True)
         (agent_dir / "BOOTSTRAP.md").write_text("# Bootstrap", encoding="utf-8")
         from routers.workspace_files import _list_config_files
+
         result = _list_config_files(ws, USER_ID, AGENT_ID)
         assert len(result) == 1
         entry = result[0]
@@ -420,4 +430,96 @@ class TestConfigFileReadEndpoint:
         workspace.ensure_user_dir(USER_ID)
         with pytest.raises(HTTPException) as exc:
             await list_config_files(agent_id="../../other", auth=_auth())
+        assert exc.value.status_code == 400
+
+
+# ===========================================================================
+# TestWriteFileEndpoint
+# ===========================================================================
+
+
+class TestWriteFileEndpoint:
+    """Tests for the _write_file helper used by the PUT endpoint."""
+
+    def test_write_workspace_file(self, tmp_path):
+        """Writing a workspace file creates it on disk."""
+        ws = _make_workspace(tmp_path)
+        user_root = tmp_path / USER_ID
+        user_root.mkdir(parents=True)
+        ws_dir = user_root / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "plan.md", "# My Plan", "workspace")
+        assert (ws_dir / "plan.md").read_text() == "# My Plan"
+
+    def test_write_config_file_allowlisted(self, tmp_path):
+        """Writing an allowlisted config file succeeds."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "I am kind", "config")
+        assert (agent_dir / "SOUL.md").read_text() == "I am kind"
+
+    def test_write_config_file_not_allowlisted_raises(self, tmp_path):
+        """Writing a non-allowlisted config file raises ValueError."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="not in allowlist"):
+            _write_file(ws, USER_ID, AGENT_ID, "secret.json", "{}", "config")
+
+    def test_write_creates_parent_dirs(self, tmp_path):
+        """Writing to a nested path creates intermediate directories."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "deep/nested/file.txt", "hello", "workspace")
+        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "file.txt").read_text() == "hello"
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for traversal in agent_id."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="plan.md", content="x", tab="workspace")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id="../other", body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_invalid_tab(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for a tab value that is neither workspace nor config."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="plan.md", content="x", tab="bogus")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_non_allowlisted_config_filename(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 when writing a non-allowlisted config file."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="secret.json", content="{}", tab="config")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert exc.value.status_code == 400
