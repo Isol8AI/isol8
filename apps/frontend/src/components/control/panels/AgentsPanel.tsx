@@ -5,7 +5,6 @@ import {
   Loader2,
   RefreshCw,
   Bot,
-  FileText,
   Wrench,
   MessageSquare,
   Plus,
@@ -13,7 +12,6 @@ import {
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
-import { AgentFilesTab } from "./AgentFilesTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
 import { useBilling } from "@/hooks/useBilling";
@@ -22,7 +20,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentEntry, AgentsListResponse } from "./agents-types";
 
-type AgentTab = "overview" | "files" | "tools" | "channels";
+type AgentTab = "overview" | "tools" | "channels";
 
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
@@ -159,7 +157,6 @@ export function AgentsPanel() {
                 {(
                   [
                     { id: "overview", icon: Bot, label: "Overview" },
-                    { id: "files", icon: FileText, label: "Files" },
                     { id: "tools", icon: Wrench, label: "Tools" },
                     ...(channelsEnabled
                       ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
@@ -184,9 +181,6 @@ export function AgentsPanel() {
 
               {activeTab === "overview" && (
                 <AgentOverviewTab agentId={selected.id} agent={selected} onAgentUpdated={() => mutate()} />
-              )}
-              {activeTab === "files" && (
-                <AgentFilesTab agentId={selected.id} />
               )}
               {activeTab === "tools" && (
                 <AgentToolsTab agentId={selected.id} />
