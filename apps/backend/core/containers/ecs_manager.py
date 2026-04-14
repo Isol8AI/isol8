@@ -990,7 +990,6 @@ class EcsManager:
         config_json = write_openclaw_config(
             region=settings.AWS_REGION,
             gateway_token=gateway_token,
-            proxy_base_url=settings.PROXY_BASE_URL,
             tier=tier,
         )
         workspace = get_workspace()

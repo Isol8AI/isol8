@@ -23,7 +23,6 @@ export interface SecretNames {
   clerkSecretKey: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
-  perplexityApiKey: string;
   encryptionKey: string;
 }
 
@@ -551,12 +550,6 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        PROXY_BASE_URL:
-          env === "local"
-            ? "http://localhost:8000/api/v1/proxy"
-            : env === "prod"
-              ? "https://api.isol8.co/api/v1/proxy"
-              : `https://api-${env}.isol8.co/api/v1/proxy`,
         DEBUG: env === "local" ? "true" : "false",
         // LocalStack needs this to redirect boto3 calls inside the ECS container
         ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
@@ -597,9 +590,6 @@ export class ServiceStack extends cdk.Stack {
         ),
         STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
-        ),
-        PERPLEXITY_API_KEY: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(this, "ImportPerplexityApiKey", props.secretNames.perplexityApiKey),
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),

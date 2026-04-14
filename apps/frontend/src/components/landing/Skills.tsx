@@ -47,19 +47,12 @@ export function Skills() {
             </div>
             <div className="store-pills">
               <span className="store-pill active">All</span>
-              <span className="store-pill">Installed (6)</span>
+              <span className="store-pill">Installed (5)</span>
               <span className="store-pill">Communication</span>
               <span className="store-pill">Productivity</span>
               <span className="store-pill">Research</span>
             </div>
             <p className="store-section-label">Installed</p>
-            <div className="store-card">
-              <span className="store-card-emoji">🔍</span>
-              <div className="store-card-info">
-                <span className="store-card-name">Perplexity <span className="store-badge">Installed</span></span>
-                <span className="store-card-desc">Search the web with AI-powered answers</span>
-              </div>
-            </div>
             <div className="store-card">
               <span className="store-card-emoji">🧠</span>
               <div className="store-card-info">
@@ -96,6 +89,14 @@ export function Skills() {
               <div className="store-card-info">
                 <span className="store-card-name">Google Calendar</span>
                 <span className="store-card-desc">Manage events, check availability, and schedule</span>
+              </div>
+              <span className="store-install-btn">Install</span>
+            </div>
+            <div className="store-card">
+              <span className="store-card-emoji">🔍</span>
+              <div className="store-card-info">
+                <span className="store-card-name">Perplexity</span>
+                <span className="store-card-desc">Search the web with AI-powered answers</span>
               </div>
               <span className="store-install-btn">Install</span>
             </div>

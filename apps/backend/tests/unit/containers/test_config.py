@@ -32,29 +32,6 @@ class TestWriteOpenclawConfig:
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert "eu-west-1" in bedrock["baseUrl"]
 
-    def test_config_search_disabled_without_token(self):
-        """Search disabled when no gateway token."""
-        config = json.loads(write_openclaw_config(gateway_token=""))
-        search = config["tools"]["web"]["search"]
-        assert search["enabled"] is False
-
-    def test_config_uses_perplexity_plugin_for_search(self):
-        """Search uses Perplexity plugin with proxy baseUrl (v2026.3.22+ format)."""
-        config = json.loads(
-            write_openclaw_config(
-                gateway_token="tok_abc123",
-            )
-        )
-        # tools.web.search just enables + sets provider
-        search = config["tools"]["web"]["search"]
-        assert search["enabled"] is True
-        assert search["provider"] == "perplexity"
-        # Actual config lives in plugins.entries.perplexity
-        plugin = config["plugins"]["entries"]["perplexity"]
-        assert plugin["enabled"] is True
-        assert plugin["config"]["webSearch"]["apiKey"] == "tok_abc123"
-        assert "proxy/search" in plugin["config"]["webSearch"]["baseUrl"]
-
     def test_config_full_profile_denies_canvas_nodes(self):
         """Tools profile is full and canvas/nodes are denied."""
         config = json.loads(write_openclaw_config())
@@ -304,18 +281,18 @@ class TestPatchOpenclawConfig:
         """Nested dicts are deep-merged."""
         base = {
             "tools": {
-                "web": {"search": {"enabled": False, "provider": "perplexity"}},
+                "web": {"fetch": {"enabled": False, "timeout": 30}},
                 "media": {"image": {"enabled": False}},
             }
         }
         patch = {
             "tools": {
-                "web": {"search": {"enabled": True}},
+                "web": {"fetch": {"enabled": True}},
             }
         }
         result = merge_openclaw_config(base, patch)
-        assert result["tools"]["web"]["search"]["enabled"] is True
-        assert result["tools"]["web"]["search"]["provider"] == "perplexity"  # preserved
+        assert result["tools"]["web"]["fetch"]["enabled"] is True
+        assert result["tools"]["web"]["fetch"]["timeout"] == 30  # preserved
         assert result["tools"]["media"]["image"]["enabled"] is False  # preserved
 
     def test_new_key_added(self):
