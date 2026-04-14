@@ -94,8 +94,8 @@ describe("PostHogProvider", () => {
       </mod.PostHogProvider>
     );
 
-    expect(screen.getByTestId("child")).toBeInTheDocument();
-    expect(screen.getByText("Hello")).toBeInTheDocument();
+    expect(screen.getByTestId("child")).toBeTruthy();
+    expect(screen.getByText("Hello")).toBeTruthy();
   });
 
   it("renders children when NEXT_PUBLIC_POSTHOG_KEY is set", async () => {
@@ -108,7 +108,7 @@ describe("PostHogProvider", () => {
       </mod.PostHogProvider>
     );
 
-    expect(screen.getByTestId("child")).toBeInTheDocument();
-    expect(screen.getByText("Hello")).toBeInTheDocument();
+    expect(screen.getByTestId("child")).toBeTruthy();
+    expect(screen.getByText("Hello")).toBeTruthy();
   });
 });
