@@ -58,11 +58,23 @@ def _ensure_within_subtree(workspace, owner_id: str, full_path: str, subtree: st
         raise ValueError(f"path escapes agent subtree: {full_path!r}")
 
 
-def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
-    """Build the relative path to an agent's workspace within the user dir."""
-    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
-        raise HTTPException(status_code=400, detail="Invalid agent_id")
-    return f"workspaces/{agent_id}"
+MAIN_AGENT_ID = "main"
+
+
+def _agent_workspace_dir(agent_id: str) -> str:
+    """Return the user-root-relative directory holding an agent's files.
+
+    Layout convention (see file-viewer v2 follow-up):
+    - main agent stores everything at workspaces/ (user-root, inherits OpenClaw's default)
+    - Custom agents store everything at agents/{agent_id}/ (explicit override from frontend)
+
+    This wrapper lets callers say "give me agent X's dir" without branching at
+    every call site. A future PR will normalize to workspaces/{id}/ for all
+    agents; this keeps the mapping in one place so that PR is a one-line change.
+    """
+    if agent_id == MAIN_AGENT_ID:
+        return "workspaces"
+    return f"agents/{agent_id}"
 
 
 def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_depth: int = 10):
@@ -82,15 +94,16 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
 def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
     """Rewrite entry paths from user-root-relative to agent-workspace-relative.
 
-    Input paths look like `workspaces/{agent_id}/foo/bar.md`. Output paths
-    strip the `workspaces/{agent_id}/` prefix so they match the contract
-    expected by the read/write endpoints.
+    Input paths look like `{_agent_workspace_dir(agent_id)}/foo/bar.md`. Output
+    paths strip the prefix so they match the contract expected by the
+    read/write endpoints.
     """
-    prefix = f"workspaces/{agent_id}/"
+    bare = _agent_workspace_dir(agent_id)
+    prefix = f"{bare}/"
     out = []
     for entry in entries:
         p = entry["path"]
-        if p == f"workspaces/{agent_id}":
+        if p == bare:
             # The agent root itself — present when the workspace dir is listed at depth 0.
             new_path = ""
         elif p.startswith(prefix):
@@ -118,16 +131,16 @@ MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
-    """List only allowlisted config files from agents/{agent_id}/."""
+    """List only allowlisted config files from the agent's workspace."""
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         return []
     user_root = workspace.user_path(owner_id)
-    agent_dir = user_root / "agents" / agent_id
-    if not agent_dir.exists() or not agent_dir.is_dir():
+    ws_dir = user_root / _agent_workspace_dir(agent_id)
+    if not ws_dir.exists() or not ws_dir.is_dir():
         return []
     results = []
     for name in sorted(CONFIG_ALLOWLIST):
-        fpath = agent_dir / name
+        fpath = ws_dir / name
         if fpath.exists() and fpath.is_file():
             stat = fpath.stat()
             results.append(
@@ -153,7 +166,10 @@ async def list_workspace_tree(
     owner_id = resolve_owner_id(auth)
     workspace = get_workspace()
 
-    agent_base = _agent_workspace_path(owner_id, agent_id)
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+
+    agent_base = _agent_workspace_dir(agent_id)
     full_path = f"{agent_base}/{path}" if path else agent_base
 
     if recursive:
@@ -183,7 +199,10 @@ async def read_workspace_file(
     owner_id = resolve_owner_id(auth)
     workspace = get_workspace()
 
-    agent_base = _agent_workspace_path(owner_id, agent_id)
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+
+    agent_base = _agent_workspace_dir(agent_id)
     full_path = f"{agent_base}/{path}"
 
     try:
@@ -224,7 +243,7 @@ async def read_config_file(
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
     workspace = get_workspace()
-    full_path = f"agents/{agent_id}/{path}"
+    full_path = f"{_agent_workspace_dir(agent_id)}/{path}"
     try:
         info = workspace.read_file_info(owner_id, full_path)
     except WorkspaceError as exc:
@@ -241,7 +260,13 @@ class WriteFileRequest(BaseModel):
 
 
 def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
-    """Write a file to workspace or config directory. Returns the written path."""
+    """Write a file to the agent's workspace. Returns the written path.
+
+    With the file-viewer v2 follow-up, config and workspace tabs point at the
+    same directory on disk (see ``_agent_workspace_dir``). The ``tab`` argument
+    is cosmetic on the backend — its only role is to gate config writes through
+    the allowlist.
+    """
     encoded = content.encode("utf-8")
     if len(encoded) > MAX_WRITE_SIZE:
         raise ValueError(f"content exceeds {MAX_WRITE_SIZE // (1024 * 1024)}MB limit")
@@ -251,15 +276,12 @@ def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str
 
     _validate_relative_path(path)
 
-    if tab == "config":
-        if path not in CONFIG_ALLOWLIST:
-            raise ValueError(f"File not in allowlist: {path}")
-        subtree = f"agents/{agent_id}"
-    elif tab == "workspace":
-        subtree = f"workspaces/{agent_id}"
-    else:
+    if tab not in ("workspace", "config"):
         raise ValueError(f"Invalid tab: {tab!r}")
+    if tab == "config" and path not in CONFIG_ALLOWLIST:
+        raise ValueError(f"File not in allowlist: {path}")
 
+    subtree = _agent_workspace_dir(agent_id)
     full_path = f"{subtree}/{path}"
     _ensure_within_subtree(workspace, owner_id, full_path, subtree)
 
