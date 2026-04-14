@@ -24,6 +24,7 @@ from websockets import connect as ws_connect
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import GATEWAY_PORT
+from routers.workspace_files import _agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -240,8 +241,8 @@ def _sanitize_filename(name: str) -> str:
     summary="Upload files to the user's agent workspace",
     description=(
         "Uploads one or more files to the user's workspace on EFS. "
-        "Files are placed in the agent's `workspaces/{agent_id}/uploads/` directory "
-        "and are accessible to the user's OpenClaw agent. "
+        "Files are placed in the agent's `uploads/` directory (inside the "
+        "agent's workspace dir) and are accessible to the user's OpenClaw agent. "
         "Max 10MB per file, 10 files per request."
     ),
     operation_id="upload_files",
@@ -285,7 +286,7 @@ async def upload_files(
             )
 
         safe_name = _sanitize_filename(f.filename or "upload")
-        dest_path = f"workspaces/{agent_id}/uploads/{safe_name}"
+        dest_path = f"{_agent_workspace_dir(agent_id)}/uploads/{safe_name}"
         workspace.write_bytes(owner_id, dest_path, data)
         # The agent's working dir is $HOME (/home/node) but EFS is mounted
         # at $HOME/.openclaw, so the agent sees uploads relative to that mount.
