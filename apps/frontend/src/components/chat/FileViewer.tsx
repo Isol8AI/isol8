@@ -5,6 +5,7 @@ import { X, Copy } from "lucide-react";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
 import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
+import { useApi } from "@/lib/api";
 
 interface FileViewerProps {
   agentId: string | null;
@@ -80,6 +81,18 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
       setActiveTab("workspace"); // chat-detected paths are always workspace paths
     }
   }, [initialFilePath]);
+
+  const api = useApi();
+
+  const handleSave = React.useCallback(
+    async (content: string) => {
+      if (!agentId || !relativeFilePath) return;
+      await api.saveWorkspaceFile(agentId, relativeFilePath, content, activeTab);
+      // Refresh the tree to pick up size/date changes
+      refresh();
+    },
+    [agentId, relativeFilePath, activeTab, api, refresh],
+  );
 
   function handleTabChange(tab: ViewerTab) {
     if (tab === activeTab) return;
@@ -221,6 +234,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             file={file}
             isLoading={fileLoading}
             error={fileError ?? null}
+            onSave={selectedPath ? handleSave : undefined}
           />
         </div>
       </div>
