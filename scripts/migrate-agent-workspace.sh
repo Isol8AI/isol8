@@ -1,17 +1,20 @@
 #!/bin/sh
-# Migrate one EFS user directory from the pre-normalization layout
-# to the normalized layout, where EVERY agent's workspace lives at
-# workspaces/{agent_id}/.
+# Migrate one EFS user directory from the pre-normalization layout to the
+# normalized layout, where every agent's workspace lives at workspaces/{id}/.
 #
-# Pre-migration:
-#   workspaces/                ← bare main-agent workspace (all of main's files)
-#   agents/{id}/               ← custom-agent workspace + OpenClaw runtime metadata
-#     agent/, sessions/, plus any user workspace content (SOUL.md etc.)
+# Pre-migration (observed in prod):
+#   workspaces/                  ← bare main-agent workspace (SOUL.md + runtime dirs)
+#   workspaces/{custom_id}/      ← pre-existing upload dirs (from PR #260)
+#   agents/{id}/                 ← OpenClaw runtime (agent/, sessions/, qmd/)
+#   openclaw.json                ← main inherits defaults.workspace; custom agents
+#                                  have absolute-path `workspace` overrides like
+#                                  "/home/node/agents/{id}"
 #
 # Post-migration:
-#   workspaces/main/           ← main-agent workspace (everything from the old bare root)
-#   workspaces/{id}/           ← custom-agent workspace (user content only)
-#   agents/{id}/               ← UNTOUCHED — OpenClaw still owns agent/ and sessions/ here
+#   workspaces/main/             ← main-agent workspace (everything from the old bare root)
+#   workspaces/{custom_id}/      ← custom-agent workspace (uploads/ preserved, config files moved in)
+#   agents/{id}/                 ← UNTOUCHED — OpenClaw runtime stays here
+#   openclaw.json                ← agents.list has workspace="workspaces/{id}" for every agent
 #
 # Usage:
 #   migrate-agent-workspace.sh /mnt/efs/users/<user_id>            # dry run
@@ -22,9 +25,8 @@
 #     --container backend --interactive \
 #     --command "/bin/sh /app/scripts/migrate-agent-workspace.sh /mnt/efs/users/<uid>"
 #
-# The user's OpenClaw service should be stopped (desired count = 0) before
-# running with --apply, to avoid races with a running agent writing into
-# workspaces/ while we're moving files.
+# Chokidar (polling mode) picks up the openclaw.json change and OpenClaw
+# hot-reloads — no container restart needed, no API call needed.
 
 set -eu
 
@@ -48,14 +50,48 @@ fi
 WS="$USER_DIR/workspaces"
 MAIN="$WS/main"
 AGENTS="$USER_DIR/agents"
+OC_JSON="$USER_DIR/openclaw.json"
 
-# OpenClaw subdirectories inside agents/{id}/ that must NOT be moved — they hold
-# runtime state (chat history, model config) which OpenClaw keeps owning.
-OPENCLAW_RUNTIME_SUBDIRS="agent sessions"
+# The 7 OpenClaw-seeded config files. These are the only filenames we move
+# out of agents/{id}/ into workspaces/{id}/. Anything else in agents/{id}/
+# (qmd/, agent/, sessions/, etc.) is OpenClaw runtime state and stays put.
+CONFIG_ALLOWLIST="SOUL.md MEMORY.md TOOLS.md IDENTITY.md USER.md HEARTBEAT.md AGENTS.md"
 
 echo "== migrate-agent-workspace =="
 echo "  user_dir: $USER_DIR"
 echo "  apply:    $APPLY"
+echo
+
+# ---------------------------------------------------------------------------
+# Discover custom agent IDs from openclaw.json
+# ---------------------------------------------------------------------------
+#
+# We need this to distinguish (at workspaces/ root) between main-agent content
+# and pre-existing workspaces/{custom_id}/ dirs — the latter must NOT be moved
+# into workspaces/main/{id}/ during Step 1. Reading openclaw.json is the only
+# reliable way to know which IDs are custom agents.
+
+CUSTOM_IDS=""
+if [ -f "$OC_JSON" ]; then
+  CUSTOM_IDS="$(python3 - "$OC_JSON" <<'PYEOF'
+import json
+import sys
+
+try:
+    with open(sys.argv[1]) as f:
+        cfg = json.load(f)
+    for a in cfg.get("agents", {}).get("list", []):
+        aid = a.get("id")
+        if aid and aid != "main":
+            print(aid)
+except Exception as exc:
+    print(f"error: {exc}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+  )"
+fi
+
+echo "  custom agents from openclaw.json: ${CUSTOM_IDS:-<none>}"
 echo
 
 # ---------------------------------------------------------------------------
@@ -82,7 +118,6 @@ move_item() {
     return 0
   fi
   # Use -e OR -L so a broken symlink at the destination still trips the skip.
-  # Without -L, `mv` would overwrite the symlink target instead of bailing.
   if [ -e "$dst" ] || [ -L "$dst" ]; then
     echo "  SKIP (exists): $dst"
     return 0
@@ -95,33 +130,40 @@ move_item() {
   fi
 }
 
+is_custom_agent_id() {
+  candidate="$1"
+  for aid in $CUSTOM_IDS; do
+    if [ "$candidate" = "$aid" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
-# Step 1: main agent — migrate workspaces/* into workspaces/main/
+# Step 1: main agent — workspaces/* (excl custom-agent dirs) -> workspaces/main/
 # ---------------------------------------------------------------------------
 #
-# The old layout placed ALL of main's workspace content at the bare workspaces/
-# root — the 7 OpenClaw seed files, any user-created files, uploads, plus
-# runtime subdirs (memory/, state/, etc.). We move EVERYTHING into workspaces/main/
-# so nothing is stranded. The only thing we skip is workspaces/main/ itself
-# (in case a partial run already created it).
-#
-# No custom agents have ever landed at workspaces/{id}/ in the legacy layout
-# (they were all forced to agents/{id}/ by the frontend override), so every
-# entry at workspaces/ root belongs to main.
+# The old layout put all of main's files + runtime dirs at workspaces/ root.
+# We move everything into workspaces/main/ EXCEPT:
+#   - workspaces/main/ itself (target)
+#   - workspaces/{custom_id}/ dirs — pre-existing from PR #260's upload
+#     endpoint or from OpenClaw's default resolution for custom agents;
+#     those are ALREADY at the target location for the new layout.
 
 if [ ! -d "$WS" ]; then
   echo "  workspaces/ doesn't exist — nothing to migrate for main"
 else
-  echo "== main agent: workspaces/* -> workspaces/main/ =="
+  echo "== Step 1: main agent — workspaces/* -> workspaces/main/ =="
   mkdir_p "$MAIN"
 
-  # Iterate every entry at workspaces/ root, including hidden files. Using a
-  # find invocation rather than globs so we don't miss dotfiles.
   find "$WS" -mindepth 1 -maxdepth 1 -print | while IFS= read -r entry; do
     name="$(basename "$entry")"
     if [ "$name" = "main" ]; then
-      # Either the target dir we just created, OR (unusual) a pre-existing
-      # subdir. Either way, do not recurse into ourselves.
+      continue
+    fi
+    if is_custom_agent_id "$name"; then
+      echo "  SKIP (custom agent workspace already in place): $entry"
       continue
     fi
     move_item "$entry" "$MAIN/$name"
@@ -131,53 +173,38 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: custom agents — move user workspace content out of agents/{id}/
+# Step 2: custom agents — move ALLOWLISTED config files from
+# agents/{id}/ to workspaces/{id}/
 # ---------------------------------------------------------------------------
 #
-# The old layout placed custom-agent workspace files at agents/{id}/, co-mingled
-# with OpenClaw's runtime state at agents/{id}/agent/ and agents/{id}/sessions/.
-# After the code change, reads/writes for custom agents go to workspaces/{id}/,
-# so we relocate anything in agents/{id}/ that isn't OpenClaw runtime state.
+# In the old layout, Config tab edits wrote SOUL.md etc. to agents/{id}/
+# (via the pre-PR-267 backend). After PR #267, reads/writes go to
+# workspaces/{id}/. We move ONLY the 7 allowlisted config filenames — never
+# runtime subdirs like qmd/, agent/, sessions/.
 #
-# `agent/` and `sessions/` stay in agents/{id}/ — OpenClaw still writes there.
-#
-# Note: we intentionally include `agents/main` in this pass. In the legacy
-# layout OpenClaw still created agents/main/sessions/ and agents/main/agent/
-# (runtime), but NEVER user workspace files (those went to workspaces/ root
-# per Step 1). So the loop is a no-op for main in practice — but if any leftover
-# user file IS found there, we migrate it to workspaces/main/ rather than
-# strand it.
+# In practice most prod custom agents have no config files on disk yet
+# (ember, pulse), so this step is often a no-op. When it does fire, it
+# rescues a handful of edited personality files.
 
 if [ ! -d "$AGENTS" ]; then
   echo "  agents/ doesn't exist — no custom-agent migration needed"
 else
-  echo "== custom agents: agents/{id}/* -> workspaces/{id}/* (excl runtime) =="
+  echo "== Step 2: custom agents — agents/{id}/{config files} -> workspaces/{id}/ =="
 
   find "$AGENTS" -mindepth 1 -maxdepth 1 -type d -print | while IFS= read -r agent_dir; do
     agent_id="$(basename "$agent_dir")"
     target_ws="$WS/$agent_id"
-    has_user_content=0
+    moved_any=0
 
-    # Check if there is any non-runtime content in agents/{id}/
-    find "$agent_dir" -mindepth 1 -maxdepth 1 -print | while IFS= read -r entry; do
-      name="$(basename "$entry")"
-      is_runtime=0
-      for runtime in $OPENCLAW_RUNTIME_SUBDIRS; do
-        if [ "$name" = "$runtime" ]; then
-          is_runtime=1
-          break
+    for fname in $CONFIG_ALLOWLIST; do
+      src="$agent_dir/$fname"
+      if [ -e "$src" ] || [ -L "$src" ]; then
+        if [ "$moved_any" -eq 0 ]; then
+          mkdir_p "$target_ws"
+          moved_any=1
         fi
-      done
-      if [ "$is_runtime" -eq 1 ]; then
-        continue
+        move_item "$src" "$target_ws/$fname"
       fi
-
-      # Non-runtime entry — move to workspaces/{id}/
-      if [ "$has_user_content" -eq 0 ]; then
-        mkdir_p "$target_ws"
-        has_user_content=1
-      fi
-      move_item "$entry" "$target_ws/$name"
     done
   done
 
@@ -185,29 +212,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Step 3: patch openclaw.json so main's workspace = workspaces/main
+# Step 3: patch openclaw.json so every agent's workspace = workspaces/{id}
 # ---------------------------------------------------------------------------
 #
-# Main used to inherit `agents.defaults.workspace` (`.openclaw/workspaces`)
-# directly, landing at the bare workspaces/ root. After migration, main's
-# files are at workspaces/main/ and we need OpenClaw to look there. The
-# backend's config generator adds a per-agent `workspace: "workspaces/main"`
-# override on main, but existing EFS copies of openclaw.json were written
-# before that change.
+# - Main: add/set workspace = "workspaces/main" (create list entry if missing).
+# - Each custom agent: replace any existing `workspace` override with
+#   "workspaces/{id}". Leave `agentDir` alone (still points to EFS via
+#   .openclaw/agents/{id}/agent — unchanged by normalization).
 #
-# We patch openclaw.json directly on EFS. Chokidar (polling mode enabled in
-# the container) picks up the change and OpenClaw hot-reloads the agent
-# config — no container restart needed.
+# Chokidar polling picks up the file change and OpenClaw hot-reloads. No
+# container restart, no API call needed.
 
-OC_JSON="$USER_DIR/openclaw.json"
 if [ ! -f "$OC_JSON" ]; then
-  echo "== openclaw.json patch: skipped ($OC_JSON does not exist) =="
+  echo "== Step 3: openclaw.json patch: skipped ($OC_JSON does not exist) =="
 else
-  echo "== openclaw.json patch: set main.workspace = workspaces/main =="
+  echo "== Step 3: openclaw.json patch =="
   if [ "$APPLY" -eq 1 ]; then
     python3 - "$OC_JSON" <<'PYEOF'
 import json
@@ -217,8 +236,12 @@ path = sys.argv[1]
 with open(path) as f:
     cfg = json.load(f)
 
-agents_list = cfg.get("agents", {}).get("list", [])
+agents_cfg = cfg.setdefault("agents", {})
+agents_list = agents_cfg.setdefault("list", [])
+
 changed = False
+
+# 1) main: ensure the entry exists with workspace = "workspaces/main"
 found_main = False
 for agent in agents_list:
     if agent.get("id") == "main":
@@ -227,14 +250,19 @@ for agent in agents_list:
             agent["workspace"] = "workspaces/main"
             changed = True
         break
-
 if not found_main:
-    # Older configs may omit the agents.list entirely. Add main explicitly so
-    # the migration is idempotent and future config regenerations still see it.
-    cfg.setdefault("agents", {}).setdefault("list", []).append(
-        {"id": "main", "default": True, "workspace": "workspaces/main"}
-    )
+    agents_list.append({"id": "main", "default": True, "workspace": "workspaces/main"})
     changed = True
+
+# 2) custom agents: rewrite any existing workspace override to workspaces/{id}
+for agent in agents_list:
+    aid = agent.get("id")
+    if not aid or aid == "main":
+        continue
+    desired = f"workspaces/{aid}"
+    if agent.get("workspace") != desired:
+        agent["workspace"] = desired
+        changed = True
 
 if changed:
     with open(path, "w") as f:
@@ -244,7 +272,9 @@ else:
     print(f"  already patched: {path}")
 PYEOF
   else
-    echo "  would patch: $OC_JSON (set agents.list[id=main].workspace = workspaces/main)"
+    echo "  would patch: $OC_JSON"
+    echo "    - agents.list[id=main].workspace = workspaces/main (add if missing)"
+    echo "    - for each custom agent: workspace = workspaces/{id}"
   fi
   echo
 fi
@@ -264,7 +294,7 @@ else
   fi
   if [ -d "$AGENTS" ]; then
     echo
-    echo "Remaining in $AGENTS/ (each agent should have only agent/ and sessions/):"
+    echo "Remaining in $AGENTS/ (runtime dirs preserved — agent/, sessions/, qmd/):"
     ls -la "$AGENTS/"
   fi
 fi
