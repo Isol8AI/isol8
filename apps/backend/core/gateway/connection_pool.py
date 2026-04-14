@@ -643,8 +643,10 @@ class GatewayConnection:
             if event_name == "agent":
                 # Unthrottled agent events -- smooth token-by-token streaming
                 stream = payload.get("stream", "")
-                if stream not in ("assistant", ""):
-                    # Log non-assistant events (tool, lifecycle, error) for debugging
+                # Exclude token-level streams (assistant, reasoning, thinking)
+                # from INFO logs — each fires per LLM token, so logging would
+                # blow up CloudWatch volume on long responses.
+                if stream not in ("assistant", "reasoning", "thinking", ""):
                     data = payload.get("data", {})
                     logger.info(
                         "Agent event for user %s: stream=%s phase=%s name=%s keys=%s",
