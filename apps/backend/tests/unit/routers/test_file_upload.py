@@ -165,3 +165,36 @@ async def test_upload_sanitizes_filename(app, auth_override, mock_container, moc
             assert "/" not in body["uploaded"][0]["filename"]
     finally:
         app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_upload_missing_agent_id_returns_422(app, auth_override):
+    """Upload without agent_id query param fails FastAPI validation with 422."""
+    app.dependency_overrides[get_current_user] = auth_override
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/container/files",
+                files=[("files", ("test.txt", b"hi", "text/plain"))],
+            )
+
+        assert resp.status_code == 422
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.mark.asyncio
+async def test_upload_traversal_agent_id_returns_400(app, auth_override):
+    """Upload with agent_id containing a traversal sequence is rejected with 400."""
+    app.dependency_overrides[get_current_user] = auth_override
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/container/files?agent_id=../other",
+                files=[("files", ("test.txt", b"hi", "text/plain"))],
+            )
+
+        assert resp.status_code == 400
+        assert "Invalid agent_id" in resp.json()["detail"]
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
