@@ -155,17 +155,19 @@ class TestWriteOpenclawConfig:
         assert config["agents"]["defaults"]["workspace"] == ".openclaw/workspaces"
 
     def test_main_agent_has_explicit_workspace(self):
-        """Main agent's workspace is workspaces/main so it joins the {id}/ scheme.
+        """Main agent's workspace is .openclaw/workspaces/main so it joins
+        the {id}/ scheme AND stays on EFS.
 
-        Without this override, OpenClaw places the default agent at the bare
-        agents.defaults.workspace path (`.openclaw/workspaces`), while custom
-        agents get `{defaults.workspace}/{agentId}`. This inconsistency makes
-        the file viewer unable to assume one layout per agent — which caused
-        the prod bug in PR #260. The explicit override normalizes main.
+        The .openclaw/ prefix is REQUIRED: OpenClaw resolves per-agent
+        workspace values via path.resolve() against the process cwd
+        (/home/node). A bare "workspaces/main" would land at
+        /home/node/workspaces/main/ — OUTSIDE the EFS mount at
+        /home/node/.openclaw/ — so every write would be lost on container
+        restart.
         """
         config = json.loads(write_openclaw_config())
         main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
-        assert main_entry.get("workspace") == "workspaces/main"
+        assert main_entry.get("workspace") == ".openclaw/workspaces/main"
 
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""

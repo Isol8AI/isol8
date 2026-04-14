@@ -241,25 +241,34 @@ agents_list = agents_cfg.setdefault("list", [])
 
 changed = False
 
-# 1) main: ensure the entry exists with workspace = "workspaces/main"
+# NOTE ON PATH FORMAT: OpenClaw resolves per-agent workspace values via
+# path.resolve() against the container cwd (/home/node), NOT against the
+# OpenClaw data root. So the value MUST start with ".openclaw/" for the
+# resolved path to land inside the EFS mount (/home/node/.openclaw/). A
+# bare "workspaces/main" would resolve to /home/node/workspaces/main/,
+# which is container-local and ephemeral.
+
+# 1) main: ensure the entry exists with workspace = ".openclaw/workspaces/main"
+main_workspace = ".openclaw/workspaces/main"
 found_main = False
 for agent in agents_list:
     if agent.get("id") == "main":
         found_main = True
-        if agent.get("workspace") != "workspaces/main":
-            agent["workspace"] = "workspaces/main"
+        if agent.get("workspace") != main_workspace:
+            agent["workspace"] = main_workspace
             changed = True
         break
 if not found_main:
-    agents_list.append({"id": "main", "default": True, "workspace": "workspaces/main"})
+    agents_list.append({"id": "main", "default": True, "workspace": main_workspace})
     changed = True
 
-# 2) custom agents: rewrite any existing workspace override to workspaces/{id}
+# 2) custom agents: rewrite any existing workspace override to
+#    .openclaw/workspaces/{id} so it also lands on EFS.
 for agent in agents_list:
     aid = agent.get("id")
     if not aid or aid == "main":
         continue
-    desired = f"workspaces/{aid}"
+    desired = f".openclaw/workspaces/{aid}"
     if agent.get("workspace") != desired:
         agent["workspace"] = desired
         changed = True
