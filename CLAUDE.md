@@ -312,7 +312,7 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 |------|---------|
 | `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. Usage recording callback. |
 | `ecs_manager.py` | Per-user ECS Fargate lifecycle. Cloud Map discovery. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
-| `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider, search proxy, memory plugin. `write_mcporter_config()` for MCP servers. |
+| `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. `write_mcporter_config()` for MCP servers. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
 | `config_store.py` | Container metadata persistence (DB-backed Container model). |
 
@@ -354,7 +354,6 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 | `billing.py` | `/billing` | `GET /account`, `/usage`; `POST /checkout`, `/portal`, `/webhooks/stripe` |
 | `container_rpc.py` | `/container` | `GET /health`; `POST /rpc` -- generic RPC proxy to user's OpenClaw gateway |
 | `control_ui_proxy.py` | `/control-ui` | Proxy for OpenClaw built-in control UI SPA |
-| `proxy.py` | `/proxy` | Proxy for external tool APIs (Perplexity search, etc.) |
 | `channels.py` | `/channels` | Messaging channel management (Telegram, Discord, WhatsApp) |
 | `settings_keys.py` | `/settings/keys` | BYOK API key CRUD (encrypted) |
 | `integrations.py` | `/` | MCP server integration management (mcporter) |
