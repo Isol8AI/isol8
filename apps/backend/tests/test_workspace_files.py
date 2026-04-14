@@ -4,19 +4,21 @@ import base64
 import struct
 import zlib
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
+from fastapi import HTTPException
 
+from core.auth import AuthContext
 from core.containers.workspace import Workspace, WorkspaceError
 
 USER_ID = "user_test_abc"
 AGENT_ID = "agent-abc-123"
-ALLOWLISTED_FILES = [
-    "SOUL.md", "MEMORY.md", "TOOLS.md", "IDENTITY.md",
-    "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "AGENTS.md",
-]
+
+
+def _auth(owner_id: str = USER_ID) -> AuthContext:
+    """Build a minimal AuthContext for direct handler calls (personal mode)."""
+    return AuthContext(user_id=owner_id)
 
 
 # ---------------------------------------------------------------------------
@@ -375,7 +377,47 @@ class TestConfigFileReadEndpoint:
         assert info["content"] == "I am helpful"
         assert info["binary"] is False
 
-    def test_rejects_non_allowlisted_filename(self, tmp_path):
-        """Non-allowlisted filenames are rejected."""
-        from routers.workspace_files import CONFIG_ALLOWLIST
-        assert "secret.json" not in CONFIG_ALLOWLIST
+    @pytest.mark.asyncio
+    async def test_read_rejects_non_allowlisted_path(self, workspace, monkeypatch):
+        """read_config_file returns 400 for a path not in the allowlist."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id=AGENT_ID, path="secret.json", auth=_auth())
+        assert exc.value.status_code == 400
+        assert "allowlist" in exc.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_traversal_in_path(self, workspace, monkeypatch):
+        """read_config_file rejects a path with traversal sequences."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id=AGENT_ID, path="../../etc/passwd", auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """read_config_file rejects a traversal sequence in agent_id."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id="../other", path="SOUL.md", auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """list_config_files returns 400 for an agent_id containing '..'."""
+        from routers.workspace_files import list_config_files
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await list_config_files(agent_id="../../other", auth=_auth())
+        assert exc.value.status_code == 400
