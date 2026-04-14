@@ -32,8 +32,40 @@ function formatFileSize(bytes: number): string {
 export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage, budgetExceeded }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
-  const [sizeError, setSizeError] = React.useState<string | null>(null);
+  const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
+  const sizeErrorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Clear timer on unmount
+  React.useEffect(() => {
+    return () => {
+      if (sizeErrorTimerRef.current) {
+        clearTimeout(sizeErrorTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showSizeError = React.useCallback((message: string) => {
+    if (sizeErrorTimerRef.current) {
+      clearTimeout(sizeErrorTimerRef.current);
+      sizeErrorTimerRef.current = null;
+    }
+    sizeErrorIdRef.current += 1;
+    setSizeError({ id: sizeErrorIdRef.current, message });
+    sizeErrorTimerRef.current = setTimeout(() => {
+      setSizeError(null);
+      sizeErrorTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  const dismissSizeError = React.useCallback(() => {
+    if (sizeErrorTimerRef.current) {
+      clearTimeout(sizeErrorTimerRef.current);
+      sizeErrorTimerRef.current = null;
+    }
+    setSizeError(null);
+  }, []);
 
   const filterOversizedFiles = React.useCallback((files: File[]): File[] => {
     const valid: File[] = [];
@@ -46,11 +78,12 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
       }
     }
     if (rejected.length > 0) {
-      setSizeError(`${rejected.join(", ")} exceed${rejected.length === 1 ? "s" : ""} the 10MB limit`);
-      setTimeout(() => setSizeError(null), 5000);
+      showSizeError(
+        `${rejected.join(", ")} exceed${rejected.length === 1 ? "s" : ""} the 10MB limit`,
+      );
     }
     return valid;
-  }, []);
+  }, [showSizeError]);
 
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
@@ -143,10 +176,10 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
 
         {sizeError && (
           <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
-            <span>{sizeError}</span>
+            <span>{sizeError.message}</span>
             <button
               type="button"
-              onClick={() => setSizeError(null)}
+              onClick={dismissSizeError}
               className="ml-auto text-red-400 hover:text-red-600"
               aria-label="Dismiss size error"
             >
