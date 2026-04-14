@@ -1,7 +1,7 @@
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import { linkifyFilePaths, isWorkspaceFileLink, extractFilePath } from "@/lib/filePathDetection";
-import { Copy, RefreshCw, Share2, Bot, ChevronDown, ChevronRight } from "lucide-react";
+import { Copy, RefreshCw, Share2, ChevronDown, ChevronRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useScrollToBottom } from "@/hooks/useScrollToBottom";
 import ReactMarkdown from "react-markdown";
@@ -11,7 +11,8 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 interface ToolUse {
   tool: string;
-  status: "running" | "done";
+  toolCallId?: string;
+  status: "running" | "done" | "error";
 }
 
 interface Message {
@@ -26,6 +27,7 @@ interface Message {
 interface MessageListProps {
   messages: Message[];
   isTyping?: boolean;
+  agentName?: string;
   onRetry?: (assistantMsgId: string) => void;
   onOpenFile?: (path: string) => void;
 }
@@ -154,46 +156,87 @@ function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
+const TOOL_STYLES = {
+  running: {
+    pill: "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]",
+    dot: "bg-[#2d8a4e] animate-pulse",
+  },
+  done: {
+    pill: "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
+    dot: "bg-[#cdc7ba]",
+  },
+  error: {
+    pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
+    dot: "bg-[#c62828]",
+  },
+} as const;
+
 function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
   if (toolUses.length === 0) return null;
   return (
     <div className="mb-3 flex flex-wrap gap-2">
-      {toolUses.map((t, i) => (
-        <span
-          key={`${t.tool}-${i}`}
-          className={cn(
-            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
-            t.status === "running"
-              ? "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]"
-              : "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
-          )}
-        >
-          {t.status === "running" ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#2d8a4e] animate-pulse" />
-          ) : (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#cdc7ba]" />
-          )}
-          {t.tool}
-        </span>
-      ))}
+      {toolUses.map((t, i) => {
+        const s = TOOL_STYLES[t.status];
+        return (
+          <span
+            key={t.toolCallId ?? `${t.tool}-${i}`}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
+              s.pill,
+            )}
+          >
+            <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
+            {t.tool}
+            {t.status === "error" && " failed"}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-function MessageToolbar({ modelName }: { modelName?: string }) {
+const AGENT_GLYPH_PATH =
+    "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
+
+function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }) {
     return (
-        <div className="flex items-center gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-xs font-medium text-[#8a8578] mr-2 flex items-center gap-1">
-                <Bot className="h-3 w-3" />
-                {modelName || "Assistant"}
+        <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold text-[#302d28] tracking-tight">
+                {name}
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <span className="inline-flex items-center justify-center w-5 h-5">
+                <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 12"
+                    fill="none"
+                    className={cn("agent-glyph", state === "thinking" && "agent-glyph--thinking")}
+                >
+                    <path
+                        className="agent-glyph-base"
+                        d={AGENT_GLYPH_PATH}
+                        strokeWidth="1.6"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                    <path
+                        className="agent-glyph-tracer"
+                        d={AGENT_GLYPH_PATH}
+                        strokeWidth="1.6"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                </svg>
+            </span>
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                 <Copy className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
                 <RefreshCw className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
                 <Share2 className="h-3 w-3" />
             </Button>
         </div>
@@ -223,7 +266,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, onRetry, onOpenFile }, ref) {
+  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
@@ -248,21 +291,17 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               data-role={msg.role}
               className={cn(
                 "flex w-full group relative",
-                msg.role === "user" ? "justify-end" : "justify-start gap-3"
+                msg.role === "user" ? "justify-end" : "justify-start"
               )}
             >
-              {/* Assistant avatar */}
-              {msg.role === "assistant" && (
-                <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
-                  <Bot className="h-4 w-4 text-white" />
-                </div>
-              )}
-
               <div className="flex flex-col min-w-0 max-w-[85%]">
                 {msg.role === "assistant" && (
                   msg.content.startsWith("Error: ")
                     ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
-                    : <MessageToolbar modelName={msg.model} />
+                    : <AgentHead
+                        name={agentName || "Assistant"}
+                        state={isTyping && isLastAssistant ? "thinking" : "idle"}
+                      />
                 )}
 
                 <div
@@ -290,25 +329,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                     ? msg.content.slice(7)
                     : msg.role === "assistant" && msg.content
                       ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
-                      : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
-                          <span className="inline-flex gap-1 items-center h-5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
-                          </span>
-                        ) : null)}
+                      : msg.content || null}
                 </div>
-
-                {isTyping && isLastAssistant && msg.content && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
-                    <span className="inline-flex gap-1 items-center">
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <span className="w-1 h-1 rounded-full bg-[#8a8578] animate-bounce" style={{ animationDelay: '300ms' }} />
-                    </span>
-                    <span>Agent is working</span>
-                  </div>
-                )}
                 </div>
               </div>
             </div>

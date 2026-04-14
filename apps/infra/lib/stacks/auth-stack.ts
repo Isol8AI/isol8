@@ -8,7 +8,6 @@ export interface AuthSecrets {
   clerkSecretKey: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
-  perplexityApiKey: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
 }
 
@@ -54,7 +53,6 @@ export class AuthStack extends cdk.Stack {
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
-      perplexityApiKey: createSecret("PerplexityApiKey", "perplexity_api_key"),
       encryptionKey: createSecret("EncryptionKey", "encryption_key"),
     };
   }

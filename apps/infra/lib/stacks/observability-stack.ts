@@ -1072,77 +1072,53 @@ export class ObservabilityStack extends cdk.Stack {
 
     const clusterName = props.cluster.clusterName;
 
-    // W36: RunningTaskCount != DesiredTaskCount for 5 min
-    // ECS publishes RunningTaskCount and DesiredTaskCount under AWS/ECS
-    const runningTasks = new cloudwatch.Metric({
-      namespace: "ECS/ContainerInsights",
-      metricName: "RunningTaskCount",
+    // W36: Backend service CPU utilization (AWS/ECS standard metric — no
+    // Container Insights needed).  AWS/ECS publishes CPUUtilization as a
+    // percentage per-service automatically.
+    const backendServiceName = cdk.Fn.select(
+      2,
+      cdk.Fn.split("/", props.backendService.serviceArn),
+    );
+
+    const cpuPct = new cloudwatch.Metric({
+      namespace: "AWS/ECS",
+      metricName: "CPUUtilization",
       statistic: "Average",
-      period: cdk.Duration.minutes(1),
+      period: cdk.Duration.minutes(5),
       dimensionsMap: {
         ClusterName: clusterName,
-        ServiceName: cdk.Fn.select(
-          2,
-          cdk.Fn.split("/", props.backendService.serviceArn),
-        ),
+        ServiceName: backendServiceName,
       },
-    });
-    const desiredTasks = new cloudwatch.Metric({
-      namespace: "ECS/ContainerInsights",
-      metricName: "DesiredTaskCount",
-      statistic: "Average",
-      period: cdk.Duration.minutes(1),
-      dimensionsMap: {
-        ClusterName: clusterName,
-        ServiceName: cdk.Fn.select(
-          2,
-          cdk.Fn.split("/", props.backendService.serviceArn),
-        ),
-      },
-    });
-    const taskCountDiff = new cloudwatch.MathExpression({
-      expression: "ABS(desired - running)",
-      usingMetrics: { desired: desiredTasks, running: runningTasks },
-      period: cdk.Duration.minutes(1),
     });
     const w36 = new cloudwatch.Alarm(this, "W36", {
-      alarmName: `isol8-${this.envName}-W36-ecs-task-count-mismatch`,
+      alarmName: `isol8-${this.envName}-W36-ecs-backend-cpu`,
       alarmDescription:
-        "Running task count does not match desired for 5 min",
-      metric: taskCountDiff,
-      threshold: 0,
-      evaluationPeriods: 5,
+        "Backend service CPU utilization exceeds 80% for 15 min",
+      metric: cpuPct,
+      threshold: 80,
+      evaluationPeriods: 3,
       comparisonOperator:
         cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
     });
     w36.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W37: ECS cluster CPU utilization (percentage via metric math)
-    // CpuUtilized and CpuReserved are absolute values (MHz); divide for percentage
-    const cpuPct = new cloudwatch.MathExpression({
-      expression: "100 * utilized / reserved",
-      usingMetrics: {
-        utilized: new cloudwatch.Metric({
-          namespace: "ECS/ContainerInsights",
-          metricName: "CpuUtilized",
-          statistic: "Average",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ClusterName: clusterName },
-        }),
-        reserved: new cloudwatch.Metric({
-          namespace: "ECS/ContainerInsights",
-          metricName: "CpuReserved",
-          statistic: "Average",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ClusterName: clusterName },
-        }),
+    // W37: Backend service Memory utilization (AWS/ECS standard metric)
+    const memPct = new cloudwatch.Metric({
+      namespace: "AWS/ECS",
+      metricName: "MemoryUtilization",
+      statistic: "Average",
+      period: cdk.Duration.minutes(5),
+      dimensionsMap: {
+        ClusterName: clusterName,
+        ServiceName: backendServiceName,
       },
     });
     const w37 = new cloudwatch.Alarm(this, "W37", {
-      alarmName: `isol8-${this.envName}-W37-ecs-cpu-utilization`,
-      alarmDescription: "ECS cluster CPU utilization exceeds 80%",
-      metric: cpuPct,
+      alarmName: `isol8-${this.envName}-W37-ecs-backend-memory`,
+      alarmDescription:
+        "Backend service memory utilization exceeds 80% for 15 min",
+      metric: memPct,
       threshold: 80,
       evaluationPeriods: 3,
       comparisonOperator:
@@ -1151,37 +1127,10 @@ export class ObservabilityStack extends cdk.Stack {
     });
     w37.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
 
-    // W38: ECS cluster Memory utilization (percentage via metric math)
-    const memPct = new cloudwatch.MathExpression({
-      expression: "100 * utilized / reserved",
-      usingMetrics: {
-        utilized: new cloudwatch.Metric({
-          namespace: "ECS/ContainerInsights",
-          metricName: "MemoryUtilized",
-          statistic: "Average",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ClusterName: clusterName },
-        }),
-        reserved: new cloudwatch.Metric({
-          namespace: "ECS/ContainerInsights",
-          metricName: "MemoryReserved",
-          statistic: "Average",
-          period: cdk.Duration.minutes(5),
-          dimensionsMap: { ClusterName: clusterName },
-        }),
-      },
-    });
-    const w38 = new cloudwatch.Alarm(this, "W38", {
-      alarmName: `isol8-${this.envName}-W38-ecs-memory-utilization`,
-      alarmDescription: "ECS cluster memory utilization exceeds 80%",
-      metric: memPct,
-      threshold: 80,
-      evaluationPeriods: 3,
-      comparisonOperator:
-        cloudwatch.ComparisonOperator.GREATER_THAN_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-    });
-    w38.addAlarmAction(new cloudwatch_actions.SnsAction(this.warnTopic));
+    // W38 removed — task count mismatch alarm required Container Insights
+    // metrics (RunningTaskCount / DesiredTaskCount) which are no longer
+    // available.  Coverage is handled by W39 (TaskStoppedUnexpected via
+    // EventBridge) and ALB healthy-host alarms.
 
     // W39: Fargate TaskStopped non-essential reason
     // EventBridge rule captures ECS task state changes with STOPPED status,
@@ -1915,29 +1864,39 @@ def handler(event, context):
 
     // ----- Row 7: ECS + EFS (4 widgets) -----
     const clusterName = props.cluster.clusterName;
+    const dashServiceName = cdk.Fn.select(
+      2,
+      cdk.Fn.split("/", props.backendService.serviceArn),
+    );
 
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
-        title: "ECS CPU utilization",
+        title: "Backend CPU %",
         left: [
           new cloudwatch.Metric({
-            namespace: "ECS/ContainerInsights",
-            metricName: "CpuUtilized",
+            namespace: "AWS/ECS",
+            metricName: "CPUUtilization",
             statistic: "Average",
-            dimensionsMap: { ClusterName: clusterName },
+            dimensionsMap: {
+              ClusterName: clusterName,
+              ServiceName: dashServiceName,
+            },
           }),
         ],
         width: 6,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: "ECS Memory utilization",
+        title: "Backend Memory %",
         left: [
           new cloudwatch.Metric({
-            namespace: "ECS/ContainerInsights",
-            metricName: "MemoryUtilized",
+            namespace: "AWS/ECS",
+            metricName: "MemoryUtilization",
             statistic: "Average",
-            dimensionsMap: { ClusterName: clusterName },
+            dimensionsMap: {
+              ClusterName: clusterName,
+              ServiceName: dashServiceName,
+            },
           }),
         ],
         width: 6,

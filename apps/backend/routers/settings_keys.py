@@ -52,7 +52,7 @@ async def delete_key(
     tool_id: str,
     auth: AuthContext = Depends(get_current_user),
 ):
-    """Remove an API key and revert to Isol8-provided proxy."""
+    """Remove an API key. The tool becomes unavailable until a new key is added."""
     owner_id = resolve_owner_id(auth)
     if auth.is_org_context:
         require_org_admin(auth)
@@ -64,5 +64,4 @@ async def delete_key(
     if not deleted:
         raise HTTPException(status_code=404, detail="Key not found")
 
-    # TODO: revert openclaw.json to proxy default + send config.apply RPC
     return {"status": "ok", "tool_id": tool_id}

@@ -390,39 +390,6 @@ class TestTransformAgentEvent:
         assert GatewayConnection._transform_agent_event(payload) is None
 
 
-class TestExtractChatText:
-    """Test static helper for extracting text from chat event payloads."""
-
-    def test_extracts_text_from_last_content_block(self):
-        payload = {
-            "message": {
-                "content": [
-                    {"type": "text", "text": "first"},
-                    {"type": "text", "text": "last"},
-                ]
-            }
-        }
-        assert GatewayConnection._extract_chat_text(payload) == "last"
-
-    def test_returns_none_when_no_message(self):
-        assert GatewayConnection._extract_chat_text({}) is None
-
-    def test_returns_none_when_message_not_dict(self):
-        assert GatewayConnection._extract_chat_text({"message": "plain string"}) is None
-
-    def test_returns_none_when_content_empty(self):
-        payload = {"message": {"content": []}}
-        assert GatewayConnection._extract_chat_text(payload) is None
-
-    def test_returns_none_when_last_block_has_no_text(self):
-        payload = {"message": {"content": [{"type": "tool_use", "id": "tu-1"}]}}
-        assert GatewayConnection._extract_chat_text(payload) is None
-
-    def test_returns_none_when_text_is_empty_string(self):
-        payload = {"message": {"content": [{"type": "text", "text": ""}]}}
-        assert GatewayConnection._extract_chat_text(payload) is None
-
-
 class TestHandleMessageChatEvents:
     """Test _handle_message routing for chat event states."""
 
@@ -453,8 +420,9 @@ class TestHandleMessageChatEvents:
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert {"type": "done"} in calls
 
-    def test_chat_final_sends_text_chunk_if_present(self, connection):
-        """chat state=final with text forwards a chunk before done."""
+    def test_chat_final_does_not_emit_text_chunk(self, connection):
+        """chat state=final emits only the done signal — assistant text already
+        streamed via agent events, so re-sending would be redundant."""
         conn, mgmt = connection
         conn._handle_message(
             {
@@ -467,7 +435,7 @@ class TestHandleMessageChatEvents:
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
-        assert {"type": "chunk", "content": "complete answer"} in calls
+        assert all(c.get("type") != "chunk" for c in calls)
         assert {"type": "done"} in calls
 
     def test_chat_error_sends_error_message(self, connection):

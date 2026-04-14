@@ -224,7 +224,6 @@ def write_openclaw_config(
     region: str = "us-east-1",
     primary_model: str = "",
     gateway_token: str = "",
-    proxy_base_url: str = "https://api.isol8.co/api/v1/proxy",
     provider: str = "bedrock",
     ollama_base_url: str = "",
     tier: str = "free",
@@ -235,8 +234,7 @@ def write_openclaw_config(
         region: AWS region for Bedrock.
         primary_model: Default model for agents.  When empty, derived from
             ``TIER_CONFIG[tier]["primary_model"]``.
-        gateway_token: Token used as API key for the search proxy.
-        proxy_base_url: Base URL for the tool proxy (Perplexity search, etc.).
+        gateway_token: Shared secret for container auth.
         provider: LLM provider to use ("bedrock" or "ollama").
         ollama_base_url: Base URL for Ollama server (e.g. "http://ollama:11434").
         tier: Billing tier -- controls which models are available.
@@ -261,21 +259,6 @@ def write_openclaw_config(
         "mode": "token",
         "token": gateway_token,
     }
-
-    # Build search plugin config — Perplexity via our proxy (v2026.3.22+ format)
-    search_plugin = {}
-    if gateway_token:
-        search_plugin = {
-            "perplexity": {
-                "enabled": True,
-                "config": {
-                    "webSearch": {
-                        "apiKey": gateway_token,
-                        "baseUrl": f"{proxy_base_url}/search",
-                    },
-                },
-            },
-        }
 
     # Build provider-specific models config
     if provider == "ollama":
@@ -387,9 +370,6 @@ def write_openclaw_config(
             "profile": "full",
             "deny": ["canvas", "nodes"],
             "web": {
-                "search": {"enabled": bool(gateway_token), "provider": "perplexity"}
-                if gateway_token
-                else {"enabled": False},
                 "fetch": {"enabled": True},
             },
             "media": {
@@ -414,7 +394,6 @@ def write_openclaw_config(
         "plugins": {
             "slots": {},
             "entries": {
-                **search_plugin,
                 "amazon-bedrock": amazon_bedrock_plugin,
             },
         },

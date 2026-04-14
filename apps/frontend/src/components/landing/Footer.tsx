@@ -4,7 +4,7 @@ export function Footer() {
   return (
     <footer className="landing-footer">
       <div className="footer-inner">
-        <span className="footer-logo">ISOL8</span>
+        <span className="footer-logo">isol8</span>
         <div className="footer-links">
           <Link href="/privacy">Privacy Policy</Link>
           <Link href="/terms">Terms of Service</Link>

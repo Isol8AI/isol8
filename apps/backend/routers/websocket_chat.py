@@ -336,6 +336,9 @@ async def ws_message(
 
         if not agent_id or not message:
             management_api = await get_management_api_client()
+            # No agent_id to tag — this is a client-validation error,
+            # untagged by necessity. Frontend treats untagged errors as
+            # broadcast so they still clear the streaming state.
             management_api.send_message(
                 x_connection_id,
                 {"type": "error", "message": "Missing agent_id or message"},
@@ -358,6 +361,7 @@ async def ws_message(
                 x_connection_id,
                 {
                     "type": "error",
+                    "agent_id": agent_id,
                     "code": "BUDGET_EXCEEDED",
                     "message": (
                         "You've used your included LLM budget for this month."
@@ -562,6 +566,7 @@ async def _process_agent_chat_background(
                 connection_id,
                 {
                     "type": "error",
+                    "agent_id": agent_id,
                     "message": "No container provisioned. Please subscribe to start chatting.",
                 },
             )
@@ -574,6 +579,7 @@ async def _process_agent_chat_background(
                 connection_id,
                 {
                     "type": "error",
+                    "agent_id": agent_id,
                     "message": "Your agent is starting up. Please try again in a moment.",
                 },
             )
@@ -582,10 +588,10 @@ async def _process_agent_chat_background(
         pool = get_gateway_pool()
         req_id = str(uuid4())
 
-        # Session key format: agent:{agentId}:{sessionName}
-        # Org members get per-user sessions; personal users keep :main (no history breakage)
-        is_org = owner_id != user_id
-        session_key = f"agent:{agent_id}:{user_id}" if is_org else f"agent:{agent_id}:main"
+        # Session key format: agent:{agentId}:{userId}
+        # Every user gets their own session, isolating their chat history
+        # from cron jobs, channels, and other system activity.
+        session_key = f"agent:{agent_id}:{user_id}"
 
         logger.info(
             "[%s] chat.send RPC agent=%s sessionKey=%s ip=%s",
@@ -633,7 +639,11 @@ async def _process_agent_chat_background(
     try:
         management_api.send_message(
             connection_id,
-            {"type": "error", "message": f"Failed to send message: {chat_err}"},
+            {
+                "type": "error",
+                "agent_id": agent_id,
+                "message": f"Failed to send message: {chat_err}",
+            },
         )
     except Exception:
         pass

@@ -30,7 +30,6 @@ from routers import (
     debug,
     desktop_auth,
     integrations,
-    proxy,
     settings_keys,
     updates,
     users,
@@ -101,10 +100,6 @@ openapi_tags = [
     {
         "name": "control-ui",
         "description": "Proxy for the embedded OpenClaw control UI SPA.",
-    },
-    {
-        "name": "proxy",
-        "description": "Proxy for external tool APIs (Perplexity, etc.).",
     },
     {
         "name": "channels",
@@ -221,9 +216,6 @@ app.include_router(updates.router, prefix=f"{settings.API_V1_STR}/container", ta
 
 # Control UI proxy (embedded OpenClaw control UI SPA)
 app.include_router(control_ui_proxy.router, prefix="/api/v1/control-ui", tags=["control-ui"])
-
-# Tool proxy (Perplexity search etc.)
-app.include_router(proxy.router, prefix="/api/v1/proxy", tags=["proxy"])
 
 # Channel management (Telegram, Discord, WhatsApp)
 app.include_router(channels.router, prefix="/api/v1/channels", tags=["channels"])

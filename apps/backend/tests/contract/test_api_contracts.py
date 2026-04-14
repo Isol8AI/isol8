@@ -56,9 +56,6 @@ schema = (
         path_regex="^/api/v1/channels/",
     )
     .exclude(
-        path_regex="^/api/v1/proxy/",
-    )
-    .exclude(
         path_regex="^/api/v1/settings/",
     )
     .exclude(

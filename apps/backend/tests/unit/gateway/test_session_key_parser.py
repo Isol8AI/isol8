@@ -17,6 +17,11 @@ from core.gateway.connection_pool import _parse_session_key  # noqa: E402
             "agent:main:main",
             {"agent_id": "main", "source": "webchat"},
         ),
+        # Personal webchat — per-user session (all users now use userId)
+        (
+            "agent:luna:user_3CEahsu949Q9",
+            {"agent_id": "luna", "source": "webchat", "member_id": "user_3CEahsu949Q9"},
+        ),
         # Org webchat — parts[2] is a Clerk user_id
         (
             "agent:main:user_2abc123",

@@ -268,7 +268,7 @@ class TestProcessAgentChatBackground:
         assert call_kwargs["user_id"] == "user-1"
         assert call_kwargs["method"] == "chat.send"
         params = call_kwargs["params"]
-        assert params["sessionKey"] == "agent:luna:main"
+        assert params["sessionKey"] == "agent:luna:user-1"
         assert params["message"] == "Hello!"
         assert "idempotencyKey" in params  # UUID, just check it's present
         assert call_kwargs["ip"] == "10.0.1.5"

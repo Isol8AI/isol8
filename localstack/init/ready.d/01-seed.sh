@@ -140,7 +140,6 @@ declare -A SECRETS=(
   ["isol8/local/clerk_secret_key"]="${CLERK_SECRET_KEY:-sk_test_placeholder}"
   ["isol8/local/stripe_secret_key"]="${STRIPE_SECRET_KEY:-sk_test_placeholder}"
   ["isol8/local/stripe_webhook_secret"]="${STRIPE_WEBHOOK_SECRET:-whsec_placeholder}"
-  ["isol8/local/perplexity_api_key"]="${PERPLEXITY_API_KEY:-pplx_placeholder}"
   ["isol8/local/encryption_key"]="${ENCRYPTION_KEY:-$FERNET_KEY}"
   ["isol8/local/database_url"]="${DATABASE_URL:-postgresql+asyncpg://postgres:postgres@db:5432/securechat}"
 )

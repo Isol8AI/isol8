@@ -1,8 +1,7 @@
 # backend/tests/unit/core/test_chat_event_transform.py
 """Unit tests for GatewayConnection.
 
-Covers _transform_agent_event(), _extract_chat_text(), _handle_message routing,
-and is_connected property.
+Covers _transform_agent_event(), _handle_message routing, and is_connected property.
 """
 
 import pytest
@@ -88,13 +87,23 @@ class TestTransformAgentEvent:
         result = GatewayConnection._transform_agent_event(
             {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"}}
         )
-        assert result == {"type": "tool_start", "tool": "web_search"}
+        assert result == {"type": "tool_start", "tool": "web_search", "toolCallId": "abc-123"}
 
     def test_tool_stream_result_phase(self):
         result = GatewayConnection._transform_agent_event(
             {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123"}}
         )
-        assert result == {"type": "tool_end", "tool": "web_search"}
+        assert result == {"type": "tool_end", "tool": "web_search", "toolCallId": "abc-123"}
+
+    def test_tool_stream_result_with_is_error(self):
+        """OpenClaw signals tool errors via isError on the result phase."""
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "tool",
+                "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123", "isError": True},
+            }
+        )
+        assert result == {"type": "tool_error", "tool": "web_search", "toolCallId": "abc-123"}
 
     def test_tool_stream_update_phase_ignored(self):
         """Intermediate tool updates are not forwarded."""
@@ -109,6 +118,22 @@ class TestTransformAgentEvent:
         )
         assert result is None
 
+    def test_thinking_stream_with_text(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "thinking", "data": {"text": "Let me think...", "delta": "..."}}
+        )
+        assert result == {"type": "thinking", "content": "Let me think..."}
+
+    def test_reasoning_stream_with_text(self):
+        """OpenClaw may emit reasoning events under either stream name."""
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "reasoning", "data": {"text": "Considering options", "delta": "s"}}
+        )
+        assert result == {"type": "thinking", "content": "Considering options"}
+
+    def test_thinking_stream_empty_text_ignored(self):
+        assert GatewayConnection._transform_agent_event({"stream": "thinking", "data": {"text": ""}}) is None
+
     def test_missing_stream_ignored(self):
         assert GatewayConnection._transform_agent_event({"data": {"text": "Hi"}}) is None
 
@@ -122,40 +147,6 @@ class TestTransformAgentEvent:
         assert (
             GatewayConnection._transform_agent_event({"stream": "assistant", "data": {"text": "", "delta": ""}}) is None
         )
-
-
-class TestExtractChatText:
-    """Tests for _extract_chat_text — extracts text from chat event message field."""
-
-    def test_extracts_text_from_content_block(self):
-        result = GatewayConnection._extract_chat_text(
-            {"message": {"content": [{"type": "text", "text": "Hello world"}]}}
-        )
-        assert result == "Hello world"
-
-    def test_uses_last_content_block(self):
-        result = GatewayConnection._extract_chat_text(
-            {
-                "message": {
-                    "content": [
-                        {"type": "thinking", "text": "internal"},
-                        {"type": "text", "text": "visible"},
-                    ]
-                }
-            }
-        )
-        assert result == "visible"
-
-    def test_no_message_returns_none(self):
-        assert GatewayConnection._extract_chat_text({}) is None
-        assert GatewayConnection._extract_chat_text({"message": "string"}) is None
-
-    def test_empty_content_returns_none(self):
-        assert GatewayConnection._extract_chat_text({"message": {"content": []}}) is None
-        assert GatewayConnection._extract_chat_text({"message": {}}) is None
-
-    def test_empty_text_returns_none(self):
-        assert GatewayConnection._extract_chat_text({"message": {"content": [{"type": "text", "text": ""}]}}) is None
 
 
 class TestHandleMessage:
@@ -217,7 +208,9 @@ class TestHandleMessage:
                 "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "t1"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_start", "tool": "web_search"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "tool_start", "tool": "web_search", "toolCallId": "t1"}
+        )
 
     def test_agent_tool_end_forwarded(self, connection, mock_management_api):
         connection._handle_message(
@@ -227,7 +220,41 @@ class TestHandleMessage:
                 "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "t1"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_end", "tool": "web_search"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "tool_end", "tool": "web_search", "toolCallId": "t1"}
+        )
+
+    def test_agent_events_tagged_with_agent_id_from_session_key(self, connection, mock_management_api):
+        """sessionKey in the payload populates agent_id so the frontend can filter cross-agent messages."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "assistant",
+                    "data": {"text": "Hello"},
+                    "sessionKey": "agent:my-agent-id:main",
+                },
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "chunk", "content": "Hello", "agent_id": "my-agent-id"}
+        )
+
+    def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
+        """chat.final done signal carries agent_id so the frontend can route it."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:my-agent-id:main",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+                },
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "agent_id": "my-agent-id"})
 
     # -- Chat events (terminal states only) --
 
@@ -245,8 +272,8 @@ class TestHandleMessage:
         )
         mock_management_api.send_message.assert_not_called()
 
-    def test_chat_final_sends_complete_text_then_done(self, connection, mock_management_api):
-        """Final event sends the complete response text, then done signal."""
+    def test_chat_final_sends_only_done(self, connection, mock_management_api):
+        """Final sends just the done signal — assistant text streamed via agent events."""
         connection._handle_message(
             {
                 "type": "event",
@@ -260,14 +287,29 @@ class TestHandleMessage:
                 },
             }
         )
-        assert mock_management_api.send_message.call_count == 2
-        mock_management_api.send_message.assert_any_call(
-            "conn-1", {"type": "chunk", "content": "Complete response here."}
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done"})
+
+    def test_chat_final_with_thinking_sends_thinking_then_done(self, connection, mock_management_api):
+        """Thinking blocks in the final message are forwarded for models that batch reasoning."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "thinking", "thinking": "Let me reason about this..."},
+                            {"type": "text", "text": "Answer"},
+                        ],
+                    },
+                },
+            }
         )
-        mock_management_api.send_message.assert_any_call("conn-1", {"type": "done"})
-        # Verify order: chunk before done
+        assert mock_management_api.send_message.call_count == 2
         calls = mock_management_api.send_message.call_args_list
-        assert calls[0] == call("conn-1", {"type": "chunk", "content": "Complete response here."})
+        assert calls[0] == call("conn-1", {"type": "thinking", "content": "Let me reason about this..."})
         assert calls[1] == call("conn-1", {"type": "done"})
 
     def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
