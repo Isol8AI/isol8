@@ -20,13 +20,34 @@ export function FileContentViewer({ file, isLoading, error, onSave }: FileConten
 
   const dirty = editContent !== originalContent;
 
-  // Sync editor content when a new file loads
+  // Sync editor content when a new file loads; warn if unsaved changes.
+  // Use a ref to read the latest dirty state without re-subscribing the effect.
+  const dirtyRef = React.useRef(false);
+  dirtyRef.current = editContent !== originalContent;
+
+  const previousPathRef = React.useRef<string | null>(null);
+
   React.useEffect(() => {
-    if (file?.content != null && !file.binary) {
-      setEditContent(file.content);
-      setOriginalContent(file.content);
-      setSaveError(null);
+    if (file?.content == null || file.binary) {
+      previousPathRef.current = file?.path ?? null;
+      return;
     }
+
+    const samePath = previousPathRef.current === file.path;
+    if (!samePath && dirtyRef.current) {
+      const proceed = window.confirm(
+        "You have unsaved changes. Discard them and load the new file?",
+      );
+      if (!proceed) {
+        // Keep editing the previous file — do not sync.
+        return;
+      }
+    }
+
+    setEditContent(file.content);
+    setOriginalContent(file.content);
+    setSaveError(null);
+    previousPathRef.current = file.path;
   }, [file?.path, file?.content, file?.binary]);
 
   const handleSave = React.useCallback(async () => {
@@ -43,13 +64,18 @@ export function FileContentViewer({ file, isLoading, error, onSave }: FileConten
     }
   }, [onSave, editContent, originalContent]);
 
-  // Cmd/Ctrl+S save shortcut — use ref to avoid stale closure
+  // Cmd/Ctrl+S save shortcut — refs avoid stale closure
   const handleSaveRef = React.useRef(handleSave);
   handleSaveRef.current = handleSave;
 
+  const canSaveRef = React.useRef(false);
+  canSaveRef.current = Boolean(
+    onSave && file && !file.binary && file.content != null,
+  );
+
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s" && canSaveRef.current) {
         e.preventDefault();
         handleSaveRef.current();
       }
