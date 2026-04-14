@@ -48,11 +48,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
   const [activeTab, setActiveTab] = React.useState<ViewerTab>("workspace");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialFilePath ?? null);
 
-  const relativeFilePath = React.useMemo(() => {
-    if (!selectedPath) return null;
-    const prefix = `agents/${agentId}/`;
-    return selectedPath.startsWith(prefix) ? selectedPath.slice(prefix.length) : selectedPath;
-  }, [selectedPath, agentId]);
+  const relativeFilePath = selectedPath;
 
   // Workspace tab data
   const { files: wsFiles, isLoading: wsTreeLoading, refresh: wsRefresh } = useWorkspaceTree(agentId);

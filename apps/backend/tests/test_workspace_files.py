@@ -615,3 +615,78 @@ class TestUploadPath:
         dest_path = f"workspaces/{agent_id}/uploads/{filename}"
         agent_path = f".openclaw/{dest_path}"
         assert agent_path == f".openclaw/workspaces/{agent_id}/uploads/{filename}"
+
+
+# ===========================================================================
+# TestWorkspaceTreeRoundTrip
+# ===========================================================================
+
+
+class TestWorkspaceTreeRoundTrip:
+    """Verify list → read uses the same agent-relative path contract."""
+
+    @pytest.mark.asyncio
+    async def test_tree_path_feeds_back_to_read(self, workspace, monkeypatch):
+        """A path returned by the tree endpoint reads successfully via the file endpoint."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        ws_dir = workspace._mount / USER_ID / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "plan.md").write_text("# Plan\nstep 1", encoding="utf-8")
+        (ws_dir / "uploads").mkdir()
+        (ws_dir / "uploads" / "data.csv").write_text("a,b\n1,2", encoding="utf-8")
+
+        from routers.workspace_files import list_workspace_tree, read_workspace_file
+
+        tree = await list_workspace_tree(
+            agent_id=AGENT_ID,
+            path="",
+            recursive=True,
+            auth=_auth(),
+        )
+        paths = {f["path"] for f in tree["files"]}
+        # Paths must be agent-relative (no `workspaces/{agent_id}/` prefix)
+        assert "plan.md" in paths
+        assert "uploads" in paths
+        assert "uploads/data.csv" in paths
+        assert not any(p.startswith("workspaces/") for p in paths if p)
+
+        # Every file path should read successfully via the file endpoint
+        for entry in tree["files"]:
+            if entry["type"] == "file":
+                info = await read_workspace_file(
+                    agent_id=AGENT_ID,
+                    path=entry["path"],
+                    auth=_auth(),
+                )
+                assert info["name"] == entry["name"]
+                assert info["size"] == entry["size"]
+
+    @pytest.mark.asyncio
+    async def test_write_then_tree_then_read(self, workspace, monkeypatch):
+        """After saveWorkspaceFile writes a workspace file, tree lists it and read returns content."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        (workspace._mount / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import (
+            WriteFileRequest,
+            list_workspace_tree,
+            read_workspace_file,
+            write_workspace_file,
+        )
+
+        body = WriteFileRequest(path="notes.txt", content="hello world", tab="workspace")
+        result = await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert result["status"] == "ok"
+        # Backend returned path is user-root-relative; tree will show agent-relative
+        assert result["path"] == f"workspaces/{AGENT_ID}/notes.txt"
+
+        tree = await list_workspace_tree(
+            agent_id=AGENT_ID,
+            path="",
+            recursive=True,
+            auth=_auth(),
+        )
+        assert any(f["path"] == "notes.txt" and f["type"] == "file" for f in tree["files"])
+
+        info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
+        assert info["content"] == "hello world"

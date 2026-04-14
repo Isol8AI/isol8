@@ -51,6 +51,30 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
             _collect_recursive(workspace, owner_id, item["path"], entries, max_depth - 1)
 
 
+def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
+    """Rewrite entry paths from user-root-relative to agent-workspace-relative.
+
+    Input paths look like `workspaces/{agent_id}/foo/bar.md`. Output paths
+    strip the `workspaces/{agent_id}/` prefix so they match the contract
+    expected by the read/write endpoints.
+    """
+    prefix = f"workspaces/{agent_id}/"
+    out = []
+    for entry in entries:
+        p = entry["path"]
+        if p == f"workspaces/{agent_id}":
+            # The agent root itself — present when the workspace dir is listed at depth 0.
+            new_path = ""
+        elif p.startswith(prefix):
+            new_path = p[len(prefix) :]
+        else:
+            # Shouldn't happen — log and keep as-is.
+            logger.warning("Unexpected workspace path %r for agent %s", p, agent_id)
+            new_path = p
+        out.append({**entry, "path": new_path})
+    return out
+
+
 CONFIG_ALLOWLIST: set[str] = {
     "SOUL.md",
     "MEMORY.md",
@@ -107,7 +131,7 @@ async def list_workspace_tree(
     if recursive:
         all_entries: list = []
         _collect_recursive(workspace, owner_id, full_path, all_entries)
-        return {"files": all_entries}
+        return {"files": _strip_agent_prefix(all_entries, agent_id)}
     else:
         try:
             entries = workspace.list_directory(owner_id, full_path)
@@ -118,7 +142,7 @@ async def list_workspace_tree(
                 raise HTTPException(status_code=403, detail="Access denied")
             raise HTTPException(status_code=500, detail=str(exc))
 
-        return {"files": entries}
+        return {"files": _strip_agent_prefix(entries, agent_id)}
 
 
 @router.get("/workspace/{agent_id}/file")
