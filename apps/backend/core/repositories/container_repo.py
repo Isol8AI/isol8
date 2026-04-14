@@ -87,6 +87,65 @@ async def update_error(owner_id: str, error: str) -> dict | None:
     )
 
 
+async def update_last_active(owner_id: str, iso_ts: str) -> None:
+    """Record the last user-activity timestamp on a running container.
+
+    Conditional update: only writes if the row exists AND status != "stopped".
+    A ConditionalCheckFailedException is swallowed -- late pings for a stopped
+    or deleted row are a no-op, never an error.
+    """
+    from botocore.exceptions import ClientError
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET last_active_at = :t, updated_at = :u",
+            ConditionExpression="attribute_exists(owner_id) AND #s <> :stopped",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":t": iso_ts,
+                ":u": utc_now_iso(),
+                ":stopped": "stopped",
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+
+
+async def mark_stopped_if_running(owner_id: str) -> bool:
+    """Flip status from "running" to "stopped" atomically.
+
+    Returns True if this call performed the transition, False if the row
+    was already stopped, missing, or in some other state. Safe for multiple
+    concurrent reapers.
+    """
+    from botocore.exceptions import ClientError
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #s = :stopped, updated_at = :u",
+            ConditionExpression="attribute_exists(owner_id) AND #s = :running",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":stopped": "stopped",
+                ":running": "running",
+                ":u": utc_now_iso(),
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
