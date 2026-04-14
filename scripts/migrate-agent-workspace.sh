@@ -188,8 +188,73 @@ fi
 # Summary
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Step 3: patch openclaw.json so main's workspace = workspaces/main
+# ---------------------------------------------------------------------------
+#
+# Main used to inherit `agents.defaults.workspace` (`.openclaw/workspaces`)
+# directly, landing at the bare workspaces/ root. After migration, main's
+# files are at workspaces/main/ and we need OpenClaw to look there. The
+# backend's config generator adds a per-agent `workspace: "workspaces/main"`
+# override on main, but existing EFS copies of openclaw.json were written
+# before that change.
+#
+# We patch openclaw.json directly on EFS. Chokidar (polling mode enabled in
+# the container) picks up the change and OpenClaw hot-reloads the agent
+# config — no container restart needed.
+
+OC_JSON="$USER_DIR/openclaw.json"
+if [ ! -f "$OC_JSON" ]; then
+  echo "== openclaw.json patch: skipped ($OC_JSON does not exist) =="
+else
+  echo "== openclaw.json patch: set main.workspace = workspaces/main =="
+  if [ "$APPLY" -eq 1 ]; then
+    python3 - "$OC_JSON" <<'PYEOF'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path) as f:
+    cfg = json.load(f)
+
+agents_list = cfg.get("agents", {}).get("list", [])
+changed = False
+found_main = False
+for agent in agents_list:
+    if agent.get("id") == "main":
+        found_main = True
+        if agent.get("workspace") != "workspaces/main":
+            agent["workspace"] = "workspaces/main"
+            changed = True
+        break
+
+if not found_main:
+    # Older configs may omit the agents.list entirely. Add main explicitly so
+    # the migration is idempotent and future config regenerations still see it.
+    cfg.setdefault("agents", {}).setdefault("list", []).append(
+        {"id": "main", "default": True, "workspace": "workspaces/main"}
+    )
+    changed = True
+
+if changed:
+    with open(path, "w") as f:
+        json.dump(cfg, f, indent=2)
+    print(f"  patched: {path}")
+else:
+    print(f"  already patched: {path}")
+PYEOF
+  else
+    echo "  would patch: $OC_JSON (set agents.list[id=main].workspace = workspaces/main)"
+  fi
+  echo
+fi
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+
 if [ "$APPLY" -eq 0 ]; then
-  echo "dry run complete. Re-run with --apply to perform moves."
+  echo "dry run complete. Re-run with --apply to perform moves + config patch."
 else
   echo "migration complete."
   echo
