@@ -118,11 +118,17 @@ MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
-    """List only allowlisted config files from agents/{agent_id}/."""
+    """List only allowlisted config files from the agent's workspace.
+
+    Config files (SOUL.md, MEMORY.md, etc.) live inside workspaces/{agent_id}/
+    alongside the agent's working files. They are NOT stored in agents/{agent_id}/
+    — that directory holds OpenClaw runtime metadata (sessions, models) which
+    is intentionally unreachable from the file viewer.
+    """
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         return []
     user_root = workspace.user_path(owner_id)
-    agent_dir = user_root / "agents" / agent_id
+    agent_dir = user_root / "workspaces" / agent_id
     if not agent_dir.exists() or not agent_dir.is_dir():
         return []
     results = []
@@ -224,7 +230,7 @@ async def read_config_file(
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise HTTPException(status_code=400, detail="Invalid agent_id")
     workspace = get_workspace()
-    full_path = f"agents/{agent_id}/{path}"
+    full_path = f"workspaces/{agent_id}/{path}"
     try:
         info = workspace.read_file_info(owner_id, full_path)
     except WorkspaceError as exc:

@@ -359,7 +359,7 @@ class TestConfigFilesEndpoint:
     def test_returns_only_allowlisted_files(self, tmp_path):
         """Only allowlisted files that exist on disk are returned."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
         (agent_dir / "MEMORY.md").write_text("Remember this", encoding="utf-8")
@@ -385,19 +385,45 @@ class TestConfigFilesEndpoint:
     def test_file_entries_have_required_fields(self, tmp_path):
         """Each entry has name, path, type, size, modified_at."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
         agent_dir.mkdir(parents=True)
-        (agent_dir / "BOOTSTRAP.md").write_text("# Bootstrap", encoding="utf-8")
+        (agent_dir / "SOUL.md").write_text("# Soul", encoding="utf-8")
         from routers.workspace_files import _list_config_files
 
         result = _list_config_files(ws, USER_ID, AGENT_ID)
         assert len(result) == 1
         entry = result[0]
-        assert entry["name"] == "BOOTSTRAP.md"
-        assert entry["path"] == "BOOTSTRAP.md"
+        assert entry["name"] == "SOUL.md"
+        assert entry["path"] == "SOUL.md"
         assert entry["type"] == "file"
         assert isinstance(entry["size"], int)
         assert isinstance(entry["modified_at"], float)
+
+    def test_reads_from_workspaces_dir_not_agents_dir(self, tmp_path):
+        """Config files are expected under workspaces/{agent_id}/, not agents/{agent_id}/.
+
+        With the workspace-normalization change, every agent (main and custom)
+        stores its SOUL.md and siblings under workspaces/{agent_id}/. The old
+        agents/{agent_id}/ dir now only holds OpenClaw runtime metadata.
+        """
+        ws = _make_workspace(tmp_path)
+        # Put SOUL.md ONLY in the new location
+        new_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        new_dir.mkdir(parents=True)
+        (new_dir / "SOUL.md").write_text("new layout", encoding="utf-8")
+
+        # Also put a decoy in the OLD location — it must NOT be read
+        old_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        old_dir.mkdir(parents=True)
+        (old_dir / "SOUL.md").write_text("DECOY", encoding="utf-8")
+
+        from routers.workspace_files import _list_config_files
+
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        names = {f["name"] for f in result}
+        assert names == {"SOUL.md"}
+        # And confirm we actually read from the new location by checking size
+        assert result[0]["size"] == len(b"new layout")
 
 
 class TestConfigFileReadEndpoint:
@@ -406,10 +432,10 @@ class TestConfigFileReadEndpoint:
     def test_reads_allowlisted_file(self, tmp_path):
         """Can read an allowlisted config file."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
         agent_dir.mkdir(parents=True)
         (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
-        info = ws.read_file_info(USER_ID, f"agents/{AGENT_ID}/SOUL.md")
+        info = ws.read_file_info(USER_ID, f"workspaces/{AGENT_ID}/SOUL.md")
         assert info["content"] == "I am helpful"
         assert info["binary"] is False
 
