@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import {
   Loader2,
   RefreshCw,
@@ -37,6 +38,7 @@ const PLACEHOLDER_CONFIG = `{
 
 export function McpServersTab(props: { agentId?: string }) {
   void props;
+  const posthog = usePostHog();
   const api = useApi();
   const [servers, setServers] = useState<Record<string, McpServer>>({});
   const [loading, setLoading] = useState(true);
@@ -92,6 +94,7 @@ export function McpServersTab(props: { agentId?: string }) {
       const resp = (await api.put("/integrations/mcp/servers", { servers: merged })) as ServersResponse;
       setServers(resp.servers ?? {});
       setConfigInput("");
+      posthog?.capture("mcp_server_added", { server_name: Object.keys(parsed).join(", ") });
       setStatus({ type: "success", message: "Server(s) added successfully." });
       setTimeout(() => setStatus(null), 3000);
     } catch (err) {
@@ -107,6 +110,7 @@ export function McpServersTab(props: { agentId?: string }) {
     try {
       const resp = (await api.del(`/integrations/mcp/servers/${encodeURIComponent(name)}`)) as ServersResponse;
       setServers(resp.servers ?? {});
+      posthog?.capture("mcp_server_removed", { server_name: name });
     } catch (err) {
       console.error("Failed to remove MCP server:", err);
     } finally {

@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+import { usePostHog } from "posthog-js/react";
 import { Button } from "@/components/ui/button";
 import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -30,6 +31,7 @@ function formatFileSize(bytes: number): string {
 }
 
 export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage, budgetExceeded }: ChatInputProps) {
+  const posthog = usePostHog();
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
   const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
@@ -88,6 +90,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
       const files = pendingFiles.map((pf) => pf.file);
+      posthog?.capture("chat_message_sent", { has_files: files.length > 0 });
       onSend(input, files.length > 0 ? files : undefined);
       setInput("");
       setPendingFiles([]);
@@ -116,6 +119,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
       id: crypto.randomUUID(),
     }));
     setPendingFiles((prev) => [...prev, ...newFiles].slice(0, 10));
+    posthog?.capture("chat_file_uploaded", { file_count: selected.length });
 
     // Reset input so the same file can be selected again
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -232,7 +236,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
               size="icon"
               variant="destructive"
               className="shrink-0 h-8 w-8 rounded-full"
-              onClick={onStop}
+              onClick={() => { posthog?.capture("chat_stopped"); onStop?.(); }}
               data-testid="stop-button"
               aria-label="Stop agent"
             >

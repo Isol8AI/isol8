@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useMemo } from "react";
+import { usePostHog } from "posthog-js/react";
 import cronstrue from "cronstrue";
 import {
   Loader2,
@@ -415,6 +416,7 @@ function RunHistory({ jobId }: { jobId: string }) {
 // --- Main panel ---
 
 export function CronPanel() {
+  const posthog = usePostHog();
   const { data, error, isLoading, mutate } = useGatewayRpc<CronListResponse>("cron.list", {
     includeDisabled: true,
   });
@@ -443,6 +445,7 @@ export function CronPanel() {
         sessionTarget: "isolated",
         wakeMode: "now",
       });
+      posthog?.capture("cron_job_created", { schedule: buildSchedule(form) });
       setMode("list");
       mutate();
       showFeedback("success", `Created "${form.name.trim()}"`);
@@ -480,6 +483,7 @@ export function CronPanel() {
   const handleDelete = async (id: string) => {
     try {
       await callRpc("cron.remove", { id });
+      posthog?.capture("cron_job_deleted");
       setDeletingJob(null);
       mutate();
       showFeedback("success", "Job deleted");
@@ -491,6 +495,7 @@ export function CronPanel() {
   const handleToggle = async (id: string, currentlyEnabled: boolean) => {
     try {
       await callRpc("cron.update", { id, patch: { enabled: !currentlyEnabled } });
+      posthog?.capture("cron_job_toggled", { enabled: !currentlyEnabled });
       mutate();
     } catch (err) {
       showFeedback("error", `Failed to toggle: ${err instanceof Error ? err.message : String(err)}`);
@@ -500,6 +505,7 @@ export function CronPanel() {
   const handleRun = async (id: string) => {
     try {
       await callRpc("cron.run", { id, mode: "force" });
+      posthog?.capture("cron_job_triggered");
       showFeedback("success", "Job triggered");
       mutate();
     } catch (err) {
