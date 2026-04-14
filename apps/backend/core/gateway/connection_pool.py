@@ -803,6 +803,13 @@ class GatewayConnectionPool:
 
         Throttles DDB writes to at most one per owner per _DDB_WRITE_COOLDOWN
         seconds. Callers are not expected to throttle; fire for every event.
+
+        Cooldown is claimed *before* the await to deflect a thundering herd of
+        concurrent pings, but is released if the write turns out to be a no-op
+        (row missing or still `status=stopped`) or if the await raises. Both
+        cases need the next ping to retry immediately — most importantly on
+        cold start, where the first ping can land while the row is still
+        flipping from `stopped` to `running`.
         """
         now = time.time()
         last = _LAST_DDB_WRITE.get(owner_id, 0.0)
@@ -814,10 +821,13 @@ class GatewayConnectionPool:
         from core.repositories import container_repo
 
         try:
-            await container_repo.update_last_active(owner_id, utc_now_iso())
+            wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
         except Exception:
-            # Don't let DDB flakiness break the hot path; let the next ping retry.
             logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
+            _LAST_DDB_WRITE.pop(owner_id, None)
+            return
+
+        if not wrote:
             _LAST_DDB_WRITE.pop(owner_id, None)
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:

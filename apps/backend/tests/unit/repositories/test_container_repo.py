@@ -266,8 +266,9 @@ async def test_update_last_active_sets_timestamp_on_running_container(dynamodb_t
 
     await container_repo.upsert("user_1", {"status": "running", "gateway_token": "t1"})
 
-    await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
+    wrote = await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
 
+    assert wrote is True
     row = await container_repo.get_by_owner_id("user_1")
     assert row["last_active_at"] == "2026-04-13T20:30:00+00:00"
 
@@ -278,9 +279,11 @@ async def test_update_last_active_noop_when_stopped(dynamodb_table):
 
     await container_repo.upsert("user_1", {"status": "stopped", "gateway_token": "t1"})
 
-    # Must not raise, must not revive a stopped container
-    await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
+    # Must not raise; must return False so callers (record_activity) can
+    # release their cooldown and retry on the next ping.
+    wrote = await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
 
+    assert wrote is False
     row = await container_repo.get_by_owner_id("user_1")
     assert "last_active_at" not in row
     assert row["status"] == "stopped"
@@ -290,9 +293,10 @@ async def test_update_last_active_noop_when_stopped(dynamodb_table):
 async def test_update_last_active_noop_when_row_missing(dynamodb_table):
     from core.repositories import container_repo
 
-    # Must not raise on missing row (late ping for a user who was fully deleted)
-    await container_repo.update_last_active("user_never_existed", "2026-04-13T20:30:00+00:00")
+    # Must not raise on missing row (late ping for a user who was fully deleted).
+    wrote = await container_repo.update_last_active("user_never_existed", "2026-04-13T20:30:00+00:00")
 
+    assert wrote is False
     row = await container_repo.get_by_owner_id("user_never_existed")
     assert row is None
 

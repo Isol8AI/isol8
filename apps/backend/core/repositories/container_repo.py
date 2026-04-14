@@ -102,12 +102,14 @@ async def update_error(owner_id: str, error: str) -> dict | None:
     )
 
 
-async def update_last_active(owner_id: str, iso_ts: str) -> None:
+async def update_last_active(owner_id: str, iso_ts: str) -> bool:
     """Record the last user-activity timestamp on a running container.
 
     Conditional update: only writes if the row exists AND status != "stopped".
-    A ConditionalCheckFailedException is swallowed -- late pings for a stopped
-    or deleted row are a no-op, never an error.
+    Returns True if the row was mutated, False if the condition failed (row
+    missing or status=stopped). Callers need to know whether the write
+    actually landed so they don't lock out the next retry during cold-start
+    transitions where the row is still flipping from "stopped" to "running".
     """
     from botocore.exceptions import ClientError
 
@@ -125,9 +127,10 @@ async def update_last_active(owner_id: str, iso_ts: str) -> None:
                 ":stopped": "stopped",
             },
         )
+        return True
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            return
+            return False
         raise
 
 
