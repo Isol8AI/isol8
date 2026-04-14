@@ -600,6 +600,62 @@ class TestWriteFileEndpoint:
             await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert exc.value.status_code == 400
 
+    def test_write_rejects_symlink_escape_workspace(self, tmp_path):
+        """Symlink in workspaces/{id}/ pointing outside must be rejected."""
+        import os
+
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("original", encoding="utf-8")
+
+        # Symlink workspaces/{id}/evil -> ../../agents/{id}/SOUL.md
+        os.symlink(
+            "../../agents/" + AGENT_ID + "/SOUL.md",
+            ws_dir / "evil",
+        )
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="escapes"):
+            _write_file(ws, USER_ID, AGENT_ID, "evil", "hacked", "workspace")
+
+        # SOUL.md must be untouched
+        assert (agent_dir / "SOUL.md").read_text() == "original"
+
+    def test_write_rejects_symlink_escape_config(self, tmp_path):
+        """Symlink in agents/{id}/ pointing outside must be rejected."""
+        import os
+
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        target = tmp_path / USER_ID / "elsewhere.txt"
+        target.write_text("original", encoding="utf-8")
+
+        # Symlink agents/{id}/SOUL.md -> ../../elsewhere.txt
+        os.symlink("../../elsewhere.txt", agent_dir / "SOUL.md")
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="escapes"):
+            _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "hacked", "config")
+
+        assert target.read_text() == "original"
+
+    def test_write_allows_nested_dirs_within_workspace(self, tmp_path):
+        """Subtree check allows legitimate nested paths inside the workspace."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        written = _write_file(ws, USER_ID, AGENT_ID, "deep/nested/notes.md", "ok", "workspace")
+        assert written == f"workspaces/{AGENT_ID}/deep/nested/notes.md"
+        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "notes.md").read_text() == "ok"
+
 
 # ===========================================================================
 # TestUploadPath

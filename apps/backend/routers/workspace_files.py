@@ -36,6 +36,28 @@ def _validate_relative_path(path: str) -> None:
         raise ValueError("path must not contain '..' segments")
 
 
+def _ensure_within_subtree(workspace, owner_id: str, full_path: str, subtree: str) -> None:
+    """Resolve full_path (following symlinks) and verify it remains within
+    {user_root}/{subtree}.
+
+    This blocks symlink-based escapes that would otherwise pass
+    `Workspace._resolve_user_file`, which only pins writes to the user root.
+
+    Raises:
+        ValueError: if the resolved target escapes the subtree.
+    """
+    user_root = workspace.user_path(owner_id).resolve()
+    subtree_root = (user_root / subtree).resolve()
+    # strict=False lets us resolve paths whose leaf doesn't exist yet (the file
+    # being created). Intermediate symlinks in the parent chain are still
+    # resolved.
+    target = (user_root / full_path).resolve(strict=False)
+    try:
+        target.relative_to(subtree_root)
+    except ValueError:
+        raise ValueError(f"path escapes agent subtree: {full_path!r}")
+
+
 def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
     """Build the relative path to an agent's workspace within the user dir."""
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
@@ -232,11 +254,14 @@ def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str
     if tab == "config":
         if path not in CONFIG_ALLOWLIST:
             raise ValueError(f"File not in allowlist: {path}")
-        full_path = f"agents/{agent_id}/{path}"
+        subtree = f"agents/{agent_id}"
     elif tab == "workspace":
-        full_path = f"workspaces/{agent_id}/{path}"
+        subtree = f"workspaces/{agent_id}"
     else:
         raise ValueError(f"Invalid tab: {tab!r}")
+
+    full_path = f"{subtree}/{path}"
+    _ensure_within_subtree(workspace, owner_id, full_path, subtree)
 
     workspace.write_file(owner_id, full_path, content)
     return full_path
