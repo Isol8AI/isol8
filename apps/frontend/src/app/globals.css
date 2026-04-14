@@ -466,6 +466,37 @@ button:focus-visible { border-radius: 999px; }
   .section-h2 { margin-bottom: 40px; }
 }
 
+/* ── OUR AGENTS ── */
+.landing-agents { background: #faf7f2; padding: 128px 48px; border-top: 1px solid #e0dbd0; }
+.agents-intro { max-width: 720px; margin-bottom: 56px; }
+.agents-intro .section-h2 { margin-bottom: 22px; max-width: 640px; }
+.agents-lede { font-size: 16px; color: #5c5c5c; line-height: 1.7; max-width: 620px; }
+.agents-lede strong { color: #1a1a1a; font-weight: 600; }
+.agents-tabs { display: flex; flex-wrap: wrap; gap: 8px; padding-bottom: 28px; margin-bottom: 40px; border-bottom: 1px solid #e0dbd0; }
+.agents-tab { padding: 9px 18px; border: 1px solid #e0dbd0; background: transparent; color: #3d3d3d; border-radius: 999px; font-family: inherit; font-size: 13px; font-weight: 500; letter-spacing: .2px; cursor: pointer; transition: background .18s, color .18s, border-color .18s; }
+.agents-tab:hover { background: #f0ebe0; border-color: #cfc8b7; }
+.agents-tab.active { background: #06402B; color: #faf7f2; border-color: #06402B; }
+.agents-panel-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 28px; flex-wrap: wrap; }
+.agents-panel-name { font-family: var(--font-lora); font-style: italic; font-size: 56px; font-weight: 400; color: #06402B; line-height: .9; letter-spacing: -.02em; }
+.agents-panel-role { font-size: 14px; color: #666; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 500; }
+.agents-panel-lede { font-size: 16.5px; color: #1a1a1a; line-height: 1.65; max-width: 720px; margin-bottom: 48px; padding-bottom: 40px; border-bottom: 1px solid #e0dbd0; }
+.agents-panel-lede strong { color: #06402B; font-weight: 600; }
+.agents-panel-body { display: grid; grid-template-columns: 1fr 1fr; gap: 64px; }
+.agents-panel-label { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 10.5px; letter-spacing: 2.5px; text-transform: uppercase; color: #8a8578; font-weight: 600; margin-bottom: 18px; display: flex; align-items: center; gap: 10px; }
+.agents-panel-label::after { content: ""; flex: 1; height: 1px; background: #e0dbd0; }
+.agents-panel-list { list-style: none; display: flex; flex-direction: column; gap: 14px; padding: 0; margin: 0; }
+.agents-panel-list li { font-size: 14.5px; color: #3d3d3d; line-height: 1.6; padding-left: 20px; position: relative; }
+.agents-panel-list li::before { content: "—"; position: absolute; left: 0; color: #06402B; font-weight: 600; }
+.agents-panel-list li strong { color: #1a1a1a; font-weight: 600; }
+.agents-panel-list li code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 12.5px; color: #06402B; background: rgba(6,64,43,.06); padding: 1px 6px; border-radius: 3px; white-space: nowrap; }
+@media (max-width: 860px) {
+  .agents-panel-body { grid-template-columns: 1fr; gap: 40px; }
+  .agents-panel-name { font-size: 44px; }
+}
+@media (max-width: 768px) {
+  .landing-agents { padding: 72px 20px; }
+}
+
 /* ── SKILLS ── */
 .landing-skills { background: #0f2d1e; padding: 96px 48px; }
 .skills-inner { max-width: 1152px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 80px; align-items: center; }
