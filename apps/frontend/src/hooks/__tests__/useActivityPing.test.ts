@@ -1,13 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 
-// Mock useGateway to observe send() calls.
+// Mock useGateway to observe send() calls. Mutable so individual tests can
+// simulate the pre-Task-8 state where useGateway does not yet expose `send`.
 const send = vi.fn();
+let mockGatewayValue: { send?: typeof send; isConnected: boolean } = {
+  send,
+  isConnected: true,
+};
 vi.mock('../useGateway', () => ({
-  useGateway: () => ({
-    send,
-    isConnected: true,
-  }),
+  useGateway: () => mockGatewayValue,
 }));
 
 function setVisibility(state: 'visible' | 'hidden') {
@@ -28,6 +30,7 @@ describe('useActivityPing', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     send.mockReset();
+    mockGatewayValue = { send, isConnected: true };
     setVisibility('visible');
   });
 
@@ -126,5 +129,23 @@ describe('useActivityPing', () => {
       vi.advanceTimersByTime(6_000);
     });
     expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw when gateway has no send method (pre-Task-8 state)', async () => {
+    // The real useGateway context does not yet expose a raw `send` method;
+    // that wiring lands in Task 8. Until then the hook must be a no-op
+    // rather than crashing with `TypeError: send is not a function`.
+    mockGatewayValue = { isConnected: true };
+    const useActivityPing = await importHook();
+    renderHook(() => useActivityPing());
+
+    expect(() => {
+      act(() => {
+        window.dispatchEvent(new MouseEvent('mousemove'));
+        vi.advanceTimersByTime(6_000);
+      });
+    }).not.toThrow();
+
+    expect(send).not.toHaveBeenCalled();
   });
 });
