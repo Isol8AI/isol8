@@ -1,16 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { X, Copy, FolderOpen } from "lucide-react";
+import { X, Copy } from "lucide-react";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
-import { useWorkspaceTree, useWorkspaceFile } from "@/hooks/useWorkspaceFiles";
+import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
 
 interface FileViewerProps {
   agentId: string | null;
   initialFilePath?: string | null;
   onClose: () => void;
 }
+
+type ViewerTab = "workspace" | "config";
 
 function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (segment: string) => void }) {
   const segments = path.split("/");
@@ -42,6 +44,7 @@ function formatDate(timestamp: number): string {
 }
 
 export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProps) {
+  const [activeTab, setActiveTab] = React.useState<ViewerTab>("workspace");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialFilePath ?? null);
 
   const relativeFilePath = React.useMemo(() => {
@@ -50,14 +53,39 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
     return selectedPath.startsWith(prefix) ? selectedPath.slice(prefix.length) : selectedPath;
   }, [selectedPath, agentId]);
 
-  const { files, isLoading: treeLoading, refresh } = useWorkspaceTree(agentId);
-  const { file, isLoading: fileLoading, error: fileError } = useWorkspaceFile(agentId, relativeFilePath);
+  // Workspace tab data
+  const { files: wsFiles, isLoading: wsTreeLoading, refresh: wsRefresh } = useWorkspaceTree(agentId);
+  const { file: wsFile, isLoading: wsFileLoading, error: wsFileError } = useWorkspaceFile(
+    activeTab === "workspace" ? agentId : null,
+    activeTab === "workspace" ? relativeFilePath : null,
+  );
+
+  // Config tab data
+  const { files: cfgFiles, isLoading: cfgTreeLoading, refresh: cfgRefresh } = useConfigFiles(agentId);
+  const { file: cfgFile, isLoading: cfgFileLoading, error: cfgFileError } = useConfigFile(
+    activeTab === "config" ? agentId : null,
+    activeTab === "config" ? relativeFilePath : null,
+  );
+
+  const files = activeTab === "workspace" ? wsFiles : cfgFiles;
+  const treeLoading = activeTab === "workspace" ? wsTreeLoading : cfgTreeLoading;
+  const refresh = activeTab === "workspace" ? wsRefresh : cfgRefresh;
+  const file = activeTab === "workspace" ? wsFile : cfgFile;
+  const fileLoading = activeTab === "workspace" ? wsFileLoading : cfgFileLoading;
+  const fileError = activeTab === "workspace" ? wsFileError : cfgFileError;
 
   React.useEffect(() => {
     if (initialFilePath) {
       setSelectedPath(initialFilePath);
+      setActiveTab("workspace"); // chat-detected paths are always workspace paths
     }
   }, [initialFilePath]);
+
+  function handleTabChange(tab: ViewerTab) {
+    if (tab === activeTab) return;
+    setActiveTab(tab);
+    setSelectedPath(null);
+  }
 
   function handleCopyContent() {
     if (file?.content) {
@@ -104,38 +132,52 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
       `}</style>
 
       <div className="file-viewer-header">
-        <FolderOpen className="h-4 w-4 text-[#8a8578] flex-shrink-0" />
-        {selectedPath ? (
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => handleTabChange("workspace")}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              activeTab === "workspace"
+                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
+                : "text-[#8a8578] hover:text-[#1a1a1a]"
+            }`}
+          >
+            Workspace
+          </button>
+          <button
+            onClick={() => handleTabChange("config")}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              activeTab === "config"
+                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
+                : "text-[#8a8578] hover:text-[#1a1a1a]"
+            }`}
+          >
+            Config
+          </button>
+        </div>
+
+        <div className="flex-1" />
+
+        {selectedPath && file && (
           <>
-            <Breadcrumbs
-              path={relativeFilePath ?? selectedPath}
-              onNavigate={() => {}}
-            />
-            <div className="flex-1" />
-            {file && (
-              <span className="text-xs text-[#8a8578] flex-shrink-0">
-                {formatFileSize(file.size)} · {formatDate(file.modified_at)}
-              </span>
-            )}
-            {file?.content && (
+            <Breadcrumbs path={relativeFilePath ?? selectedPath} onNavigate={() => {}} />
+            <span className="text-xs text-[#8a8578] flex-shrink-0 ml-2">
+              {formatFileSize(file.size)} · {formatDate(file.modified_at)}
+            </span>
+            {file.content && (
               <button
                 onClick={handleCopyContent}
-                className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0"
+                className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
                 title="Copy file content"
               >
                 <Copy className="h-4 w-4" />
               </button>
             )}
           </>
-        ) : (
-          <>
-            <span className="text-sm text-[#8a8578]">Workspace</span>
-            <div className="flex-1" />
-          </>
         )}
+
         <button
           onClick={onClose}
-          className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0"
+          className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
           title="Close file viewer"
         >
           <X className="h-4 w-4" />
@@ -150,6 +192,11 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             onSelect={setSelectedPath}
             onRefresh={() => refresh()}
             isLoading={treeLoading}
+            emptyMessage={
+              activeTab === "workspace"
+                ? "No files yet. Your agent will create files here as it works."
+                : "No config files found."
+            }
           />
         </div>
         <div className="file-viewer-content">
