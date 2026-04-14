@@ -331,8 +331,10 @@ async def ws_message(
         return Response(status_code=200)
 
     if msg_type == "user_active":
+        # Fire-and-forget: the ping is best-effort activity tracking. Awaiting
+        # would let DDB slowness stall /ws/message and risk API Gateway timeouts.
         try:
-            await get_gateway_pool().record_activity(owner_id)
+            asyncio.create_task(get_gateway_pool().record_activity(owner_id))
         except Exception:
             pass  # Pool may not be initialized in tests
         return Response(status_code=200)
@@ -349,9 +351,11 @@ async def ws_message(
             )
             return Response(status_code=200)
 
-        # Track chat activity for idle detection (scale-to-zero)
+        # Track chat activity for idle detection (scale-to-zero). Fire-and-forget
+        # so DDB latency can't stall the chat request and trigger an API Gateway
+        # timeout.
         try:
-            await get_gateway_pool().record_activity(owner_id)
+            asyncio.create_task(get_gateway_pool().record_activity(owner_id))
         except Exception:
             pass  # Pool may not be initialized in tests
 

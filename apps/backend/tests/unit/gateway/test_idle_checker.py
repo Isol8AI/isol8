@@ -249,3 +249,40 @@ async def test_reaper_survives_billing_lookup_failure():
 
         # user_a was skipped due to billing failure; user_b still reaped
         assert stopped == ["user_b"]
+
+
+@pytest.mark.asyncio
+async def test_reap_once_emits_both_gauges():
+    """Every reaper cycle must emit both gateway.running.count (new, feeds P12
+    heartbeat alarm) AND gateway.connection.open (legacy, feeds the W5 alarm
+    which has treatMissingData=BREACHING). Dropping the legacy emission would
+    leave W5 permanently in ALARM from absent datapoints."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    pool = GatewayConnectionPool(management_api=None)
+    # Simulate two "open" backend↔gateway connections so the legacy gauge has
+    # a non-zero sample to assert on.
+    pool._connections = {"user_a": object(), "user_b": object()}  # type: ignore[assignment]
+
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_status",
+            new_callable=AsyncMock,
+            return_value=[{"owner_id": "user_a", "status": "running"}],
+        ),
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "user_a", "plan_tier": "starter"},
+        ),
+        patch("core.gateway.connection_pool.gauge") as mock_gauge,
+    ):
+        await pool._reap_once()
+
+    metric_names = [call.args[0] for call in mock_gauge.call_args_list]
+    assert "gateway.running.count" in metric_names
+    assert "gateway.connection.open" in metric_names
+    running_call = next(c for c in mock_gauge.call_args_list if c.args[0] == "gateway.running.count")
+    open_call = next(c for c in mock_gauge.call_args_list if c.args[0] == "gateway.connection.open")
+    assert running_call.args[1] == 1  # one row from get_by_status
+    assert open_call.args[1] == 2  # two entries in pool._connections

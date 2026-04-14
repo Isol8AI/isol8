@@ -965,6 +965,10 @@ class GatewayConnectionPool:
 
         try:
             gauge("gateway.running.count", len(rows))
+            # Preserve the legacy metric so the W5 alarm on gateway.connection.open
+            # keeps getting datapoints. Measures active backend↔container gateway
+            # WS connections (distinct from running.count, which is DDB-backed).
+            gauge("gateway.connection.open", len(self._connections))
         except Exception:
             pass
 

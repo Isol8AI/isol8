@@ -10,6 +10,8 @@ These tests use httpx AsyncClient with ASGITransport for testing HTTP endpoints.
 Services are mocked to isolate route logic.
 """
 
+import asyncio
+
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
@@ -426,6 +428,9 @@ class TestActivityTracking:
             )
 
         assert response.status_code == 200
+        # record_activity is scheduled fire-and-forget via asyncio.create_task
+        # so the handler can return before DDB latency. Drain pending tasks.
+        await asyncio.sleep(0)
         mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")
         mock_management_api.send_message.assert_not_called()
 
@@ -450,6 +455,7 @@ class TestActivityTracking:
             )
 
         assert response.status_code == 200
+        await asyncio.sleep(0)  # drain the fire-and-forget task
         mock_gateway_pool.record_activity.assert_awaited_once_with("test-org-789")
 
     @pytest.mark.asyncio
@@ -483,4 +489,5 @@ class TestActivityTracking:
                 )
 
         assert response.status_code == 200
+        await asyncio.sleep(0)  # drain the fire-and-forget task
         mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")
