@@ -157,4 +157,28 @@ describe("ObservabilityStack", () => {
       },
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Free-tier scale-to-zero reaper alarms
+  // ---------------------------------------------------------------------
+
+  test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "gateway.running.count",
+      Namespace: "Isol8",
+      Statistic: "SampleCount",
+      ComparisonOperator: "LessThanThreshold",
+      Threshold: 5,
+      TreatMissingData: "breaching",
+    });
+  });
+
+  test("creates the reaper-crash alarm on Sum(gateway.idle_checker.crash)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "gateway.idle_checker.crash",
+      Namespace: "Isol8",
+      Statistic: "Sum",
+      Threshold: 1,
+    });
+  });
 });

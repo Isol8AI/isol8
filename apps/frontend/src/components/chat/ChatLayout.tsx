@@ -11,6 +11,7 @@ import Link from "next/link";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useGateway } from "@/hooks/useGateway";
+import { useActivityPing } from "@/hooks/useActivityPing";
 import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -68,6 +69,9 @@ export function ChatLayout({
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
+  // Emit throttled user_active pings so the backend scale-to-zero reaper
+  // can keep idle free-tier containers running while the user is active.
+  useActivityPing();
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);

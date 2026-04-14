@@ -29,13 +29,28 @@ async def get_by_gateway_token(token: str) -> dict | None:
 
 
 async def get_by_status(status: str) -> list[dict]:
+    """Return every container row with the given status.
+
+    Follows DynamoDB's LastEvaluatedKey. Query responses are capped at 1 MB,
+    so a single call only returns the first page — the reaper (and any other
+    caller that iterates the full set for correctness) needs every row.
+    """
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
-        IndexName="status-index",
-        KeyConditionExpression=Key("status").eq(status),
-    )
-    return response.get("Items", [])
+    items: list[dict] = []
+    last_evaluated_key: dict | None = None
+    while True:
+        kwargs = {
+            "IndexName": "status-index",
+            "KeyConditionExpression": Key("status").eq(status),
+        }
+        if last_evaluated_key is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(response.get("Items", []))
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    return items
 
 
 async def upsert(owner_id: str, fields: dict) -> dict:
@@ -85,6 +100,68 @@ async def update_error(owner_id: str, error: str) -> dict | None:
             "last_error_at": utc_now_iso(),
         },
     )
+
+
+async def update_last_active(owner_id: str, iso_ts: str) -> bool:
+    """Record the last user-activity timestamp on a running container.
+
+    Conditional update: only writes if the row exists AND status != "stopped".
+    Returns True if the row was mutated, False if the condition failed (row
+    missing or status=stopped). Callers need to know whether the write
+    actually landed so they don't lock out the next retry during cold-start
+    transitions where the row is still flipping from "stopped" to "running".
+    """
+    from botocore.exceptions import ClientError
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET last_active_at = :t, updated_at = :u",
+            ConditionExpression="attribute_exists(owner_id) AND #s <> :stopped",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":t": iso_ts,
+                ":u": utc_now_iso(),
+                ":stopped": "stopped",
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+async def mark_stopped_if_running(owner_id: str) -> bool:
+    """Flip status from "running" to "stopped" atomically.
+
+    Returns True if this call performed the transition, False if the row
+    was already stopped, missing, or in some other state. Safe for multiple
+    concurrent reapers.
+    """
+    from botocore.exceptions import ClientError
+
+    table = _get_table()
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="SET #s = :stopped, updated_at = :u",
+            ConditionExpression="attribute_exists(owner_id) AND #s = :running",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":stopped": "stopped",
+                ":running": "running",
+                ":u": utc_now_iso(),
+            },
+        )
+        return True
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
 
 
 async def delete(owner_id: str) -> None:

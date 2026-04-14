@@ -95,6 +95,7 @@ interface GatewayContextValue {
   nodeConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
+  send: (payload: unknown) => void;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   sendChat: (agentId: string, message: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
@@ -411,6 +412,19 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // ---- send (raw fire-and-forget) ----
+
+  // Fire-and-forget send for best-effort signals (e.g. user_active pings
+  // for the free-tier scale-to-zero reaper). Silent no-op when the socket
+  // isn't open — callers retry on their own cadence.
+  const send = useCallback((payload: unknown): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    ws.send(JSON.stringify(payload));
+  }, []);
+
   // ---- Subscription helpers ----
 
   const onEvent = useCallback(
@@ -434,8 +448,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
-    [isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
+    () => ({ isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
+    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect],
   );
 
   return (

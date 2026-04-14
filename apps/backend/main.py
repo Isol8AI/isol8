@@ -3,6 +3,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -18,7 +19,9 @@ from fastapi.responses import JSONResponse
 
 from core.auth import get_current_user
 from core.config import settings
-from core.containers import startup_containers, shutdown_containers
+from core.containers import get_gateway_pool, startup_containers, shutdown_containers
+from core.observability.metrics import put_metric
+from core.services.update_service import run_scheduled_worker
 from routers import (
     billing,
     channels,
@@ -41,25 +44,33 @@ from routers import (
 logger = logging.getLogger(__name__)
 
 
+async def _safe_idle_checker():
+    """Run the gateway idle checker with a metric emitted on crash.
+
+    The in-process reaper used to die silently inside this broad except, which
+    meant free-tier containers never scaled to zero. Emitting
+    ``gateway.idle_checker.crash`` lets a CloudWatch alarm page when the reaper
+    dies. The metric emit is itself wrapped in try/except so a metric failure
+    can't mask the original reaper crash.
+    """
+    try:
+        pool = get_gateway_pool()
+        await pool.run_idle_checker()
+    except Exception:
+        try:
+            put_metric("gateway.idle_checker.crash")
+        except Exception:
+            pass
+        logger.warning("idle checker exited with exception", exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    import asyncio
-
-    from core.containers import get_gateway_pool
-    from core.services.update_service import run_scheduled_worker
-
     # Startup
     logger.info("Starting application...")
     await startup_containers()
     worker_task = asyncio.create_task(run_scheduled_worker())
-
-    async def _safe_idle_checker():
-        try:
-            pool = get_gateway_pool()
-            await pool.run_idle_checker()
-        except Exception:
-            logger.warning("Idle checker not available (gateway pool init failed)")
 
     idle_checker_task = asyncio.create_task(_safe_idle_checker())
 
