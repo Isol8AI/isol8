@@ -966,7 +966,9 @@ class GatewayConnectionPool:
             last_active_str = row.get("last_active_at")
             if last_active_str:
                 try:
-                    last_active_epoch = datetime.fromisoformat(last_active_str).timestamp()
+                    # Our writer emits `+00:00`, but replace a trailing `Z` so
+                    # any external writer (or pre-3.11 Python) parses cleanly.
+                    last_active_epoch = datetime.fromisoformat(last_active_str.replace("Z", "+00:00")).timestamp()
                 except Exception:
                     last_active_epoch = 0.0
             else:
