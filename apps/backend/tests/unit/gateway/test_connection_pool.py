@@ -80,3 +80,15 @@ async def test_record_activity_different_users_not_coalesced():
         await pool.record_activity("user_2")
 
     assert mock_update.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_close_user_no_longer_references_last_activity():
+    """Regression for Task 4: close_user used to pop _last_activity, now that
+    dict is gone. This test ensures close_user runs cleanly for a user it's
+    never seen — no AttributeError / KeyError from the removed code path."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    pool = GatewayConnectionPool(management_api=None)
+    # Should not raise
+    await pool.close_user("user_never_connected")
