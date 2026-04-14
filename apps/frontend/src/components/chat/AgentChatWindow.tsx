@@ -403,7 +403,8 @@ export function AgentChatWindow({
   const { userId } = useAuth();
   // Every user gets their own session — isolates chat history from cron,
   // channels, and other system activity. Matches backend (websocket_chat.py).
-  const sessionName = userId ?? "main";
+  // userId is always defined here — ChatLayout gates on clerkLoaded && isSignedIn.
+  const sessionName = userId!;
   const {
     messages: chatMessages,
     isStreaming,

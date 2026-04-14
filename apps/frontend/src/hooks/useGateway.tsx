@@ -41,13 +41,14 @@ export interface BudgetExceededPayload {
 }
 
 export type ChatIncomingMessage =
-  | { type: "chunk"; content: string }
-  | { type: "thinking"; content: string }
-  | { type: "done" }
-  | { type: "error"; message: string; code?: string } & Partial<BudgetExceededPayload>
+  | { type: "chunk"; content: string; agent_id?: string }
+  | { type: "thinking"; content: string; agent_id?: string }
+  | { type: "done"; agent_id?: string }
+  | { type: "error"; message: string; code?: string; agent_id?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
-  | { type: "tool_start"; tool: string }
-  | { type: "tool_end"; tool: string }
+  | { type: "tool_start"; tool: string; toolCallId?: string; agent_id?: string }
+  | { type: "tool_end"; tool: string; toolCallId?: string; agent_id?: string }
+  | { type: "tool_error"; tool: string; toolCallId?: string; agent_id?: string }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
@@ -181,6 +182,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       msgType === "heartbeat" ||
       msgType === "tool_start" ||
       msgType === "tool_end" ||
+      msgType === "tool_error" ||
       msgType === "update_available"
     ) {
       const chatMsg = data as unknown as ChatIncomingMessage;

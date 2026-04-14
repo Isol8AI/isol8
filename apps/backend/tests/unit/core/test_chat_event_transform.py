@@ -88,13 +88,23 @@ class TestTransformAgentEvent:
         result = GatewayConnection._transform_agent_event(
             {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"}}
         )
-        assert result == {"type": "tool_start", "tool": "web_search"}
+        assert result == {"type": "tool_start", "tool": "web_search", "toolCallId": "abc-123"}
 
     def test_tool_stream_result_phase(self):
         result = GatewayConnection._transform_agent_event(
             {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123"}}
         )
-        assert result == {"type": "tool_end", "tool": "web_search"}
+        assert result == {"type": "tool_end", "tool": "web_search", "toolCallId": "abc-123"}
+
+    def test_tool_stream_result_with_is_error(self):
+        """OpenClaw signals tool errors via isError on the result phase."""
+        result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "tool",
+                "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123", "isError": True},
+            }
+        )
+        assert result == {"type": "tool_error", "tool": "web_search", "toolCallId": "abc-123"}
 
     def test_tool_stream_update_phase_ignored(self):
         """Intermediate tool updates are not forwarded."""
@@ -108,6 +118,22 @@ class TestTransformAgentEvent:
             {"stream": "tool", "data": {"phase": "start", "toolCallId": "abc-123"}}
         )
         assert result is None
+
+    def test_thinking_stream_with_text(self):
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "thinking", "data": {"text": "Let me think...", "delta": "..."}}
+        )
+        assert result == {"type": "thinking", "content": "Let me think..."}
+
+    def test_reasoning_stream_with_text(self):
+        """OpenClaw may emit reasoning events under either stream name."""
+        result = GatewayConnection._transform_agent_event(
+            {"stream": "reasoning", "data": {"text": "Considering options", "delta": "s"}}
+        )
+        assert result == {"type": "thinking", "content": "Considering options"}
+
+    def test_thinking_stream_empty_text_ignored(self):
+        assert GatewayConnection._transform_agent_event({"stream": "thinking", "data": {"text": ""}}) is None
 
     def test_missing_stream_ignored(self):
         assert GatewayConnection._transform_agent_event({"data": {"text": "Hi"}}) is None
@@ -217,7 +243,9 @@ class TestHandleMessage:
                 "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "t1"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_start", "tool": "web_search"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "tool_start", "tool": "web_search", "toolCallId": "t1"}
+        )
 
     def test_agent_tool_end_forwarded(self, connection, mock_management_api):
         connection._handle_message(
@@ -227,7 +255,45 @@ class TestHandleMessage:
                 "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "t1"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "tool_end", "tool": "web_search"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "tool_end", "tool": "web_search", "toolCallId": "t1"}
+        )
+
+    def test_agent_events_tagged_with_agent_id_from_session_key(self, connection, mock_management_api):
+        """sessionKey in the payload populates agent_id so the frontend can filter cross-agent messages."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "agent",
+                "payload": {
+                    "stream": "assistant",
+                    "data": {"text": "Hello"},
+                    "sessionKey": "agent:my-agent-id:main",
+                },
+            }
+        )
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "chunk", "content": "Hello", "agent_id": "my-agent-id"}
+        )
+
+    def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
+        """chat.final output also carries agent_id so the frontend can route the done signal."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:my-agent-id:main",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
+                },
+            }
+        )
+        assert mock_management_api.send_message.call_count == 2
+        mock_management_api.send_message.assert_any_call(
+            "conn-1", {"type": "chunk", "content": "Done.", "agent_id": "my-agent-id"}
+        )
+        mock_management_api.send_message.assert_any_call("conn-1", {"type": "done", "agent_id": "my-agent-id"})
 
     # -- Chat events (terminal states only) --
 
