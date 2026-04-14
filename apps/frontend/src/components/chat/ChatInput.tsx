@@ -5,6 +5,8 @@ import { Button } from "@/components/ui/button";
 import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
 interface PendingFile {
   file: File;
   id: string;
@@ -30,7 +32,25 @@ function formatFileSize(bytes: number): string {
 export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage, budgetExceeded }: ChatInputProps) {
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
+  const [sizeError, setSizeError] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const filterOversizedFiles = React.useCallback((files: File[]): File[] => {
+    const valid: File[] = [];
+    const rejected: string[] = [];
+    for (const file of files) {
+      if (file.size > MAX_FILE_SIZE) {
+        rejected.push(file.name);
+      } else {
+        valid.push(file);
+      }
+    }
+    if (rejected.length > 0) {
+      setSizeError(`${rejected.join(", ")} exceed${rejected.length === 1 ? "s" : ""} the 10MB limit`);
+      setTimeout(() => setSizeError(null), 5000);
+    }
+    return valid;
+  }, []);
 
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
@@ -57,7 +77,8 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
     const selected = e.target.files;
     if (!selected) return;
 
-    const newFiles: PendingFile[] = Array.from(selected).map((file) => ({
+    const valid = filterOversizedFiles(Array.from(selected));
+    const newFiles: PendingFile[] = valid.map((file) => ({
       file,
       id: crypto.randomUUID(),
     }));
@@ -76,7 +97,8 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
     const dropped = e.dataTransfer.files;
     if (!dropped.length) return;
 
-    const newFiles: PendingFile[] = Array.from(dropped).map((file) => ({
+    const valid = filterOversizedFiles(Array.from(dropped));
+    const newFiles: PendingFile[] = valid.map((file) => ({
       file,
       id: crypto.randomUUID(),
     }));
@@ -116,6 +138,20 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {sizeError && (
+          <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+            <span>{sizeError}</span>
+            <button
+              type="button"
+              onClick={() => setSizeError(null)}
+              className="ml-auto text-red-400 hover:text-red-600"
+              aria-label="Dismiss size error"
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
         )}
 
