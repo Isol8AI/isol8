@@ -141,7 +141,14 @@ async def redeploy_container(
                 "defaults": {
                     "model": {"primary": tier_cfg["primary_model"]},
                     "models": tier_cfg.get("model_aliases", {}),
+                    "verboseDefault": "full",
                 },
+                # Don't patch `agents.list` here — `_deep_merge` replaces
+                # arrays wholesale, which would clobber user-created agents
+                # persisted via OpenClaw's `agents.create` RPC. The initial
+                # write in `write_openclaw_config` sets up `main` on first
+                # provision; existing containers keep whatever list is
+                # already on EFS.
             },
         }
 

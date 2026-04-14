@@ -311,17 +311,27 @@ class GatewayConnection:
                 return None
             tool_call_id = data.get("toolCallId", "")
             if phase == "start":
+                # OpenClaw never strips `args` — it's safe to forward at any
+                # verboseLevel. Shows the user what the tool was called with.
                 msg: dict = {"type": "tool_start", "tool": name}
                 if tool_call_id:
                     msg["toolCallId"] = tool_call_id
+                if "args" in data:
+                    msg["args"] = data["args"]
                 return msg
             if phase == "result":
                 # OpenClaw signals tool errors via isError flag on the result
-                # phase, not a separate "error" phase.
+                # phase, not a separate "error" phase. `result` and `meta`
+                # are only populated when verboseLevel is "full" (set in
+                # agents.defaults.verboseDefault).
                 is_error = bool(data.get("isError"))
                 msg = {"type": "tool_error" if is_error else "tool_end", "tool": name}
                 if tool_call_id:
                     msg["toolCallId"] = tool_call_id
+                if "result" in data:
+                    msg["result"] = data["result"]
+                if data.get("meta"):
+                    msg["meta"] = data["meta"]
                 return msg
             return None
 

@@ -38,7 +38,13 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     setError(null);
 
     try {
-      await callRpc("agents.create", { name: name.trim(), workspace: "agents/" + normalizedId });
+      await callRpc("agents.create", {
+        name: name.trim(),
+        workspace: "agents/" + normalizedId,
+        // Match the main agent's default so new agents stream thinking
+        // events in real time instead of batching at chat.final.
+        reasoningDefault: "stream",
+      });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
