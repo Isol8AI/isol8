@@ -440,7 +440,8 @@ export function AgentChatWindow({
         if (files && files.length > 0) {
           setIsUploading(true);
           try {
-            const result = await api.uploadFiles(files);
+            if (!agentId) throw new Error("No agent selected");
+            const result = await api.uploadFiles(files, agentId);
             const fileList = result.uploaded
               .map((f) => `- ${f.filename} → ${f.path}`)
               .join("\n");
@@ -464,7 +465,7 @@ export function AgentChatWindow({
         console.error("Failed to send message:", err);
       }
     },
-    [sendMessage, api],
+    [sendMessage, api, agentId],
   );
 
   const messages: Message[] = useMemo(

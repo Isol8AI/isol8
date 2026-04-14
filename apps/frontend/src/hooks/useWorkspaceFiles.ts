@@ -55,3 +55,38 @@ export function useWorkspaceFile(agentId: string | null, filePath: string | null
     isLoading,
   };
 }
+
+export function useConfigFiles(agentId: string | null) {
+  const api = useApi();
+  const key = agentId ? `/container/workspace/${agentId}/config-files` : null;
+
+  const { data, error, isLoading, mutate } = useSWR<{ files: FileEntry[] }>(
+    key,
+    () => api.get(key!) as Promise<{ files: FileEntry[] }>,
+  );
+
+  return {
+    files: data?.files ?? [],
+    error,
+    isLoading,
+    refresh: mutate,
+  };
+}
+
+export function useConfigFile(agentId: string | null, filePath: string | null) {
+  const api = useApi();
+  const key = agentId && filePath
+    ? `/container/workspace/${agentId}/config-file?path=${encodeURIComponent(filePath)}`
+    : null;
+
+  const { data, error, isLoading } = useSWR<FileInfo>(
+    key,
+    () => api.get(key!) as Promise<FileInfo>,
+  );
+
+  return {
+    file: data ?? null,
+    error,
+    isLoading,
+  };
+}
