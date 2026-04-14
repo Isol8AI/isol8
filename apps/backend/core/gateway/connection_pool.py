@@ -328,24 +328,6 @@ class GatewayConnection:
         return None
 
     @staticmethod
-    def _extract_chat_text(payload: dict) -> str | None:
-        """Extract text from a chat event's message.content field."""
-        msg = payload.get("message")
-        if not isinstance(msg, dict):
-            return None
-        content = msg.get("content", [])
-        if isinstance(content, list) and content:
-            # Find the last text block (skip thinking blocks)
-            for block in reversed(content):
-                if isinstance(block, dict) and block.get("type") in ("text", "output_text"):
-                    return block.get("text") or None
-            # Fallback: last block regardless of type
-            block = content[-1]
-            if isinstance(block, dict):
-                return block.get("text") or None
-        return None
-
-    @staticmethod
     def _extract_thinking_text(payload: dict) -> str | None:
         """Extract thinking/reasoning text from a chat event's message.content field."""
         msg = payload.get("message")
@@ -718,20 +700,20 @@ class GatewayConnection:
                 event_agent_id = parsed_key.get("agent_id")
                 if state == "final":
                     put_metric("chat.message.count")
-                    # Send thinking content if present (before visible text)
+                    # Deliver thinking from content blocks for models that
+                    # batch reasoning into the final message (reasoningLevel
+                    # not set to "stream"). Once reasoningLevel:"stream" is
+                    # enabled on the session, this will typically be empty
+                    # because thinking streamed via agent events already.
                     thinking_text = self._extract_thinking_text(payload)
                     if thinking_text:
                         fwd: dict = {"type": "thinking", "content": thinking_text}
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
                         self._forward_to_frontends(fwd, target_member)
-                    # Send complete text as safety net before done signal
-                    final_text = self._extract_chat_text(payload)
-                    if final_text:
-                        fwd = {"type": "chunk", "content": final_text}
-                        if event_agent_id:
-                            fwd["agent_id"] = event_agent_id
-                        self._forward_to_frontends(fwd, target_member)
+                    # OpenClaw guarantees the full text reached us via agent
+                    # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
+                    # as a server-side backstop), so no chunk is emitted here.
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
