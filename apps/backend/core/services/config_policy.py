@@ -94,6 +94,30 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
             }
         )
 
+    # 3. agents.defaults.models — keys must all be in tier allowlist
+    models_map = config.get("agents", {}).get("defaults", {}).get("models", {})
+    if isinstance(models_map, dict):
+        illegal_keys = [
+            k for k in models_map if k.removeprefix("amazon-bedrock/") not in _TIER_ALLOWED_MODEL_IDS[effective_tier]
+        ]
+        if illegal_keys:
+            # Build expected: filter out illegal entries, ensure primary is present.
+            # Reuse write_openclaw_config's helper via a direct import.
+            from core.containers.config import _agent_models_for_tier
+
+            expected_primary = (
+                f"amazon-bedrock/{TIER_CONFIG[effective_tier]['primary_model'].removeprefix('amazon-bedrock/')}"
+            )
+            expected_models = _agent_models_for_tier(effective_tier, expected_primary)
+            violations.append(
+                {
+                    "field": "agents.defaults.models",
+                    "reason": f"agents.defaults.models contains non-allowlisted keys for tier={effective_tier}: {illegal_keys}",
+                    "expected": expected_models,
+                    "actual": models_map,
+                }
+            )
+
     return violations
 
 

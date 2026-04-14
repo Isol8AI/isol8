@@ -107,3 +107,19 @@ class TestEvaluate:
         config["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/claude-opus-4"
         violations = config_policy.evaluate(config, "pro")
         assert any(v["field"] == "agents.defaults.model.primary" for v in violations)
+
+    def test_free_tier_agents_models_with_qwen_is_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["agents"]["defaults"]["models"]["amazon-bedrock/qwen.qwen3-vl-235b-a22b"] = {
+            "alias": "Qwen3 VL 235B",
+        }
+        violations = config_policy.evaluate(config, "free")
+        assert any(v["field"] == "agents.defaults.models" for v in violations)
+
+    def test_paid_tier_agents_models_within_allowlist_no_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="pro")
+        config = json.loads(raw)
+        # Pro tier generator already includes both MiniMax and Qwen — clean.
+        violations = config_policy.evaluate(config, "pro")
+        assert not any(v["field"] == "agents.defaults.models" for v in violations)
