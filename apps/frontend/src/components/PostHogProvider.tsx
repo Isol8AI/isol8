@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth, useUser } from "@clerk/nextjs";
 import posthog from "posthog-js";
@@ -62,7 +62,14 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <PHProvider client={posthog}>
-      <PostHogPageview />
+      {/* Suspense required: PostHogPageview reads useSearchParams(), which
+          forces the whole subtree out of static prerendering unless isolated
+          in a Suspense boundary. Without this, pages like /_not-found fail
+          prerender with the CSR-bailout error. PostHogPageview renders null
+          so fallback={null} is a true no-op. */}
+      <Suspense fallback={null}>
+        <PostHogPageview />
+      </Suspense>
       <PostHogIdentify />
       {children}
     </PHProvider>
