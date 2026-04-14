@@ -225,11 +225,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (!currentAssistantIdRef.current) return;
 
       // Drop messages meant for a different agent. Heartbeat and
-      // update_available don't carry agent_id because they aren't tied to
-      // a specific run; everything else must match the active agent.
+      // update_available aren't tied to a specific run. Errors are
+      // allowed through even without agent_id as a safety valve —
+      // some failure paths (client-side validation, etc.) have no
+      // agent context but still need to clear the streaming state.
       const isUntaggedBroadcast =
         msg.type === "heartbeat" || msg.type === "update_available";
-      if (!isUntaggedBroadcast && msg.agent_id !== agentIdRef.current) return;
+      const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
+      if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) return;
 
       if (msg.type === "chunk") {
         // OpenClaw sends cumulative text (full response so far) in each
