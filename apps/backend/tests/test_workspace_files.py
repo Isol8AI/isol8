@@ -7,10 +7,19 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 
+from core.auth import AuthContext
+from core.config import settings
 from core.containers.workspace import Workspace, WorkspaceError
 
 USER_ID = "user_test_abc"
+AGENT_ID = "agent-abc-123"
+
+
+def _auth(owner_id: str = USER_ID) -> AuthContext:
+    """Build a minimal AuthContext for direct handler calls (personal mode)."""
+    return AuthContext(user_id=owner_id)
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +59,12 @@ def _minimal_png() -> bytes:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _local_environment(monkeypatch):
+    """Force ENVIRONMENT=local so os.chown is skipped on macOS during tests."""
+    monkeypatch.setattr(settings, "ENVIRONMENT", "local")
 
 
 @pytest.fixture()
@@ -305,3 +320,440 @@ class TestReadFileInfo:
         ws, _ = populated_workspace
         info = ws.read_file_info(USER_ID, "image.png")
         assert info["mime_type"] == "image/png"
+
+
+# ===========================================================================
+# TestConfigFilesEndpoint / TestConfigFileReadEndpoint
+# ===========================================================================
+
+
+class TestConfigFilesEndpoint:
+    """Tests for GET /workspace/{agent_id}/config-files."""
+
+    def test_returns_only_allowlisted_files(self, tmp_path):
+        """Only allowlisted files that exist on disk are returned."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
+        (agent_dir / "MEMORY.md").write_text("Remember this", encoding="utf-8")
+        (agent_dir / "sessions").mkdir()  # should be excluded
+        (agent_dir / "secret.json").write_text("{}", encoding="utf-8")  # not allowlisted
+
+        from routers.workspace_files import _list_config_files
+
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        names = {f["name"] for f in result}
+        assert names == {"SOUL.md", "MEMORY.md"}
+        assert all(f["type"] == "file" for f in result)
+
+    def test_empty_when_no_agent_dir(self, tmp_path):
+        """Returns empty list when agent dir doesn't exist."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID).mkdir(parents=True)
+        from routers.workspace_files import _list_config_files
+
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        assert result == []
+
+    def test_file_entries_have_required_fields(self, tmp_path):
+        """Each entry has name, path, type, size, modified_at."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "BOOTSTRAP.md").write_text("# Bootstrap", encoding="utf-8")
+        from routers.workspace_files import _list_config_files
+
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["name"] == "BOOTSTRAP.md"
+        assert entry["path"] == "BOOTSTRAP.md"
+        assert entry["type"] == "file"
+        assert isinstance(entry["size"], int)
+        assert isinstance(entry["modified_at"], float)
+
+
+class TestConfigFileReadEndpoint:
+    """Tests for GET /workspace/{agent_id}/config-file."""
+
+    def test_reads_allowlisted_file(self, tmp_path):
+        """Can read an allowlisted config file."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
+        info = ws.read_file_info(USER_ID, f"agents/{AGENT_ID}/SOUL.md")
+        assert info["content"] == "I am helpful"
+        assert info["binary"] is False
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_non_allowlisted_path(self, workspace, monkeypatch):
+        """read_config_file returns 400 for a path not in the allowlist."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id=AGENT_ID, path="secret.json", auth=_auth())
+        assert exc.value.status_code == 400
+        assert "allowlist" in exc.value.detail.lower()
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_traversal_in_path(self, workspace, monkeypatch):
+        """read_config_file rejects a path with traversal sequences."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id=AGENT_ID, path="../../etc/passwd", auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_read_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """read_config_file rejects a traversal sequence in agent_id."""
+        from routers.workspace_files import read_config_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await read_config_file(agent_id="../other", path="SOUL.md", auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """list_config_files returns 400 for an agent_id containing '..'."""
+        from routers.workspace_files import list_config_files
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        with pytest.raises(HTTPException) as exc:
+            await list_config_files(agent_id="../../other", auth=_auth())
+        assert exc.value.status_code == 400
+
+
+# ===========================================================================
+# TestWriteFileEndpoint
+# ===========================================================================
+
+
+class TestWriteFileEndpoint:
+    """Tests for the _write_file helper used by the PUT endpoint."""
+
+    def test_write_workspace_file(self, tmp_path):
+        """Writing a workspace file creates it on disk."""
+        ws = _make_workspace(tmp_path)
+        user_root = tmp_path / USER_ID
+        user_root.mkdir(parents=True)
+        ws_dir = user_root / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "plan.md", "# My Plan", "workspace")
+        assert (ws_dir / "plan.md").read_text() == "# My Plan"
+
+    def test_write_config_file_allowlisted(self, tmp_path):
+        """Writing an allowlisted config file succeeds."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "I am kind", "config")
+        assert (agent_dir / "SOUL.md").read_text() == "I am kind"
+
+    def test_write_config_file_not_allowlisted_raises(self, tmp_path):
+        """Writing a non-allowlisted config file raises ValueError."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="not in allowlist"):
+            _write_file(ws, USER_ID, AGENT_ID, "secret.json", "{}", "config")
+
+    def test_write_creates_parent_dirs(self, tmp_path):
+        """Writing to a nested path creates intermediate directories."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        _write_file(ws, USER_ID, AGENT_ID, "deep/nested/file.txt", "hello", "workspace")
+        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "file.txt").read_text() == "hello"
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_traversal_in_agent_id(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for traversal in agent_id."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="plan.md", content="x", tab="workspace")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id="../other", body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_invalid_tab(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for a tab value that is neither workspace nor config."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="plan.md", content="x", tab="bogus")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_non_allowlisted_config_filename(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 when writing a non-allowlisted config file."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(path="secret.json", content="{}", tab="config")
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    def test_write_rejects_traversal_in_path(self, tmp_path):
+        """`..` in path raises ValueError (regression for allowlist bypass)."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match=r"\.\."):
+            _write_file(
+                ws,
+                USER_ID,
+                AGENT_ID,
+                "../../agents/" + AGENT_ID + "/SOUL.md",
+                "hacked",
+                "workspace",
+            )
+
+    def test_write_rejects_absolute_path(self, tmp_path):
+        """Absolute paths are rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="relative"):
+            _write_file(ws, USER_ID, AGENT_ID, "/etc/passwd", "x", "workspace")
+
+    def test_write_rejects_empty_path(self, tmp_path):
+        """Empty path is rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError):
+            _write_file(ws, USER_ID, AGENT_ID, "", "x", "workspace")
+
+    def test_write_rejects_dot_only_path(self, tmp_path):
+        """Dot-only paths (., ./, .) are rejected with ValueError."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        for bad in [".", "./", "./.", "././"]:
+            with pytest.raises(ValueError, match=r"dot-only"):
+                _write_file(ws, USER_ID, AGENT_ID, bad, "x", "workspace")
+
+    def test_write_rejects_oversized_content(self, tmp_path):
+        """Content over 10MB is rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        big = "a" * (10 * 1024 * 1024 + 1)
+        with pytest.raises(ValueError, match="10MB"):
+            _write_file(ws, USER_ID, AGENT_ID, "big.txt", big, "workspace")
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_traversal_in_path(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for `..` in body.path (regression test)."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(
+            path=f"../../agents/{AGENT_ID}/SOUL.md",
+            content="hacked",
+            tab="workspace",
+        )
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert exc.value.status_code == 400
+
+    def test_write_rejects_symlink_escape_workspace(self, tmp_path):
+        """Symlink in workspaces/{id}/ pointing outside must be rejected."""
+        import os
+
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("original", encoding="utf-8")
+
+        # Symlink workspaces/{id}/evil -> ../../agents/{id}/SOUL.md
+        os.symlink(
+            "../../agents/" + AGENT_ID + "/SOUL.md",
+            ws_dir / "evil",
+        )
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="escapes"):
+            _write_file(ws, USER_ID, AGENT_ID, "evil", "hacked", "workspace")
+
+        # SOUL.md must be untouched
+        assert (agent_dir / "SOUL.md").read_text() == "original"
+
+    def test_write_rejects_symlink_escape_config(self, tmp_path):
+        """Symlink in agents/{id}/ pointing outside must be rejected."""
+        import os
+
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        target = tmp_path / USER_ID / "elsewhere.txt"
+        target.write_text("original", encoding="utf-8")
+
+        # Symlink agents/{id}/SOUL.md -> ../../elsewhere.txt
+        os.symlink("../../elsewhere.txt", agent_dir / "SOUL.md")
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="escapes"):
+            _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "hacked", "config")
+
+        assert target.read_text() == "original"
+
+    def test_write_allows_nested_dirs_within_workspace(self, tmp_path):
+        """Subtree check allows legitimate nested paths inside the workspace."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        written = _write_file(ws, USER_ID, AGENT_ID, "deep/nested/notes.md", "ok", "workspace")
+        assert written == f"workspaces/{AGENT_ID}/deep/nested/notes.md"
+        assert (tmp_path / USER_ID / "workspaces" / AGENT_ID / "deep" / "nested" / "notes.md").read_text() == "ok"
+
+
+# ===========================================================================
+# TestUploadPath
+# ===========================================================================
+
+
+class TestUploadPath:
+    """Verify upload destination path construction."""
+
+    def test_upload_writes_to_agent_workspace(self, tmp_path):
+        """Uploads should go to workspaces/{agent_id}/uploads/."""
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID / "uploads"
+        (tmp_path / USER_ID).mkdir(parents=True)
+
+        dest_path = f"workspaces/{AGENT_ID}/uploads/test.pdf"
+        ws.write_bytes(USER_ID, dest_path, b"fake pdf content")
+        assert (ws_dir / "test.pdf").read_bytes() == b"fake pdf content"
+
+    def test_agent_visible_path(self):
+        """Agent-visible path should include workspaces/{agent_id}."""
+        agent_id = "my-agent"
+        filename = "data.csv"
+        dest_path = f"workspaces/{agent_id}/uploads/{filename}"
+        agent_path = f".openclaw/{dest_path}"
+        assert agent_path == f".openclaw/workspaces/{agent_id}/uploads/{filename}"
+
+
+# ===========================================================================
+# TestWorkspaceTreeRoundTrip
+# ===========================================================================
+
+
+class TestWorkspaceTreeRoundTrip:
+    """Verify list → read uses the same agent-relative path contract."""
+
+    @pytest.mark.asyncio
+    async def test_tree_path_feeds_back_to_read(self, workspace, monkeypatch):
+        """A path returned by the tree endpoint reads successfully via the file endpoint."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        ws_dir = workspace._mount / USER_ID / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "plan.md").write_text("# Plan\nstep 1", encoding="utf-8")
+        (ws_dir / "uploads").mkdir()
+        (ws_dir / "uploads" / "data.csv").write_text("a,b\n1,2", encoding="utf-8")
+
+        from routers.workspace_files import list_workspace_tree, read_workspace_file
+
+        tree = await list_workspace_tree(
+            agent_id=AGENT_ID,
+            path="",
+            recursive=True,
+            auth=_auth(),
+        )
+        paths = {f["path"] for f in tree["files"]}
+        # Paths must be agent-relative (no `workspaces/{agent_id}/` prefix)
+        assert "plan.md" in paths
+        assert "uploads" in paths
+        assert "uploads/data.csv" in paths
+        assert not any(p.startswith("workspaces/") for p in paths if p)
+
+        # Every file path should read successfully via the file endpoint
+        for entry in tree["files"]:
+            if entry["type"] == "file":
+                info = await read_workspace_file(
+                    agent_id=AGENT_ID,
+                    path=entry["path"],
+                    auth=_auth(),
+                )
+                assert info["name"] == entry["name"]
+                assert info["size"] == entry["size"]
+
+    @pytest.mark.asyncio
+    async def test_write_then_tree_then_read(self, workspace, monkeypatch):
+        """After saveWorkspaceFile writes a workspace file, tree lists it and read returns content."""
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        (workspace._mount / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import (
+            WriteFileRequest,
+            list_workspace_tree,
+            read_workspace_file,
+            write_workspace_file,
+        )
+
+        body = WriteFileRequest(path="notes.txt", content="hello world", tab="workspace")
+        result = await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert result["status"] == "ok"
+        # Backend returned path is user-root-relative; tree will show agent-relative
+        assert result["path"] == f"workspaces/{AGENT_ID}/notes.txt"
+
+        tree = await list_workspace_tree(
+            agent_id=AGENT_ID,
+            path="",
+            recursive=True,
+            auth=_auth(),
+        )
+        assert any(f["path"] == "notes.txt" and f["type"] == "file" for f in tree["files"])
+
+        info = await read_workspace_file(agent_id=AGENT_ID, path="notes.txt", auth=_auth())
+        assert info["content"] == "hello world"

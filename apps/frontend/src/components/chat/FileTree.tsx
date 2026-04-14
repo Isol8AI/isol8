@@ -90,9 +90,10 @@ interface FileTreeProps {
   onSelect: (path: string) => void;
   onRefresh: () => void;
   isLoading: boolean;
+  emptyMessage?: string;
 }
 
-export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading }: FileTreeProps) {
+export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading, emptyMessage }: FileTreeProps) {
   const rootEntries = React.useMemo(() => {
     if (files.length === 0) return [];
     const depths = files.map((f) => f.path.split("/").length);
@@ -114,7 +115,9 @@ export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading }
       </div>
       <div className="flex-1 overflow-y-auto p-2">
         {files.length === 0 && !isLoading ? (
-          <div className="text-xs text-[#8a8578] text-center py-4">No files in workspace</div>
+          <div className="text-xs text-[#8a8578] text-center py-4 px-3">
+            {emptyMessage ?? "No files in workspace"}
+          </div>
         ) : (
           rootEntries.map((entry) => (
             <FileTreeNode

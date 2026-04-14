@@ -17,7 +17,7 @@ import re
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from pydantic import BaseModel, Field
 from websockets import connect as ws_connect
 
@@ -240,8 +240,9 @@ def _sanitize_filename(name: str) -> str:
     summary="Upload files to the user's agent workspace",
     description=(
         "Uploads one or more files to the user's workspace on EFS. "
-        "Files are placed in the `uploads/` directory and are accessible "
-        "to the user's OpenClaw agent. Max 10MB per file, 10 files per request."
+        "Files are placed in the agent's `workspaces/{agent_id}/uploads/` directory "
+        "and are accessible to the user's OpenClaw agent. "
+        "Max 10MB per file, 10 files per request."
     ),
     operation_id="upload_files",
     responses={
@@ -251,6 +252,7 @@ def _sanitize_filename(name: str) -> str:
 )
 async def upload_files(
     files: List[UploadFile] = File(..., description="Files to upload"),
+    agent_id: str = Query(..., description="Target agent ID"),
     auth: AuthContext = Depends(get_current_user),
 ):
     if len(files) > MAX_FILES_PER_REQUEST:
@@ -258,6 +260,9 @@ async def upload_files(
             status_code=400,
             detail=f"Too many files. Maximum {MAX_FILES_PER_REQUEST} per request.",
         )
+
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
 
     owner_id = resolve_owner_id(auth)
 
@@ -280,10 +285,10 @@ async def upload_files(
             )
 
         safe_name = _sanitize_filename(f.filename or "upload")
-        dest_path = f"uploads/{safe_name}"
+        dest_path = f"workspaces/{agent_id}/uploads/{safe_name}"
         workspace.write_bytes(owner_id, dest_path, data)
         # The agent's working dir is $HOME (/home/node) but EFS is mounted
-        # at $HOME/.openclaw, so the agent path is .openclaw/uploads/filename
+        # at $HOME/.openclaw, so the agent sees uploads relative to that mount.
         agent_path = f".openclaw/{dest_path}"
         uploaded.append({"filename": safe_name, "path": agent_path, "size": len(data)})
         logger.info("Uploaded %s (%d bytes) for user %s", dest_path, len(data), owner_id)

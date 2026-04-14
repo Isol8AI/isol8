@@ -54,7 +54,8 @@ interface ApiMethods {
   put: (endpoint: string, body: unknown) => Promise<unknown>;
   del: (endpoint: string) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
-  uploadFiles: (files: File[]) => Promise<UploadResponse>;
+  uploadFiles: (files: File[], agentId: string) => Promise<UploadResponse>;
+  saveWorkspaceFile: (agentId: string, path: string, content: string, tab: "workspace" | "config") => Promise<{ status: string; path: string }>;
 }
 
 export function useApi(): ApiMethods {
@@ -124,7 +125,7 @@ export function useApi(): ApiMethods {
           body: JSON.stringify({ patch }),
         }) as Promise<{ status: string; owner_id: string }>;
       },
-      async uploadFiles(files: File[]): Promise<UploadResponse> {
+      async uploadFiles(files: File[], agentId: string): Promise<UploadResponse> {
         const token = await getToken();
         if (!token) throw new Error("No authentication token available");
 
@@ -133,7 +134,7 @@ export function useApi(): ApiMethods {
           formData.append("files", file);
         }
 
-        const response = await fetch(`${BACKEND_URL}/container/files`, {
+        const response = await fetch(`${BACKEND_URL}/container/files?agent_id=${encodeURIComponent(agentId)}`, {
           method: "POST",
           headers: { Authorization: `Bearer ${token}` },
           body: formData,
@@ -145,6 +146,17 @@ export function useApi(): ApiMethods {
         }
 
         return response.json();
+      },
+      saveWorkspaceFile(
+        agentId: string,
+        path: string,
+        content: string,
+        tab: "workspace" | "config",
+      ): Promise<{ status: string; path: string }> {
+        return authenticatedFetch(`/container/workspace/${encodeURIComponent(agentId)}/file`, {
+          method: "PUT",
+          body: JSON.stringify({ path, content, tab }),
+        }) as Promise<{ status: string; path: string }>;
       },
     }),
     [authenticatedFetch, getToken]
