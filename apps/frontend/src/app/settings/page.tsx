@@ -2,6 +2,7 @@
 
 import "./settings.css";
 import React, { useState, useEffect, useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import Link from "next/link";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
@@ -177,6 +178,7 @@ function ProfilePanel() {
 // =============================================================================
 
 function BillingPanel() {
+  const posthog = usePostHog();
   const {
     account,
     isLoading,
@@ -216,13 +218,14 @@ function BillingPanel() {
   }, [createCheckout]);
 
   const handlePortal = useCallback(async () => {
+    posthog?.capture("billing_portal_opened");
     setPortalLoading(true);
     try {
       await openPortal();
     } catch {
       setPortalLoading(false);
     }
-  }, [openPortal]);
+  }, [openPortal, posthog]);
 
   const handleOverageToggle = useCallback(async () => {
     const newEnabled = !overageEnabled;
@@ -233,6 +236,7 @@ function BillingPanel() {
       const limit = overageLimit ? parseFloat(overageLimit) : null;
       await toggleOverage(newEnabled, limit);
       setOverageEnabled(newEnabled);
+      posthog?.capture("overage_enabled", { enabled: newEnabled });
       setOverageSuccess(true);
       setTimeout(() => setOverageSuccess(false), 2000);
     } catch (err) {
@@ -240,7 +244,7 @@ function BillingPanel() {
     } finally {
       setOverageSaving(false);
     }
-  }, [overageEnabled, overageLimit, toggleOverage]);
+  }, [overageEnabled, overageLimit, toggleOverage, posthog]);
 
   const handleOverageLimitSave = useCallback(async () => {
     setOverageSaving(true);
@@ -249,6 +253,7 @@ function BillingPanel() {
     try {
       const limit = overageLimit ? parseFloat(overageLimit) : null;
       await toggleOverage(overageEnabled, limit);
+      posthog?.capture("overage_limit_set", { limit });
       setOverageSuccess(true);
       setTimeout(() => setOverageSuccess(false), 2000);
     } catch (err) {
@@ -256,7 +261,7 @@ function BillingPanel() {
     } finally {
       setOverageSaving(false);
     }
-  }, [overageEnabled, overageLimit, toggleOverage]);
+  }, [overageEnabled, overageLimit, toggleOverage, posthog]);
 
   // Loading
   if (isLoading) {

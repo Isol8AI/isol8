@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
@@ -21,6 +22,7 @@ function normalizeToId(name: string): string {
 }
 
 export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreateFormProps) {
+  const posthog = usePostHog();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -45,13 +47,14 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
         // events in real time instead of batching at chat.final.
         reasoningDefault: "stream",
       });
+      posthog?.capture("agent_created", { agent_name: name.trim() });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, onCreated]);
+  }, [canCreate, callRpc, name, onCreated, posthog]);
 
   const clientError = isDuplicate
     ? "An agent with this name already exists"

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 /**
@@ -38,6 +39,7 @@ interface AgentsListResponse {
 }
 
 export function useAgents() {
+  const posthog = usePostHog();
   const { data, error, isLoading, mutate } =
     useGatewayRpc<AgentsListResponse>("agents.list");
   const callRpc = useGatewayRpcMutation();
@@ -64,9 +66,12 @@ export function useAgents() {
   const updateAgent = useCallback(
     async (agentId: string, updates: { model?: string; name?: string }) => {
       await callRpc("agents.update", { agentId, ...updates });
+      if (updates.model) {
+        posthog?.capture("agent_model_changed", { agent_id: agentId, model: updates.model });
+      }
       mutate();
     },
-    [callRpc, mutate],
+    [callRpc, mutate, posthog],
   );
 
   return {
