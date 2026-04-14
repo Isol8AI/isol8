@@ -74,7 +74,9 @@ move_item() {
   if [ ! -e "$src" ] && [ ! -L "$src" ]; then
     return 0
   fi
-  if [ -e "$dst" ]; then
+  # Use -e OR -L so a broken symlink at the destination still trips the skip.
+  # Without -L, `mv` would overwrite the symlink target instead of bailing.
+  if [ -e "$dst" ] || [ -L "$dst" ]; then
     echo "  SKIP (exists): $dst"
     return 0
   fi
