@@ -141,7 +141,11 @@ async def redeploy_container(
                 "defaults": {
                     "model": {"primary": tier_cfg["primary_model"]},
                     "models": tier_cfg.get("model_aliases", {}),
+                    "verboseDefault": "full",
                 },
+                "list": [
+                    {"id": "main", "default": True, "reasoningDefault": "stream"},
+                ],
             },
         }
 

@@ -339,7 +339,25 @@ def write_openclaw_config(
                 "llm": {
                     "idleTimeoutSeconds": 300,
                 },
+                # verboseDefault="full" keeps tool result/partialResult in
+                # agent events so the frontend can show tool input + output.
+                # OpenClaw defaults to "off" which strips those fields before
+                # they reach our WebSocket subscriber.
+                "verboseDefault": "full",
             },
+            # Per-agent settings. reasoningDefault is not allowed in
+            # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so
+            # we declare the implicit "main" agent explicitly here to opt it
+            # into real-time thinking streams. User-created agents inherit it
+            # via AgentCreateForm passing reasoningDefault: "stream" on
+            # agents.create.
+            "list": [
+                {
+                    "id": "main",
+                    "default": True,
+                    "reasoningDefault": "stream",
+                },
+            ],
         },
         "memory": {
             "backend": "qmd",

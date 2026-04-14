@@ -40,15 +40,41 @@ export interface BudgetExceededPayload {
   tier: string;
 }
 
+/**
+ * OpenClaw tool result content blocks — text blocks or image refs. Image
+ * data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer.
+ */
+export type ToolResultBlock = { type: string; text?: string; bytes?: number; omitted?: boolean };
+
 export type ChatIncomingMessage =
   | { type: "chunk"; content: string; agent_id?: string }
   | { type: "thinking"; content: string; agent_id?: string }
   | { type: "done"; agent_id?: string }
   | { type: "error"; message: string; code?: string; agent_id?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
-  | { type: "tool_start"; tool: string; toolCallId?: string; agent_id?: string }
-  | { type: "tool_end"; tool: string; toolCallId?: string; agent_id?: string }
-  | { type: "tool_error"; tool: string; toolCallId?: string; agent_id?: string }
+  | {
+      type: "tool_start";
+      tool: string;
+      toolCallId?: string;
+      args?: Record<string, unknown>;
+      agent_id?: string;
+    }
+  | {
+      type: "tool_end";
+      tool: string;
+      toolCallId?: string;
+      result?: ToolResultBlock[];
+      meta?: string;
+      agent_id?: string;
+    }
+  | {
+      type: "tool_error";
+      tool: string;
+      toolCallId?: string;
+      result?: ToolResultBlock[];
+      meta?: string;
+      agent_id?: string;
+    }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */

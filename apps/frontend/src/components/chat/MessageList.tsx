@@ -9,10 +9,20 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
+interface ToolResultBlock {
+  type: string;
+  text?: string;
+  bytes?: number;
+  omitted?: boolean;
+}
+
 interface ToolUse {
   tool: string;
   toolCallId?: string;
   status: "running" | "done" | "error";
+  args?: Record<string, unknown>;
+  result?: ToolResultBlock[];
+  meta?: string;
 }
 
 interface Message {
@@ -171,26 +181,82 @@ const TOOL_STYLES = {
   },
 } as const;
 
+function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null {
+  if (!blocks?.length) return null;
+  const parts: string[] = [];
+  for (const b of blocks) {
+    if (b.type === "text" && b.text) parts.push(b.text);
+    else if (b.omitted) parts.push(`[${b.type} — ${b.bytes ?? "?"} bytes, omitted]`);
+  }
+  return parts.join("\n\n") || null;
+}
+
+function ToolPill({ t }: { t: ToolUse }) {
+  const [open, setOpen] = React.useState(false);
+  const s = TOOL_STYLES[t.status];
+  const hasDetails = !!(t.args || t.result || t.meta);
+
+  return (
+    <div className="inline-block">
+      <button
+        type="button"
+        onClick={() => hasDetails && setOpen((v) => !v)}
+        disabled={!hasDetails}
+        className={cn(
+          "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors",
+          s.pill,
+          hasDetails ? "cursor-pointer hover:brightness-95" : "cursor-default",
+        )}
+        aria-expanded={open}
+      >
+        <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
+        <span>{t.tool}</span>
+        {t.status === "error" && <span>failed</span>}
+        {hasDetails &&
+          (open ? (
+            <ChevronDown className="h-3 w-3 opacity-70" />
+          ) : (
+            <ChevronRight className="h-3 w-3 opacity-70" />
+          ))}
+      </button>
+      {open && hasDetails && (
+        <div className="mt-1.5 max-w-xl rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-2 text-xs space-y-2">
+          {t.meta && (
+            <div className="text-[#8a8578]">
+              <span className="font-medium text-[#302d28]">target:</span> {t.meta}
+            </div>
+          )}
+          {t.args && Object.keys(t.args).length > 0 && (
+            <div>
+              <div className="font-medium text-[#302d28] mb-0.5">input</div>
+              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
+                {JSON.stringify(t.args, null, 2)}
+              </pre>
+            </div>
+          )}
+          {renderToolResult(t.result) && (
+            <div>
+              <div className="font-medium text-[#302d28] mb-0.5">
+                {t.status === "error" ? "error" : "output"}
+              </div>
+              <pre className="whitespace-pre-wrap break-words text-[#302d28] bg-[#f3efe6] rounded px-2 py-1 max-h-48 overflow-auto">
+                {renderToolResult(t.result)}
+              </pre>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
   if (toolUses.length === 0) return null;
   return (
-    <div className="mb-3 flex flex-wrap gap-2">
-      {toolUses.map((t, i) => {
-        const s = TOOL_STYLES[t.status];
-        return (
-          <span
-            key={t.toolCallId ?? `${t.tool}-${i}`}
-            className={cn(
-              "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
-              s.pill,
-            )}
-          >
-            <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
-            {t.tool}
-            {t.status === "error" && " failed"}
-          </span>
-        );
-      })}
+    <div className="mb-3 flex flex-wrap gap-2 items-start">
+      {toolUses.map((t, i) => (
+        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} />
+      ))}
     </div>
   );
 }
