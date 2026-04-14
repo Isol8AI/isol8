@@ -356,6 +356,13 @@ def write_openclaw_config(
                     "id": "main",
                     "default": True,
                     "reasoningDefault": "stream",
+                    # Explicit override so main lands at workspaces/main/ (matching
+                    # the {defaults.workspace}/{agentId} scheme custom agents get
+                    # automatically). Without this, main would inherit the bare
+                    # defaults.workspace path, creating a two-layout split that
+                    # the file viewer cannot represent cleanly. See
+                    # docs/superpowers/specs/2026-04-14-agent-workspace-normalization-design.md
+                    "workspace": "workspaces/main",
                 },
             ],
         },

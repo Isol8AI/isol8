@@ -154,6 +154,19 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         assert config["agents"]["defaults"]["workspace"] == ".openclaw/workspaces"
 
+    def test_main_agent_has_explicit_workspace(self):
+        """Main agent's workspace is workspaces/main so it joins the {id}/ scheme.
+
+        Without this override, OpenClaw places the default agent at the bare
+        agents.defaults.workspace path (`.openclaw/workspaces`), while custom
+        agents get `{defaults.workspace}/{agentId}`. This inconsistency makes
+        the file viewer unable to assume one layout per agent — which caused
+        the prod bug in PR #260. The explicit override normalizes main.
+        """
+        config = json.loads(write_openclaw_config())
+        main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
+        assert main_entry.get("workspace") == "workspaces/main"
+
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
         config = json.loads(write_openclaw_config())
