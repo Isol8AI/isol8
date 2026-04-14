@@ -523,3 +523,68 @@ class TestWriteFileEndpoint:
         with pytest.raises(HTTPException) as exc:
             await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert exc.value.status_code == 400
+
+    def test_write_rejects_traversal_in_path(self, tmp_path):
+        """`..` in path raises ValueError (regression for allowlist bypass)."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match=r"\.\."):
+            _write_file(
+                ws,
+                USER_ID,
+                AGENT_ID,
+                "../../agents/" + AGENT_ID + "/SOUL.md",
+                "hacked",
+                "workspace",
+            )
+
+    def test_write_rejects_absolute_path(self, tmp_path):
+        """Absolute paths are rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError, match="relative"):
+            _write_file(ws, USER_ID, AGENT_ID, "/etc/passwd", "x", "workspace")
+
+    def test_write_rejects_empty_path(self, tmp_path):
+        """Empty path is rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        with pytest.raises(ValueError):
+            _write_file(ws, USER_ID, AGENT_ID, "", "x", "workspace")
+
+    def test_write_rejects_oversized_content(self, tmp_path):
+        """Content over 10MB is rejected."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        big = "a" * (10 * 1024 * 1024 + 1)
+        with pytest.raises(ValueError, match="10MB"):
+            _write_file(ws, USER_ID, AGENT_ID, "big.txt", big, "workspace")
+
+    @pytest.mark.asyncio
+    async def test_endpoint_rejects_traversal_in_path(self, workspace, monkeypatch):
+        """PUT endpoint returns 400 for `..` in body.path (regression test)."""
+        from fastapi import HTTPException
+        from routers.workspace_files import WriteFileRequest, write_workspace_file
+
+        monkeypatch.setattr("routers.workspace_files.get_workspace", lambda: workspace)
+        workspace.ensure_user_dir(USER_ID)
+        body = WriteFileRequest(
+            path=f"../../agents/{AGENT_ID}/SOUL.md",
+            content="hacked",
+            tab="workspace",
+        )
+        with pytest.raises(HTTPException) as exc:
+            await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
+        assert exc.value.status_code == 400

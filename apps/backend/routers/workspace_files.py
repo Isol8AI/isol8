@@ -1,6 +1,7 @@
 """REST endpoints for browsing agent workspace files on EFS."""
 
 import logging
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -12,6 +13,21 @@ from core.containers.workspace import WorkspaceError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _validate_relative_path(path: str) -> None:
+    """Reject empty paths, absolute paths, and any segment equal to '..'.
+
+    Raises ValueError with a message suitable for surfacing as a 400 detail.
+    """
+    if not path or path.startswith(("/", "\\")):
+        raise ValueError("path must be a non-empty relative path")
+    parts = PurePosixPath(path).parts
+    if any(part in ("..", "") for part in parts):
+        raise ValueError("path must not contain '..' segments")
+    # Also reject backslash-separated traversal on Windows-style paths
+    if ".." in path.replace("\\", "/").split("/"):
+        raise ValueError("path must not contain '..' segments")
 
 
 def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
@@ -45,6 +61,8 @@ CONFIG_ALLOWLIST: set[str] = {
     "BOOTSTRAP.md",
     "AGENTS.md",
 }
+
+MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
 def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
@@ -172,8 +190,14 @@ class WriteFileRequest(BaseModel):
 
 def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
     """Write a file to workspace or config directory. Returns the written path."""
+    encoded = content.encode("utf-8")
+    if len(encoded) > MAX_WRITE_SIZE:
+        raise ValueError(f"content exceeds {MAX_WRITE_SIZE // (1024 * 1024)}MB limit")
+
     if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
         raise ValueError(f"Invalid agent_id: {agent_id!r}")
+
+    _validate_relative_path(path)
 
     if tab == "config":
         if path not in CONFIG_ALLOWLIST:
@@ -207,6 +231,8 @@ async def write_workspace_file(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except WorkspaceError as exc:
+        if "traversal" in str(exc).lower():
+            raise HTTPException(status_code=403, detail="Access denied")
         raise HTTPException(status_code=500, detail=str(exc))
 
     logger.info("Wrote %s for user %s (tab=%s)", written_path, owner_id, body.tab)
