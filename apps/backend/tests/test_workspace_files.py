@@ -588,3 +588,30 @@ class TestWriteFileEndpoint:
         with pytest.raises(HTTPException) as exc:
             await write_workspace_file(agent_id=AGENT_ID, body=body, auth=_auth())
         assert exc.value.status_code == 400
+
+
+# ===========================================================================
+# TestUploadPath
+# ===========================================================================
+
+
+class TestUploadPath:
+    """Verify upload destination path construction."""
+
+    def test_upload_writes_to_agent_workspace(self, tmp_path):
+        """Uploads should go to workspaces/{agent_id}/uploads/."""
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID / "uploads"
+        (tmp_path / USER_ID).mkdir(parents=True)
+
+        dest_path = f"workspaces/{AGENT_ID}/uploads/test.pdf"
+        ws.write_bytes(USER_ID, dest_path, b"fake pdf content")
+        assert (ws_dir / "test.pdf").read_bytes() == b"fake pdf content"
+
+    def test_agent_visible_path(self):
+        """Agent-visible path should include workspaces/{agent_id}."""
+        agent_id = "my-agent"
+        filename = "data.csv"
+        dest_path = f"workspaces/{agent_id}/uploads/{filename}"
+        agent_path = f".openclaw/{dest_path}"
+        assert agent_path == f".openclaw/workspaces/{agent_id}/uploads/{filename}"

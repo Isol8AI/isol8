@@ -34,6 +34,9 @@ def auth_override():
     return _override
 
 
+AGENT_ID = "agent-xyz"
+
+
 @pytest.mark.asyncio
 async def test_upload_single_file(app, auth_override, mock_container, mock_workspace):
     """Upload a single file writes to workspace."""
@@ -47,7 +50,7 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/api/v1/container/files",
+                    f"/api/v1/container/files?agent_id={AGENT_ID}",
                     files=[("files", ("test.txt", b"hello world", "text/plain"))],
                 )
 
@@ -55,10 +58,12 @@ async def test_upload_single_file(app, auth_override, mock_container, mock_works
             body = resp.json()
             assert len(body["uploaded"]) == 1
             assert body["uploaded"][0]["filename"] == "test.txt"
-            assert body["uploaded"][0]["path"] == ".openclaw/uploads/test.txt"
+            assert body["uploaded"][0]["path"] == f".openclaw/workspaces/{AGENT_ID}/uploads/test.txt"
             assert body["uploaded"][0]["size"] == 11
 
-            mock_workspace.write_bytes.assert_called_once_with("user_123", "uploads/test.txt", b"hello world")
+            mock_workspace.write_bytes.assert_called_once_with(
+                "user_123", f"workspaces/{AGENT_ID}/uploads/test.txt", b"hello world"
+            )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
 
@@ -76,7 +81,7 @@ async def test_upload_multiple_files(app, auth_override, mock_container, mock_wo
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/api/v1/container/files",
+                    f"/api/v1/container/files?agent_id={AGENT_ID}",
                     files=[
                         ("files", ("a.txt", b"aaa", "text/plain")),
                         ("files", ("b.csv", b"1,2,3", "text/csv")),
@@ -105,7 +110,7 @@ async def test_upload_rejects_oversized_file(app, auth_override, mock_container,
             big_data = b"x" * (10 * 1024 * 1024 + 1)
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/api/v1/container/files",
+                    f"/api/v1/container/files?agent_id={AGENT_ID}",
                     files=[("files", ("big.bin", big_data, "application/octet-stream"))],
                 )
 
@@ -128,7 +133,7 @@ async def test_upload_no_container(app, auth_override, mock_workspace):
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/api/v1/container/files",
+                    f"/api/v1/container/files?agent_id={AGENT_ID}",
                     files=[("files", ("test.txt", b"hello", "text/plain"))],
                 )
 
@@ -150,7 +155,7 @@ async def test_upload_sanitizes_filename(app, auth_override, mock_container, moc
 
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
-                    "/api/v1/container/files",
+                    f"/api/v1/container/files?agent_id={AGENT_ID}",
                     files=[("files", ("../../etc/passwd", b"nope", "text/plain"))],
                 )
 
