@@ -9,6 +9,11 @@ export interface FileEntry {
   type: "file" | "dir";
   size: number | null;
   modified_at: number;
+  /**
+   * Present only on frontend-synthesized "ghost" entries — allowlisted config
+   * files that don't exist on disk yet. Backend responses never set this.
+   */
+  missing?: boolean;
 }
 
 export interface FileInfo {

@@ -7,6 +7,16 @@ import { FileContentViewer } from "@/components/chat/FileContentViewer";
 import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
 import { useApi } from "@/lib/api";
 
+const CONFIG_ALLOWLIST = [
+  "SOUL.md",
+  "MEMORY.md",
+  "TOOLS.md",
+  "IDENTITY.md",
+  "USER.md",
+  "HEARTBEAT.md",
+  "AGENTS.md",
+];
+
 interface FileViewerProps {
   agentId: string | null;
   initialFilePath?: string | null;
@@ -252,6 +262,7 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
                 ? "No files yet. Your agent will create files here as it works."
                 : "No config files found."
             }
+            allowlist={activeTab === "config" ? CONFIG_ALLOWLIST : undefined}
           />
         </div>
         <div className="file-viewer-content">

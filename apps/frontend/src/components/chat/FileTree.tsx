@@ -3,7 +3,7 @@
 import * as React from "react";
 import {
   ChevronRight, ChevronDown, FileText, FileCode, FileImage,
-  FileJson, File, FolderOpen, FolderClosed, RefreshCw,
+  FileJson, File, FileWarning, FolderOpen, FolderClosed, RefreshCw,
 } from "lucide-react";
 import type { FileEntry } from "@/hooks/useWorkspaceFiles";
 
@@ -67,6 +67,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
   }
 
   const isSelected = selectedPath === entry.path;
+  const isMissing = Boolean((entry as FileEntry & { missing?: boolean }).missing);
 
   return (
     <button
@@ -74,12 +75,19 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
       className={`w-full flex items-center gap-1.5 px-2 py-1 text-sm rounded transition-colors ${
         isSelected
           ? "bg-white text-[#1a1a1a] shadow-sm"
-          : "text-[#1a1a1a] hover:bg-[#e8e3d9]"
+          : isMissing
+            ? "text-[#8a8578] hover:bg-[#e8e3d9]"
+            : "text-[#1a1a1a] hover:bg-[#e8e3d9]"
       }`}
+      title={isMissing ? "Click to create this file" : undefined}
     >
       <span className="w-3.5 flex-shrink-0" />
-      {renderFileIcon(entry.name, "h-4 w-4 text-[#8a8578] flex-shrink-0")}
-      <span className="truncate">{entry.name}</span>
+      {isMissing ? (
+        <FileWarning className="h-4 w-4 text-[#8a8578] flex-shrink-0" />
+      ) : (
+        renderFileIcon(entry.name, "h-4 w-4 text-[#8a8578] flex-shrink-0")
+      )}
+      <span className={`truncate ${isMissing ? "italic" : ""}`}>{entry.name}</span>
     </button>
   );
 }
@@ -91,15 +99,59 @@ interface FileTreeProps {
   onRefresh: () => void;
   isLoading: boolean;
   emptyMessage?: string;
+  /**
+   * Optional allowlist of filenames that SHOULD be visible as entries in this
+   * tree even if they don't exist on disk. Used by the Config tab to render
+   * "missing" ghost entries the user can click to create the file. When set,
+   * the tree also filters `files` down to only names in the allowlist.
+   */
+  allowlist?: string[];
 }
 
-export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading, emptyMessage }: FileTreeProps) {
+export function FileTree({
+  files,
+  selectedPath,
+  onSelect,
+  onRefresh,
+  isLoading,
+  emptyMessage,
+  allowlist,
+}: FileTreeProps) {
+  // When an allowlist is provided, we're in "curated" mode (Config tab):
+  //   - filter `files` down to only names in the allowlist
+  //   - synthesize ghost entries for allowlisted names that aren't present
+  // Without an allowlist we render every entry as-is (Workspace tab).
+  const displayEntries = React.useMemo<FileEntry[]>(() => {
+    if (!allowlist) {
+      return files;
+    }
+    const allowed = new Set(allowlist);
+    const presentByName = new Map(
+      files.filter((f) => allowed.has(f.name)).map((f) => [f.name, f]),
+    );
+    return allowlist.map(
+      (name) =>
+        presentByName.get(name) ?? {
+          name,
+          path: name,
+          type: "file" as const,
+          size: null,
+          modified_at: 0,
+          missing: true,
+        },
+    );
+  }, [files, allowlist]);
+
   const rootEntries = React.useMemo(() => {
-    if (files.length === 0) return [];
-    const depths = files.map((f) => f.path.split("/").length);
+    if (allowlist) {
+      // In curated mode, every entry is a root entry — no tree nesting.
+      return displayEntries;
+    }
+    if (displayEntries.length === 0) return [];
+    const depths = displayEntries.map((f) => f.path.split("/").length);
     const minDepth = Math.min(...depths);
-    return files.filter((f) => f.path.split("/").length === minDepth);
-  }, [files]);
+    return displayEntries.filter((f) => f.path.split("/").length === minDepth);
+  }, [displayEntries, allowlist]);
 
   return (
     <div className="h-full flex flex-col">
@@ -114,7 +166,7 @@ export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading, 
         </button>
       </div>
       <div className="flex-1 overflow-y-auto p-2">
-        {files.length === 0 && !isLoading ? (
+        {rootEntries.length === 0 && !isLoading ? (
           <div className="text-xs text-[#8a8578] text-center py-4 px-3">
             {emptyMessage ?? "No files in workspace"}
           </div>
@@ -123,7 +175,7 @@ export function FileTree({ files, selectedPath, onSelect, onRefresh, isLoading, 
             <FileTreeNode
               key={entry.path}
               entry={entry}
-              allEntries={files}
+              allEntries={displayEntries}
               selectedPath={selectedPath}
               onSelect={onSelect}
             />
