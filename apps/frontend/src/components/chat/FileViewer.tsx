@@ -132,8 +132,12 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
       `}</style>
 
       <div className="file-viewer-header">
-        <div className="flex items-center gap-1">
+        <div role="tablist" aria-label="File viewer tabs" className="flex items-center gap-1">
           <button
+            id="file-viewer-tab-workspace"
+            role="tab"
+            aria-selected={activeTab === "workspace"}
+            aria-controls="file-viewer-tabpanel"
             onClick={() => handleTabChange("workspace")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "workspace"
@@ -144,6 +148,10 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             Workspace
           </button>
           <button
+            id="file-viewer-tab-config"
+            role="tab"
+            aria-selected={activeTab === "config"}
+            aria-controls="file-viewer-tabpanel"
             onClick={() => handleTabChange("config")}
             className={`px-3 py-1 text-sm rounded-md transition-colors ${
               activeTab === "config"
@@ -184,7 +192,16 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
         </button>
       </div>
 
-      <div className="file-viewer-body">
+      <div
+        className="file-viewer-body"
+        id="file-viewer-tabpanel"
+        role="tabpanel"
+        aria-labelledby={
+          activeTab === "workspace"
+            ? "file-viewer-tab-workspace"
+            : "file-viewer-tab-config"
+        }
+      >
         <div className="file-viewer-tree">
           <FileTree
             files={files}
