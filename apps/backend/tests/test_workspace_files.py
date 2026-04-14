@@ -4,13 +4,19 @@ import base64
 import struct
 import zlib
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
 from core.containers.workspace import Workspace, WorkspaceError
 
 USER_ID = "user_test_abc"
+AGENT_ID = "agent-abc-123"
+ALLOWLISTED_FILES = [
+    "SOUL.md", "MEMORY.md", "TOOLS.md", "IDENTITY.md",
+    "USER.md", "HEARTBEAT.md", "BOOTSTRAP.md", "AGENTS.md",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -305,3 +311,71 @@ class TestReadFileInfo:
         ws, _ = populated_workspace
         info = ws.read_file_info(USER_ID, "image.png")
         assert info["mime_type"] == "image/png"
+
+
+# ===========================================================================
+# TestConfigFilesEndpoint / TestConfigFileReadEndpoint
+# ===========================================================================
+
+
+class TestConfigFilesEndpoint:
+    """Tests for GET /workspace/{agent_id}/config-files."""
+
+    def test_returns_only_allowlisted_files(self, tmp_path):
+        """Only allowlisted files that exist on disk are returned."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
+        (agent_dir / "MEMORY.md").write_text("Remember this", encoding="utf-8")
+        (agent_dir / "sessions").mkdir()  # should be excluded
+        (agent_dir / "secret.json").write_text("{}", encoding="utf-8")  # not allowlisted
+
+        from routers.workspace_files import _list_config_files
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        names = {f["name"] for f in result}
+        assert names == {"SOUL.md", "MEMORY.md"}
+        assert all(f["type"] == "file" for f in result)
+
+    def test_empty_when_no_agent_dir(self, tmp_path):
+        """Returns empty list when agent dir doesn't exist."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID).mkdir(parents=True)
+        from routers.workspace_files import _list_config_files
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        assert result == []
+
+    def test_file_entries_have_required_fields(self, tmp_path):
+        """Each entry has name, path, type, size, modified_at."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "BOOTSTRAP.md").write_text("# Bootstrap", encoding="utf-8")
+        from routers.workspace_files import _list_config_files
+        result = _list_config_files(ws, USER_ID, AGENT_ID)
+        assert len(result) == 1
+        entry = result[0]
+        assert entry["name"] == "BOOTSTRAP.md"
+        assert entry["path"] == "BOOTSTRAP.md"
+        assert entry["type"] == "file"
+        assert isinstance(entry["size"], int)
+        assert isinstance(entry["modified_at"], float)
+
+
+class TestConfigFileReadEndpoint:
+    """Tests for GET /workspace/{agent_id}/config-file."""
+
+    def test_reads_allowlisted_file(self, tmp_path):
+        """Can read an allowlisted config file."""
+        ws = _make_workspace(tmp_path)
+        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "SOUL.md").write_text("I am helpful", encoding="utf-8")
+        info = ws.read_file_info(USER_ID, f"agents/{AGENT_ID}/SOUL.md")
+        assert info["content"] == "I am helpful"
+        assert info["binary"] is False
+
+    def test_rejects_non_allowlisted_filename(self, tmp_path):
+        """Non-allowlisted filenames are rejected."""
+        from routers.workspace_files import CONFIG_ALLOWLIST
+        assert "secret.json" not in CONFIG_ALLOWLIST
