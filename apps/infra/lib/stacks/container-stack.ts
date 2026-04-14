@@ -48,10 +48,14 @@ export class ContainerStack extends cdk.Stack {
     // Import KMS key by ARN to avoid cross-stack dependency cycle
     const kmsKey = kms.Key.fromKeyArn(this, "ImportedKmsKey", props.kmsKeyArn);
 
-    // ECS Fargate cluster with Container Insights
+    // ECS Fargate cluster — Container Insights disabled to avoid per-service
+    // metric explosion (~15 metrics × N user containers = thousands of
+    // CloudWatch metric streams).  We use AWS/ECS standard metrics
+    // (CPUUtilization, MemoryUtilization) for the backend service alarms
+    // and custom EMF metrics for everything else.
     this.cluster = new ecs.Cluster(this, "Cluster", {
       vpc: props.vpc,
-      containerInsights: true,
+      containerInsights: false,
     });
 
     // Cloud Map private DNS namespace
