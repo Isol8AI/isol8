@@ -151,16 +151,16 @@ export function Hero() {
   return (
     <section className="landing-hero">
       <div className="hero-left">
-        <p className="eyebrow">isol8 — private AI pods</p>
+        <p className="eyebrow">isol8 — automated workflows</p>
         <h1 className="hero-h1">
-          An agent for <em>every part</em>
+          Deploy an agent
           <br />
-          of your business.
+          <em>in one click.</em>
         </h1>
         <p className="hero-sub">
-          Your isol8 pod is a dedicated AI environment — isolated, persistent,
-          and personal. It knows your history, matches your voice, connects to
-          your tools, and works autonomously so you don&apos;t have to.
+          Pre-built agents for every branch of your business. Pick one, click
+          deploy — it connects to the tools you already use and runs the
+          workflow autonomously.
         </p>
         <div className="hero-ctas">
           <Link href="/chat" className="btn-large">
