@@ -162,28 +162,23 @@ describe("ObservabilityStack", () => {
   // Free-tier scale-to-zero reaper alarms
   // ---------------------------------------------------------------------
 
-  test("creates the reaper-crash alarm with the gateway.idle_checker.crash metric", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "gateway.idle_checker.crash",
-      Namespace: "Isol8",
-    });
-  });
-
-  test("creates the reaper-dead composite alarm", () => {
-    template.resourceCountIs("AWS::CloudWatch::CompositeAlarm", 1);
-  });
-
-  test("creates the no-stops alarm using gateway.idle.scale_to_zero", () => {
-    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
-      MetricName: "gateway.idle.scale_to_zero",
-      Namespace: "Isol8",
-    });
-  });
-
-  test("creates the has-running alarm using gateway.running.count", () => {
+  test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
     template.hasResourceProperties("AWS::CloudWatch::Alarm", {
       MetricName: "gateway.running.count",
       Namespace: "Isol8",
+      Statistic: "SampleCount",
+      ComparisonOperator: "LessThanThreshold",
+      Threshold: 5,
+      TreatMissingData: "breaching",
+    });
+  });
+
+  test("creates the reaper-crash alarm on Sum(gateway.idle_checker.crash)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "gateway.idle_checker.crash",
+      Namespace: "Isol8",
+      Statistic: "Sum",
+      Threshold: 1,
     });
   });
 });
