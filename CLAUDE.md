@@ -568,7 +568,6 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | `STRIPE_METER_ID` | Stripe usage meter ID | Empty |
 | `BILLING_MARKUP` | Markup multiplier | `1.4` |
 | `ENCRYPTION_KEY` | Fernet key for BYOK | Required for key management |
-| `PERPLEXITY_API_KEY` | For search proxy | Optional |
 | `CORS_ORIGINS` | Comma-separated origins | `http://localhost:3000` |
 | `STRIPE_STARTER_PRICE_ID` | Stripe fixed price for Starter tier | Required for billing |
 | `STRIPE_PRO_PRICE_ID` | Stripe fixed price for Pro tier | Required for billing |

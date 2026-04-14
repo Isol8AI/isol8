@@ -45,7 +45,6 @@ services:
     environment:
       - AWS_ENDPOINT_URL=http://localstack:4566
       - WS_MANAGEMENT_API_URL=http://localstack:4566/@connections
-      - PROXY_BASE_URL=http://backend:8000/api/v1/proxy
     volumes:
       - ./apps/backend:/app
       - isol8_efs:/mnt/efs

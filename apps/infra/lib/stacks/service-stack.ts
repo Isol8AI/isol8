@@ -550,12 +550,6 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        PROXY_BASE_URL:
-          env === "local"
-            ? "http://localhost:8000/api/v1/proxy"
-            : env === "prod"
-              ? "https://api.isol8.co/api/v1/proxy"
-              : `https://api-${env}.isol8.co/api/v1/proxy`,
         DEBUG: env === "local" ? "true" : "false",
         // LocalStack needs this to redirect boto3 calls inside the ECS container
         ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
