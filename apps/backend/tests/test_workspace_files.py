@@ -134,6 +134,32 @@ class TestListDirectory:
         assert "node_modules" not in names
         assert "__pycache__" not in names
 
+    def test_list_excludes_openclaw_runtime_dirs(self, tmp_path):
+        """state/, skills/, canvas/, identity/ are excluded from listings.
+
+        OpenClaw creates these inside each agent's workspace for its own
+        runtime state. Users shouldn't see or edit them from the file viewer.
+        memory/ is NOT excluded — it's user-facing via QMD.
+        """
+        ws = _make_workspace(tmp_path)
+        root = tmp_path / USER_ID / "workspaces" / "main"
+        root.mkdir(parents=True)
+        (root / "SOUL.md").write_text("soul", encoding="utf-8")
+        (root / "memory").mkdir()
+        (root / "state").mkdir()
+        (root / "skills").mkdir()
+        (root / "canvas").mkdir()
+        (root / "identity").mkdir()
+
+        entries = ws.list_directory(USER_ID, "workspaces/main")
+        names = {e["name"] for e in entries}
+        assert "SOUL.md" in names
+        assert "memory" in names  # kept — user-visible via QMD
+        assert "state" not in names
+        assert "skills" not in names
+        assert "canvas" not in names
+        assert "identity" not in names
+
     def test_list_subdirectory(self, populated_workspace):
         """list_directory on a sub-path works correctly."""
         ws, root = populated_workspace

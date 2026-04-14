@@ -30,6 +30,12 @@ _EXCLUDED_NAMES: set[str] = {
     "__pycache__",
     ".mcporter",
     ".git",
+    # OpenClaw runtime dirs inside an agent's workspace. memory/ is NOT
+    # excluded — it's the user-visible QMD memory index.
+    "state",
+    "skills",
+    "canvas",
+    "identity",
 }
 
 # File extensions treated as plain text (returned as UTF-8 strings).
