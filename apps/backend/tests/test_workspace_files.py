@@ -561,6 +561,17 @@ class TestWriteFileEndpoint:
         with pytest.raises(ValueError):
             _write_file(ws, USER_ID, AGENT_ID, "", "x", "workspace")
 
+    def test_write_rejects_dot_only_path(self, tmp_path):
+        """Dot-only paths (., ./, .) are rejected with ValueError."""
+        ws = _make_workspace(tmp_path)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        for bad in [".", "./", "./.", "././"]:
+            with pytest.raises(ValueError, match=r"dot-only"):
+                _write_file(ws, USER_ID, AGENT_ID, bad, "x", "workspace")
+
     def test_write_rejects_oversized_content(self, tmp_path):
         """Content over 10MB is rejected."""
         ws = _make_workspace(tmp_path)

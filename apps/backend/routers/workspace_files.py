@@ -16,17 +16,23 @@ router = APIRouter()
 
 
 def _validate_relative_path(path: str) -> None:
-    """Reject empty paths, absolute paths, and any segment equal to '..'.
+    """Reject empty paths, absolute paths, dot-only paths, and any segment equal to '..'.
 
     Raises ValueError with a message suitable for surfacing as a 400 detail.
     """
     if not path or path.startswith(("/", "\\")):
         raise ValueError("path must be a non-empty relative path")
+
+    normalized = path.replace("\\", "/")
+    # Reject dot-only paths: '.', './', './.', etc. collapse to empty parts.
+    segments = [s for s in normalized.split("/") if s != ""]
+    if not segments or all(s == "." for s in segments):
+        raise ValueError("path must not be a dot-only path")
+    if any(s == ".." for s in segments):
+        raise ValueError("path must not contain '..' segments")
+    # Existing PurePosixPath-based checks are still useful as belt-and-suspenders
     parts = PurePosixPath(path).parts
     if any(part in ("..", "") for part in parts):
-        raise ValueError("path must not contain '..' segments")
-    # Also reject backslash-separated traversal on Windows-style paths
-    if ".." in path.replace("\\", "/").split("/"):
         raise ValueError("path must not contain '..' segments")
 
 
