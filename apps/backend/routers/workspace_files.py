@@ -103,6 +103,10 @@ def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
     return out
 
 
+# The 7 config files OpenClaw seeds in every agent workspace.
+# Source: desktop/openclaw/src/agents/workspace.ts:26-34. These are the only
+# filenames the Config tab treats as first-class personality/config files;
+# writes via tab="config" are restricted to this set.
 CONFIG_ALLOWLIST: set[str] = {
     "SOUL.md",
     "MEMORY.md",
@@ -110,7 +114,6 @@ CONFIG_ALLOWLIST: set[str] = {
     "IDENTITY.md",
     "USER.md",
     "HEARTBEAT.md",
-    "BOOTSTRAP.md",
     "AGENTS.md",
 }
 
@@ -247,7 +250,13 @@ class WriteFileRequest(BaseModel):
 
 
 def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
-    """Write a file to workspace or config directory. Returns the written path."""
+    """Write a file into the agent's workspace. Returns the user-root-relative path.
+
+    Both tabs ("workspace" and "config") write under the same subtree:
+    workspaces/{agent_id}/. The tab controls the allowlist gate only — the
+    config tab is restricted to the 7 personality files (SOUL.md etc.), the
+    workspace tab accepts arbitrary relative paths.
+    """
     encoded = content.encode("utf-8")
     if len(encoded) > MAX_WRITE_SIZE:
         raise ValueError(f"content exceeds {MAX_WRITE_SIZE // (1024 * 1024)}MB limit")
@@ -260,12 +269,10 @@ def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str
     if tab == "config":
         if path not in CONFIG_ALLOWLIST:
             raise ValueError(f"File not in allowlist: {path}")
-        subtree = f"agents/{agent_id}"
-    elif tab == "workspace":
-        subtree = f"workspaces/{agent_id}"
-    else:
+    elif tab != "workspace":
         raise ValueError(f"Invalid tab: {tab!r}")
 
+    subtree = f"workspaces/{agent_id}"
     full_path = f"{subtree}/{path}"
     _ensure_within_subtree(workspace, owner_id, full_path, subtree)
 

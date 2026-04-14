@@ -509,7 +509,7 @@ class TestWriteFileEndpoint:
     def test_write_config_file_allowlisted(self, tmp_path):
         """Writing an allowlisted config file succeeds."""
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
         agent_dir.mkdir(parents=True)
 
         from routers.workspace_files import _write_file
@@ -520,12 +520,43 @@ class TestWriteFileEndpoint:
     def test_write_config_file_not_allowlisted_raises(self, tmp_path):
         """Writing a non-allowlisted config file raises ValueError."""
         ws = _make_workspace(tmp_path)
-        (tmp_path / USER_ID / "agents" / AGENT_ID).mkdir(parents=True)
+        (tmp_path / USER_ID / "workspaces" / AGENT_ID).mkdir(parents=True)
 
         from routers.workspace_files import _write_file
 
         with pytest.raises(ValueError, match="not in allowlist"):
             _write_file(ws, USER_ID, AGENT_ID, "secret.json", "{}", "config")
+
+    def test_config_tab_writes_under_workspaces_subtree(self, tmp_path):
+        """tab='config' writes into workspaces/{id}/, not agents/{id}/."""
+        ws = _make_workspace(tmp_path)
+        ws_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
+        ws_dir.mkdir(parents=True)
+
+        from routers.workspace_files import _write_file
+
+        written = _write_file(ws, USER_ID, AGENT_ID, "SOUL.md", "hello", "config")
+        assert written == f"workspaces/{AGENT_ID}/SOUL.md"
+        assert (ws_dir / "SOUL.md").read_text() == "hello"
+        # And confirm nothing was written into the old agents/{id}/ path
+        assert not (tmp_path / USER_ID / "agents" / AGENT_ID / "SOUL.md").exists()
+
+    def test_bootstrap_md_not_in_allowlist(self):
+        """BOOTSTRAP.md is not a real OpenClaw-seeded file — drop it from the allowlist."""
+        from routers.workspace_files import CONFIG_ALLOWLIST
+
+        assert "BOOTSTRAP.md" not in CONFIG_ALLOWLIST
+        # The 7 files OpenClaw actually seeds (per
+        # desktop/openclaw/src/agents/workspace.ts):
+        assert CONFIG_ALLOWLIST == {
+            "SOUL.md",
+            "MEMORY.md",
+            "TOOLS.md",
+            "IDENTITY.md",
+            "USER.md",
+            "HEARTBEAT.md",
+            "AGENTS.md",
+        }
 
     def test_write_creates_parent_dirs(self, tmp_path):
         """Writing to a nested path creates intermediate directories."""
@@ -678,16 +709,16 @@ class TestWriteFileEndpoint:
         assert (agent_dir / "SOUL.md").read_text() == "original"
 
     def test_write_rejects_symlink_escape_config(self, tmp_path):
-        """Symlink in agents/{id}/ pointing outside must be rejected."""
+        """Symlink in workspaces/{id}/ pointing outside must be rejected for config tab."""
         import os
 
         ws = _make_workspace(tmp_path)
-        agent_dir = tmp_path / USER_ID / "agents" / AGENT_ID
+        agent_dir = tmp_path / USER_ID / "workspaces" / AGENT_ID
         agent_dir.mkdir(parents=True)
         target = tmp_path / USER_ID / "elsewhere.txt"
         target.write_text("original", encoding="utf-8")
 
-        # Symlink agents/{id}/SOUL.md -> ../../elsewhere.txt
+        # Symlink workspaces/{id}/SOUL.md -> ../../elsewhere.txt
         os.symlink("../../elsewhere.txt", agent_dir / "SOUL.md")
 
         from routers.workspace_files import _write_file
