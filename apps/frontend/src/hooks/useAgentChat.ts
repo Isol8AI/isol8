@@ -71,7 +71,8 @@ function extractThinkingContent(content: ContentBlock[]): string {
 
 export interface ToolUse {
   tool: string;
-  status: "running" | "done";
+  toolCallId?: string;
+  status: "running" | "done" | "error";
 }
 
 export interface AgentMessage {
@@ -223,6 +224,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       // Only process if we're currently streaming
       if (!currentAssistantIdRef.current) return;
 
+      // Drop messages meant for a different agent. Heartbeat and
+      // update_available aren't tied to a specific run. Errors are
+      // allowed through even without agent_id as a safety valve —
+      // some failure paths (client-side validation, etc.) have no
+      // agent context but still need to clear the streaming state.
+      const isUntaggedBroadcast =
+        msg.type === "heartbeat" || msg.type === "update_available";
+      const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
+      if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) return;
+
       if (msg.type === "chunk") {
         // OpenClaw sends cumulative text (full response so far) in each
         // chunk, so we replace rather than append — matching how OpenClaw's
@@ -289,11 +300,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "thinking") {
+        // Streamed thinking events carry the cumulative thinking text, so
+        // replace rather than append. The chat.final batch sends a single
+        // event with the full text — replace works for that too.
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === currentAssistantIdRef.current
-                ? { ...m, thinking: (m.thinking ? m.thinking + "\n\n" : "") + msg.content }
+                ? { ...m, thinking: msg.content }
                 : m,
             ),
           );
@@ -310,7 +324,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
                     ...m,
                     toolUses: [
                       ...(m.toolUses || []),
-                      { tool: msg.tool, status: "running" as const },
+                      {
+                        tool: msg.tool,
+                        toolCallId: msg.toolCallId,
+                        status: "running" as const,
+                      },
                     ],
                   }
                 : m,
@@ -320,16 +338,23 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         return;
       }
 
-      if (msg.type === "tool_end") {
+      if (msg.type === "tool_end" || msg.type === "tool_error") {
+        const nextStatus = msg.type === "tool_end" ? "done" : "error";
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>
             prev.map((m) => {
               if (m.id !== currentAssistantIdRef.current) return m;
-              const toolUses = (m.toolUses || []).map((t) =>
-                t.tool === msg.tool && t.status === "running"
-                  ? { ...t, status: "done" as const }
-                  : t,
-              );
+              const toolUses = (m.toolUses || []).map((t) => {
+                const matchesCallId =
+                  msg.toolCallId !== undefined &&
+                  t.toolCallId === msg.toolCallId;
+                const matchesName =
+                  msg.toolCallId === undefined && t.tool === msg.tool;
+                const isRunning = t.status === "running";
+                return isRunning && (matchesCallId || matchesName)
+                  ? { ...t, status: nextStatus as "done" | "error" }
+                  : t;
+              });
               return { ...m, toolUses };
             }),
           );

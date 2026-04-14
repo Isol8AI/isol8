@@ -11,7 +11,8 @@ import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
 interface ToolUse {
   tool: string;
-  status: "running" | "done";
+  toolCallId?: string;
+  status: "running" | "done" | "error";
 }
 
 interface Message {
@@ -155,28 +156,41 @@ function ThinkingBlock({ content }: { content: string }) {
   );
 }
 
+const TOOL_STYLES = {
+  running: {
+    pill: "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]",
+    dot: "bg-[#2d8a4e] animate-pulse",
+  },
+  done: {
+    pill: "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
+    dot: "bg-[#cdc7ba]",
+  },
+  error: {
+    pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
+    dot: "bg-[#c62828]",
+  },
+} as const;
+
 function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
   if (toolUses.length === 0) return null;
   return (
     <div className="mb-3 flex flex-wrap gap-2">
-      {toolUses.map((t, i) => (
-        <span
-          key={`${t.tool}-${i}`}
-          className={cn(
-            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
-            t.status === "running"
-              ? "bg-[#e8f5e9] text-[#2d8a4e] border-[#c8e6c9]"
-              : "bg-[#f3efe6] text-[#8a8578] border-[#e0dbd0]",
-          )}
-        >
-          {t.status === "running" ? (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#2d8a4e] animate-pulse" />
-          ) : (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#cdc7ba]" />
-          )}
-          {t.tool}
-        </span>
-      ))}
+      {toolUses.map((t, i) => {
+        const s = TOOL_STYLES[t.status];
+        return (
+          <span
+            key={t.toolCallId ?? `${t.tool}-${i}`}
+            className={cn(
+              "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border",
+              s.pill,
+            )}
+          >
+            <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
+            {t.tool}
+            {t.status === "error" && " failed"}
+          </span>
+        );
+      })}
     </div>
   );
 }

@@ -215,6 +215,9 @@ class GatewayConnection:
                 "scopes": list(BACKEND_OPERATOR_SCOPES),
                 "auth": {"token": self.token},
                 "device": device,
+                # Opt in to real-time tool events. Without this capability,
+                # OpenClaw silently drops stream:"tool" events for this client.
+                "caps": ["tool-events"],
             },
         }
         await self._ws.send(json.dumps(connect_msg))
@@ -277,11 +280,12 @@ class GatewayConnection:
 
     @staticmethod
     def _transform_agent_event(payload: dict) -> dict | None:
-        """Extract streaming text or tool events from an OpenClaw agent event.
+        """Extract streaming text, thinking, or tool events from an OpenClaw agent event.
 
         Agent events fire for every LLM token (no 150ms throttle).
         - ``stream: "assistant"`` events with text are forwarded as chunks.
-        - ``stream: "tool"`` events are forwarded as tool_start/tool_end.
+        - ``stream: "reasoning"`` / ``"thinking"`` events are forwarded for real-time thinking.
+        - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error.
         """
         stream = payload.get("stream")
         data = payload.get("data")
@@ -294,35 +298,33 @@ class GatewayConnection:
                 return {"type": "chunk", "content": text}
             return None
 
+        if stream in ("reasoning", "thinking"):
+            text = data.get("text", "")
+            if text:
+                return {"type": "thinking", "content": text}
+            return None
+
         if stream == "tool":
             phase = data.get("phase", "")
             name = data.get("name", "")
             if not name:
                 return None
+            tool_call_id = data.get("toolCallId", "")
             if phase == "start":
-                return {"type": "tool_start", "tool": name}
+                msg: dict = {"type": "tool_start", "tool": name}
+                if tool_call_id:
+                    msg["toolCallId"] = tool_call_id
+                return msg
             if phase == "result":
-                return {"type": "tool_end", "tool": name}
+                # OpenClaw signals tool errors via isError flag on the result
+                # phase, not a separate "error" phase.
+                is_error = bool(data.get("isError"))
+                msg = {"type": "tool_error" if is_error else "tool_end", "tool": name}
+                if tool_call_id:
+                    msg["toolCallId"] = tool_call_id
+                return msg
             return None
 
-        return None
-
-    @staticmethod
-    def _extract_chat_text(payload: dict) -> str | None:
-        """Extract text from a chat event's message.content field."""
-        msg = payload.get("message")
-        if not isinstance(msg, dict):
-            return None
-        content = msg.get("content", [])
-        if isinstance(content, list) and content:
-            # Find the last text block (skip thinking blocks)
-            for block in reversed(content):
-                if isinstance(block, dict) and block.get("type") in ("text", "output_text"):
-                    return block.get("text") or None
-            # Fallback: last block regardless of type
-            block = content[-1]
-            if isinstance(block, dict):
-                return block.get("text") or None
         return None
 
     @staticmethod
@@ -641,8 +643,10 @@ class GatewayConnection:
             if event_name == "agent":
                 # Unthrottled agent events -- smooth token-by-token streaming
                 stream = payload.get("stream", "")
-                if stream not in ("assistant", ""):
-                    # Log non-assistant events (tool, lifecycle, error) for debugging
+                # Exclude token-level streams (assistant, reasoning, thinking)
+                # from INFO logs — each fires per LLM token, so logging would
+                # blow up CloudWatch volume on long responses.
+                if stream not in ("assistant", "reasoning", "thinking", ""):
                     data = payload.get("data", {})
                     logger.info(
                         "Agent event for user %s: stream=%s phase=%s name=%s keys=%s",
@@ -670,6 +674,12 @@ class GatewayConnection:
                     return
                 transformed = self._transform_agent_event(payload)
                 if transformed:
+                    # Tag with agent_id so the frontend can route messages
+                    # to the correct agent conversation and prevent cross-
+                    # agent leakage when switching agents mid-stream.
+                    event_agent_id = parsed_key.get("agent_id")
+                    if event_agent_id:
+                        transformed["agent_id"] = event_agent_id
                     self._forward_to_frontends(transformed, target_member)
 
             elif event_name == "chat":
@@ -687,29 +697,47 @@ class GatewayConnection:
                         session_key[:60] if session_key else "-",
                         target_member or "broadcast",
                     )
+                # Tag all chat messages with agent_id so the frontend can
+                # route responses to the correct agent conversation.
+                event_agent_id = parsed_key.get("agent_id")
                 if state == "final":
                     put_metric("chat.message.count")
-                    # Send thinking content if present (before visible text)
+                    # Deliver thinking from content blocks for models that
+                    # batch reasoning into the final message (reasoningLevel
+                    # not set to "stream"). Once reasoningLevel:"stream" is
+                    # enabled on the session, this will typically be empty
+                    # because thinking streamed via agent events already.
                     thinking_text = self._extract_thinking_text(payload)
                     if thinking_text:
-                        self._forward_to_frontends({"type": "thinking", "content": thinking_text}, target_member)
-                    # Send complete text as safety net before done signal
-                    final_text = self._extract_chat_text(payload)
-                    if final_text:
-                        self._forward_to_frontends({"type": "chunk", "content": final_text}, target_member)
-                    self._forward_to_frontends({"type": "done"}, target_member)
+                        fwd: dict = {"type": "thinking", "content": thinking_text}
+                        if event_agent_id:
+                            fwd["agent_id"] = event_agent_id
+                        self._forward_to_frontends(fwd, target_member)
+                    # OpenClaw guarantees the full text reached us via agent
+                    # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
+                    # as a server-side backstop), so no chunk is emitted here.
+                    fwd = {"type": "done"}
+                    if event_agent_id:
+                        fwd["agent_id"] = event_agent_id
+                    self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     put_metric("chat.error", dimensions={"reason": "agent_error"})
                     err = payload.get("error", {})
-                    msg = (
+                    err_msg = (
                         err.get("message", "Agent run failed")
                         if isinstance(err, dict)
                         else str(err or "Agent run failed")
                     )
-                    self._forward_to_frontends({"type": "error", "message": msg}, target_member)
+                    fwd = {"type": "error", "message": err_msg}
+                    if event_agent_id:
+                        fwd["agent_id"] = event_agent_id
+                    self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
-                    self._forward_to_frontends({"type": "error", "message": "Agent run was cancelled"}, target_member)
+                    fwd = {"type": "error", "message": "Agent run was cancelled"}
+                    if event_agent_id:
+                        fwd["agent_id"] = event_agent_id
+                    self._forward_to_frontends(fwd, target_member)
 
             else:
                 # Forward other events as-is for SWR revalidation (broadcast to all)
