@@ -336,7 +336,7 @@ export function ChatLayout({
           </div>
         </div>
 
-        <div className="main-area">
+        <div className="main-area" style={{ gridArea: "main" }}>
           <div className="main-header">
             <button className="mobile-hamburger" onClick={() => setSidebarOpen(true)} aria-label="Open menu">
               <Menu size={22} />

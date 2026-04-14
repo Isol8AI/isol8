@@ -1,11 +1,17 @@
 .app-shell {
   display: grid;
   grid-template-columns: 260px 1fr;
+  grid-template-areas: "sidebar main";
   height: 100vh;
   overflow: hidden;
+  transition: grid-template-columns 200ms ease;
 }
 .app-shell.with-file-viewer {
-  grid-template-columns: 260px 1fr 1fr;
+  grid-template-columns: 0px 380px 1fr;
+  grid-template-areas: "sidebar main viewer";
+}
+.file-viewer-panel {
+  grid-area: viewer;
 }
 .cream-sidebar {
   background: #f3efe6;
@@ -13,6 +19,12 @@
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: opacity 150ms ease;
+}
+.app-shell.with-file-viewer .cream-sidebar {
+  opacity: 0;
+  pointer-events: none;
+  border-right: none;
 }
 .sidebar-header {
   display: flex;
@@ -306,9 +318,14 @@
 @media (max-width: 768px) {
   .app-shell {
     grid-template-columns: 1fr;
+    grid-template-areas: "main";
   }
   .app-shell.with-file-viewer {
     grid-template-columns: 1fr;
+    grid-template-areas: "viewer";
+  }
+  .app-shell.with-file-viewer .main-area {
+    display: none;
   }
   .cream-sidebar {
     display: none;
