@@ -42,9 +42,10 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     try {
       await callRpc("agents.create", {
         name: name.trim(),
-        workspace: "agents/" + normalizedId,
-        // Match the main agent's default so new agents stream thinking
-        // events in real time instead of batching at chat.final.
+        // No `workspace` override: OpenClaw appends /{agentId} to
+        // agents.defaults.workspace automatically, so the agent lands at
+        // workspaces/{agentId}/. Matches main's explicit workspaces/main
+        // override — every agent uses the same scheme.
         reasoningDefault: "stream",
       });
       posthog?.capture("agent_created", { agent_name: name.trim() });
