@@ -151,6 +151,44 @@ async def test_get_by_status(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_get_by_status_paginates_through_last_evaluated_key():
+    """Regression: DDB Query caps at 1MB per page. get_by_status must follow
+    LastEvaluatedKey so the reaper doesn't silently miss users past the first
+    page once the fleet grows."""
+    from unittest.mock import MagicMock, patch
+
+    from core.repositories import container_repo
+
+    page1 = {
+        "Items": [{"owner_id": "user_page1_a"}, {"owner_id": "user_page1_b"}],
+        "LastEvaluatedKey": {"owner_id": "user_page1_b"},
+    }
+    page2 = {
+        "Items": [{"owner_id": "user_page2_a"}],
+        # no LastEvaluatedKey → loop terminates
+    }
+
+    fake_table = MagicMock()
+    fake_table.query = MagicMock(side_effect=[page1, page2])
+
+    with patch("core.repositories.container_repo._get_table", return_value=fake_table):
+        results = await container_repo.get_by_status("running")
+
+    assert [r["owner_id"] for r in results] == [
+        "user_page1_a",
+        "user_page1_b",
+        "user_page2_a",
+    ]
+    assert fake_table.query.call_count == 2
+    # First call must NOT include ExclusiveStartKey; second call MUST include
+    # the key returned by the first page.
+    first_kwargs = fake_table.query.call_args_list[0].kwargs
+    second_kwargs = fake_table.query.call_args_list[1].kwargs
+    assert "ExclusiveStartKey" not in first_kwargs
+    assert second_kwargs["ExclusiveStartKey"] == {"owner_id": "user_page1_b"}
+
+
+@pytest.mark.asyncio
 async def test_update_status(dynamodb_table):
     from core.repositories import container_repo
 

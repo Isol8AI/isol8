@@ -29,13 +29,28 @@ async def get_by_gateway_token(token: str) -> dict | None:
 
 
 async def get_by_status(status: str) -> list[dict]:
+    """Return every container row with the given status.
+
+    Follows DynamoDB's LastEvaluatedKey. Query responses are capped at 1 MB,
+    so a single call only returns the first page — the reaper (and any other
+    caller that iterates the full set for correctness) needs every row.
+    """
     table = _get_table()
-    response = await run_in_thread(
-        table.query,
-        IndexName="status-index",
-        KeyConditionExpression=Key("status").eq(status),
-    )
-    return response.get("Items", [])
+    items: list[dict] = []
+    last_evaluated_key: dict | None = None
+    while True:
+        kwargs = {
+            "IndexName": "status-index",
+            "KeyConditionExpression": Key("status").eq(status),
+        }
+        if last_evaluated_key is not None:
+            kwargs["ExclusiveStartKey"] = last_evaluated_key
+        response = await run_in_thread(table.query, **kwargs)
+        items.extend(response.get("Items", []))
+        last_evaluated_key = response.get("LastEvaluatedKey")
+        if not last_evaluated_key:
+            break
+    return items
 
 
 async def upsert(owner_id: str, fields: dict) -> dict:
