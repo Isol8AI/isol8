@@ -72,13 +72,6 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
   const fileLoading = activeTab === "workspace" ? wsFileLoading : cfgFileLoading;
   const fileError = activeTab === "workspace" ? wsFileError : cfgFileError;
 
-  React.useEffect(() => {
-    if (initialFilePath) {
-      setSelectedPath(initialFilePath);
-      setActiveTab("workspace"); // chat-detected paths are always workspace paths
-    }
-  }, [initialFilePath]);
-
   const api = useApi();
 
   const handleSave = React.useCallback(
@@ -95,6 +88,21 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
     if (!editorDirty) return true;
     return window.confirm("You have unsaved changes. Discard them?");
   }, [editorDirty]);
+
+  // Ref-guard against prompting on the initial mount when editorDirty is
+  // already false; we still want to prompt on prop-driven switches that
+  // happen AFTER the user has unsaved edits.
+  const confirmDiscardIfDirtyRef = React.useRef(confirmDiscardIfDirty);
+  confirmDiscardIfDirtyRef.current = confirmDiscardIfDirty;
+
+  React.useEffect(() => {
+    if (!initialFilePath) return;
+    if (initialFilePath === selectedPath) return;
+    if (!confirmDiscardIfDirtyRef.current()) return;
+    setSelectedPath(initialFilePath);
+    setActiveTab("workspace"); // chat-detected paths are always workspace paths
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFilePath]); // intentionally omitting selectedPath to preserve original trigger semantics
 
   const handleSelectFile = React.useCallback(
     (path: string) => {
