@@ -137,20 +137,49 @@
 }
 
 /* ═══════════════════════════════════════════════
-   THINKING INFINITY ANIMATION
+   AGENT GLYPH
+   Rotates between upright 8 (idle) and horizontal ∞ (thinking).
+   Back-out easing gives the rotation a subtle overshoot so the
+   state change feels purposeful rather than mechanical.
    ═══════════════════════════════════════════════ */
 
-.thinking-infinity .infinity-base {
-  opacity: 0.35;
+.agent-glyph {
+  transform-origin: center center;
+  transform: rotate(90deg);
+  transition: transform 650ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.agent-glyph.agent-glyph--thinking {
+  transform: rotate(0deg);
 }
 
-.thinking-infinity .infinity-tracer {
+/* Two-path composition:
+   - base   = the full, solid figure-eight stroke (100% drawn when idle)
+   - tracer = a short segment that chases around the loop while thinking
+   Idle: base at full opacity, tracer hidden.
+   Thinking: base dims so the tracer reads as the moving element. */
+.agent-glyph .agent-glyph-base {
+  stroke: #302d28;
+  opacity: 1;
+  transition: opacity 350ms ease;
+}
+.agent-glyph .agent-glyph-tracer {
+  stroke: #302d28;
   stroke-dasharray: 12 36;
-  animation: infinity-trace 2s linear infinite;
+  stroke-dashoffset: 48;
+  opacity: 0;
+  transition: opacity 250ms ease;
+}
+.agent-glyph.agent-glyph--thinking .agent-glyph-base {
+  opacity: 0.3;
+}
+.agent-glyph.agent-glyph--thinking .agent-glyph-tracer {
+  opacity: 1;
+  animation: agent-glyph-trace 1.8s linear infinite;
+  animation-delay: 250ms; /* let rotation + base-fade finish before tracing begins */
 }
 
-@keyframes infinity-trace {
-  0% { stroke-dashoffset: 48; }
+@keyframes agent-glyph-trace {
+  0%   { stroke-dashoffset: 48; }
   100% { stroke-dashoffset: 0; }
 }
 

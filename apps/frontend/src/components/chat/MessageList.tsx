@@ -26,6 +26,7 @@ interface Message {
 interface MessageListProps {
   messages: Message[];
   isTyping?: boolean;
+  agentName?: string;
   onRetry?: (assistantMsgId: string) => void;
   onOpenFile?: (path: string) => void;
 }
@@ -180,19 +181,48 @@ function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
   );
 }
 
-function MessageToolbar({ modelName }: { modelName?: string }) {
+const AGENT_GLYPH_PATH =
+    "M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z";
+
+function AgentHead({ name, state }: { name: string; state: "idle" | "thinking" }) {
     return (
-        <div className="flex items-center gap-1 mb-2 opacity-0 group-hover:opacity-100 transition-opacity">
-            <span className="text-xs font-medium text-[#8a8578] mr-2 flex items-center gap-1">
-                {modelName || "Assistant"}
+        <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold text-[#302d28] tracking-tight">
+                {name}
             </span>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <span className="inline-flex items-center justify-center w-5 h-5">
+                <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 12"
+                    fill="none"
+                    className={cn("agent-glyph", state === "thinking" && "agent-glyph--thinking")}
+                >
+                    <path
+                        className="agent-glyph-base"
+                        d={AGENT_GLYPH_PATH}
+                        strokeWidth="1.6"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                    <path
+                        className="agent-glyph-tracer"
+                        d={AGENT_GLYPH_PATH}
+                        strokeWidth="1.6"
+                        fill="none"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                    />
+                </svg>
+            </span>
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity ml-1">
                 <Copy className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
                 <RefreshCw className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6]">
+            <Button variant="ghost" size="icon" className="h-6 w-6 text-[#8a8578] hover:text-[#1a1a1a] hover:bg-[#f3efe6] opacity-0 group-hover:opacity-100 transition-opacity">
                 <Share2 className="h-3 w-3" />
             </Button>
         </div>
@@ -222,7 +252,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, onRetry, onOpenFile }, ref) {
+  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
@@ -247,23 +277,17 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
               data-role={msg.role}
               className={cn(
                 "flex w-full group relative",
-                msg.role === "user" ? "justify-end" : "justify-start gap-3"
+                msg.role === "user" ? "justify-end" : "justify-start"
               )}
             >
-              {/* Assistant avatar */}
-              {msg.role === "assistant" && (
-                <div className="w-8 h-8 rounded-full bg-[#06402B] flex items-center justify-center flex-shrink-0 mt-1">
-                  <svg width="14" height="8" viewBox="0 0 24 12" fill="none">
-                    <path d="M12 6C9.5 2 7 1 5 3C3 5 3 7 5 9C7 11 9.5 10 12 6C14.5 2 17 1 19 3C21 5 21 7 19 9C17 11 14.5 10 12 6Z" stroke="white" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
-                  </svg>
-                </div>
-              )}
-
               <div className="flex flex-col min-w-0 max-w-[85%]">
                 {msg.role === "assistant" && (
                   msg.content.startsWith("Error: ")
                     ? <ErrorToolbar messageId={msg.id} onRetry={onRetry} />
-                    : <MessageToolbar modelName={msg.model} />
+                    : <AgentHead
+                        name={agentName || "Assistant"}
+                        state={isTyping && isLastAssistant ? "thinking" : "idle"}
+                      />
                 )}
 
                 <div
@@ -291,25 +315,8 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                     ? msg.content.slice(7)
                     : msg.role === "assistant" && msg.content
                       ? <MarkdownContent content={msg.content} onOpenFile={onOpenFile} />
-                      : msg.content || (isTyping && msg.role === "assistant" && !msg.thinking ? (
-                          <span className="inline-flex items-center h-5">
-                            <svg width="24" height="12" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
-                              <path className="infinity-base" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
-                              <path className="infinity-tracer" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#5a5549" strokeWidth="1.3" fill="none" />
-                            </svg>
-                          </span>
-                        ) : null)}
+                      : msg.content || null}
                 </div>
-
-                {isTyping && isLastAssistant && msg.content && (
-                  <div className="mt-3 flex items-center gap-2 text-xs text-[#8a8578]">
-                    <svg width="18" height="10" viewBox="0 0 24 12" fill="none" className="thinking-infinity">
-                      <path className="infinity-base" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#8a8578" strokeWidth="1.3" fill="none" />
-                      <path className="infinity-tracer" d="M11.2 6 C10.4 4.2 8.8 2.5 7 2.5 C5.2 2.5 4 4 4 6 C4 8 5.2 9.5 7 9.5 C8.8 9.5 10.4 7.8 11.2 6 C12 4.2 13.6 2.5 15.4 2.5 C17.2 2.5 18.4 4 18.4 6 C18.4 8 17.2 9.5 15.4 9.5 C13.6 9.5 12 7.8 11.2 6Z" stroke="#5a5549" strokeWidth="1.3" fill="none" />
-                    </svg>
-                    <span>Agent is working</span>
-                  </div>
-                )}
                 </div>
               </div>
             </div>

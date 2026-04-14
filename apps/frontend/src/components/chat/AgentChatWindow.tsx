@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChatInput } from "./ChatInput";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
+import { useAgents } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useAuth, useOrganization } from "@clerk/nextjs";
@@ -416,6 +417,10 @@ export function AgentChatWindow({
     needsBootstrap,
   } = useAgentChat(agentId, sessionName);
 
+  const { agents } = useAgents();
+  const activeAgent = agents.find((a) => a.id === agentId);
+  const agentName = activeAgent?.identity?.name ?? activeAgent?.name ?? agentId ?? undefined;
+
   const api = useApi();
   const [isUploading, setIsUploading] = useState(false);
   const messageListRef = useRef<MessageListHandle>(null);
@@ -488,7 +493,7 @@ export function AgentChatWindow({
       <div className="flex flex-col h-full bg-[#faf7f2]">
         <div className="flex-1 flex flex-col">
           {messages.length > 0 && (
-            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} onOpenFile={onOpenFile} />
+            <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} />
           )}
           <div className="p-4 m-4 bg-[#fce4ec] border border-[#f8bbd0] text-[#a5311f] rounded-lg">
             <p className="font-medium">Error</p>
@@ -548,7 +553,7 @@ export function AgentChatWindow({
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
-      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} onOpenFile={onOpenFile} />
+      <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} />
       <UpdateBanner />
       <DowngradeBanner />
       <ApproachLimitBanner />
