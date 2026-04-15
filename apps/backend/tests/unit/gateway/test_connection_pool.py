@@ -205,6 +205,47 @@ async def test_record_activity_retry_floor_also_gates_after_ddb_exception():
 
 
 @pytest.mark.asyncio
+async def test_record_activity_retry_backdate_uses_post_await_time():
+    """Codex P2 regression: the retry-floor stamp must be computed from
+    time AFTER the DDB await, not before. Otherwise a slow update_last_active
+    call (e.g. partial DDB outage) consumes the entire 30s cooldown by the
+    time we get to the backdate line, and the next ping is admitted
+    immediately — the opposite of the intended bound."""
+    from core.gateway.connection_pool import (
+        _DDB_WRITE_COOLDOWN,
+        _DDB_WRITE_RETRY_FLOOR,
+        _LAST_DDB_WRITE,
+        GatewayConnectionPool,
+    )
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    # Two time.time readings: 100.0 inside the entry-gate, then 105.0 inside
+    # the post-await backdate (simulating a 5-second slow DDB call without
+    # an actual sleep).
+    times = iter([100.0, 105.0])
+
+    with (
+        patch(
+            "core.repositories.container_repo.update_last_active",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "core.gateway.connection_pool.time.time",
+            side_effect=lambda: next(times),
+        ),
+    ):
+        await pool.record_activity("user_1")
+
+    # Buggy version would stamp at 100.0 - 28 = 72.0 (pre-await `now`).
+    # Fixed version stamps at 105.0 - 28 = 77.0 (post-await fresh time).
+    expected = 105.0 - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    assert _LAST_DDB_WRITE["user_1"] == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
 async def test_close_user_no_longer_references_last_activity():
     """Regression for Task 4: close_user used to pop _last_activity, now that
     dict is gone. This test ensures close_user runs cleanly for a user it's

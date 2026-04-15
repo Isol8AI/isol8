@@ -864,19 +864,19 @@ class GatewayConnectionPool:
         from core.dynamodb import utc_now_iso
         from core.repositories import container_repo
 
-        # Backdating `last_write` to (now - cooldown + floor) gates the next
-        # record_activity call until _DDB_WRITE_RETRY_FLOOR seconds have passed.
-        retry_backdate = now - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
-
         try:
             wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
         except Exception:
             logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
-            _LAST_DDB_WRITE[owner_id] = retry_backdate
+            # Compute the backdate from a FRESH time.time() — not the pre-await
+            # `now` — so a slow DDB call (e.g. partial outage) can't itself
+            # consume the entire retry-floor window and admit the next ping
+            # immediately. Codex P2 on PR #269.
+            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
             return
 
         if not wrote:
-            _LAST_DDB_WRITE[owner_id] = retry_backdate
+            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
