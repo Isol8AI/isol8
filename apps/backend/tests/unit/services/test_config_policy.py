@@ -157,3 +157,59 @@ class TestEvaluate:
         config["channels"]["telegram"]["accounts"] = {}
         violations = config_policy.evaluate(config, "free")
         assert not any(v["field"] == "channels.accounts" for v in violations)
+
+
+class TestApplyReverts:
+    """Tests for config_policy.apply_reverts()."""
+
+    def test_revert_providers_restores_tier_allowlist(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["models"]["providers"]["openai"] = {"api": "openai", "models": []}
+        violations = config_policy.evaluate(config, "free")
+        reverted = config_policy.apply_reverts(config, violations)
+        assert "openai" not in reverted["models"]["providers"]
+        assert "amazon-bedrock" in reverted["models"]["providers"]
+
+    def test_revert_primary_restores_tier_default(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+        violations = config_policy.evaluate(config, "free")
+        reverted = config_policy.apply_reverts(config, violations)
+        assert reverted["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/minimax.minimax-m2.5"
+
+    def test_revert_channels_empties_accounts_for_violating_providers_only(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["channels"]["telegram"]["accounts"] = {"a": {"botToken": "x"}}
+        config["channels"]["discord"]["accounts"] = {"b": {"botToken": "y"}}
+        violations = config_policy.evaluate(config, "free")
+        reverted = config_policy.apply_reverts(config, violations)
+        assert reverted["channels"]["telegram"]["accounts"] == {}
+        assert reverted["channels"]["discord"]["accounts"] == {}
+        # Scaffold flags preserved
+        assert reverted["channels"]["telegram"]["enabled"] is True
+        assert reverted["channels"]["telegram"]["dmPolicy"] == "pairing"
+
+    def test_apply_reverts_preserves_meta_and_unrelated_keys(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["meta"] = {"lastTouchedVersion": "2026.4.5", "lastTouchedAt": "2026-04-12T19:43:24Z"}
+        config["tools"]["deny"].append("some-new-tool")
+        config["models"]["providers"]["openai"] = {"api": "openai"}
+        violations = config_policy.evaluate(config, "free")
+        reverted = config_policy.apply_reverts(config, violations)
+        # Meta preserved
+        assert reverted["meta"] == {"lastTouchedVersion": "2026.4.5", "lastTouchedAt": "2026-04-12T19:43:24Z"}
+        # Agent-mutable tool change preserved
+        assert "some-new-tool" in reverted["tools"]["deny"]
+        # Provider reverted
+        assert "openai" not in reverted["models"]["providers"]
+
+    def test_apply_reverts_empty_violations_is_identity(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        reverted = config_policy.apply_reverts(config, [])
+        assert reverted == config
+        assert reverted is not config  # deep-copy

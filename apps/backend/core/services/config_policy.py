@@ -140,9 +140,36 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
     return violations
 
 
+def _set_dotted(target: dict, dotted: str, value: Any) -> None:
+    """Set `target[a][b][c] = value` for dotted='a.b.c'. Creates intermediate
+    dicts as needed."""
+    parts = dotted.split(".")
+    cursor = target
+    for segment in parts[:-1]:
+        if segment not in cursor or not isinstance(cursor[segment], dict):
+            cursor[segment] = {}
+        cursor = cursor[segment]
+    cursor[parts[-1]] = value
+
+
 def apply_reverts(config: dict, violations: list[PolicyViolation]) -> dict:
     """Return a deep copy of config with each violating field replaced by
-    its expected value. Non-violating fields — including OpenClaw's `meta`
-    block and everything else — are preserved untouched.
+    its expected value. Non-violating fields are preserved untouched.
+
+    Special-cases `channels.accounts` since that's a collection of per-provider
+    sub-fields, not a single dotted path.
     """
-    return copy.deepcopy(config)
+    result = copy.deepcopy(config)
+    for v in violations:
+        field = v["field"]
+        expected = v["expected"]
+        if field == "channels.accounts":
+            # expected is {provider: {} ...}; write into channels.{provider}.accounts
+            channels = result.setdefault("channels", {})
+            for provider in expected:
+                provider_cfg = channels.setdefault(provider, {})
+                if isinstance(provider_cfg, dict):
+                    provider_cfg["accounts"] = {}
+        else:
+            _set_dotted(result, field, copy.deepcopy(expected))
+    return result
