@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
 import {
   JobEditDialog,
@@ -183,5 +183,50 @@ describe("JobEditDialog", () => {
     expect(
       screen.getByRole("button", { name: /^Enable anyway$/ }),
     ).toBeInTheDocument();
+  });
+
+  it("Advanced: deleteAfterRun checkbox shows checked during confirm, reverts on Cancel", () => {
+    renderDialog();
+
+    const advancedHeader = screen.getByRole("button", { name: /^Advanced$/ });
+    fireEvent.click(advancedHeader);
+
+    const toggle = screen.getByLabelText(/Delete after first successful run/);
+    expect(toggle).not.toBeChecked();
+
+    // Tick the box -- optimistic visual: it should read as checked while the
+    // confirm banner is up, so the user sees feedback for their click.
+    fireEvent.click(toggle);
+    expect(toggle).toBeChecked();
+
+    // Click the banner's Cancel (not the dialog-level footer Cancel) --
+    // checkbox reverts to unchecked because form.deleteAfterRun never
+    // actually flipped.
+    const banner = screen
+      .getByRole("button", { name: /^Enable anyway$/ })
+      .closest("div")!.parentElement!;
+    fireEvent.click(within(banner).getByRole("button", { name: /^Cancel$/ }));
+    expect(toggle).not.toBeChecked();
+  });
+
+  it("Failure alerts: enabling toggle seeds failureAlertDelivery with {mode:'announce'}", () => {
+    const { props } = renderDialog();
+
+    const failureHeader = screen.getByRole("button", { name: /^Failure alerts$/ });
+    fireEvent.click(failureHeader);
+
+    // Toggle the master switch on. baseInitial inherits
+    // failureAlertDelivery: undefined from EMPTY_FORM.
+    const toggle = screen.getByLabelText(/Alert me when this job fails/);
+    fireEvent.click(toggle);
+
+    // Save and inspect the outgoing form state.
+    fireEvent.click(screen.getByRole("button", { name: /^Save$/ }));
+    expect(props.onSave).toHaveBeenCalledWith(
+      expect.objectContaining({
+        failureAlertEnabled: true,
+        failureAlertDelivery: { mode: "announce" },
+      }),
+    );
   });
 });

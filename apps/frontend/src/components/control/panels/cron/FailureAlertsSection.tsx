@@ -45,7 +45,17 @@ export function FailureAlertsSection({
       <label className="flex items-center gap-2 cursor-pointer">
         <Checkbox
           checked={form.failureAlertEnabled}
-          onCheckedChange={(checked) => update("failureAlertEnabled", checked === true)}
+          onCheckedChange={(checked) => {
+            const enabling = checked === true;
+            update("failureAlertEnabled", enabling);
+            // Seed delivery so DeliveryPicker has a defined state on first
+            // enable and the save payload carries a mode (otherwise backend
+            // sees {after, cooldownMs} with no mode/channel). Default to
+            // in-chat announce, matching the top-level delivery default.
+            if (enabling && form.failureAlertDelivery === undefined) {
+              update("failureAlertDelivery", { mode: "announce" });
+            }
+          }}
         />
         <span className="text-sm">Alert me when this job fails repeatedly</span>
       </label>

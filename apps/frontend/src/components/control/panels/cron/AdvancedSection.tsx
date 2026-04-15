@@ -31,7 +31,11 @@ export function AdvancedSection({
       <div className="space-y-1">
         <label className="flex items-center gap-2 cursor-pointer">
           <Checkbox
-            checked={form.deleteAfterRun}
+            // Optimistic visual: show checked while the user is confirming,
+            // so ticking the box doesn't appear to "do nothing" before
+            // Enable anyway commits. Cancel reverts (form.deleteAfterRun
+            // stays false).
+            checked={form.deleteAfterRun || confirmingDeleteAfterRun}
             onCheckedChange={(checked) => {
               if (checked === true && !form.deleteAfterRun) {
                 setConfirmingDeleteAfterRun(true);
