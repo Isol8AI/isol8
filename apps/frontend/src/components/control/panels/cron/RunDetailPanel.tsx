@@ -24,12 +24,13 @@ export function RunDetailPanel({
   onEdit,
 }: {
   run: CronRunEntry;
-  job: CronJob;
+  job: CronJob | undefined;
   onClose: () => void;
   onRunNow: () => void;
   onEdit: () => void;
 }) {
   const [promptOpen, setPromptOpen] = useState(false);
+  const jobDeleted = !job;
 
   // Reuse the same chat.history fetch (SWR dedupes with RunTranscript's call)
   // so we can derive the first user message to display in the prompt accordion.
@@ -40,11 +41,16 @@ export function RunDetailPanel({
   const adaptedMessages = adaptSessionMessages(transcriptData?.messages);
   const firstUserMsg = firstUserMessage(adaptedMessages);
 
-  const payloadText =
-    job.payload.kind === "agentTurn" ? job.payload.message : job.payload.text;
+  const payloadText = job
+    ? job.payload.kind === "agentTurn"
+      ? job.payload.message
+      : job.payload.text
+    : undefined;
   const displayedPrompt = firstUserMsg ?? payloadText;
   const promptEditedSinceRun =
-    job.updatedAtMs > run.triggeredAtMs && firstUserMsg === undefined;
+    job !== undefined &&
+    job.updatedAtMs > run.triggeredAtMs &&
+    firstUserMsg === undefined;
 
   const copyPrompt = () => {
     navigator.clipboard.writeText(displayedPrompt ?? "").catch(() => {});
@@ -66,11 +72,16 @@ export function RunDetailPanel({
             · {formatDuration(run.durationMs)}
           </span>
         )}
+        {jobDeleted && (
+          <span className="px-2 py-0.5 rounded text-xs uppercase bg-[#f3efe6] text-[#8a8578]">
+            (deleted)
+          </span>
+        )}
         <div className="flex-1" />
-        <Button size="sm" variant="outline" onClick={onRunNow}>
+        <Button size="sm" variant="outline" onClick={onRunNow} disabled={jobDeleted}>
           <Play className="h-3 w-3 mr-1" /> Run now
         </Button>
-        <Button size="sm" variant="outline" onClick={onEdit}>
+        <Button size="sm" variant="outline" onClick={onEdit} disabled={jobDeleted}>
           <Pencil className="h-3 w-3 mr-1" /> Edit job
         </Button>
         <Button size="sm" variant="outline" onClick={copyPrompt}>
@@ -121,7 +132,7 @@ export function RunDetailPanel({
         <RunTranscript sessionKey={run.sessionKey} />
       </div>
 
-      <RunMetadata run={run} nextRunAtMs={job.state.nextRunAtMs} />
+      <RunMetadata run={run} nextRunAtMs={job?.state.nextRunAtMs} />
     </div>
   );
 }

@@ -14,16 +14,21 @@ interface JobListProps {
   onRunNow: (job: CronJob) => void;
   onDelete: (job: CronJob) => void;
   onSelectRun: (job: CronJob, run: CronRunEntry) => void;
+  createDisabled?: boolean;
+  createHelperText?: string;
 }
 
 export function JobList(props: JobListProps) {
-  const { jobs, expandedJobId, onCreate } = props;
+  const { jobs, expandedJobId, onCreate, createDisabled, createHelperText } = props;
 
   if (jobs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
         <p className="text-[#8a8578] mb-4">No crons yet</p>
-        <Button onClick={onCreate}>
+        {createHelperText && (
+          <p className="text-xs text-[#8a8578] mb-2">{createHelperText}</p>
+        )}
+        <Button onClick={onCreate} disabled={createDisabled}>
           <Plus className="h-4 w-4 mr-2" /> Create your first cron
         </Button>
       </div>
@@ -32,8 +37,11 @@ export function JobList(props: JobListProps) {
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="flex justify-end">
-        <Button size="sm" onClick={onCreate}>
+      <div className="flex justify-end items-center gap-3">
+        {createHelperText && (
+          <p className="text-xs text-[#8a8578]">{createHelperText}</p>
+        )}
+        <Button size="sm" onClick={onCreate} disabled={createDisabled}>
           <Plus className="h-4 w-4 mr-2" /> New cron
         </Button>
       </div>

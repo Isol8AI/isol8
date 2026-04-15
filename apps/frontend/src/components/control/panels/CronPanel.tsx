@@ -7,6 +7,7 @@ import {
   X,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { JobList } from "./cron/JobList";
@@ -61,7 +62,7 @@ function StateBShell({
   const [queryFilter, setQueryFilter] = useState("");
   const [limit, setLimit] = useState(50);
 
-  const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>(
+  const { data, error, isLoading, mutate } = useGatewayRpc<CronRunsResponse>(
     "cron.runs",
     {
       scope: "job",
@@ -71,6 +72,7 @@ function StateBShell({
       ...(statusFilter !== "all" ? { statuses: [statusFilter] } : {}),
       ...(queryFilter ? { query: queryFilter } : {}),
     },
+    { refreshInterval: 30_000, revalidateOnFocus: true },
   );
   const runs = data?.entries ?? [];
   const hasMore = data?.hasMore ?? false;
@@ -78,6 +80,7 @@ function StateBShell({
     selectedRunTs !== null
       ? runs.find((r) => r.triggeredAtMs === selectedRunTs)
       : undefined;
+  const jobDeleted = !job;
 
   return (
     <div className="flex flex-col h-full">
@@ -86,11 +89,24 @@ function StateBShell({
           ← Back to jobs
         </Button>
         <span className="text-sm font-medium">{jobName}</span>
+        {jobDeleted && (
+          <span className="px-2 py-0.5 rounded text-xs uppercase bg-[#f3efe6] text-[#8a8578]">
+            (deleted)
+          </span>
+        )}
       </div>
       <div className="flex-1 grid grid-cols-[320px_1fr] min-h-0">
         <div className="border-r border-[#e0dbd0] min-h-0 flex flex-col">
           {error && (
-            <div className="p-3 text-xs text-destructive">Failed to load runs</div>
+            <div
+              role="alert"
+              className="m-3 flex items-center justify-between gap-2 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-xs text-destructive"
+            >
+              <span>Failed to load runs</span>
+              <Button size="sm" variant="outline" onClick={() => mutate()}>
+                <RefreshCw className="h-3 w-3 mr-1" /> Retry
+              </Button>
+            </div>
           )}
           <RunList
             runs={runs}
@@ -111,7 +127,7 @@ function StateBShell({
             isLoading={isLoading}
           />
         </div>
-        {selectedRun && job ? (
+        {selectedRun ? (
           <RunDetailPanel
             run={selectedRun}
             job={job}
@@ -132,9 +148,12 @@ function StateBShell({
 // --- Main panel ---
 
 export function CronPanel() {
-  const { data, error, isLoading, mutate } = useGatewayRpc<CronListResponse>("cron.list", {
-    includeDisabled: true,
-  });
+  const { data, error, isLoading, mutate } = useGatewayRpc<CronListResponse>(
+    "cron.list",
+    { includeDisabled: true },
+    { refreshInterval: 30_000, revalidateOnFocus: true },
+  );
+  const { data: agentsData } = useAgents();
   const callRpc = useGatewayRpcMutation();
 
   const [mode, setMode] = useState<"list" | "create" | "edit">("list");
@@ -143,6 +162,12 @@ export function CronPanel() {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [view, setView] = useState<ViewState>({ kind: "overview" });
+  // Optimistic overrides for the enabled flag keyed by job id. When set, the
+  // JobCard reads from here instead of the server data; the entry is cleared
+  // on successful revalidation (or on error to roll back).
+  const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>({});
+
+  const noAgents = (agentsData?.agents ?? []).length === 0;
 
   const showFeedback = useCallback((type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -236,10 +261,28 @@ export function CronPanel() {
   };
 
   const handleToggle = async (id: string, currentlyEnabled: boolean) => {
+    const next = !currentlyEnabled;
+    // Optimistic flip: update local override immediately so the badge toggles
+    // without waiting for the RPC round-trip.
+    setEnabledOverrides((prev) => ({ ...prev, [id]: next }));
     try {
-      await callRpc("cron.update", { id, patch: { enabled: !currentlyEnabled } });
+      await callRpc("cron.update", { id, patch: { enabled: next } });
       mutate();
+      // Clear the override; the revalidated server data becomes the source of truth.
+      setEnabledOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[id];
+        return rest;
+      });
     } catch (err) {
+      // Roll back: drop the override so the UI reverts to the server state.
+      setEnabledOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[id];
+        return rest;
+      });
       showFeedback("error", `Failed to toggle: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
@@ -263,8 +306,10 @@ export function CronPanel() {
     );
   }
 
-  // Error state
-  if (error) {
+  // Error state -- only take over the panel when we have no data yet. When
+  // a revalidation fails after a successful fetch, we keep rendering the
+  // stale jobs and surface the failure as an inline banner below.
+  if (error && !data) {
     return (
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">{error.message}</p>
@@ -275,7 +320,15 @@ export function CronPanel() {
     );
   }
 
-  const jobs = data?.jobs ?? (Array.isArray(data) ? (data as unknown as CronJob[]) : []);
+  const rawJobs =
+    data?.jobs ?? (Array.isArray(data) ? (data as unknown as CronJob[]) : []);
+  // Apply optimistic enabled overrides before handing jobs off to JobList /
+  // StateBShell so the toggle UI flips immediately.
+  const jobs = rawJobs.map((j) =>
+    Object.prototype.hasOwnProperty.call(enabledOverrides, j.id)
+      ? { ...j, enabled: enabledOverrides[j.id] }
+      : j,
+  );
 
   return (
     <div className="p-6 space-y-4">
@@ -288,6 +341,19 @@ export function CronPanel() {
           </Button>
         </div>
       </div>
+
+      {/* Stale-data error banner (revalidation failed after a successful load) */}
+      {error && data && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-2 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive"
+        >
+          <span>Failed to refresh cron jobs: {error.message}</span>
+          <Button size="sm" variant="outline" onClick={() => mutate()}>
+            <RefreshCw className="h-3 w-3 mr-1" /> Retry
+          </Button>
+        </div>
+      )}
 
       {/* Feedback banner */}
       {feedback && (
@@ -349,6 +415,8 @@ export function CronPanel() {
             setMode("list");
             setView({ kind: "runs", jobId: job.id, selectedRunTs: run.triggeredAtMs });
           }}
+          createDisabled={noAgents}
+          createHelperText={noAgents ? "Create an agent first" : undefined}
         />
       ) : (
         (() => {
