@@ -11,6 +11,7 @@ from typing import Any, Literal, TypedDict
 from core.config import TIER_CONFIG
 from core.containers.config import (
     _TIER_ALLOWED_MODEL_IDS,
+    _agent_models_for_tier,
     _models_for_tier,
 )
 
@@ -102,9 +103,6 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
         ]
         if illegal_keys:
             # Build expected: filter out illegal entries, ensure primary is present.
-            # Reuse write_openclaw_config's helper via a direct import.
-            from core.containers.config import _agent_models_for_tier
-
             expected_primary = (
                 f"amazon-bedrock/{TIER_CONFIG[effective_tier]['primary_model'].removeprefix('amazon-bedrock/')}"
             )
@@ -117,6 +115,27 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
                     "actual": models_map,
                 }
             )
+
+    # 4. channels.{provider}.accounts — free tier must have no accounts
+    if effective_tier == "free":
+        channels = config.get("channels", {})
+        if isinstance(channels, dict):
+            offending: dict[str, dict] = {}
+            for provider, provider_cfg in channels.items():
+                if not isinstance(provider_cfg, dict):
+                    continue
+                accounts = provider_cfg.get("accounts", {})
+                if isinstance(accounts, dict) and accounts:
+                    offending[provider] = accounts
+            if offending:
+                violations.append(
+                    {
+                        "field": "channels.accounts",
+                        "reason": f"free tier cannot have channel accounts; found: {sorted(offending.keys())}",
+                        "expected": {p: {} for p in offending},
+                        "actual": offending,
+                    }
+                )
 
     return violations
 

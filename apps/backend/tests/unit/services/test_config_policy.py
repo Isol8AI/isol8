@@ -123,3 +123,37 @@ class TestEvaluate:
         # Pro tier generator already includes both MiniMax and Qwen — clean.
         violations = config_policy.evaluate(config, "pro")
         assert not any(v["field"] == "agents.defaults.models" for v in violations)
+
+    def test_free_tier_telegram_account_is_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["channels"]["telegram"]["accounts"] = {
+            "my-agent": {"botToken": "1:abc"},
+        }
+        violations = config_policy.evaluate(config, "free")
+        fields = [v["field"] for v in violations]
+        assert "channels.accounts" in fields
+
+    def test_paid_tier_telegram_account_no_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="starter")
+        config = json.loads(raw)
+        config["channels"]["telegram"]["accounts"] = {
+            "my-agent": {"botToken": "1:abc"},
+        }
+        violations = config_policy.evaluate(config, "starter")
+        assert not any(v["field"] == "channels.accounts" for v in violations)
+
+    def test_free_tier_scaffold_channels_no_violation(self):
+        # write_openclaw_config ships enabled/dmPolicy flags for all providers
+        # but no accounts — should be clean on free.
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        violations = config_policy.evaluate(config, "free")
+        assert not any(v["field"] == "channels.accounts" for v in violations)
+
+    def test_free_tier_channels_with_empty_accounts_no_violation(self):
+        raw = write_openclaw_config(gateway_token="t", tier="free")
+        config = json.loads(raw)
+        config["channels"]["telegram"]["accounts"] = {}
+        violations = config_policy.evaluate(config, "free")
+        assert not any(v["field"] == "channels.accounts" for v in violations)
