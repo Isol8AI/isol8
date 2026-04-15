@@ -16,7 +16,7 @@ import {
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { formatSchedule, formatDuration, formatAbsoluteTime } from "./formatters";
+import { formatSchedule, formatDuration, formatAbsoluteTime, formatDelivery } from "./formatters";
 import type { CronJob, CronRunEntry, CronRunStatus, CronRunsResponse } from "./types";
 
 // --- Status badge ---
@@ -110,8 +110,19 @@ export function JobCard({
 }: JobCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  const consecutiveErrors = job.state?.consecutiveErrors ?? 0;
+  const showErrorBadge =
+    job.enabled && consecutiveErrors >= 1 && job.state?.lastRunStatus === "error";
+  const isRunning = Boolean(job.state?.runningAtMs);
+
   return (
-    <div role="article" className="rounded-lg border border-[#e0dbd0] overflow-hidden">
+    <div
+      role="article"
+      className={cn(
+        "rounded-lg border border-[#e0dbd0] overflow-hidden",
+        isRunning && "ring-2 ring-blue-400 ring-offset-2 animate-pulse",
+      )}
+    >
       {/* Job header */}
       <div className="p-3 space-y-2">
         <div className="flex items-center justify-between">
@@ -136,6 +147,11 @@ export function JobCard({
             >
               {job.enabled ? "active" : "paused"}
             </span>
+            {showErrorBadge && (
+              <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800 shrink-0">
+                {consecutiveErrors} consecutive errors
+              </span>
+            )}
           </button>
           <div className="flex gap-1 shrink-0">
             <Button
@@ -173,8 +189,37 @@ export function JobCard({
           </div>
         </div>
 
-        {/* Schedule + last run info */}
-        <div className="flex items-center gap-3 text-xs text-[#8a8578] pl-7">
+        {/* Prompt preview */}
+        <div className="pl-7">
+          {(() => {
+            if (job.payload.kind === "agentTurn") {
+              const msg = job.payload.message;
+              const truncated = msg.length > 200 ? msg.slice(0, 200) + "…" : msg;
+              return (
+                <p className="text-sm text-[#5a5549] line-clamp-2" title={msg}>
+                  {truncated}
+                </p>
+              );
+            }
+            // systemEvent
+            const text = job.payload.text;
+            const truncated = text.length > 200 ? text.slice(0, 200) + "…" : text;
+            return (
+              <p className="text-sm text-[#5a5549] line-clamp-2" title={text}>
+                <span className="text-xs uppercase tracking-wide text-[#8a8578] mr-2">
+                  system event
+                </span>
+                {truncated}
+              </p>
+            );
+          })()}
+          {job.description && (
+            <p className="text-xs text-[#8a8578] mt-1">{job.description}</p>
+          )}
+        </div>
+
+        {/* Schedule + last run info + delivery */}
+        <div className="flex items-center gap-3 text-xs text-[#8a8578] pl-7 flex-wrap">
           <span>{formatSchedule(job.schedule)}</span>
           {job.state?.lastRunStatus && (
             <>
@@ -188,11 +233,18 @@ export function JobCard({
               <span>Next: {formatAbsoluteTime(job.state.nextRunAtMs)}</span>
             </>
           )}
+          {isRunning && (
+            <>
+              <span>&middot;</span>
+              <span className="inline-flex items-center gap-2 text-xs text-blue-600">
+                <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+                Running now…
+              </span>
+            </>
+          )}
+          <span>&middot;</span>
+          <span>Delivers to: {formatDelivery(job.delivery)}</span>
         </div>
-
-        {job.description && (
-          <div className="text-xs text-[#5a5549] pl-7">{job.description}</div>
-        )}
       </div>
 
       {/* Delete confirmation */}

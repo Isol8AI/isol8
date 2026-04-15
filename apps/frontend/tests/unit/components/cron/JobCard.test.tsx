@@ -43,4 +43,64 @@ describe("JobCard (refactor)", () => {
     render(<JobCard job={{ ...baseJob, enabled: false }} {...noopProps} />);
     expect(screen.getByText(/paused/i)).toBeInTheDocument();
   });
+
+  it("shows truncated prompt preview from payload.message", () => {
+    const longPrompt =
+      "Summarize today's top 3 TechCrunch posts and email me a brief summary with links and author names and ".repeat(3);
+    render(
+      <JobCard
+        job={{ ...baseJob, payload: { kind: "agentTurn", message: longPrompt } }}
+        {...noopProps}
+      />,
+    );
+    const el = screen.getByText(/Summarize today's top 3/);
+    // 200 chars + ellipsis char (\u2026 = 1 char). Use 203 to be lenient with
+    // whatever ellipsis string you pick, as long as it's short.
+    expect(el.textContent!.length).toBeLessThanOrEqual(203);
+    expect(el.textContent).toMatch(/…$/);
+  });
+
+  it("shows delivery summary from delivery.channel+to", () => {
+    render(
+      <JobCard
+        job={{ ...baseJob, delivery: { mode: "announce", channel: "telegram", to: "@me" } }}
+        {...noopProps}
+      />,
+    );
+    expect(screen.getByText(/Delivers to:/i)).toBeInTheDocument();
+    expect(screen.getByText(/Telegram @me/)).toBeInTheDocument();
+  });
+
+  it("shows running indicator when state.runningAtMs is set", () => {
+    render(
+      <JobCard
+        job={{ ...baseJob, state: { ...baseJob.state, runningAtMs: Date.now() - 1000 } }}
+        {...noopProps}
+      />,
+    );
+    expect(screen.getByText(/Running now/i)).toBeInTheDocument();
+  });
+
+  it("shows description when set", () => {
+    render(
+      <JobCard
+        job={{ ...baseJob, description: "Runs every morning at 7am" }}
+        {...noopProps}
+      />,
+    );
+    expect(screen.getByText("Runs every morning at 7am")).toBeInTheDocument();
+  });
+
+  it("shows consecutive errors badge when >= 1 and enabled", () => {
+    render(
+      <JobCard
+        job={{
+          ...baseJob,
+          state: { ...baseJob.state, consecutiveErrors: 3, lastRunStatus: "error" },
+        }}
+        {...noopProps}
+      />,
+    );
+    expect(screen.getByText(/3 consecutive errors/i)).toBeInTheDocument();
+  });
 });
