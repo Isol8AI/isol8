@@ -62,7 +62,14 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
   const relativeFilePath = selectedPath;
 
   // Workspace tab data
-  const { files: wsFiles, isLoading: wsTreeLoading, refresh: wsRefresh } = useWorkspaceTree(agentId);
+  const { files: wsRawFiles, isLoading: wsTreeLoading, refresh: wsRefresh } = useWorkspaceTree(agentId);
+  // Hide top-level allowlisted config files from the Workspace tab — they
+  // already get a curated home in the Config tab. Nested files of the same
+  // name (e.g. uploads/SOUL.md) still show; the filter is path-aware.
+  const wsFiles = React.useMemo(
+    () => wsRawFiles.filter((f) => !(CONFIG_ALLOWLIST.includes(f.name) && !f.path.includes("/"))),
+    [wsRawFiles],
+  );
   const { file: wsFile, isLoading: wsFileLoading, error: wsFileError } = useWorkspaceFile(
     activeTab === "workspace" ? agentId : null,
     activeTab === "workspace" ? relativeFilePath : null,
