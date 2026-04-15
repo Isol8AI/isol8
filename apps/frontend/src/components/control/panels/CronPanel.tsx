@@ -5,15 +5,13 @@ import cronstrue from "cronstrue";
 import {
   Loader2,
   RefreshCw,
-  Clock,
-  Plus,
   X,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { JobCard } from "./cron/JobCard";
+import { JobList } from "./cron/JobList";
 import type {
   CronJob,
   CronListResponse,
@@ -374,11 +372,6 @@ export function CronPanel() {
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
-          {mode === "list" && (
-            <Button size="sm" onClick={() => setMode("create")}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" /> New Job
-            </Button>
-          )}
         </div>
       </div>
 
@@ -423,35 +416,25 @@ export function CronPanel() {
       )}
 
       {/* Job list */}
-      {mode === "list" && jobs.length === 0 && (
-        <div className="text-center py-8 space-y-2">
-          <Clock className="h-8 w-8 mx-auto opacity-30" />
-          <p className="text-sm text-[#8a8578]">No cron jobs configured.</p>
-          <p className="text-xs text-[#5a5549]">Create a job to schedule recurring agent tasks.</p>
-        </div>
-      )}
-
-      {mode === "list" && jobs.length > 0 && (
-        <div className="space-y-2">
-          {jobs.map((job) => (
-            <JobCard
-              key={job.id}
-              job={job}
-              expanded={expandedJob === job.id}
-              onToggleExpand={() => setExpandedJob(expandedJob === job.id ? null : job.id)}
-              onEdit={() => {
-                setEditingJob(job);
-                setMode("edit");
-              }}
-              onPauseResume={() => handleToggle(job.id, !!job.enabled)}
-              onRunNow={() => handleRun(job.id)}
-              onDelete={() => handleDelete(job.id)}
-              onSelectRun={() => {
-                /* no-op for now; Task 7 wires */
-              }}
-            />
-          ))}
-        </div>
+      {mode === "list" && (
+        <JobList
+          jobs={jobs}
+          expandedJobId={expandedJob}
+          onToggleExpand={(jobId) =>
+            setExpandedJob(expandedJob === jobId ? null : jobId)
+          }
+          onCreate={() => setMode("create")}
+          onEdit={(job) => {
+            setEditingJob(job);
+            setMode("edit");
+          }}
+          onPauseResume={(job) => handleToggle(job.id, !!job.enabled)}
+          onRunNow={(job) => handleRun(job.id)}
+          onDelete={(job) => handleDelete(job.id)}
+          onSelectRun={() => {
+            /* no-op for now; Task 7 wires this */
+          }}
+        />
       )}
     </div>
   );
