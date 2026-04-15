@@ -14,11 +14,14 @@ export type CronRunStatus = "ok" | "error" | "skipped";
 export type CronDeliveryStatus = "delivered" | "not-delivered" | "unknown" | "not-requested";
 export type CronFailoverReason =
   | "auth"
+  | "auth_permanent"
   | "format"
   | "rate_limit"
+  | "overloaded"
   | "billing"
   | "timeout"
   | "model_not_found"
+  | "session_expired"
   | "unknown";
 
 export interface CronFailureDestination {
