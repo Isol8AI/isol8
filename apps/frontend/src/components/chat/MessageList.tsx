@@ -30,13 +30,6 @@ interface MessageListProps {
   agentName?: string;
   onRetry?: (assistantMsgId: string) => void;
   onOpenFile?: (path: string) => void;
-  /**
-   * Whether the list should automatically scroll to the bottom when new
-   * messages arrive. Defaults to `true` to preserve existing live-chat
-   * behavior. Set to `false` for read-only transcript views (e.g. cron run
-   * detail panel) where auto-scroll would fight the user reading from the top.
-   */
-  autoScroll?: boolean;
 }
 
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
@@ -273,19 +266,12 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile, autoScroll = true }, ref) {
+  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,
     }));
-
-    // Auto-scroll to the bottom whenever new messages arrive, unless the
-    // caller has opted out (e.g. read-only transcript views).
-    React.useEffect(() => {
-      if (!autoScroll) return;
-      scrollToBottom();
-    }, [messages, autoScroll, scrollToBottom]);
 
     return (
       <div
