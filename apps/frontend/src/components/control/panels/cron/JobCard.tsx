@@ -39,7 +39,13 @@ function StatusBadge({ status }: { status?: CronRunStatus }) {
 
 // --- Run history ---
 
-function RunHistory({ jobId }: { jobId: string }) {
+function RunHistory({
+  jobId,
+  onSelectRun,
+}: {
+  jobId: string;
+  onSelectRun?: (run: CronRunEntry) => void;
+}) {
   const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>("cron.runs", {
     scope: "job",
     id: jobId,
@@ -67,7 +73,12 @@ function RunHistory({ jobId }: { jobId: string }) {
   return (
     <div className="space-y-1">
       {entries.map((entry) => (
-        <div key={entry.triggeredAtMs} className="flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0]">
+        <button
+          type="button"
+          key={entry.triggeredAtMs}
+          onClick={() => onSelectRun?.(entry)}
+          className="w-full flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0] text-left hover:bg-[#f3efe6]"
+        >
           <StatusBadge status={entry.status} />
           <span className="text-[#8a8578]">{formatAbsoluteTime(entry.triggeredAtMs)}</span>
           {entry.durationMs != null && (
@@ -79,7 +90,7 @@ function RunHistory({ jobId }: { jobId: string }) {
           {entry.error && (
             <span className="text-destructive truncate flex-1">{entry.error}</span>
           )}
-        </div>
+        </button>
       ))}
     </div>
   );
@@ -106,7 +117,7 @@ export function JobCard({
   onPauseResume,
   onRunNow,
   onDelete,
-  onSelectRun: _onSelectRun, // TODO(Task 7): wire run row onClick
+  onSelectRun,
 }: JobCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
@@ -284,7 +295,7 @@ export function JobCard({
       {expanded && (
         <div className="px-3 pb-3 pl-7 border-t border-[#e0dbd0]">
           <p className="text-xs font-medium text-[#8a8578] pt-2 pb-1">Run History</p>
-          <RunHistory jobId={job.id} />
+          <RunHistory jobId={job.id} onSelectRun={onSelectRun} />
         </div>
       )}
     </div>

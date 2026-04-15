@@ -15,6 +15,7 @@ import { JobList } from "./cron/JobList";
 import type {
   CronJob,
   CronListResponse,
+  CronRunsResponse,
   CronSchedule,
   CronScheduleKind,
 } from "./cron/types";
@@ -247,6 +248,84 @@ function CronJobForm({
   );
 }
 
+// --- View state ---
+
+type ViewState =
+  | { kind: "overview" }
+  | { kind: "runs"; jobId: string; selectedRunTs: number | null };
+
+// --- State B shell (runs list + placeholder detail) ---
+
+function StateBShell({
+  jobId,
+  selectedRunTs,
+  onSelectRun,
+  onBack,
+  jobName,
+}: {
+  jobId: string;
+  selectedRunTs: number | null;
+  onSelectRun: (ts: number) => void;
+  onBack: () => void;
+  jobName: string;
+}) {
+  const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>("cron.runs", {
+    scope: "job",
+    id: jobId,
+    limit: 50,
+    sortDir: "desc",
+  });
+  const runs = data?.entries ?? [];
+
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center gap-3 px-4 h-12 border-b border-[#e0dbd0]">
+        <Button size="sm" variant="ghost" onClick={onBack}>
+          ← Back to jobs
+        </Button>
+        <span className="text-sm font-medium">{jobName}</span>
+      </div>
+      <div className="flex-1 grid grid-cols-[320px_1fr] min-h-0">
+        <div className="border-r border-[#e0dbd0] overflow-y-auto">
+          {isLoading && <div className="p-3 text-xs text-[#8a8578]">Loading runs…</div>}
+          {error && <div className="p-3 text-xs text-destructive">Failed to load runs</div>}
+          {runs.map((r) => (
+            <button
+              key={r.triggeredAtMs}
+              role="row"
+              aria-selected={selectedRunTs === r.triggeredAtMs}
+              onClick={() => onSelectRun(r.triggeredAtMs)}
+              className={cn(
+                "w-full text-left px-3 py-2 text-xs border-b border-[#e0dbd0] hover:bg-[#f3efe6]",
+                selectedRunTs === r.triggeredAtMs && "bg-[#e8e3d9]",
+              )}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span
+                  className={cn(
+                    r.status === "ok" && "text-[#2d8a4e]",
+                    r.status === "error" && "text-destructive",
+                    r.status === "skipped" && "text-yellow-600",
+                  )}
+                >
+                  {r.status}
+                </span>
+                <span className="text-[#8a8578]">{new Date(r.triggeredAtMs).toLocaleString()}</span>
+              </div>
+              {r.summary && (
+                <div className="mt-1 text-[#5a5549] truncate">{r.summary}</div>
+              )}
+            </button>
+          ))}
+        </div>
+        <div className="p-6 text-sm text-[#8a8578]">
+          Select a run to vet
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- Main panel ---
 
 export function CronPanel() {
@@ -260,6 +339,7 @@ export function CronPanel() {
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [view, setView] = useState<ViewState>({ kind: "overview" });
 
   const showFeedback = useCallback((type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -415,8 +495,8 @@ export function CronPanel() {
         />
       )}
 
-      {/* Job list */}
-      {mode === "list" && (
+      {/* Job list or runs drill-in */}
+      {mode === "list" && (view.kind === "overview" ? (
         <JobList
           jobs={jobs}
           expandedJobId={expandedJob}
@@ -431,11 +511,19 @@ export function CronPanel() {
           onPauseResume={(job) => handleToggle(job.id, !!job.enabled)}
           onRunNow={(job) => handleRun(job.id)}
           onDelete={(job) => handleDelete(job.id)}
-          onSelectRun={() => {
-            /* no-op for now; Task 7 wires this */
-          }}
+          onSelectRun={(job, run) =>
+            setView({ kind: "runs", jobId: job.id, selectedRunTs: run.triggeredAtMs })
+          }
         />
-      )}
+      ) : (
+        <StateBShell
+          jobId={view.jobId}
+          selectedRunTs={view.selectedRunTs}
+          onSelectRun={(ts) => setView({ ...view, selectedRunTs: ts })}
+          onBack={() => setView({ kind: "overview" })}
+          jobName={jobs.find((j) => j.id === view.jobId)?.name ?? view.jobId}
+        />
+      ))}
     </div>
   );
 }
