@@ -1754,6 +1754,132 @@ def handler(event, context):
       }),
     );
 
+    // ----- Row 3.5: Free-tier scale-to-zero (4 widgets) -----
+    // Source-of-truth for the heartbeat is the P12 alarm (reaper-dead) — these
+    // widgets are for at-a-glance visibility, not gating.
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Running containers (gauge)",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count",
+            statistic: "Maximum",
+            dimensionsMap: dims,
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Running by tier",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "free" },
+            label: "free",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "starter" },
+            label: "starter",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "pro" },
+            label: "pro",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "enterprise" },
+            label: "enterprise",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Cold starts & latency",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "ok" },
+            label: "cold starts (ok)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "error" },
+            label: "cold starts (error)",
+          }),
+        ],
+        right: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.latency",
+            statistic: "p50",
+            dimensionsMap: dims,
+            label: "p50 latency",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.latency",
+            statistic: "p99",
+            dimensionsMap: dims,
+            label: "p99 latency",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "record_activity outcomes & scale-to-zero events",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "success" },
+            label: "success",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "noop" },
+            label: "noop (cold-start race)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "error" },
+            label: "error (DDB)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.idle.scale_to_zero",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, tier: "free" },
+            label: "scale-to-zero (free)",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+    );
+
     // ----- Row 4: Channels & Billing (4 widgets) -----
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({

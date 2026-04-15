@@ -236,6 +236,10 @@ async def test_record_activity_retry_backdate_uses_post_await_time():
             "core.gateway.connection_pool.time.time",
             side_effect=lambda: next(times),
         ),
+        # Suppress put_metric so its internal time.time() call doesn't consume
+        # values from our `times` iterator. We're testing the backdate stamp,
+        # not metric emission (covered separately).
+        patch("core.gateway.connection_pool.put_metric"),
     ):
         await pool.record_activity("user_1")
 
@@ -243,6 +247,83 @@ async def test_record_activity_retry_backdate_uses_post_await_time():
     # Fixed version stamps at 105.0 - 28 = 77.0 (post-await fresh time).
     expected = 105.0 - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
     assert _LAST_DDB_WRITE["user_1"] == pytest.approx(expected)
+
+
+@pytest.mark.asyncio
+async def test_record_activity_emits_outcome_metric_on_success():
+    """Observability: each record_activity call emits a count metric tagged
+    with outcome=success / noop / error so we can graph the breakdown."""
+    from core.gateway.connection_pool import GatewayConnectionPool, _LAST_DDB_WRITE
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    with (
+        patch(
+            "core.repositories.container_repo.update_last_active",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+        patch("core.gateway.connection_pool.put_metric") as mock_put_metric,
+    ):
+        await pool.record_activity("user_1")
+
+    outcomes = [
+        c.kwargs.get("dimensions", {}).get("outcome")
+        for c in mock_put_metric.call_args_list
+        if c.args and c.args[0] == "gateway.record_activity.count"
+    ]
+    assert outcomes == ["success"]
+
+
+@pytest.mark.asyncio
+async def test_record_activity_emits_outcome_metric_on_noop():
+    from core.gateway.connection_pool import GatewayConnectionPool, _LAST_DDB_WRITE
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    with (
+        patch(
+            "core.repositories.container_repo.update_last_active",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch("core.gateway.connection_pool.put_metric") as mock_put_metric,
+    ):
+        await pool.record_activity("user_1")
+
+    outcomes = [
+        c.kwargs.get("dimensions", {}).get("outcome")
+        for c in mock_put_metric.call_args_list
+        if c.args and c.args[0] == "gateway.record_activity.count"
+    ]
+    assert outcomes == ["noop"]
+
+
+@pytest.mark.asyncio
+async def test_record_activity_emits_outcome_metric_on_error():
+    from core.gateway.connection_pool import GatewayConnectionPool, _LAST_DDB_WRITE
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    with (
+        patch(
+            "core.repositories.container_repo.update_last_active",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("ddb blip"),
+        ),
+        patch("core.gateway.connection_pool.put_metric") as mock_put_metric,
+    ):
+        await pool.record_activity("user_1")
+
+    outcomes = [
+        c.kwargs.get("dimensions", {}).get("outcome")
+        for c in mock_put_metric.call_args_list
+        if c.args and c.args[0] == "gateway.record_activity.count"
+    ]
+    assert outcomes == ["error"]
 
 
 @pytest.mark.asyncio

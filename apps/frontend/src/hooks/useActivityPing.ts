@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import posthog from 'posthog-js';
 import { useGateway } from './useGateway';
 
 const PING_INTERVAL_MS = 60_000;
@@ -47,6 +48,16 @@ export function useActivityPing(): void {
       const now = Date.now();
       if (now - lastPingRef.current < PING_INTERVAL_MS) return;
       send({ type: 'user_active' });
+      // Client-side telemetry: lets us debug "why isn't my container staying
+      // alive" by checking PostHog before assuming a backend issue. Capture
+      // the inter-ping interval so we can confirm the throttle is working.
+      try {
+        posthog.capture('activity_ping_sent', {
+          interval_ms: lastPingRef.current === 0 ? null : now - lastPingRef.current,
+        });
+      } catch {
+        // PostHog not initialised (no key) — that's expected in dev.
+      }
       lastPingRef.current = now;
       pendingRef.current = false;
     };
