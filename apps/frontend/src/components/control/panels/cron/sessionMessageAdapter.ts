@@ -3,6 +3,13 @@ export interface AdaptedMessage {
   role: "user" | "assistant";
   content: string;
   thinking?: string;
+  /**
+   * Wall-clock timestamp (ms since epoch) of the underlying message, when
+   * the OpenClaw history payload supplies one. Used by RunDetailPanel to
+   * scope the displayed prompt to a specific run in multi-run sessions —
+   * see `firstUserMessage` in RunTranscript.tsx.
+   */
+  ts?: number;
 }
 
 interface RawContentBlock {
@@ -13,6 +20,9 @@ interface RawContentBlock {
 interface RawMessage {
   role: string;
   content?: RawContentBlock[];
+  /** OpenClaw history messages typically carry `ts` in ms; some shapes use `timestamp`. */
+  ts?: number;
+  timestamp?: number;
 }
 
 function extractText(content: RawContentBlock[] | undefined): string {
@@ -53,11 +63,14 @@ export function adaptSessionMessages(raw: unknown[] | undefined): AdaptedMessage
     const content = extractText(m.content);
     const thinking = extractThinking(m.content);
     if (!content && !thinking) continue;
+    const tsRaw = typeof m.ts === "number" ? m.ts : m.timestamp;
+    const ts = typeof tsRaw === "number" && Number.isFinite(tsRaw) ? tsRaw : undefined;
     out.push({
       id: `history-${out.length}`,
       role: m.role,
       content,
       ...(thinking ? { thinking } : {}),
+      ...(ts !== undefined ? { ts } : {}),
     });
   }
   return out;

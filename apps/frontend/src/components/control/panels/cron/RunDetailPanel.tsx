@@ -39,7 +39,10 @@ export function RunDetailPanel({
     run.sessionKey ? { sessionKey: run.sessionKey, limit: 200 } : undefined,
   );
   const adaptedMessages = adaptSessionMessages(transcriptData?.messages);
-  const firstUserMsg = firstUserMessage(adaptedMessages);
+  // Scope the prompt lookup to messages from this run so multi-run sessions
+  // (non-isolated cron jobs that share a sessionKey across runs) don't
+  // surface the very first prompt the session ever saw.
+  const firstUserMsg = firstUserMessage(adaptedMessages, run.triggeredAtMs);
 
   const payloadText = job
     ? job.payload.kind === "agentTurn"

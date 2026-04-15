@@ -21,6 +21,7 @@ import {
   jobToForm,
   type FormState,
 } from "./cron/JobEditDialog";
+import { buildEditPayloadDiff } from "./cron/formState";
 import type { RunStatusFilter } from "./cron/RunFilters";
 import type {
   CronJob,
@@ -213,31 +214,14 @@ export function CronPanel() {
     if (!editingJob) return;
     setSaving(true);
     try {
-      const cleanFallbacks = form.fallbacks?.map((s) => s.trim()).filter(Boolean) ?? [];
+      // buildEditPayloadDiff diffs the form against the original job so that
+      // optional overrides the user cleared (model, fallbacks, timeoutSeconds,
+      // thinking, lightContext, toolsAllow, delivery, agentId, deleteAfterRun)
+      // are sent as explicit clearing values instead of being silently
+      // omitted.
       await callRpc("cron.update", {
         id: editingJob.id,
-        patch: {
-          name: form.name.trim(),
-          schedule: buildSchedule(form),
-          payload: {
-            kind: "agentTurn",
-            message: form.message.trim(),
-            ...(form.model ? { model: form.model } : {}),
-            ...(cleanFallbacks.length > 0 ? { fallbacks: cleanFallbacks } : {}),
-            ...(form.timeoutSeconds != null ? { timeoutSeconds: form.timeoutSeconds } : {}),
-            ...(form.thinking ? { thinking: form.thinking } : {}),
-            ...(form.lightContext ? { lightContext: true } : {}),
-            ...(form.toolsAllow && form.toolsAllow.length > 0 ? { toolsAllow: form.toolsAllow } : {}),
-          },
-          enabled: form.enabled,
-          wakeMode: form.wakeMode,
-          deleteAfterRun: form.deleteAfterRun,
-          // Explicitly send `failureAlert: false` when disabled so a previously-set
-          // alert is cleared on the backend.
-          failureAlert: buildFailureAlertPayload(form),
-          ...(form.delivery !== undefined ? { delivery: form.delivery } : {}),
-          ...(form.agentId ? { agentId: form.agentId } : {}),
-        },
+        patch: buildEditPayloadDiff(form, editingJob),
       });
       setMode("list");
       setEditingJob(null);

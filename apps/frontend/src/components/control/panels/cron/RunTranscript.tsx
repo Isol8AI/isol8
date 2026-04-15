@@ -56,6 +56,32 @@ export function RunTranscript({ sessionKey }: { sessionKey: string | undefined }
   return <MessageList messages={messages} />;
 }
 
-export function firstUserMessage(messages: AdaptedMessage[]): string | undefined {
+/**
+ * Tolerance (ms) applied when matching `afterTs` against message `ts`.
+ * Run.triggeredAtMs and the message timestamp recorded by OpenClaw are
+ * captured at slightly different points in the pipeline, so we allow a
+ * small fudge factor before declaring a message "older than this run".
+ */
+const FIRST_USER_MESSAGE_TS_TOLERANCE_MS = 5_000;
+
+/**
+ * Returns the first user message in `messages`. When `afterTs` is provided,
+ * skips messages whose `ts` is more than `FIRST_USER_MESSAGE_TS_TOLERANCE_MS`
+ * earlier — which is what we want for multi-run sessions where the same
+ * sessionKey contains prompts from previous runs. Falls back to the first
+ * user message overall when `afterTs` isn't provided or no message satisfies
+ * the bound (e.g. the adapter didn't get a `ts` from the history payload).
+ */
+export function firstUserMessage(
+  messages: AdaptedMessage[],
+  afterTs?: number,
+): string | undefined {
+  if (afterTs !== undefined) {
+    const cutoff = afterTs - FIRST_USER_MESSAGE_TS_TOLERANCE_MS;
+    const scoped = messages.find(
+      (m) => m.role === "user" && m.ts !== undefined && m.ts >= cutoff,
+    );
+    if (scoped) return scoped.content;
+  }
   return messages.find((m) => m.role === "user")?.content;
 }

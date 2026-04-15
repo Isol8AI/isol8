@@ -29,6 +29,19 @@ describe("adaptSessionMessages", () => {
     ]);
   });
 
+  it("preserves the message timestamp when present (ts or timestamp)", () => {
+    const raw = [
+      { role: "user", content: [{ type: "text", text: "first" }], ts: 1_700_000_000_000 },
+      { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: 1_700_000_001_000 },
+      { role: "user", content: [{ type: "text", text: "no ts here" }] },
+    ];
+    expect(adaptSessionMessages(raw)).toEqual([
+      { id: "history-0", role: "user", content: "first", ts: 1_700_000_000_000 },
+      { id: "history-1", role: "assistant", content: "ok", ts: 1_700_000_001_000 },
+      { id: "history-2", role: "user", content: "no ts here" },
+    ]);
+  });
+
   it("filters out system/tool messages and empty content", () => {
     const raw = [
       { role: "system", content: [{ type: "text", text: "boot" }] },

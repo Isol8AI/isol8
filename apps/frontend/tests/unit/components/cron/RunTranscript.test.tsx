@@ -19,7 +19,8 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpcMutation: () => vi.fn(),
 }));
 
-import { RunTranscript } from "@/components/control/panels/cron/RunTranscript";
+import { RunTranscript, firstUserMessage } from "@/components/control/panels/cron/RunTranscript";
+import type { AdaptedMessage } from "@/components/control/panels/cron/sessionMessageAdapter";
 
 beforeEach(() => {
   rpcState.data = undefined;
@@ -65,5 +66,36 @@ describe("RunTranscript", () => {
     rpcState.data = { messages: [] };
     render(<RunTranscript sessionKey="session-abc" />);
     expect(screen.getByText(/no transcript available/i)).toBeInTheDocument();
+  });
+});
+
+describe("firstUserMessage", () => {
+  it("returns the first user message overall when no afterTs is provided", () => {
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "first prompt", ts: 1_000 },
+      { id: "1", role: "assistant", content: "ack", ts: 2_000 },
+      { id: "2", role: "user", content: "second prompt", ts: 3_000 },
+    ];
+    expect(firstUserMessage(messages)).toBe("first prompt");
+  });
+
+  it("skips user messages older than afterTs (minus tolerance) in multi-run sessions", () => {
+    const messages: AdaptedMessage[] = [
+      // Old run: well before the cutoff.
+      { id: "0", role: "user", content: "old prompt", ts: 1_000 },
+      { id: "1", role: "assistant", content: "old answer", ts: 1_500 },
+      // Current run: at the cutoff.
+      { id: "2", role: "user", content: "current prompt", ts: 100_000 },
+      { id: "3", role: "assistant", content: "current answer", ts: 100_500 },
+    ];
+    expect(firstUserMessage(messages, 100_000)).toBe("current prompt");
+  });
+
+  it("falls back to the first user message when no message has ts (afterTs unmatched)", () => {
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "no-ts prompt" },
+      { id: "1", role: "assistant", content: "answer" },
+    ];
+    expect(firstUserMessage(messages, 100_000)).toBe("no-ts prompt");
   });
 });

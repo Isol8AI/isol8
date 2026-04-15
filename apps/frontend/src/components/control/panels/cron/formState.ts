@@ -10,6 +10,8 @@ import type {
   CronDelivery,
   CronFailureAlert,
   CronJob,
+  CronJobPatch,
+  CronPayloadPatch,
   CronSchedule,
   CronScheduleKind,
   CronWakeMode,
@@ -221,4 +223,123 @@ export function jobToForm(job: CronJob): FormState {
     return { ...EMPTY_FORM, ...base, scheduleKind: "at", atDatetime };
   }
   return { ...EMPTY_FORM, ...base };
+}
+
+// --- Edit-time payload diff -------------------------------------------------
+//
+// Build a CronJobPatch from a (form, originalJob) pair such that fields the
+// user explicitly cleared in the form are sent with an explicit clearing
+// value to the backend. Without this, optional overrides like `model`,
+// `fallbacks`, `timeoutSeconds`, `thinking`, `lightContext`, `toolsAllow`,
+// `delivery`, `agentId`, `deleteAfterRun` and `failureAlert` would be
+// silently retained because the previous code spread them only when truthy.
+//
+// Clearing convention (matches OpenClaw cron.update + CronPayloadPatch):
+//   - Optional scalars / arrays → `null` clears (e.g. toolsAllow is typed
+//     `string[] | null` in CronPayloadPatch; other optional payload fields
+//     follow the same convention at runtime even though their TS types only
+//     say `T | undefined`).
+//   - `lightContext`, `deleteAfterRun`, `failureAlert` → `false` clears
+//     (typed booleans / boolean-or-object).
+//   - `delivery` → send `{ mode: "none" }` to clear; never send `undefined`.
+//
+// Unchanged fields are still emitted so the patch matches the pre-fix
+// behaviour for everything that wasn't cleared.
+
+function nonEmptyArray<T>(arr: T[] | undefined): T[] | undefined {
+  return arr && arr.length > 0 ? arr : undefined;
+}
+
+export function buildEditPayloadDiff(
+  form: FormState,
+  original: CronJob,
+): CronJobPatch {
+  const cleanFallbacks = nonEmptyArray(
+    form.fallbacks?.map((s) => s.trim()).filter(Boolean),
+  );
+  const cleanToolsAllow = nonEmptyArray(form.toolsAllow);
+
+  const origPayload =
+    original.payload?.kind === "agentTurn" ? original.payload : undefined;
+
+  // Build the agentTurn payload patch. We always include `kind` + `message`
+  // (required by the dialog), then walk each optional field deciding
+  // include-as-value, include-as-clear, or omit.
+  const payload: CronPayloadPatch & { kind: "agentTurn" } = {
+    kind: "agentTurn",
+    message: form.message.trim(),
+  };
+
+  // model (string)
+  if (form.model) {
+    payload.model = form.model;
+  } else if (origPayload?.model !== undefined && origPayload.model !== "") {
+    // Was set, now cleared → explicit null. The TS type is `string | undefined`
+    // but the OpenClaw cron.update handler accepts null for clearing.
+    (payload as { model?: string | null }).model = null;
+  }
+
+  // fallbacks (string[])
+  if (cleanFallbacks) {
+    payload.fallbacks = cleanFallbacks;
+  } else if (origPayload?.fallbacks && origPayload.fallbacks.length > 0) {
+    (payload as { fallbacks?: string[] | null }).fallbacks = null;
+  }
+
+  // timeoutSeconds (number)
+  if (form.timeoutSeconds != null) {
+    payload.timeoutSeconds = form.timeoutSeconds;
+  } else if (origPayload?.timeoutSeconds != null) {
+    (payload as { timeoutSeconds?: number | null }).timeoutSeconds = null;
+  }
+
+  // thinking (string)
+  if (form.thinking) {
+    payload.thinking = form.thinking;
+  } else if (origPayload?.thinking !== undefined && origPayload.thinking !== "") {
+    (payload as { thinking?: string | null }).thinking = null;
+  }
+
+  // lightContext (boolean) — `false` is the cleared value (also the default).
+  // Always send the form's value when it differs from the original so an
+  // explicit toggle-off is honoured.
+  if (form.lightContext) {
+    payload.lightContext = true;
+  } else if (origPayload?.lightContext) {
+    payload.lightContext = false;
+  }
+
+  // toolsAllow (string[] | null) — explicit null clears per CronPayloadPatch.
+  if (cleanToolsAllow) {
+    payload.toolsAllow = cleanToolsAllow;
+  } else if (origPayload?.toolsAllow && origPayload.toolsAllow.length > 0) {
+    payload.toolsAllow = null;
+  }
+
+  const patch: CronJobPatch = {
+    name: form.name.trim(),
+    schedule: buildSchedule(form),
+    payload,
+    enabled: form.enabled,
+    wakeMode: form.wakeMode,
+    deleteAfterRun: form.deleteAfterRun,
+    failureAlert: buildFailureAlertPayload(form),
+  };
+
+  // delivery: spreading only when defined would let a previously-set
+  // delivery linger. Send `{ mode: "none" }` when the user cleared it.
+  if (form.delivery !== undefined) {
+    patch.delivery = form.delivery;
+  } else if (original.delivery !== undefined) {
+    patch.delivery = { mode: "none" };
+  }
+
+  // agentId (top-level): null clears.
+  if (form.agentId) {
+    patch.agentId = form.agentId;
+  } else if (original.agentId) {
+    (patch as { agentId?: string | null }).agentId = null;
+  }
+
+  return patch;
 }
