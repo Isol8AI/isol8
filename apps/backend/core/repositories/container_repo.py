@@ -167,3 +167,28 @@ async def mark_stopped_if_running(owner_id: str) -> bool:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def set_reconciler_grace(owner_id: str, seconds: int = 5) -> dict | None:
+    """Write `reconciler_grace_until = now + seconds` to this owner's container
+    row. The reconciler checks this before reverting so admin / backend-initiated
+    writes aren't immediately undone by a concurrent reconciler tick.
+
+    No-op if the row doesn't exist (returns None).
+    """
+    import time
+
+    return await update_fields(owner_id, {"reconciler_grace_until": int(time.time()) + seconds})
+
+
+async def get_reconciler_grace(owner_id: str) -> int:
+    """Return the reconciler_grace_until timestamp (epoch seconds) for this
+    owner, or 0 if unset or the row doesn't exist."""
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return 0
+    value = existing.get("reconciler_grace_until")
+    if value is None:
+        return 0
+    # DDB returns numbers as Decimal -- coerce to int.
+    return int(value)
