@@ -11,9 +11,17 @@ Ships in three modes via CONFIG_RECONCILER_MODE:
 """
 
 import asyncio
+import json
 import logging
+import os
+import time
 
-from core.repositories import container_repo
+from core.config import settings
+from core.constants import SYSTEM_ACTOR_ID
+from core.observability.metrics import put_metric
+from core.repositories import billing_repo, container_repo
+from core.services import config_policy
+from core.services.config_patcher import _locked_rmw
 
 logger = logging.getLogger(__name__)
 
@@ -33,17 +41,15 @@ class ConfigReconciler:
         self._tier_cache: dict[str, tuple[str, float]] = {}
 
     def stop(self) -> None:
-        """Signal the loop to exit after its current tick."""
         self._stop.set()
 
     async def run_forever(self) -> None:
-        logger.info("config_reconciler started")
+        logger.info("config_reconciler started mode=%s", settings.CONFIG_RECONCILER_MODE)
         while not self._stop.is_set():
             try:
                 await self._tick()
             except Exception:
                 logger.exception("config_reconciler tick failed")
-            # Sleep until tick_interval elapses OR stop is set (whichever first).
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=self._tick_interval)
             except asyncio.TimeoutError:
@@ -51,6 +57,8 @@ class ConfigReconciler:
         logger.info("config_reconciler stopped")
 
     async def _tick(self) -> None:
+        if settings.CONFIG_RECONCILER_MODE == "off":
+            return
         owners = await container_repo.list_active_owners()
         if not owners:
             return
@@ -64,21 +72,132 @@ class ConfigReconciler:
                 except Exception:
                     logger.exception("config_reconciler failed for owner %s", owner_id)
 
+        started = time.monotonic()
         await asyncio.gather(*[_one(o) for o in owners])
+        put_metric(
+            "config.reconciler.tick.duration",
+            value=(time.monotonic() - started) * 1000.0,
+            dimensions={"mode": settings.CONFIG_RECONCILER_MODE},
+        )
 
     async def _check_one(self, owner_id: str) -> None:
-        import os
+        # Defense-in-depth against path traversal: owner_ids come from Clerk +
+        # DynamoDB and are always safe, but this function now writes to EFS,
+        # so guard against unexpected slashes, dotfiles, or `..` segments.
+        if not owner_id or "/" in owner_id or ".." in owner_id or owner_id.startswith("."):
+            return
 
         path = os.path.join(self._efs_mount, owner_id, "openclaw.json")
         try:
             mtime = await asyncio.to_thread(os.path.getmtime, path)
         except FileNotFoundError:
-            # Container row says running but file not yet there; skip.
             return
 
         if self._last_seen_mtime.get(owner_id) == mtime:
             return
 
-        # File changed (or first time seeing it); in this task, only record
-        # the mtime. Actual read + policy + revert lands in Task 11.
-        self._last_seen_mtime[owner_id] = mtime
+        tier = await self._resolve_tier(owner_id)
+        if tier is None:
+            # Fail-open: don't lock a user out of their own plan due to our DDB error.
+            return
+
+        grace_until = await container_repo.get_reconciler_grace(owner_id)
+        if grace_until > int(time.time()):
+            # Admin just wrote; don't fight them.
+            return
+
+        mode = settings.CONFIG_RECONCILER_MODE
+
+        if mode == "report":
+            # Read without a lock (we're not writing); evaluate; log.
+            try:
+                config = await asyncio.to_thread(_read_json, path)
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning("reconciler: failed to read %s: %s", path, e)
+                put_metric("config.reconciler.errors", dimensions={"kind": "read"})
+                return
+            violations = config_policy.evaluate(config, tier)
+            if violations:
+                put_metric("config.drift.reported", dimensions={"tier": tier})
+                logger.info(
+                    "reconciler(report) drift for owner=%s tier=%s fields=%s",
+                    owner_id,
+                    tier,
+                    [v["field"] for v in violations],
+                )
+            self._last_seen_mtime[owner_id] = mtime
+            return
+
+        if mode == "enforce":
+            reverted_fields: list[str] = []
+
+            def _mutate(current: dict) -> bool:
+                violations = config_policy.evaluate(current, tier)
+                if not violations:
+                    return False
+                reverted = config_policy.apply_reverts(current, violations)
+                current.clear()
+                current.update(reverted)
+                reverted_fields.extend(v["field"] for v in violations)
+                return True
+
+            try:
+                await _locked_rmw(owner_id, _mutate, "policy_revert")
+            except Exception as e:
+                logger.exception("reconciler: revert failed for owner=%s: %s", owner_id, e)
+                put_metric("config.reconciler.errors", dimensions={"kind": "revert"})
+                return
+
+            if reverted_fields:
+                put_metric("config.drift.reverted", dimensions={"tier": tier})
+                logger.info(
+                    "reconciler(enforce) reverted owner=%s tier=%s fields=%s",
+                    owner_id,
+                    tier,
+                    reverted_fields,
+                )
+                await _write_audit(owner_id, tier, reverted_fields)
+            # Mtime moved from our own write; refresh cache from the fresh stat.
+            try:
+                self._last_seen_mtime[owner_id] = await asyncio.to_thread(os.path.getmtime, path)
+            except FileNotFoundError:
+                self._last_seen_mtime.pop(owner_id, None)
+            return
+
+        # Unknown mode — behave as off.
+        logger.warning("unknown CONFIG_RECONCILER_MODE=%r, treating as off", mode)
+
+    async def _resolve_tier(self, owner_id: str) -> str | None:
+        cached = self._tier_cache.get(owner_id)
+        now = time.monotonic()
+        if cached and now - cached[1] < self._tier_cache_ttl:
+            return cached[0]
+        try:
+            account = await billing_repo.get_by_owner_id(owner_id)
+        except Exception:
+            logger.exception("reconciler: billing_repo lookup failed for owner=%s", owner_id)
+            put_metric("config.reconciler.errors", dimensions={"kind": "tier_lookup"})
+            return None
+        tier = (account or {}).get("plan_tier", "free")
+        self._tier_cache[owner_id] = (tier, now)
+        return tier
+
+
+def _read_json(path: str) -> dict:
+    with open(path, "r") as f:
+        return json.load(f)
+
+
+async def _write_audit(owner_id: str, tier: str, fields: list[str]) -> None:
+    """Best-effort audit log; swallow failures (audit should never break the loop)."""
+    try:
+        from core.repositories import audit_log_repo  # type: ignore
+
+        await audit_log_repo.create(
+            actor_id=SYSTEM_ACTOR_ID,
+            action="config_policy_revert",
+            owner_id=owner_id,
+            metadata={"tier": tier, "fields": fields},
+        )
+    except Exception:
+        logger.debug("audit log write failed", exc_info=True)

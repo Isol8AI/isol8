@@ -94,3 +94,118 @@ async def test_tick_handles_missing_config_file(tmp_path, monkeypatch):
 
     # Should not raise.
     await r._tick()
+
+
+@pytest.mark.asyncio
+async def test_tick_reverts_drift_in_enforce_mode(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+
+    from core.containers.config import write_openclaw_config
+    from core.services.config_reconciler import ConfigReconciler
+
+    user = "user_drift"
+    udir = tmp_path / user
+    udir.mkdir()
+    cfg_path = udir / "openclaw.json"
+    # Start with a clean free-tier config, then mutate it in-file.
+    base = json.loads(write_openclaw_config(gateway_token="t", tier="free"))
+    base["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    cfg_path.write_text(json.dumps(base, indent=2))
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr("core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE", "enforce", raising=False)
+    monkeypatch.setattr("core.services.config_patcher._efs_mount_path", str(tmp_path))
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        AsyncMock(return_value=[user]),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.get_reconciler_grace",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan_tier": "free"}),
+    )
+
+    await r._tick()
+
+    on_disk = json.loads(cfg_path.read_text())
+    assert on_disk["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/minimax.minimax-m2.5"
+
+
+@pytest.mark.asyncio
+async def test_tick_report_mode_does_not_write(tmp_path, monkeypatch):
+    import json
+    from unittest.mock import AsyncMock
+
+    from core.containers.config import write_openclaw_config
+    from core.services.config_reconciler import ConfigReconciler
+
+    user = "user_report"
+    udir = tmp_path / user
+    udir.mkdir()
+    cfg_path = udir / "openclaw.json"
+    base = json.loads(write_openclaw_config(gateway_token="t", tier="free"))
+    base["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    cfg_path.write_text(json.dumps(base, indent=2))
+    drift_mtime = cfg_path.stat().st_mtime
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr("core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE", "report", raising=False)
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        AsyncMock(return_value=[user]),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.get_reconciler_grace",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan_tier": "free"}),
+    )
+
+    await r._tick()
+
+    # mtime unchanged → no write happened
+    assert cfg_path.stat().st_mtime == drift_mtime
+
+
+@pytest.mark.asyncio
+async def test_tick_honors_grace_window(tmp_path, monkeypatch):
+    import json
+    import time
+    from unittest.mock import AsyncMock
+
+    from core.containers.config import write_openclaw_config
+    from core.services.config_reconciler import ConfigReconciler
+
+    user = "user_grace"
+    udir = tmp_path / user
+    udir.mkdir()
+    cfg_path = udir / "openclaw.json"
+    base = json.loads(write_openclaw_config(gateway_token="t", tier="free"))
+    base["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    cfg_path.write_text(json.dumps(base, indent=2))
+    pre_mtime = cfg_path.stat().st_mtime
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr("core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE", "enforce", raising=False)
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        AsyncMock(return_value=[user]),
+    )
+    # Grace is in the future → skip revert.
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.get_reconciler_grace",
+        AsyncMock(return_value=int(time.time()) + 30),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan_tier": "free"}),
+    )
+
+    await r._tick()
+    assert cfg_path.stat().st_mtime == pre_mtime
