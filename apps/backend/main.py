@@ -74,6 +74,21 @@ async def lifespan(app: FastAPI):
 
     idle_checker_task = asyncio.create_task(_safe_idle_checker())
 
+    from core.services.config_reconciler import ConfigReconciler
+
+    reconciler = ConfigReconciler(efs_mount=settings.EFS_MOUNT_PATH)
+
+    async def _safe_reconciler():
+        if settings.CONFIG_RECONCILER_MODE == "off":
+            logger.info("config_reconciler disabled (CONFIG_RECONCILER_MODE=off)")
+            return
+        try:
+            await reconciler.run_forever()
+        except Exception:
+            logger.exception("config_reconciler crashed")
+
+    reconciler_task = asyncio.create_task(_safe_reconciler())
+
     yield
 
     # Shutdown
@@ -86,6 +101,11 @@ async def lifespan(app: FastAPI):
         pass
     try:
         await worker_task
+    except asyncio.CancelledError:
+        pass
+    reconciler.stop()
+    try:
+        await reconciler_task
     except asyncio.CancelledError:
         pass
     await shutdown_containers()
