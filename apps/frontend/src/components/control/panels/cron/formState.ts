@@ -37,6 +37,19 @@ export interface FormState {
   thinking?: string;
   /** When true, skip loading recent chat history for the run. */
   lightContext?: boolean;
+
+  // --- Tools (Task 15) ---
+  /**
+   * Agent this cron is scoped to. Used only internally (e.g. to filter
+   * `tools.catalog` lookups); not sent as part of the cron.add/update
+   * payload — CronJob.agentId is top-level on the cron itself.
+   */
+  agentId?: string;
+  /**
+   * Allowlist of tool ids the agent may call during this run. Undefined or
+   * empty means "all tools allowed" (server default).
+   */
+  toolsAllow?: string[];
 }
 
 export const EMPTY_FORM: FormState = {
@@ -58,6 +71,8 @@ export const EMPTY_FORM: FormState = {
   timeoutSeconds: undefined,
   thinking: undefined,
   lightContext: false,
+  agentId: undefined,
+  toolsAllow: undefined,
 };
 
 export function buildSchedule(form: FormState): CronSchedule {
@@ -84,6 +99,7 @@ export function jobToForm(job: CronJob): FormState {
           timeoutSeconds: job.payload.timeoutSeconds,
           thinking: job.payload.thinking,
           lightContext: job.payload.lightContext ?? false,
+          toolsAllow: job.payload.toolsAllow,
         }
       : {};
   const base = {
@@ -91,6 +107,7 @@ export function jobToForm(job: CronJob): FormState {
     message: msg,
     enabled: job.enabled,
     delivery: job.delivery,
+    agentId: job.agentId,
     ...agentExec,
   };
   if (s.kind === "cron") {

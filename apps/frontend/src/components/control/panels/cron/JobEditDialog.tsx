@@ -9,6 +9,7 @@ import { DeliveryPicker } from "./DeliveryPicker";
 import { FallbackModelList } from "./FallbackModelList";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
 import { SchedulePicker, scheduleIsValid } from "./SchedulePicker";
+import { ToolsAllowlist } from "./ToolsAllowlist";
 
 // Re-export shared form-state for backwards compatibility. The canonical
 // home is now `./formState.ts`.
@@ -179,6 +180,16 @@ export function JobEditDialog({
         <p className="text-xs text-[#8a8578] pl-6">
           Skip loading recent history for faster/cheaper runs.
         </p>
+      </div>
+
+      {/* Tools allowlist */}
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-[#8a8578]">Tools allowed</label>
+        <ToolsAllowlist
+          agentId={form.agentId}
+          value={form.toolsAllow}
+          onChange={(v) => update("toolsAllow", v)}
+        />
       </div>
     </div>
   );
