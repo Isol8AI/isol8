@@ -87,13 +87,47 @@ async def test_record_activity_different_users_not_coalesced():
 
 
 @pytest.mark.asyncio
-async def test_record_activity_releases_cooldown_on_noop_write():
-    """Cold-start regression: when update_last_active returns False (row still
-    status=stopped before start_user_service has flipped it), the cooldown
-    must be released so the next ping retries immediately. Otherwise the
-    reaper could see a null last_active_at on the next cycle and stop an
-    actively-used container.
+async def test_record_activity_backdates_cooldown_on_noop_write():
+    """When update_last_active returns False (cold-start row=stopped, or
+    missing row, or attacker pinging their own stopped container), the
+    cooldown is BACKDATED to allow retry in ~_DDB_WRITE_RETRY_FLOOR seconds
+    — not popped, not held the full 30s. Bounds DDB write rate during
+    stopped-container windows.
     """
+    from core.gateway.connection_pool import (
+        _DDB_WRITE_COOLDOWN,
+        _DDB_WRITE_RETRY_FLOOR,
+        _LAST_DDB_WRITE,
+        GatewayConnectionPool,
+    )
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    with patch(
+        "core.repositories.container_repo.update_last_active",
+        new_callable=AsyncMock,
+        return_value=False,
+    ) as mock_update:
+        before = time.time()
+        await pool.record_activity("user_1")
+        after = time.time()
+
+    mock_update.assert_awaited_once()
+    # Cooldown stamp should be back-dated to ≈ now - (cooldown - retry_floor),
+    # i.e. the next allowed retry is exactly _DDB_WRITE_RETRY_FLOOR away.
+    stamp = _LAST_DDB_WRITE["user_1"]
+    expected_min = before - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    expected_max = after - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    assert expected_min <= stamp <= expected_max
+
+
+@pytest.mark.asyncio
+async def test_record_activity_retry_floor_gates_back_to_back_noop_writes():
+    """Attack scenario: an authenticated user floods user_active against
+    their own stopped container. Each ping would hit DDB on a conditional
+    UpdateItem (which fails but still bills WCU). The retry floor caps this
+    at one DDB call per _DDB_WRITE_RETRY_FLOOR seconds."""
     from core.gateway.connection_pool import GatewayConnectionPool, _LAST_DDB_WRITE
 
     _LAST_DDB_WRITE.clear()
@@ -104,34 +138,111 @@ async def test_record_activity_releases_cooldown_on_noop_write():
         new_callable=AsyncMock,
         return_value=False,
     ) as mock_update:
-        await pool.record_activity("user_1")
+        # 5 back-to-back pings (no time passes). Only the first should reach
+        # DDB; the next 4 are gated by the backdated cooldown.
+        for _ in range(5):
+            await pool.record_activity("user_1")
 
-    mock_update.assert_awaited_once()
-    # Cooldown must NOT be set; next ping should go through.
-    assert "user_1" not in _LAST_DDB_WRITE
+    assert mock_update.await_count == 1
 
 
 @pytest.mark.asyncio
-async def test_record_activity_retries_immediately_after_noop_write():
-    """Companion to the above: after a no-op write, a second ping in the
-    same instant should fire another write — cooldown was released, so no
-    30s lockout."""
-    from core.gateway.connection_pool import GatewayConnectionPool, _LAST_DDB_WRITE
+async def test_record_activity_retries_after_retry_floor_elapses():
+    """After ≥_DDB_WRITE_RETRY_FLOOR seconds have passed since a no-op,
+    the next ping is allowed through. Confirms the floor is a *gate*, not
+    a permanent lockout."""
+    from core.gateway.connection_pool import (
+        _DDB_WRITE_RETRY_FLOOR,
+        _LAST_DDB_WRITE,
+        GatewayConnectionPool,
+    )
 
     _LAST_DDB_WRITE.clear()
     pool = GatewayConnectionPool(management_api=None)
 
-    # First call: row is stopped, returns False. Second call: row is now
-    # running, returns True. Both should reach update_last_active.
     with patch(
         "core.repositories.container_repo.update_last_active",
         new_callable=AsyncMock,
-        side_effect=[False, True],
+        return_value=False,
     ) as mock_update:
         await pool.record_activity("user_1")
+        # Roll the stamp back by retry-floor + 1s to simulate elapsed time.
+        _LAST_DDB_WRITE["user_1"] -= _DDB_WRITE_RETRY_FLOOR + 1
         await pool.record_activity("user_1")
 
     assert mock_update.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_record_activity_retry_floor_also_gates_after_ddb_exception():
+    """Symmetric to the no-op case: a DDB exception backdates the cooldown
+    too. Prevents DDB outages from amplifying into a write storm once the
+    service comes back up."""
+    from core.gateway.connection_pool import (
+        _DDB_WRITE_COOLDOWN,
+        _DDB_WRITE_RETRY_FLOOR,
+        _LAST_DDB_WRITE,
+        GatewayConnectionPool,
+    )
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    with patch(
+        "core.repositories.container_repo.update_last_active",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("ddb blip"),
+    ) as mock_update:
+        before = time.time()
+        await pool.record_activity("user_1")
+        after = time.time()
+
+    mock_update.assert_awaited_once()
+    stamp = _LAST_DDB_WRITE["user_1"]
+    expected_min = before - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    expected_max = after - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    assert expected_min <= stamp <= expected_max
+
+
+@pytest.mark.asyncio
+async def test_record_activity_retry_backdate_uses_post_await_time():
+    """Codex P2 regression: the retry-floor stamp must be computed from
+    time AFTER the DDB await, not before. Otherwise a slow update_last_active
+    call (e.g. partial DDB outage) consumes the entire 30s cooldown by the
+    time we get to the backdate line, and the next ping is admitted
+    immediately — the opposite of the intended bound."""
+    from core.gateway.connection_pool import (
+        _DDB_WRITE_COOLDOWN,
+        _DDB_WRITE_RETRY_FLOOR,
+        _LAST_DDB_WRITE,
+        GatewayConnectionPool,
+    )
+
+    _LAST_DDB_WRITE.clear()
+    pool = GatewayConnectionPool(management_api=None)
+
+    # Two time.time readings: 100.0 inside the entry-gate, then 105.0 inside
+    # the post-await backdate (simulating a 5-second slow DDB call without
+    # an actual sleep).
+    times = iter([100.0, 105.0])
+
+    with (
+        patch(
+            "core.repositories.container_repo.update_last_active",
+            new_callable=AsyncMock,
+            return_value=False,
+        ),
+        patch(
+            "core.gateway.connection_pool.time.time",
+            side_effect=lambda: next(times),
+        ),
+    ):
+        await pool.record_activity("user_1")
+
+    # Buggy version would stamp at 100.0 - 28 = 72.0 (pre-await `now`).
+    # Fixed version stamps at 105.0 - 28 = 77.0 (post-await fresh time).
+    expected = 105.0 - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+    assert _LAST_DDB_WRITE["user_1"] == pytest.approx(expected)
 
 
 @pytest.mark.asyncio
