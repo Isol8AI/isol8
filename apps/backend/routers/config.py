@@ -105,29 +105,40 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
     description=(
         "Deep-merges the patch into the caller's owner_id openclaw.json on EFS. "
         "Derives owner_id from auth context (org_id if org, else user_id). "
-        "Requires org_admin for org callers. Tier-gates channel fields."
+        "Requires org_admin for org callers. Tier-gates locked fields via config_policy."
     ),
 )
 async def patch_config(
     body: ConfigPatchBody,
     auth: AuthContext = Depends(get_current_user),
 ):
-    # Org admin check (personal context passes through)
     require_org_admin(auth)
-
     owner_id = resolve_owner_id(auth)
 
-    # Tier gate on channel fields
-    if _patch_touches_channels(body.patch):
-        account = await billing_repo.get_by_owner_id(owner_id)
-        tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
-        if tier == "free":
-            raise HTTPException(
-                status_code=403,
-                detail="channels_require_paid_tier",
-            )
+    # Resolve tier and simulate the merged config to apply policy to the
+    # final state, not to the isolated patch (which might only toggle a
+    # scaffold flag while keeping the locked field legal).
+    account = await billing_repo.get_by_owner_id(owner_id)
+    tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
 
-        # Bot token collision pre-check
+    current = await read_openclaw_config_from_efs(owner_id) or {}
+    merged = _deep_merge_for_policy(current, body.patch)
+
+    from core.services import config_policy
+
+    violations = config_policy.evaluate(merged, tier)
+    if violations:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "policy_violation",
+                "fields": [v["field"] for v in violations],
+                "reason": violations[0]["reason"],
+            },
+        )
+
+    # Bot-token collision pre-check (channels-specific; runs only if patch touches channels).
+    if _patch_touches_channels(body.patch):
         await _check_token_collision(owner_id, body.patch)
 
     try:
@@ -136,3 +147,22 @@ async def patch_config(
         raise HTTPException(status_code=404, detail=str(e))
 
     return {"status": "patched", "owner_id": owner_id}
+
+
+def _deep_merge_for_policy(base: dict, patch: dict) -> dict:
+    """Local deep-merge matching config_patcher._deep_merge semantics —
+    dicts merge recursively, non-dict values replace. Kept local to avoid
+    importing a private helper."""
+    import copy
+
+    result = copy.deepcopy(base) if not isinstance(base, dict) else dict(base)
+    if not isinstance(patch, dict):
+        return patch
+    for k, v in patch.items():
+        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
+            result[k] = _deep_merge_for_policy(result[k], v)
+        else:
+            import copy as _c
+
+            result[k] = _c.deepcopy(v)
+    return result
