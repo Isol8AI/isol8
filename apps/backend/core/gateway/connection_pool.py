@@ -32,6 +32,7 @@ _GRACE_PERIOD = 30  # seconds before closing idle connection
 _IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
 _IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
 _DDB_WRITE_COOLDOWN = 30.0  # seconds between per-owner last_active_at writes
+_DDB_WRITE_RETRY_FLOOR = 2.0  # minimum seconds between retries after a no-op / exception
 
 # Per-owner cooldown map. Module-level so it survives pool reconstruction in tests
 # and across pool singletons. Values are the last epoch-seconds we wrote to DDB.
@@ -843,11 +844,16 @@ class GatewayConnectionPool:
         seconds. Callers are not expected to throttle; fire for every event.
 
         Cooldown is claimed *before* the await to deflect a thundering herd of
-        concurrent pings, but is released if the write turns out to be a no-op
-        (row missing or still `status=stopped`) or if the await raises. Both
-        cases need the next ping to retry immediately — most importantly on
-        cold start, where the first ping can land while the row is still
-        flipping from `stopped` to `running`.
+        concurrent pings. On a no-op write (row missing or still `status=stopped`)
+        or an exception, the cooldown is *backdated* so the next retry is allowed
+        in ~_DDB_WRITE_RETRY_FLOOR seconds — not immediately. Two reasons:
+
+        1. Cold-start UX: when a user returns after idle, their first ping may
+           land while the row is still flipping from `stopped` to `running`.
+           Retry quickly, but don't wait a full 30s.
+        2. Abuse floor: an authenticated user flooding `user_active` against
+           their own stopped container can't burn unbounded DDB WCU on
+           conditional-check failures — retries bounded to 1 per _DDB_WRITE_RETRY_FLOOR.
         """
         now = time.time()
         last = _LAST_DDB_WRITE.get(owner_id, 0.0)
@@ -858,15 +864,19 @@ class GatewayConnectionPool:
         from core.dynamodb import utc_now_iso
         from core.repositories import container_repo
 
+        # Backdating `last_write` to (now - cooldown + floor) gates the next
+        # record_activity call until _DDB_WRITE_RETRY_FLOOR seconds have passed.
+        retry_backdate = now - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+
         try:
             wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
         except Exception:
             logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
-            _LAST_DDB_WRITE.pop(owner_id, None)
+            _LAST_DDB_WRITE[owner_id] = retry_backdate
             return
 
         if not wrote:
-            _LAST_DDB_WRITE.pop(owner_id, None)
+            _LAST_DDB_WRITE[owner_id] = retry_backdate
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
