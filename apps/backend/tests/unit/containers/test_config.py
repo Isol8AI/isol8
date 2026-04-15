@@ -154,6 +154,21 @@ class TestWriteOpenclawConfig:
         config = json.loads(write_openclaw_config())
         assert config["agents"]["defaults"]["workspace"] == ".openclaw/workspaces"
 
+    def test_main_agent_has_explicit_workspace(self):
+        """Main agent's workspace is .openclaw/workspaces/main so it joins
+        the {id}/ scheme AND stays on EFS.
+
+        The .openclaw/ prefix is REQUIRED: OpenClaw resolves per-agent
+        workspace values via path.resolve() against the process cwd
+        (/home/node). A bare "workspaces/main" would land at
+        /home/node/workspaces/main/ — OUTSIDE the EFS mount at
+        /home/node/.openclaw/ — so every write would be lost on container
+        restart.
+        """
+        config = json.loads(write_openclaw_config())
+        main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
+        assert main_entry.get("workspace") == ".openclaw/workspaces/main"
+
     def test_browser_disabled(self):
         """Browser automation is disabled by default."""
         config = json.loads(write_openclaw_config())
