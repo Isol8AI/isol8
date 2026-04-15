@@ -32,6 +32,17 @@ function extractThinking(content: RawContentBlock[] | undefined): string | undef
   return thinking || undefined;
 }
 
+/**
+ * Adapts a raw session-message payload from `chat.history` / `sessions.get`
+ * into the Message shape MessageList consumes. Mirrors the decoder in
+ * useAgentChat.ts:193-204 with two deliberate departures:
+ *   1. `id` uses the output array's length, not the raw-input index, so
+ *      filtered entries (non-user/assistant, empty content) don't leave
+ *      gaps in the sequence — produces stable, dense React keys.
+ *   2. Role filtering and empty-content filtering happen in one pass
+ *      rather than filter/map/filter, so a message with neither text nor
+ *      thinking is dropped before receiving an id.
+ */
 export function adaptSessionMessages(raw: unknown[] | undefined): AdaptedMessage[] {
   if (!raw) return [];
   const out: AdaptedMessage[] = [];
