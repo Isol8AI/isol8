@@ -173,38 +173,54 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Step 2: custom agents — move ALLOWLISTED config files from
-# agents/{id}/ to workspaces/{id}/
+# Step 2: custom agents — move non-runtime content from agents/{id}/
+# to workspaces/{id}/
 # ---------------------------------------------------------------------------
 #
 # In the old layout, Config tab edits wrote SOUL.md etc. to agents/{id}/
-# (via the pre-PR-267 backend). After PR #267, reads/writes go to
-# workspaces/{id}/. We move ONLY the 7 allowlisted config filenames — never
-# runtime subdirs like qmd/, agent/, sessions/.
+# (via the pre-PR-267 backend); any other user-written files under
+# agents/{id}/ would also be stranded once the backend starts reading from
+# workspaces/{id}/. We move EVERYTHING from agents/{id}/ into
+# workspaces/{id}/ EXCEPT known OpenClaw runtime subdirs (agent/, sessions/,
+# qmd/) — those stay put because OpenClaw continues owning them there.
 #
-# In practice most prod custom agents have no config files on disk yet
-# (ember, pulse), so this step is often a no-op. When it does fire, it
-# rescues a handful of edited personality files.
+# In practice most prod custom agents only have runtime subdirs on EFS (their
+# workspace pointed to container-local paths pre-fix), so this step usually
+# moves nothing. But it's defensive: if a user DID write a note or artifact
+# into agents/{id}/ somehow, we rescue it rather than strand it.
+
+AGENTS_RUNTIME_SUBDIRS="agent sessions qmd"
+
+is_agents_runtime_name() {
+  candidate="$1"
+  for known in $AGENTS_RUNTIME_SUBDIRS; do
+    if [ "$candidate" = "$known" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
 
 if [ ! -d "$AGENTS" ]; then
   echo "  agents/ doesn't exist — no custom-agent migration needed"
 else
-  echo "== Step 2: custom agents — agents/{id}/{config files} -> workspaces/{id}/ =="
+  echo "== Step 2: custom agents — agents/{id}/* (excl runtime) -> workspaces/{id}/ =="
 
   find "$AGENTS" -mindepth 1 -maxdepth 1 -type d -print | while IFS= read -r agent_dir; do
     agent_id="$(basename "$agent_dir")"
     target_ws="$WS/$agent_id"
     moved_any=0
 
-    for fname in $CONFIG_ALLOWLIST; do
-      src="$agent_dir/$fname"
-      if [ -e "$src" ] || [ -L "$src" ]; then
-        if [ "$moved_any" -eq 0 ]; then
-          mkdir_p "$target_ws"
-          moved_any=1
-        fi
-        move_item "$src" "$target_ws/$fname"
+    find "$agent_dir" -mindepth 1 -maxdepth 1 -print | while IFS= read -r entry; do
+      name="$(basename "$entry")"
+      if is_agents_runtime_name "$name"; then
+        continue
       fi
+      if [ "$moved_any" -eq 0 ]; then
+        mkdir_p "$target_ws"
+        moved_any=1
+      fi
+      move_item "$entry" "$target_ws/$name"
     done
   done
 

@@ -79,7 +79,7 @@ function FileTreeNode({ entry, allEntries, selectedPath, onSelect }: FileTreeNod
             ? "text-[#8a8578] hover:bg-[#e8e3d9]"
             : "text-[#1a1a1a] hover:bg-[#e8e3d9]"
       }`}
-      title={isMissing ? "This file does not exist yet" : undefined}
+      title={isMissing ? "Click to create this file" : undefined}
     >
       <span className="w-3.5 flex-shrink-0" />
       {isMissing ? (
