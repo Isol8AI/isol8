@@ -403,8 +403,9 @@ export function ChatLayout({
           existingIds={agents.map((a) => a.id)}
           onCancel={() => setCreateFormOpen(false)}
           onCreate={async (name) => {
-            // No `workspace` override: OpenClaw appends /{agentId} to
-            // agents.defaults.workspace so the agent lands at workspaces/{id}/.
+            // OpenClaw's agents.create requires a non-empty `workspace` —
+            // see useAgents.createAgent, which fills in the default path
+            // (.openclaw/workspaces/{id}) when omitted.
             await createAgent({ name });
             setCreateFormOpen(false);
           }}

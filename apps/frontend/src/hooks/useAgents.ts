@@ -48,11 +48,20 @@ export function useAgents() {
   const defaultId = data?.defaultId;
 
   const createAgent = useCallback(
-    // `workspace` is optional — omit it to let OpenClaw apply its default
-    // (`{agents.defaults.workspace}/{agentId}` → `workspaces/{id}/`). Only
-    // pass a value when you need a non-standard path.
+    // OpenClaw's agents.create requires a non-empty `workspace` string
+    // (it does NOT inherit agents.defaults.workspace at create time).
+    // When the caller omits `workspace`, we fill in the same path the
+    // default would resolve to at runtime — .openclaw/workspaces/{id} —
+    // so the agent lands on EFS without the caller knowing about path
+    // conventions.
     async (params: { name: string; workspace?: string; emoji?: string }) => {
-      await callRpc("agents.create", params);
+      const normalizedId = params.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/-+/g, "-")
+        .replace(/^-|-$/g, "");
+      const workspace = params.workspace ?? `.openclaw/workspaces/${normalizedId}`;
+      await callRpc("agents.create", { ...params, workspace });
       mutate();
     },
     [callRpc, mutate],
