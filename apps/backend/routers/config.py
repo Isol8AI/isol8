@@ -18,8 +18,10 @@ from core.auth import (
 )
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo
+from core.services import config_policy
 from core.services.config_patcher import (
     ConfigPatchError,
+    deep_merge,
     patch_openclaw_config,
 )
 
@@ -137,9 +139,7 @@ async def patch_config(
     except Exception:
         logger.exception("EFS read failed for owner_id=%s; treating current config as {}", owner_id)
         current = {}
-    merged = _deep_merge_for_policy(current, body.patch)
-
-    from core.services import config_policy
+    merged = deep_merge(current, body.patch)
 
     violations = config_policy.evaluate(merged, tier)
     if violations:
@@ -162,22 +162,3 @@ async def patch_config(
         raise HTTPException(status_code=404, detail=str(e))
 
     return {"status": "patched", "owner_id": owner_id}
-
-
-def _deep_merge_for_policy(base: dict, patch: dict) -> dict:
-    """Local deep-merge matching config_patcher._deep_merge semantics —
-    dicts merge recursively, non-dict values replace. Kept local to avoid
-    importing a private helper."""
-    import copy
-
-    result = copy.deepcopy(base) if not isinstance(base, dict) else dict(base)
-    if not isinstance(patch, dict):
-        return patch
-    for k, v in patch.items():
-        if k in result and isinstance(result[k], dict) and isinstance(v, dict):
-            result[k] = _deep_merge_for_policy(result[k], v)
-        else:
-            import copy as _c
-
-            result[k] = _c.deepcopy(v)
-    return result

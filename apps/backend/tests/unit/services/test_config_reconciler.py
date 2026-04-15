@@ -174,6 +174,91 @@ async def test_tick_report_mode_does_not_write(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_tick_off_mode_no_op(tmp_path, monkeypatch):
+    """CONFIG_RECONCILER_MODE=off must short-circuit _tick before any
+    DDB / EFS / billing work."""
+    from unittest.mock import AsyncMock
+
+    from core.services.config_reconciler import ConfigReconciler
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr(
+        "core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE",
+        "off",
+        raising=False,
+    )
+
+    list_owners = AsyncMock(return_value=["user_off"])
+    get_grace = AsyncMock(return_value=0)
+    get_billing = AsyncMock(return_value={"plan_tier": "free"})
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        list_owners,
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.get_reconciler_grace",
+        get_grace,
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.billing_repo.get_by_owner_id",
+        get_billing,
+    )
+
+    await r._tick()
+
+    # off mode must short-circuit before any IO.
+    list_owners.assert_not_called()
+    get_grace.assert_not_called()
+    get_billing.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_tick_unknown_mode_warns_and_no_op(tmp_path, monkeypatch, caplog):
+    """An unknown CONFIG_RECONCILER_MODE value must log a warning and
+    leave drift on disk (behave as ``off`` at the per-owner level)."""
+    import json
+    import logging
+    from unittest.mock import AsyncMock
+
+    from core.containers.config import write_openclaw_config
+    from core.services.config_reconciler import ConfigReconciler
+
+    user = "user_unknown_mode"
+    udir = tmp_path / user
+    udir.mkdir()
+    cfg_path = udir / "openclaw.json"
+    base = json.loads(write_openclaw_config(gateway_token="t", tier="free"))
+    base["agents"]["defaults"]["model"]["primary"] = "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    cfg_path.write_text(json.dumps(base, indent=2))
+    pre_mtime = cfg_path.stat().st_mtime
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr(
+        "core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE",
+        "bogus",
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.get_reconciler_grace",
+        AsyncMock(return_value=0),
+    )
+    monkeypatch.setattr(
+        "core.services.config_reconciler.billing_repo.get_by_owner_id",
+        AsyncMock(return_value={"plan_tier": "free"}),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await r._check_one(user)
+
+    # No write happened (drift stays on disk).
+    assert cfg_path.stat().st_mtime == pre_mtime
+    on_disk = json.loads(cfg_path.read_text())
+    assert on_disk["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
+    # Warning was logged.
+    assert any("unknown CONFIG_RECONCILER_MODE" in rec.message for rec in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_tick_honors_grace_window(tmp_path, monkeypatch):
     import json
     import time

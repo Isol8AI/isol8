@@ -18,7 +18,7 @@ import logging
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo, container_repo
 from core.services import config_policy
-from core.services.config_patcher import _locked_rmw
+from core.services.config_patcher import locked_rmw
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("reconcile_all")
@@ -49,7 +49,7 @@ async def reconcile_owner(owner_id: str, dry_run: bool) -> tuple[str, list[str]]
         current.update(reverted)
         return True
 
-    await _locked_rmw(owner_id, _mutate, "fleet_cleanup")
+    await locked_rmw(owner_id, _mutate, "fleet_cleanup")
     return ("reverted", fields)
 
 

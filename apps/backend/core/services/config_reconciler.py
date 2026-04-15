@@ -17,11 +17,10 @@ import os
 import time
 
 from core.config import settings
-from core.constants import SYSTEM_ACTOR_ID
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, container_repo
 from core.services import config_policy
-from core.services.config_patcher import _locked_rmw
+from core.services.config_patcher import locked_rmw
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +76,7 @@ class ConfigReconciler:
         put_metric(
             "config.reconciler.tick.duration",
             value=(time.monotonic() - started) * 1000.0,
+            unit="Milliseconds",
             dimensions={"mode": settings.CONFIG_RECONCILER_MODE},
         )
 
@@ -142,7 +142,7 @@ class ConfigReconciler:
                 return True
 
             try:
-                await _locked_rmw(owner_id, _mutate, "policy_revert")
+                await locked_rmw(owner_id, _mutate, "policy_revert")
             except Exception as e:
                 logger.exception("reconciler: revert failed for owner=%s: %s", owner_id, e)
                 put_metric("config.reconciler.errors", dimensions={"kind": "revert"})
@@ -156,7 +156,10 @@ class ConfigReconciler:
                     tier,
                     reverted_fields,
                 )
-                await _write_audit(owner_id, tier, reverted_fields)
+                # Revert events are observable via the logger.info above
+                # (CloudWatch) and the config.drift.reverted metric. No
+                # dedicated audit log table — those two channels give us
+                # sufficient observability for this loop.
             # Mtime moved from our own write; refresh cache from the fresh stat.
             try:
                 self._last_seen_mtime[owner_id] = await asyncio.to_thread(os.path.getmtime, path)
@@ -186,18 +189,3 @@ class ConfigReconciler:
 def _read_json(path: str) -> dict:
     with open(path, "r") as f:
         return json.load(f)
-
-
-async def _write_audit(owner_id: str, tier: str, fields: list[str]) -> None:
-    """Best-effort audit log; swallow failures (audit should never break the loop)."""
-    try:
-        from core.repositories import audit_log_repo  # type: ignore
-
-        await audit_log_repo.create(
-            actor_id=SYSTEM_ACTOR_ID,
-            action="config_policy_revert",
-            owner_id=owner_id,
-            metadata={"tier": tier, "fields": fields},
-        )
-    except Exception:
-        logger.debug("audit log write failed", exc_info=True)

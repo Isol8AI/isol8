@@ -46,13 +46,48 @@ def _expected_providers(tier: str) -> dict:
 
 
 def _providers_match(actual: Any, expected: dict) -> bool:
-    """Strict equality check. Providers block must match exactly — any extra
-    provider, any extra/missing model, any changed field is a violation."""
-    # NOTE: strict `==` is order-sensitive for the `models` list. Both
-    # `write_openclaw_config` and `_expected_providers` derive the list from
-    # `_models_for_tier` so order is shared. If either side re-orders, every
-    # clean config will flip to a violation.
-    return actual == expected
+    """Strict equality check against a canonical form. Providers block must
+    match exactly — any extra provider, any extra/missing model, any changed
+    field is a violation.
+
+    Canonicalizes before comparison so list ordering of ``models`` does not
+    matter: provider top-level keys compared as sets, per-provider non-``models``
+    fields compared as dicts, ``models`` compared as ``{id: model}`` maps.
+    Each model's full content is still strictly checked — only the list-order
+    invariant is loosened.
+    """
+    if not isinstance(actual, dict):
+        return False
+
+    if set(actual.keys()) != set(expected.keys()):
+        return False
+
+    for provider, expected_cfg in expected.items():
+        actual_cfg = actual.get(provider)
+        if not isinstance(actual_cfg, dict) or not isinstance(expected_cfg, dict):
+            return False
+
+        # Non-models keys must match exactly (baseUrl, api, auth, ...).
+        actual_non_models = {k: v for k, v in actual_cfg.items() if k != "models"}
+        expected_non_models = {k: v for k, v in expected_cfg.items() if k != "models"}
+        if actual_non_models != expected_non_models:
+            return False
+
+        # Models list: compare as {id: model} dict to ignore ordering but keep
+        # content-strict comparison on every model entry.
+        actual_models = actual_cfg.get("models", [])
+        expected_models = expected_cfg.get("models", [])
+        if not isinstance(actual_models, list) or not isinstance(expected_models, list):
+            return False
+        try:
+            actual_by_id = {m["id"]: m for m in actual_models}
+            expected_by_id = {m["id"]: m for m in expected_models}
+        except (TypeError, KeyError):
+            return False
+        if actual_by_id != expected_by_id:
+            return False
+
+    return True
 
 
 def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
