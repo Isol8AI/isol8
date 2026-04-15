@@ -118,10 +118,25 @@ async def patch_config(
     # Resolve tier and simulate the merged config to apply policy to the
     # final state, not to the isolated patch (which might only toggle a
     # scaffold flag while keeping the locked field legal).
-    account = await billing_repo.get_by_owner_id(owner_id)
-    tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
+    # Fail-closed: if the billing lookup blows up (e.g. DDB unavailable in
+    # contract/test envs, transient AWS error), assume the most restrictive
+    # tier so we never accidentally loosen policy when infra is degraded.
+    try:
+        account = await billing_repo.get_by_owner_id(owner_id)
+        tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
+    except Exception:
+        logger.exception("billing lookup failed for owner_id=%s; defaulting to free tier", owner_id)
+        tier = "free"
 
-    current = await read_openclaw_config_from_efs(owner_id) or {}
+    # Fail-open on current-config read: if EFS is unreachable or read raises,
+    # treat current config as empty so the merged config is just the patch
+    # itself. The downstream patch_openclaw_config call will still 404 if the
+    # underlying file truly doesn't exist.
+    try:
+        current = await read_openclaw_config_from_efs(owner_id) or {}
+    except Exception:
+        logger.exception("EFS read failed for owner_id=%s; treating current config as {}", owner_id)
+        current = {}
     merged = _deep_merge_for_policy(current, body.patch)
 
     from core.services import config_policy
