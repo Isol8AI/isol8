@@ -42,10 +42,13 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     try {
       await callRpc("agents.create", {
         name: name.trim(),
-        // No `workspace` override: OpenClaw appends /{agentId} to
-        // agents.defaults.workspace automatically, so the agent lands at
-        // workspaces/{agentId}/. Matches main's explicit workspaces/main
-        // override — every agent uses the same scheme.
+        // OpenClaw's agents.create requires a non-empty `workspace` string —
+        // it does NOT inherit agents.defaults.workspace at create time
+        // (only at runtime via resolveAgentWorkspaceDir). Pass the same
+        // path the default would resolve to, so the agent lands at
+        // .openclaw/workspaces/{id}/ on EFS — matching main's explicit
+        // workspaces/main override.
+        workspace: ".openclaw/workspaces/" + normalizedId,
         reasoningDefault: "stream",
       });
       posthog?.capture("agent_created", { agent_name: name.trim() });
