@@ -5,7 +5,9 @@ import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
+import { AdvancedSection } from "./AdvancedSection";
 import { DeliveryPicker } from "./DeliveryPicker";
+import { FailureAlertsSection } from "./FailureAlertsSection";
 import { FallbackModelList } from "./FallbackModelList";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
 import { SchedulePicker, scheduleIsValid } from "./SchedulePicker";
@@ -16,22 +18,13 @@ import { ToolsAllowlist } from "./ToolsAllowlist";
 export {
   EMPTY_FORM,
   buildSchedule,
+  buildFailureAlertPayload,
   jobToForm,
   type FormState,
   type ScheduleKind,
 } from "./formState";
 
 import type { FormState } from "./formState";
-
-// --- Placeholder shared by empty accordion sections (Tasks 14-16) ---
-
-function ComingSoon({ task }: { task: string }) {
-  return (
-    <div className="text-xs text-[#8a8578] italic">
-      Coming soon ({task}).
-    </div>
-  );
-}
 
 // --- Dialog ---
 
@@ -73,7 +66,12 @@ export function JobEditDialog({
         everyValue={form.everyValue}
         everyUnit={form.everyUnit}
         atDatetime={form.atDatetime}
-        onFieldChange={update}
+        onFieldChange={(key, value) =>
+          // SchedulePickerFields is a strict subset of FormState, so the
+          // key/value pairing is always valid at runtime. TS can't prove the
+          // indexed-access contravariance on its own.
+          update(key as keyof FormState, value as FormState[keyof FormState])
+        }
       />
 
       {/* Message */}
@@ -198,8 +196,18 @@ export function JobEditDialog({
     { id: "basics", title: "Basics", defaultOpen: true, children: basicsBody },
     { id: "delivery", title: "Delivery", defaultOpen: true, children: deliveryBody },
     { id: "agent-execution", title: "Agent execution", defaultOpen: false, children: agentExecutionBody },
-    { id: "failure-alerts", title: "Failure alerts", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
-    { id: "advanced", title: "Advanced", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
+    {
+      id: "failure-alerts",
+      title: "Failure alerts",
+      defaultOpen: false,
+      children: <FailureAlertsSection form={form} update={update} />,
+    },
+    {
+      id: "advanced",
+      title: "Advanced",
+      defaultOpen: false,
+      children: <AdvancedSection form={form} update={update} />,
+    },
   ];
 
   return (

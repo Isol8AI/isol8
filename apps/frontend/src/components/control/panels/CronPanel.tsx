@@ -16,6 +16,7 @@ import {
   JobEditDialog,
   EMPTY_FORM,
   buildSchedule,
+  buildFailureAlertPayload,
   jobToForm,
   type FormState,
 } from "./cron/JobEditDialog";
@@ -167,8 +168,11 @@ export function CronPanel() {
         },
         enabled: form.enabled,
         sessionTarget: "isolated",
-        wakeMode: "now",
+        wakeMode: form.wakeMode,
         ...(form.delivery ? { delivery: form.delivery } : {}),
+        ...(form.agentId ? { agentId: form.agentId } : {}),
+        ...(form.deleteAfterRun ? { deleteAfterRun: true } : {}),
+        failureAlert: buildFailureAlertPayload(form),
       });
       setMode("list");
       mutate();
@@ -201,7 +205,13 @@ export function CronPanel() {
             ...(form.toolsAllow && form.toolsAllow.length > 0 ? { toolsAllow: form.toolsAllow } : {}),
           },
           enabled: form.enabled,
+          wakeMode: form.wakeMode,
+          deleteAfterRun: form.deleteAfterRun,
+          // Explicitly send `failureAlert: false` when disabled so a previously-set
+          // alert is cleared on the backend.
+          failureAlert: buildFailureAlertPayload(form),
           ...(form.delivery !== undefined ? { delivery: form.delivery } : {}),
+          ...(form.agentId ? { agentId: form.agentId } : {}),
         },
       });
       setMode("list");

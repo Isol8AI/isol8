@@ -6,7 +6,14 @@
 // Extracted from JobEditDialog.tsx in Task 13 so that multiple siblings
 // can reference the same FormState without cyclic imports.
 
-import type { CronDelivery, CronJob, CronSchedule, CronScheduleKind } from "./types";
+import type {
+  CronDelivery,
+  CronFailureAlert,
+  CronJob,
+  CronSchedule,
+  CronScheduleKind,
+  CronWakeMode,
+} from "./types";
 
 export type ScheduleKind = CronScheduleKind;
 
@@ -40,9 +47,9 @@ export interface FormState {
 
   // --- Tools (Task 15) ---
   /**
-   * Agent this cron is scoped to. Used only internally (e.g. to filter
-   * `tools.catalog` lookups); not sent as part of the cron.add/update
-   * payload — CronJob.agentId is top-level on the cron itself.
+   * Agent this cron is scoped to. Used internally (e.g. to filter
+   * `tools.catalog` lookups) AND sent as `agentId` at the top-level of the
+   * cron.add/update payload (CronJob.agentId is a top-level field).
    */
   agentId?: string;
   /**
@@ -50,15 +57,41 @@ export interface FormState {
    * empty means "all tools allowed" (server default).
    */
   toolsAllow?: string[];
+
+  // --- Failure alerts (Task 16) ---
+  /** Master switch for the failure-alert block. When false, serialize `failureAlert: false`. */
+  failureAlertEnabled: boolean;
+  /** Trigger after this many consecutive failures. */
+  failureAlertAfter: number;
+  /** Minimum ms between two alerts. */
+  failureAlertCooldownMs: number;
+  /**
+   * Destination for the failure alert. Modelled as a CronDelivery so we can
+   * reuse DeliveryPicker (nested); translated to CronFailureAlert's
+   * `{channel, to, accountId, mode}` subset on save.
+   */
+  failureAlertDelivery?: CronDelivery;
+
+  // --- Advanced (Task 16) ---
+  /** One-shot jobs: delete after the first successful run. */
+  deleteAfterRun: boolean;
+  /**
+   * How the scheduler dispatches due runs:
+   *  - "next-heartbeat" waits for the next scheduler tick (default),
+   *  - "now" fires immediately.
+   */
+  wakeMode: CronWakeMode;
 }
 
 export const EMPTY_FORM: FormState = {
   name: "",
-  scheduleKind: "cron",
+  // Create-form defaults (Task 16): pick "Every 1 day" as the most common
+  // fresh-cron configuration. User can flip to cron/at in SchedulePicker.
+  scheduleKind: "every",
   cronExpr: "",
   cronTz: "",
-  everyValue: 30,
-  everyUnit: "minutes",
+  everyValue: 1,
+  everyUnit: "days",
   atDatetime: "",
   message: "",
   enabled: true,
@@ -73,6 +106,14 @@ export const EMPTY_FORM: FormState = {
   lightContext: false,
   agentId: undefined,
   toolsAllow: undefined,
+  // Failure alerts: off by default. When user toggles on, defaults below apply.
+  failureAlertEnabled: false,
+  failureAlertAfter: 3,
+  failureAlertCooldownMs: 3_600_000, // 1 hour
+  failureAlertDelivery: undefined,
+  // Advanced defaults.
+  deleteAfterRun: false,
+  wakeMode: "next-heartbeat",
 };
 
 export function buildSchedule(form: FormState): CronSchedule {
@@ -86,6 +127,48 @@ export function buildSchedule(form: FormState): CronSchedule {
     case "at":
       return { kind: "at", at: new Date(form.atDatetime).toISOString() };
   }
+}
+
+// --- Failure-alert <-> CronDelivery translation ---
+//
+// CronFailureAlert has {channel, to, accountId, mode} plus {after, cooldownMs}.
+// The destination subset maps cleanly to CronDelivery so we can reuse
+// <DeliveryPicker nested />. `mode` on CronFailureAlert is narrower
+// ("announce" | "webhook"); when the user somehow ends up with "none" we drop
+// the field entirely so the backend can default it.
+
+export function failureAlertToDelivery(
+  a: CronFailureAlert | false | undefined,
+): CronDelivery | undefined {
+  if (!a) return undefined;
+  return {
+    mode: a.mode ?? "announce",
+    channel: a.channel,
+    to: a.to,
+    accountId: a.accountId,
+  };
+}
+
+export function deliveryToFailureAlertDest(
+  d: CronDelivery | undefined,
+): Pick<CronFailureAlert, "channel" | "to" | "accountId" | "mode"> {
+  if (!d) return {};
+  const out: Pick<CronFailureAlert, "channel" | "to" | "accountId" | "mode"> = {};
+  if (d.mode === "announce" || d.mode === "webhook") out.mode = d.mode;
+  if (d.channel !== undefined) out.channel = d.channel;
+  if (d.to !== undefined) out.to = d.to;
+  if (d.accountId !== undefined) out.accountId = d.accountId;
+  return out;
+}
+
+export function buildFailureAlertPayload(form: FormState): CronFailureAlert | false {
+  if (!form.failureAlertEnabled) return false;
+  const dest = deliveryToFailureAlertDest(form.failureAlertDelivery);
+  return {
+    after: form.failureAlertAfter,
+    cooldownMs: form.failureAlertCooldownMs,
+    ...dest,
+  };
 }
 
 export function jobToForm(job: CronJob): FormState {
@@ -102,13 +185,24 @@ export function jobToForm(job: CronJob): FormState {
           toolsAllow: job.payload.toolsAllow,
         }
       : {};
+  const fa = job.failureAlert; // CronFailureAlert | false | undefined
+  const failureAlertFields = {
+    failureAlertEnabled: !!fa,
+    failureAlertAfter: (fa && typeof fa === "object" ? fa.after : undefined) ?? 3,
+    failureAlertCooldownMs:
+      (fa && typeof fa === "object" ? fa.cooldownMs : undefined) ?? 3_600_000,
+    failureAlertDelivery: failureAlertToDelivery(fa),
+  };
   const base = {
     name: job.name,
     message: msg,
     enabled: job.enabled,
     delivery: job.delivery,
     agentId: job.agentId,
+    deleteAfterRun: job.deleteAfterRun ?? false,
+    wakeMode: job.wakeMode ?? "next-heartbeat",
     ...agentExec,
+    ...failureAlertFields,
   };
   if (s.kind === "cron") {
     return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: s.expr ?? "", cronTz: s.tz ?? "" };
