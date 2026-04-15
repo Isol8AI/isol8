@@ -36,7 +36,11 @@ class ConfigReconciler:
         self._tier_cache_ttl = tier_cache_ttl
         self._tick_interval = tick_interval
         self._stop = asyncio.Event()
-        self._last_seen_mtime: dict[str, float] = {}
+        # Cache key combines mtime AND tier so a plan change alone (without a
+        # file edit) still triggers re-evaluation once the tier-cache TTL
+        # expires. Otherwise a paid→free downgrade where the user hasn't
+        # touched openclaw.json would never be observed.
+        self._last_seen: dict[str, tuple[float, str]] = {}
         self._tier_cache: dict[str, tuple[str, float]] = {}
 
     def stop(self) -> None:
@@ -93,12 +97,15 @@ class ConfigReconciler:
         except FileNotFoundError:
             return
 
-        if self._last_seen_mtime.get(owner_id) == mtime:
-            return
-
         tier = await self._resolve_tier(owner_id)
         if tier is None:
             # Fail-open: don't lock a user out of their own plan due to our DDB error.
+            return
+
+        # Short-circuit only when BOTH the file and the user's tier are
+        # unchanged since the last tick. A tier change with an untouched
+        # file must still re-evaluate (paid→free downgrade case).
+        if self._last_seen.get(owner_id) == (mtime, tier):
             return
 
         grace_until = await container_repo.get_reconciler_grace(owner_id)
@@ -125,7 +132,7 @@ class ConfigReconciler:
                     tier,
                     [v["field"] for v in violations],
                 )
-            self._last_seen_mtime[owner_id] = mtime
+            self._last_seen[owner_id] = (mtime, tier)
             return
 
         if mode == "enforce":
@@ -162,9 +169,10 @@ class ConfigReconciler:
                 # sufficient observability for this loop.
             # Mtime moved from our own write; refresh cache from the fresh stat.
             try:
-                self._last_seen_mtime[owner_id] = await asyncio.to_thread(os.path.getmtime, path)
+                new_mtime = await asyncio.to_thread(os.path.getmtime, path)
+                self._last_seen[owner_id] = (new_mtime, tier)
             except FileNotFoundError:
-                self._last_seen_mtime.pop(owner_id, None)
+                self._last_seen.pop(owner_id, None)
             return
 
         # Unknown mode — behave as off.

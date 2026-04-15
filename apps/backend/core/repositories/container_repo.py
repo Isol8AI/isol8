@@ -201,6 +201,25 @@ async def list_active_owners() -> list[str]:
     Deliberately excludes 'provisioning' — during that phase the backend
     itself is writing openclaw.json, and the reconciler must not race with
     it. The reconciler starts caring once the container is fully running.
+
+    Paginates via LastEvaluatedKey so fleets whose status-index page exceeds
+    DynamoDB's 1MB response cap are fully enumerated (otherwise later pages
+    would be silently dropped, leaving some users unreconciled).
     """
-    rows = await get_by_status("running")
-    return [r["owner_id"] for r in rows if "owner_id" in r]
+    table = _get_table()
+    owners: list[str] = []
+    last_key = None
+    while True:
+        query_kwargs: dict = {
+            "IndexName": "status-index",
+            "KeyConditionExpression": Key("status").eq("running"),
+            "ProjectionExpression": "owner_id",
+        }
+        if last_key:
+            query_kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **query_kwargs)
+        owners.extend(item["owner_id"] for item in response.get("Items", []) if "owner_id" in item)
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return owners
