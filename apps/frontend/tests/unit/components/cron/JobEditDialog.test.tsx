@@ -179,7 +179,15 @@ describe("JobEditDialog", () => {
     fireEvent.click(toggle);
 
     // Confirmation banner is present with Cancel + Enable anyway buttons.
-    expect(screen.getByText(/will.*delete this cron job/i)).toBeInTheDocument();
+    // The warning text is split across a <strong> element, so match via a
+    // function matcher scoped to <p> to avoid matching ancestor containers too.
+    expect(
+      screen.getByText((_content, element) => {
+        if (!element || element.tagName !== "P") return false;
+        const text = element.textContent ?? "";
+        return /will\s+delete this cron job/i.test(text);
+      }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: /^Enable anyway$/ }),
     ).toBeInTheDocument();

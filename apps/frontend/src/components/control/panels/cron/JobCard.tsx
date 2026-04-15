@@ -61,17 +61,22 @@ function RunHistory({
     );
   }
 
-  if (error) {
+  const entries = data?.entries ?? [];
+
+  // Error without stale data: show error message only.
+  if (error && entries.length === 0) {
     return <p className="text-xs text-destructive py-1">Failed to load history</p>;
   }
 
-  const entries = data?.entries ?? [];
   if (entries.length === 0) {
     return <p className="text-xs text-[#8a8578] py-1">No runs yet</p>;
   }
 
   return (
     <div className="space-y-1">
+      {error && (
+        <p className="text-xs text-destructive py-1">Failed to refresh history</p>
+      )}
       {entries.map((entry) => (
         <button
           type="button"
