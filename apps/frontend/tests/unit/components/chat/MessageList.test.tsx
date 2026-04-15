@@ -2,6 +2,15 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { MessageList } from '@/components/chat/MessageList';
 
+const scrollToBottomSpy = vi.fn();
+vi.mock('@/hooks/useScrollToBottom', () => ({
+  useScrollToBottom: () => ({
+    containerRef: { current: null },
+    endRef: { current: null },
+    scrollToBottom: scrollToBottomSpy,
+  }),
+}));
+
 const mockMessages = [
   { id: '1', role: 'user' as const, content: 'Hello there!' },
   { id: '2', role: 'assistant' as const, content: 'Hi! How can I help you?' },
@@ -108,6 +117,18 @@ describe('MessageList', () => {
 
       const infinity = document.querySelectorAll('.thinking-infinity');
       expect(infinity.length).toBe(0);
+    });
+  });
+
+  describe('autoScroll prop', () => {
+    it('does not auto-scroll when autoScroll={false}', () => {
+      scrollToBottomSpy.mockClear();
+      const msgs = [
+        { id: '1', role: 'user' as const, content: 'hi' },
+        { id: '2', role: 'assistant' as const, content: 'hello' },
+      ];
+      render(<MessageList messages={msgs} autoScroll={false} />);
+      expect(scrollToBottomSpy).not.toHaveBeenCalled();
     });
   });
 
