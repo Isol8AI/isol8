@@ -120,7 +120,7 @@ export function JobCard({
       role="article"
       className={cn(
         "rounded-lg border border-[#e0dbd0] overflow-hidden",
-        isRunning && "ring-2 ring-blue-400 ring-offset-2 animate-pulse",
+        isRunning && "ring-2 ring-[#2d8a4e]/40 ring-offset-1",
       )}
     >
       {/* Job header */}
@@ -148,7 +148,7 @@ export function JobCard({
               {job.enabled ? "active" : "paused"}
             </span>
             {showErrorBadge && (
-              <span className="text-xs px-2 py-0.5 rounded bg-red-100 text-red-800 shrink-0">
+              <span className="text-xs px-2 py-0.5 rounded bg-destructive/10 text-destructive shrink-0">
                 {consecutiveErrors} consecutive errors
               </span>
             )}
@@ -236,8 +236,11 @@ export function JobCard({
           {isRunning && (
             <>
               <span>&middot;</span>
-              <span className="inline-flex items-center gap-2 text-xs text-blue-600">
-                <span className="h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
+              <span
+                aria-live="polite"
+                className="inline-flex items-center gap-2 text-xs text-[#2d8a4e]"
+              >
+                <span className="h-2 w-2 rounded-full bg-[#2d8a4e] animate-pulse" />
                 Running now…
               </span>
             </>
