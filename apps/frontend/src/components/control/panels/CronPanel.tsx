@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { JobList } from "./cron/JobList";
 import { RunList } from "./cron/RunList";
+import { RunDetailPanel } from "./cron/RunDetailPanel";
 import type { RunStatusFilter } from "./cron/RunFilters";
 import type {
   CronJob,
@@ -265,12 +266,20 @@ function StateBShell({
   onSelectRun,
   onBack,
   jobName,
+  job,
+  onCloseRun,
+  onRunNow,
+  onEdit,
 }: {
   jobId: string;
   selectedRunTs: number | null;
   onSelectRun: (run: CronRunEntry) => void;
   onBack: () => void;
   jobName: string;
+  job: CronJob | undefined;
+  onCloseRun: () => void;
+  onRunNow: () => void;
+  onEdit: () => void;
 }) {
   const [statusFilter, setStatusFilter] = useState<RunStatusFilter>("all");
   const [queryFilter, setQueryFilter] = useState("");
@@ -289,6 +298,10 @@ function StateBShell({
   );
   const runs = data?.entries ?? [];
   const hasMore = data?.hasMore ?? false;
+  const selectedRun =
+    selectedRunTs !== null
+      ? runs.find((r) => r.triggeredAtMs === selectedRunTs)
+      : undefined;
 
   return (
     <div className="flex flex-col h-full">
@@ -322,7 +335,19 @@ function StateBShell({
             isLoading={isLoading}
           />
         </div>
-        <div className="p-6 text-sm text-[#8a8578]">Select a run to vet</div>
+        {selectedRun && job ? (
+          <RunDetailPanel
+            run={selectedRun}
+            job={job}
+            onClose={onCloseRun}
+            onRunNow={onRunNow}
+            onEdit={onEdit}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-[#8a8578]">
+            Select a run to vet
+          </div>
+        )}
       </div>
     </div>
   );
@@ -519,13 +544,31 @@ export function CronPanel() {
           }}
         />
       ) : (
-        <StateBShell
-          jobId={view.jobId}
-          selectedRunTs={view.selectedRunTs}
-          onSelectRun={(run) => setView({ ...view, selectedRunTs: run.triggeredAtMs })}
-          onBack={() => setView({ kind: "overview" })}
-          jobName={jobs.find((j) => j.id === view.jobId)?.name ?? view.jobId}
-        />
+        (() => {
+          const selectedJob = jobs.find((j) => j.id === view.jobId);
+          return (
+            <StateBShell
+              jobId={view.jobId}
+              selectedRunTs={view.selectedRunTs}
+              onSelectRun={(run) => setView({ ...view, selectedRunTs: run.triggeredAtMs })}
+              onBack={() => setView({ kind: "overview" })}
+              jobName={selectedJob?.name ?? view.jobId}
+              job={selectedJob}
+              onCloseRun={() =>
+                setView({ kind: "runs", jobId: view.jobId, selectedRunTs: null })
+              }
+              onRunNow={() => {
+                if (selectedJob) handleRun(selectedJob.id);
+              }}
+              onEdit={() => {
+                if (selectedJob) {
+                  setEditingJob(selectedJob);
+                  setMode("edit");
+                }
+              }}
+            />
+          );
+        })()
       ))}
     </div>
   );
