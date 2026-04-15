@@ -8,7 +8,7 @@ expected value from helpers in core/containers/config.py.
 import copy
 from typing import Any, Literal, TypedDict
 
-from core.config import TIER_CONFIG
+from core.config import TIER_CONFIG, settings
 from core.containers.config import (
     _TIER_ALLOWED_MODEL_IDS,
     _agent_models_for_tier,
@@ -32,12 +32,15 @@ class PolicyViolation(TypedDict):
 
 def _expected_providers(tier: str) -> dict:
     """The one provider block this tier is allowed to run: amazon-bedrock
-    with exactly the tier's model list. No other providers permitted."""
-    # NOTE: hardcodes us-east-1 because Isol8 is single-region (see CLAUDE.md).
-    # If we go multi-region, thread `region` through from caller.
+    with exactly the tier's model list. No other providers permitted.
+
+    Region comes from ``settings.AWS_REGION`` so this matches what
+    ``write_openclaw_config`` writes at provisioning time — otherwise any
+    non-us-east-1 deploy would flip every clean config into drift.
+    """
     return {
         "amazon-bedrock": {
-            "baseUrl": "https://bedrock-runtime.us-east-1.amazonaws.com",
+            "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
             "api": "bedrock-converse-stream",
             "auth": "aws-sdk",
             "models": _models_for_tier(tier),

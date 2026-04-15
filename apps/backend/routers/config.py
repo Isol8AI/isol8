@@ -130,27 +130,33 @@ async def patch_config(
         logger.exception("billing lookup failed for owner_id=%s; defaulting to free tier", owner_id)
         tier = "free"
 
-    # Fail-open on current-config read: if EFS is unreachable or read raises,
-    # treat current config as empty so the merged config is just the patch
-    # itself. The downstream patch_openclaw_config call will still 404 if the
-    # underlying file truly doesn't exist.
+    # Fail-open on current-config read errors: if EFS is unreachable or read
+    # raises, proceed without policy evaluation so the downstream
+    # patch_openclaw_config call can surface the real error (ConfigPatchError
+    # -> 404 when the file truly doesn't exist).
     try:
-        current = await read_openclaw_config_from_efs(owner_id) or {}
+        current = await read_openclaw_config_from_efs(owner_id)
     except Exception:
-        logger.exception("EFS read failed for owner_id=%s; treating current config as {}", owner_id)
-        current = {}
-    merged = deep_merge(current, body.patch)
+        logger.exception("EFS read failed for owner_id=%s; skipping policy check", owner_id)
+        current = None
 
-    violations = config_policy.evaluate(merged, tier)
-    if violations:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "policy_violation",
-                "fields": [v["field"] for v in violations],
-                "reason": violations[0]["reason"],
-            },
-        )
+    # Only run policy when we have a real current config. If the file is
+    # missing/unreadable, skip the policy check and let patch_openclaw_config
+    # surface the real error (ConfigPatchError -> 404). This preserves
+    # distinct error semantics: "your patch violates policy" vs "your config
+    # doesn't exist yet".
+    if current is not None:
+        merged = deep_merge(current, body.patch)
+        violations = config_policy.evaluate(merged, tier)
+        if violations:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "policy_violation",
+                    "fields": [v["field"] for v in violations],
+                    "reason": violations[0]["reason"],
+                },
+            )
 
     # Bot-token collision pre-check (channels-specific; runs only if patch touches channels).
     if _patch_touches_channels(body.patch):

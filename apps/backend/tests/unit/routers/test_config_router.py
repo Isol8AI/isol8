@@ -364,3 +364,51 @@ def test_patch_config_accepts_non_locked_field_change(client):
         mock_patch.assert_awaited_once()
     finally:
         cleanup()
+
+
+def test_patch_config_missing_config_returns_404_not_403(client):
+    """When openclaw.json doesn't exist yet (read returns None), we must NOT
+    run policy evaluation against an empty {} (which would flag
+    models.providers as violating the tier allowlist and return a misleading
+    403 policy_violation). Instead the downstream patch must surface the real
+    404 not-found error, so callers can distinguish "your patch violates
+    policy" from "your config doesn't exist yet"."""
+    from core.services.config_patcher import ConfigPatchError
+
+    cleanup = _patch_auth(_personal_auth())
+    try:
+        with (
+            patch(
+                "routers.config.patch_openclaw_config",
+                AsyncMock(side_effect=ConfigPatchError("Config not found for owner user_personal")),
+            ) as mock_patch,
+            patch(
+                "routers.config.read_openclaw_config_from_efs",
+                AsyncMock(return_value=None),
+            ),
+            _mock_billing("free"),
+        ):
+            resp = client.patch(
+                "/api/v1/config",
+                # This patch WOULD violate policy (unauthorized provider) if
+                # policy evaluation ran against an empty current config.
+                json={
+                    "patch": {
+                        "models": {
+                            "providers": {
+                                "openai": {
+                                    "api": "openai",
+                                    "baseUrl": "x",
+                                    "models": [],
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+        assert resp.status_code == 404
+        assert "Config not found" in resp.json().get("detail", "")
+        # Downstream patch WAS called (i.e., we did not short-circuit with 403)
+        mock_patch.assert_awaited_once()
+    finally:
+        cleanup()

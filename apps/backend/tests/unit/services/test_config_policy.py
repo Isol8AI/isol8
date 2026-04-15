@@ -213,3 +213,30 @@ class TestApplyReverts:
         reverted = config_policy.apply_reverts(config, [])
         assert reverted == config
         assert reverted is not config  # deep-copy
+
+
+class TestRegionDerivation:
+    """Tests that _expected_providers derives region from settings.AWS_REGION
+    instead of hardcoding us-east-1."""
+
+    def test_providers_baseurl_derived_from_settings_region(self, monkeypatch):
+        """If the deploy runs in eu-west-1 (so write_openclaw_config emits
+        baseUrl=https://bedrock-runtime.eu-west-1.amazonaws.com), the policy
+        expected-providers block must use the same region, otherwise every
+        clean config would flip into `models.providers` drift."""
+        from core.config import settings
+
+        monkeypatch.setattr(settings, "AWS_REGION", "eu-west-1")
+
+        raw = write_openclaw_config(
+            region="eu-west-1",
+            gateway_token="t",
+            tier="starter",
+        )
+        config = json.loads(raw)
+
+        violations = config_policy.evaluate(config, "starter")
+        fields = [v["field"] for v in violations]
+        assert "models.providers" not in fields, (
+            f"clean eu-west-1 config should have no providers violation, got {violations}"
+        )
