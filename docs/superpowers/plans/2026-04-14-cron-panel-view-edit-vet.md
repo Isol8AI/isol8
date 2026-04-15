@@ -317,7 +317,15 @@ git commit -m "refactor(cron): extract types matching OpenClaw cron model"
 
 ---
 
-## Task 2: Add `autoScroll` prop to MessageList
+## Task 2: Add `autoScroll` prop to MessageList — SKIPPED (no-op)
+
+**Outcome (2026-04-14):** Investigation showed `MessageList` has no internal auto-scroll effect; scroll is fully caller-driven via `messageListRef.current?.scrollToBottom()` (see `AgentChatWindow.tsx:471`). `RunTranscript` in Task 10 will simply render `<MessageList messages={...} />` without wiring a `ref`, which naturally means no auto-scroll. No prop needed. An initial implementation added a redundant internal effect and was reverted in commit `f7448fd7`.
+
+**Task 10 adjustment:** where the plan below writes `<MessageList messages={messages} autoScroll={false} />`, drop the `autoScroll` prop — just render `<MessageList messages={messages} />`.
+
+The original Task 2 text is preserved below for reference but must NOT be executed:
+
+---
 
 We need a read-only transcript variant. The cheapest change is a prop on `MessageList` that disables the auto-scroll-to-bottom hook.
 
