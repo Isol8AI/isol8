@@ -12,9 +12,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { JobList } from "./cron/JobList";
+import { RunList } from "./cron/RunList";
+import type { RunStatusFilter } from "./cron/RunFilters";
 import type {
   CronJob,
   CronListResponse,
+  CronRunEntry,
   CronRunsResponse,
   CronSchedule,
   CronScheduleKind,
@@ -265,17 +268,27 @@ function StateBShell({
 }: {
   jobId: string;
   selectedRunTs: number | null;
-  onSelectRun: (ts: number) => void;
+  onSelectRun: (run: CronRunEntry) => void;
   onBack: () => void;
   jobName: string;
 }) {
-  const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>("cron.runs", {
-    scope: "job",
-    id: jobId,
-    limit: 50,
-    sortDir: "desc",
-  });
+  const [statusFilter, setStatusFilter] = useState<RunStatusFilter>("all");
+  const [queryFilter, setQueryFilter] = useState("");
+  const [limit, setLimit] = useState(50);
+
+  const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>(
+    "cron.runs",
+    {
+      scope: "job",
+      id: jobId,
+      limit,
+      sortDir: "desc",
+      ...(statusFilter !== "all" ? { statuses: [statusFilter] } : {}),
+      ...(queryFilter ? { query: queryFilter } : {}),
+    },
+  );
   const runs = data?.entries ?? [];
+  const hasMore = data?.hasMore ?? false;
 
   return (
     <div className="flex flex-col h-full">
@@ -286,41 +299,30 @@ function StateBShell({
         <span className="text-sm font-medium">{jobName}</span>
       </div>
       <div className="flex-1 grid grid-cols-[320px_1fr] min-h-0">
-        <div className="border-r border-[#e0dbd0] overflow-y-auto">
-          {isLoading && <div className="p-3 text-xs text-[#8a8578]">Loading runs…</div>}
-          {error && <div className="p-3 text-xs text-destructive">Failed to load runs</div>}
-          {runs.map((r) => (
-            <button
-              key={r.triggeredAtMs}
-              role="row"
-              aria-selected={selectedRunTs === r.triggeredAtMs}
-              onClick={() => onSelectRun(r.triggeredAtMs)}
-              className={cn(
-                "w-full text-left px-3 py-2 text-xs border-b border-[#e0dbd0] hover:bg-[#f3efe6]",
-                selectedRunTs === r.triggeredAtMs && "bg-[#e8e3d9]",
-              )}
-            >
-              <div className="flex items-center justify-between gap-2">
-                <span
-                  className={cn(
-                    r.status === "ok" && "text-[#2d8a4e]",
-                    r.status === "error" && "text-destructive",
-                    r.status === "skipped" && "text-yellow-600",
-                  )}
-                >
-                  {r.status}
-                </span>
-                <span className="text-[#8a8578]">{new Date(r.triggeredAtMs).toLocaleString()}</span>
-              </div>
-              {r.summary && (
-                <div className="mt-1 text-[#5a5549] truncate">{r.summary}</div>
-              )}
-            </button>
-          ))}
+        <div className="border-r border-[#e0dbd0] min-h-0 flex flex-col">
+          {error && (
+            <div className="p-3 text-xs text-destructive">Failed to load runs</div>
+          )}
+          <RunList
+            runs={runs}
+            selectedTs={selectedRunTs}
+            onSelect={onSelectRun}
+            statusFilter={statusFilter}
+            queryFilter={queryFilter}
+            onStatusFilterChange={(s) => {
+              setStatusFilter(s);
+              setLimit(50);
+            }}
+            onQueryFilterChange={(q) => {
+              setQueryFilter(q);
+              setLimit(50);
+            }}
+            hasMore={hasMore}
+            onLoadMore={() => setLimit((n) => n + 50)}
+            isLoading={isLoading}
+          />
         </div>
-        <div className="p-6 text-sm text-[#8a8578]">
-          Select a run to vet
-        </div>
+        <div className="p-6 text-sm text-[#8a8578]">Select a run to vet</div>
       </div>
     </div>
   );
@@ -520,7 +522,7 @@ export function CronPanel() {
         <StateBShell
           jobId={view.jobId}
           selectedRunTs={view.selectedRunTs}
-          onSelectRun={(ts) => setView({ ...view, selectedRunTs: ts })}
+          onSelectRun={(run) => setView({ ...view, selectedRunTs: run.triggeredAtMs })}
           onBack={() => setView({ kind: "overview" })}
           jobName={jobs.find((j) => j.id === view.jobId)?.name ?? view.jobId}
         />
