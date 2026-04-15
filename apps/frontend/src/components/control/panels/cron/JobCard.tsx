@@ -66,8 +66,8 @@ function RunHistory({ jobId }: { jobId: string }) {
 
   return (
     <div className="space-y-1">
-      {entries.map((entry, i) => (
-        <div key={i} className="flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0]">
+      {entries.map((entry) => (
+        <div key={entry.triggeredAtMs} className="flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0]">
           <StatusBadge status={entry.status} />
           <span className="text-[#8a8578]">{formatAbsoluteTime(entry.triggeredAtMs)}</span>
           {entry.durationMs != null && (
@@ -106,6 +106,7 @@ export function JobCard({
   onPauseResume,
   onRunNow,
   onDelete,
+  onSelectRun: _onSelectRun, // TODO(Task 7): wire run row onClick
 }: JobCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
