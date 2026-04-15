@@ -60,7 +60,14 @@ class ConfigReconciler:
         logger.info("config_reconciler stopped")
 
     async def _tick(self) -> None:
-        if settings.CONFIG_RECONCILER_MODE == "off":
+        # Validate the mode at entry so typos ("Off", "ENFORCE", "enforce ",
+        # an unset default, …) early-exit before we enumerate owners or hit
+        # DDB / EFS. Anything other than the two valid run modes is treated
+        # as off; unknown values get a single warning per tick.
+        mode = settings.CONFIG_RECONCILER_MODE
+        if mode not in ("report", "enforce"):
+            if mode != "off":
+                logger.warning("unknown CONFIG_RECONCILER_MODE=%r, treating as off", mode)
             return
         owners = await container_repo.list_active_owners()
         if not owners:
@@ -113,6 +120,10 @@ class ConfigReconciler:
             # Admin just wrote; don't fight them.
             return
 
+        # Mode was already validated in _tick; only "report" or "enforce"
+        # reach this point. We re-read it here (rather than threading it as
+        # a param) because the value can flip mid-tick and we want each
+        # owner's branch to honor the latest setting.
         mode = settings.CONFIG_RECONCILER_MODE
 
         if mode == "report":
@@ -174,9 +185,6 @@ class ConfigReconciler:
             except FileNotFoundError:
                 self._last_seen.pop(owner_id, None)
             return
-
-        # Unknown mode — behave as off.
-        logger.warning("unknown CONFIG_RECONCILER_MODE=%r, treating as off", mode)
 
     async def _resolve_tier(self, owner_id: str) -> str | None:
         cached = self._tier_cache.get(owner_id)

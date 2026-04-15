@@ -214,8 +214,9 @@ async def test_tick_off_mode_no_op(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_tick_unknown_mode_warns_and_no_op(tmp_path, monkeypatch, caplog):
-    """An unknown CONFIG_RECONCILER_MODE value must log a warning and
-    leave drift on disk (behave as ``off`` at the per-owner level)."""
+    """An unknown CONFIG_RECONCILER_MODE value must log a warning at the
+    top of _tick and short-circuit before any DDB / EFS / billing work
+    (behave as ``off`` for the whole tick)."""
     import json
     import logging
     from unittest.mock import AsyncMock
@@ -238,17 +239,24 @@ async def test_tick_unknown_mode_warns_and_no_op(tmp_path, monkeypatch, caplog):
         "bogus",
         raising=False,
     )
+    list_owners = AsyncMock(return_value=[user])
+    get_grace = AsyncMock(return_value=0)
+    get_billing = AsyncMock(return_value={"plan_tier": "free"})
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        list_owners,
+    )
     monkeypatch.setattr(
         "core.services.config_reconciler.container_repo.get_reconciler_grace",
-        AsyncMock(return_value=0),
+        get_grace,
     )
     monkeypatch.setattr(
         "core.services.config_reconciler.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"plan_tier": "free"}),
+        get_billing,
     )
 
     with caplog.at_level(logging.WARNING):
-        await r._check_one(user)
+        await r._tick()
 
     # No write happened (drift stays on disk).
     assert cfg_path.stat().st_mtime == pre_mtime
@@ -256,6 +264,10 @@ async def test_tick_unknown_mode_warns_and_no_op(tmp_path, monkeypatch, caplog):
     assert on_disk["agents"]["defaults"]["model"]["primary"] == "amazon-bedrock/qwen.qwen3-vl-235b-a22b"
     # Warning was logged.
     assert any("unknown CONFIG_RECONCILER_MODE" in rec.message for rec in caplog.records)
+    # Early-exit: no IO at all.
+    list_owners.assert_not_called()
+    get_grace.assert_not_called()
+    get_billing.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -416,3 +428,49 @@ async def test_tick_honors_grace_window(tmp_path, monkeypatch):
 
     await r._tick()
     assert cfg_path.stat().st_mtime == pre_mtime
+
+
+@pytest.mark.asyncio
+async def test_tick_exits_early_on_unknown_mode(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services.config_reconciler import ConfigReconciler
+
+    r = ConfigReconciler(efs_mount="/tmp/unused")
+    monkeypatch.setattr(
+        "core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE",
+        "ENFORCE",  # mistyped
+        raising=False,
+    )
+    mock_list = AsyncMock(return_value=["owner_1"])
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        mock_list,
+    )
+
+    await r._tick()
+
+    # list_active_owners should not have been called — early return.
+    mock_list.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tick_exits_early_on_trailing_whitespace_mode(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from core.services.config_reconciler import ConfigReconciler
+
+    r = ConfigReconciler(efs_mount="/tmp/unused")
+    monkeypatch.setattr(
+        "core.services.config_reconciler.settings.CONFIG_RECONCILER_MODE",
+        "enforce ",  # trailing space
+        raising=False,
+    )
+    mock_list = AsyncMock(return_value=["owner_1"])
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        mock_list,
+    )
+
+    await r._tick()
+    mock_list.assert_not_awaited()

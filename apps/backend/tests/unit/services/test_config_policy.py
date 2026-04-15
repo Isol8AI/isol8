@@ -158,6 +158,40 @@ class TestEvaluate:
         violations = config_policy.evaluate(config, "free")
         assert not any(v["field"] == "channels.accounts" for v in violations)
 
+    def test_models_null_is_violation_not_crash(self):
+        config = {
+            "models": None,
+            "agents": {
+                "defaults": {
+                    "model": {"primary": "amazon-bedrock/minimax.minimax-m2.5"},
+                    "models": {},
+                }
+            },
+        }
+        violations = config_policy.evaluate(config, "free")
+        # Should emit a models.providers violation (treats null as empty),
+        # not raise an AttributeError.
+        assert any(v["field"] == "models.providers" for v in violations)
+
+    def test_agents_defaults_null_is_handled_safely(self):
+        config = {
+            "models": {"providers": {"amazon-bedrock": {"baseUrl": "x", "api": "y", "auth": "z", "models": []}}},
+            "agents": None,
+        }
+        # Should not raise; should flag primary as out-of-allowlist
+        # (empty string not in allowlist).
+        violations = config_policy.evaluate(config, "free")
+        assert any(v["field"] == "agents.defaults.model.primary" for v in violations)
+
+    def test_primary_non_string_is_handled_safely(self):
+        config = {
+            "models": {"providers": {"amazon-bedrock": {"baseUrl": "x", "api": "y", "auth": "z", "models": []}}},
+            "agents": {"defaults": {"model": {"primary": 42}, "models": {}}},
+        }
+        violations = config_policy.evaluate(config, "free")
+        # Should not raise; integer primary treated as "" (not in allowlist).
+        assert any(v["field"] == "agents.defaults.model.primary" for v in violations)
+
 
 class TestApplyReverts:
     """Tests for config_policy.apply_reverts()."""

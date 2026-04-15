@@ -93,11 +93,30 @@ def _providers_match(actual: Any, expected: dict) -> bool:
     return True
 
 
+def _safe_dict(root: Any, *path: str) -> dict:
+    """Walk ``root[path[0]][path[1]]…`` and return the value at the end if it
+    is a dict, otherwise ``{}``. Any non-dict intermediate short-circuits to
+    ``{}``. Used so malformed configs (e.g. ``{"models": null}``) yield a
+    violation rather than an ``AttributeError`` deep in ``evaluate``.
+    """
+    cursor: Any = root
+    for segment in path:
+        if not isinstance(cursor, dict):
+            return {}
+        cursor = cursor.get(segment)
+    return cursor if isinstance(cursor, dict) else {}
+
+
 def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
     """Return a list of locked-field violations for this config at this tier.
 
     Empty list means the config is legal. Each violation has enough info
     to revert (field, expected value) and for audit (reason, actual value).
+
+    Malformed inputs (non-dict ``models``, non-dict ``agents.defaults``,
+    non-string ``primary``, etc.) are tolerated: each nested access is
+    guarded so the offending block is treated as missing/invalid and surfaces
+    as a normal violation (which ``apply_reverts`` then normalizes).
     """
     violations: list[PolicyViolation] = []
 
@@ -105,7 +124,7 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
     effective_tier = tier if tier in _TIER_ALLOWED_MODEL_IDS else "free"
 
     # 1. models.providers — strict match against tier's allowed block
-    actual_providers = config.get("models", {}).get("providers", {})
+    actual_providers = _safe_dict(config, "models", "providers")
     expected_providers = _expected_providers(effective_tier)
     if not _providers_match(actual_providers, expected_providers):
         violations.append(
@@ -118,7 +137,9 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
         )
 
     # 2. agents.defaults.model.primary — must be in tier allowlist
-    primary = config.get("agents", {}).get("defaults", {}).get("model", {}).get("primary", "")
+    model_block = _safe_dict(config, "agents", "defaults", "model")
+    primary_raw = model_block.get("primary", "")
+    primary = primary_raw if isinstance(primary_raw, str) else ""
     bare_primary = primary.removeprefix("amazon-bedrock/")
     if bare_primary not in _TIER_ALLOWED_MODEL_IDS[effective_tier]:
         expected_primary = (
@@ -129,12 +150,12 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
                 "field": "agents.defaults.model.primary",
                 "reason": f"primary model {primary!r} is not allowed for tier={effective_tier}",
                 "expected": expected_primary,
-                "actual": primary,
+                "actual": primary_raw,
             }
         )
 
     # 3. agents.defaults.models — keys must all be in tier allowlist
-    models_map = config.get("agents", {}).get("defaults", {}).get("models", {})
+    models_map = _safe_dict(config, "agents", "defaults", "models")
     if isinstance(models_map, dict):
         illegal_keys = [
             k for k in models_map if k.removeprefix("amazon-bedrock/") not in _TIER_ALLOWED_MODEL_IDS[effective_tier]
@@ -156,7 +177,7 @@ def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
 
     # 4. channels.{provider}.accounts — free tier must have no accounts
     if effective_tier == "free":
-        channels = config.get("channels", {})
+        channels = _safe_dict(config, "channels")
         if isinstance(channels, dict):
             offending: dict[str, dict] = {}
             for provider, provider_cfg in channels.items():
