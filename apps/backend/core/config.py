@@ -30,6 +30,12 @@ class Settings(BaseSettings):
     AWS_REGION: str = os.getenv("AWS_REGION", "us-east-1")
     BEDROCK_ENABLED: bool = os.getenv("BEDROCK_ENABLED", "true").lower() == "true"
 
+    # Config reconciler mode (drift detection/correction for openclaw.json on EFS)
+    #   off     -- reconciler disabled (default)
+    #   report  -- detect drift and log/emit metrics, do not mutate
+    #   enforce -- detect drift and rewrite openclaw.json to match desired state
+    CONFIG_RECONCILER_MODE: str = "off"
+
     # CORS Configuration (comma-separated origins; deployed values set by Terraform)
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
 
