@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, require_org_admin, resolve_owner_id
 from core.observability.metrics import put_metric
-from core.repositories import update_repo
+from core.repositories import container_repo, update_repo
 from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
 from core.services.update_service import apply_update, queue_fleet_image_update
 
@@ -153,6 +153,9 @@ async def patch_single_config(
     if auth.is_org_context:
         require_org_admin(auth)
 
+    # Tell the reconciler to stand down for 5s while we apply an admin override.
+    await container_repo.set_reconciler_grace(owner_id, seconds=5)
+
     try:
         await patch_openclaw_config(owner_id, body.patch)
     except ConfigPatchError as e:
@@ -197,6 +200,7 @@ async def patch_fleet_config(
     failed = 0
     for oid in owners:
         try:
+            await container_repo.set_reconciler_grace(oid, seconds=5)
             await patch_openclaw_config(oid, body.patch)
             patched += 1
         except ConfigPatchError:
