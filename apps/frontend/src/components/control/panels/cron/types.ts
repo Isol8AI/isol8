@@ -1,11 +1,11 @@
 // apps/frontend/src/components/control/panels/cron/types.ts
 
-export type CronScheduleKind = "at" | "every" | "cron";
-
 export type CronSchedule =
   | { kind: "at"; at: string }
   | { kind: "every"; everyMs: number; anchorMs?: number }
   | { kind: "cron"; expr: string; tz?: string; staggerMs?: number };
+
+export type CronScheduleKind = CronSchedule["kind"];
 
 export type CronSessionTarget = "main" | "isolated" | "current" | `session:${string}`;
 export type CronWakeMode = "next-heartbeat" | "now";
