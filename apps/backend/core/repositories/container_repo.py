@@ -192,3 +192,15 @@ async def get_reconciler_grace(owner_id: str) -> int:
         return 0
     # DDB returns numbers as Decimal -- coerce to int.
     return int(value)
+
+
+async def list_active_owners() -> list[str]:
+    """Return owner_ids for containers with status='running'. Used by the
+    config reconciler to enumerate targets.
+
+    Deliberately excludes 'provisioning' — during that phase the backend
+    itself is writing openclaw.json, and the reconciler must not race with
+    it. The reconciler starts caring once the container is fully running.
+    """
+    rows = await get_by_status("running")
+    return [r["owner_id"] for r in rows if "owner_id" in r]

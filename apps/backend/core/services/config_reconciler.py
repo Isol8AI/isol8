@@ -13,6 +13,8 @@ Ships in three modes via CONFIG_RECONCILER_MODE:
 import asyncio
 import logging
 
+from core.repositories import container_repo
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,5 +51,34 @@ class ConfigReconciler:
         logger.info("config_reconciler stopped")
 
     async def _tick(self) -> None:
-        """One pass over the active-owner set. No-op in the skeleton."""
-        return
+        owners = await container_repo.list_active_owners()
+        if not owners:
+            return
+
+        sem = asyncio.Semaphore(20)
+
+        async def _one(owner_id: str):
+            async with sem:
+                try:
+                    await self._check_one(owner_id)
+                except Exception:
+                    logger.exception("config_reconciler failed for owner %s", owner_id)
+
+        await asyncio.gather(*[_one(o) for o in owners])
+
+    async def _check_one(self, owner_id: str) -> None:
+        import os
+
+        path = os.path.join(self._efs_mount, owner_id, "openclaw.json")
+        try:
+            mtime = await asyncio.to_thread(os.path.getmtime, path)
+        except FileNotFoundError:
+            # Container row says running but file not yet there; skip.
+            return
+
+        if self._last_seen_mtime.get(owner_id) == mtime:
+            return
+
+        # File changed (or first time seeing it); in this task, only record
+        # the mtime. Actual read + policy + revert lands in Task 11.
+        self._last_seen_mtime[owner_id] = mtime

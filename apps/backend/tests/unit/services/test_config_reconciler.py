@@ -41,3 +41,56 @@ async def test_reconciler_swallows_tick_exceptions(monkeypatch, caplog):
     r.stop()
     await asyncio.wait_for(task, timeout=2.0)
     assert call_count >= 2  # loop kept going despite exceptions
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_user_when_mtime_unchanged(tmp_path, monkeypatch):
+    from core.services.config_reconciler import ConfigReconciler
+
+    user_dir = tmp_path / "user_A"
+    user_dir.mkdir()
+    cfg = user_dir / "openclaw.json"
+    cfg.write_text('{"models":{"providers":{}}}')
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        AsyncMock(return_value=["user_A"]),
+    )
+
+    read_count = 0
+    original_open = open
+
+    def tracked_open(path, *a, **kw):
+        nonlocal read_count
+        if str(path).endswith("openclaw.json"):
+            read_count += 1
+        return original_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", tracked_open)
+
+    # First tick — mtime unseen, should read.
+    await r._tick()
+    first_reads = read_count
+
+    # Second tick — mtime unchanged, should skip read.
+    await r._tick()
+    assert read_count == first_reads, "second tick must not re-read unchanged file"
+
+
+@pytest.mark.asyncio
+async def test_tick_handles_missing_config_file(tmp_path, monkeypatch):
+    from core.services.config_reconciler import ConfigReconciler
+    from unittest.mock import AsyncMock
+
+    r = ConfigReconciler(efs_mount=str(tmp_path))
+    monkeypatch.setattr(
+        "core.services.config_reconciler.container_repo.list_active_owners",
+        AsyncMock(return_value=["ghost_user"]),
+    )
+
+    # Should not raise.
+    await r._tick()
