@@ -158,6 +158,7 @@ export function CronPanel() {
         enabled: form.enabled,
         sessionTarget: "isolated",
         wakeMode: "now",
+        ...(form.delivery ? { delivery: form.delivery } : {}),
       });
       setMode("list");
       mutate();
@@ -180,6 +181,7 @@ export function CronPanel() {
           schedule: buildSchedule(form),
           payload: { kind: "agentTurn", message: form.message.trim() },
           enabled: form.enabled,
+          ...(form.delivery !== undefined ? { delivery: form.delivery } : {}),
         },
       });
       setMode("list");

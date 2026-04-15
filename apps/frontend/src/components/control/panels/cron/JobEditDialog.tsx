@@ -4,77 +4,23 @@ import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DeliveryPicker } from "./DeliveryPicker";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
 import { SchedulePicker, scheduleIsValid } from "./SchedulePicker";
-import type { CronJob, CronSchedule, CronScheduleKind } from "./types";
 
-// --- Form state ---
+// Re-export shared form-state for backwards compatibility. The canonical
+// home is now `./formState.ts`.
+export {
+  EMPTY_FORM,
+  buildSchedule,
+  jobToForm,
+  type FormState,
+  type ScheduleKind,
+} from "./formState";
 
-export type ScheduleKind = CronScheduleKind;
+import type { FormState } from "./formState";
 
-export interface FormState {
-  name: string;
-  scheduleKind: ScheduleKind;
-  cronExpr: string;
-  cronTz: string;
-  everyValue: number;
-  everyUnit: "minutes" | "hours" | "days";
-  atDatetime: string;
-  message: string;
-  enabled: boolean;
-}
-
-export const EMPTY_FORM: FormState = {
-  name: "",
-  scheduleKind: "cron",
-  cronExpr: "",
-  cronTz: "",
-  everyValue: 30,
-  everyUnit: "minutes",
-  atDatetime: "",
-  message: "",
-  enabled: true,
-};
-
-// --- Helpers ---
-
-export function buildSchedule(form: FormState): CronSchedule {
-  switch (form.scheduleKind) {
-    case "cron":
-      return { kind: "cron", expr: form.cronExpr, ...(form.cronTz ? { tz: form.cronTz } : {}) };
-    case "every": {
-      const multipliers = { minutes: 60000, hours: 3600000, days: 86400000 };
-      return { kind: "every", everyMs: form.everyValue * multipliers[form.everyUnit] };
-    }
-    case "at":
-      return { kind: "at", at: new Date(form.atDatetime).toISOString() };
-  }
-}
-
-export function jobToForm(job: CronJob): FormState {
-  const s = job.schedule;
-  const msg = job.payload?.kind === "agentTurn" ? (job.payload.message ?? "") : (job.payload?.text ?? "");
-  const base = { name: job.name, message: msg, enabled: job.enabled };
-  if (s.kind === "cron") {
-    return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: s.expr ?? "", cronTz: s.tz ?? "" };
-  }
-  if (s.kind === "every") {
-    const ms = s.everyMs ?? 60000;
-    if (ms >= 86400000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 86400000), everyUnit: "days" };
-    if (ms >= 3600000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 3600000), everyUnit: "hours" };
-    return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 60000), everyUnit: "minutes" };
-  }
-  if (s.kind === "at") {
-    let atDatetime = "";
-    try {
-      atDatetime = s.at ? new Date(s.at).toISOString().slice(0, 16) : "";
-    } catch { /* ignore */ }
-    return { ...EMPTY_FORM, ...base, scheduleKind: "at", atDatetime };
-  }
-  return { ...EMPTY_FORM, ...base };
-}
-
-// --- Placeholder shared by empty accordion sections (Tasks 13-16) ---
+// --- Placeholder shared by empty accordion sections (Tasks 14-16) ---
 
 function ComingSoon({ task }: { task: string }) {
   return (
@@ -152,9 +98,16 @@ export function JobEditDialog({
     </div>
   );
 
+  const deliveryBody = (
+    <DeliveryPicker
+      value={form.delivery}
+      onChange={(d) => update("delivery", d)}
+    />
+  );
+
   const sections: JobEditSection[] = [
     { id: "basics", title: "Basics", defaultOpen: true, children: basicsBody },
-    { id: "delivery", title: "Delivery", defaultOpen: true, children: <ComingSoon task="Task 13" /> },
+    { id: "delivery", title: "Delivery", defaultOpen: true, children: deliveryBody },
     { id: "agent-execution", title: "Agent execution", defaultOpen: false, children: <ComingSoon task="Task 14" /> },
     { id: "failure-alerts", title: "Failure alerts", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
     { id: "advanced", title: "Advanced", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
