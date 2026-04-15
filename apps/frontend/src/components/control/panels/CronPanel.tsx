@@ -511,9 +511,10 @@ export function CronPanel() {
           onPauseResume={(job) => handleToggle(job.id, !!job.enabled)}
           onRunNow={(job) => handleRun(job.id)}
           onDelete={(job) => handleDelete(job.id)}
-          onSelectRun={(job, run) =>
-            setView({ kind: "runs", jobId: job.id, selectedRunTs: run.triggeredAtMs })
-          }
+          onSelectRun={(job, run) => {
+            setMode("list");
+            setView({ kind: "runs", jobId: job.id, selectedRunTs: run.triggeredAtMs });
+          }}
         />
       ) : (
         <StateBShell
