@@ -153,7 +153,7 @@ export function CronPanel() {
     { includeDisabled: true },
     { refreshInterval: 30_000, revalidateOnFocus: true },
   );
-  const { data: agentsData } = useAgents();
+  const { agents: agentsData } = useAgents();
   const callRpc = useGatewayRpcMutation();
 
   const [mode, setMode] = useState<"list" | "create" | "edit">("list");
@@ -167,7 +167,7 @@ export function CronPanel() {
   // on successful revalidation (or on error to roll back).
   const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>({});
 
-  const noAgents = (agentsData?.agents ?? []).length === 0;
+  const noAgents = (agentsData ?? []).length === 0;
 
   const showFeedback = useCallback((type: "success" | "error", message: string) => {
     setFeedback({ type, message });

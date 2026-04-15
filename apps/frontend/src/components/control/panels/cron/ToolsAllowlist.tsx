@@ -45,7 +45,7 @@ export interface ToolsAllowlistProps {
 // --- Component ---
 
 export function ToolsAllowlist({ agentId, value, onChange }: ToolsAllowlistProps) {
-  const selected = value ?? [];
+  const selected = useMemo(() => value ?? [], [value]);
   const selectRef = useRef<HTMLSelectElement | null>(null);
   const [customInput, setCustomInput] = useState("");
 
