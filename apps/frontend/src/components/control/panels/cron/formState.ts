@@ -25,6 +25,18 @@ export interface FormState {
    * EMPTY_FORM seeds a default of `{ mode: "announce" }` (Chat).
    */
   delivery?: CronDelivery;
+
+  // --- Agent execution (Task 14) ---
+  /** Override primary model; undefined/empty means "use agent default". */
+  model?: string;
+  /** Ordered list of fallback model ids. */
+  fallbacks?: string[];
+  /** Hard timeout for a single run in seconds. */
+  timeoutSeconds?: number;
+  /** Free-text thinking/reasoning hint passed to the model. */
+  thinking?: string;
+  /** When true, skip loading recent chat history for the run. */
+  lightContext?: boolean;
 }
 
 export const EMPTY_FORM: FormState = {
@@ -40,6 +52,12 @@ export const EMPTY_FORM: FormState = {
   // Default: announce to in-chat. Channel dropdown inside DeliveryPicker
   // defaults to "__chat__" which leaves `channel` undefined.
   delivery: { mode: "announce" },
+  // Agent-execution defaults: all undefined/empty so the payload omits them.
+  model: undefined,
+  fallbacks: undefined,
+  timeoutSeconds: undefined,
+  thinking: undefined,
+  lightContext: false,
 };
 
 export function buildSchedule(form: FormState): CronSchedule {
@@ -58,11 +76,22 @@ export function buildSchedule(form: FormState): CronSchedule {
 export function jobToForm(job: CronJob): FormState {
   const s = job.schedule;
   const msg = job.payload?.kind === "agentTurn" ? (job.payload.message ?? "") : (job.payload?.text ?? "");
+  const agentExec =
+    job.payload?.kind === "agentTurn"
+      ? {
+          model: job.payload.model,
+          fallbacks: job.payload.fallbacks,
+          timeoutSeconds: job.payload.timeoutSeconds,
+          thinking: job.payload.thinking,
+          lightContext: job.payload.lightContext ?? false,
+        }
+      : {};
   const base = {
     name: job.name,
     message: msg,
     enabled: job.enabled,
     delivery: job.delivery,
+    ...agentExec,
   };
   if (s.kind === "cron") {
     return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: s.expr ?? "", cronTz: s.tz ?? "" };

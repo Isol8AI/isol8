@@ -151,10 +151,19 @@ export function CronPanel() {
   const handleCreate = async (form: FormState) => {
     setSaving(true);
     try {
+      const cleanFallbacks = form.fallbacks?.map((s) => s.trim()).filter(Boolean) ?? [];
       await callRpc("cron.add", {
         name: form.name.trim(),
         schedule: buildSchedule(form),
-        payload: { kind: "agentTurn", message: form.message.trim() },
+        payload: {
+          kind: "agentTurn",
+          message: form.message.trim(),
+          ...(form.model ? { model: form.model } : {}),
+          ...(cleanFallbacks.length > 0 ? { fallbacks: cleanFallbacks } : {}),
+          ...(form.timeoutSeconds != null ? { timeoutSeconds: form.timeoutSeconds } : {}),
+          ...(form.thinking ? { thinking: form.thinking } : {}),
+          ...(form.lightContext ? { lightContext: true } : {}),
+        },
         enabled: form.enabled,
         sessionTarget: "isolated",
         wakeMode: "now",
@@ -174,12 +183,21 @@ export function CronPanel() {
     if (!editingJob) return;
     setSaving(true);
     try {
+      const cleanFallbacks = form.fallbacks?.map((s) => s.trim()).filter(Boolean) ?? [];
       await callRpc("cron.update", {
         id: editingJob.id,
         patch: {
           name: form.name.trim(),
           schedule: buildSchedule(form),
-          payload: { kind: "agentTurn", message: form.message.trim() },
+          payload: {
+            kind: "agentTurn",
+            message: form.message.trim(),
+            ...(form.model ? { model: form.model } : {}),
+            ...(cleanFallbacks.length > 0 ? { fallbacks: cleanFallbacks } : {}),
+            ...(form.timeoutSeconds != null ? { timeoutSeconds: form.timeoutSeconds } : {}),
+            ...(form.thinking ? { thinking: form.thinking } : {}),
+            ...(form.lightContext ? { lightContext: true } : {}),
+          },
           enabled: form.enabled,
           ...(form.delivery !== undefined ? { delivery: form.delivery } : {}),
         },

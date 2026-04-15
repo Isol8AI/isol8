@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { DeliveryPicker } from "./DeliveryPicker";
+import { FallbackModelList } from "./FallbackModelList";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
 import { SchedulePicker, scheduleIsValid } from "./SchedulePicker";
 
@@ -105,10 +107,86 @@ export function JobEditDialog({
     />
   );
 
+  const agentExecutionBody = (
+    <div className="space-y-4">
+      {/* Model */}
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-[#8a8578]">Model</label>
+        <Input
+          value={form.model ?? ""}
+          onChange={(e) => update("model", e.target.value || undefined)}
+          placeholder="Use agent default"
+          className="h-8 text-sm font-mono"
+        />
+      </div>
+
+      {/* Fallbacks */}
+      <div className="space-y-1">
+        <label className="text-xs font-medium text-[#8a8578]">Fallbacks</label>
+        <FallbackModelList
+          value={form.fallbacks}
+          onChange={(next) => update("fallbacks", next)}
+        />
+      </div>
+
+      {/* Timeout + Thinking */}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1">
+          <label className="text-xs font-medium text-[#8a8578]">
+            Timeout (seconds)
+          </label>
+          <Input
+            type="number"
+            min={1}
+            value={form.timeoutSeconds ?? ""}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === "") return update("timeoutSeconds", undefined);
+              const n = Number(v);
+              update("timeoutSeconds", Number.isFinite(n) && n > 0 ? n : undefined);
+            }}
+            placeholder="default"
+            className="h-8 text-sm"
+          />
+        </div>
+        <div className="space-y-1">
+          <label
+            className="text-xs font-medium text-[#8a8578]"
+            title="Reasoning/thinking hint passed to the model (provider-specific)."
+          >
+            Thinking
+          </label>
+          <Input
+            value={form.thinking ?? ""}
+            onChange={(e) => update("thinking", e.target.value || undefined)}
+            placeholder="e.g. high"
+            className="h-8 text-sm"
+          />
+        </div>
+      </div>
+
+      {/* Light context */}
+      <div className="space-y-1">
+        <label className="flex items-center gap-2 cursor-pointer">
+          <Checkbox
+            checked={!!form.lightContext}
+            onCheckedChange={(checked) =>
+              update("lightContext", checked === true)
+            }
+          />
+          <span className="text-sm">Light context</span>
+        </label>
+        <p className="text-xs text-[#8a8578] pl-6">
+          Skip loading recent history for faster/cheaper runs.
+        </p>
+      </div>
+    </div>
+  );
+
   const sections: JobEditSection[] = [
     { id: "basics", title: "Basics", defaultOpen: true, children: basicsBody },
     { id: "delivery", title: "Delivery", defaultOpen: true, children: deliveryBody },
-    { id: "agent-execution", title: "Agent execution", defaultOpen: false, children: <ComingSoon task="Task 14" /> },
+    { id: "agent-execution", title: "Agent execution", defaultOpen: false, children: agentExecutionBody },
     { id: "failure-alerts", title: "Failure alerts", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
     { id: "advanced", title: "Advanced", defaultOpen: false, children: <ComingSoon task="Task 16" /> },
   ];
