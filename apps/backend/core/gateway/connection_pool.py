@@ -1029,16 +1029,22 @@ class GatewayConnectionPool:
         stopped: list[str] = []
         # Per-cycle billing cache: one DDB read per unique owner per cycle, even
         # if the row appears in both the per-tier-breakdown count and the
-        # idle-eligible reap path below.
+        # idle-eligible reap path below. `failed_lookups` caches the negative
+        # case so a transient billing outage doesn't double the read amp +
+        # log noise (Codex P2 on PR #273).
         tier_cache: Dict[str, str] = {}
+        failed_lookups: set[str] = set()
 
         async def _resolve_tier(oid: str) -> str | None:
             if oid in tier_cache:
                 return tier_cache[oid]
+            if oid in failed_lookups:
+                return None
             try:
                 account = await billing_repo.get_by_owner_id(oid)
             except Exception:
                 logger.warning("idle_checker: billing lookup failed for %s, skipping", oid)
+                failed_lookups.add(oid)
                 return None
             plan_tier = (account or {}).get("plan_tier", "free")
             tier_cache[oid] = plan_tier

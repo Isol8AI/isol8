@@ -332,3 +332,38 @@ async def test_reap_once_emits_per_tier_running_count_breakdown():
     breakdown = {c.kwargs.get("dimensions", {}).get("tier"): c.args[1] for c in by_tier_calls}
     # Two free users + the orphan (defaulted to free) = 3 free, 1 starter.
     assert breakdown == {"free": 3, "starter": 1}
+
+
+@pytest.mark.asyncio
+async def test_reap_once_caches_billing_lookup_failures_within_cycle():
+    """Codex P2 regression on PR #273: a failed billing lookup must be cached
+    for the rest of the cycle, otherwise the per-tier breakdown loop AND the
+    idle-eligible reap loop both trigger a DDB get_by_owner_id call for the
+    same failing owner — doubling read pressure and warning-log noise."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    old_ts = _iso(datetime.now(timezone.utc) - timedelta(minutes=30))
+    pool = GatewayConnectionPool(management_api=None)
+
+    # Same owner appears once in get_by_status. We expect billing to be
+    # called exactly once even though _resolve_tier is invoked twice in
+    # the cycle (once for the per-tier breakdown, once for the reap path).
+    rows = [
+        {"owner_id": "user_billing_broken", "status": "running", "last_active_at": old_ts},
+    ]
+
+    mock_billing = AsyncMock(side_effect=RuntimeError("billing down"))
+
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_status",
+            new_callable=AsyncMock,
+            return_value=rows,
+        ),
+        patch("core.repositories.billing_repo.get_by_owner_id", new=mock_billing),
+        patch("core.containers.get_ecs_manager"),
+    ):
+        await pool._reap_once()
+
+    # Without the per-cycle failure cache, billing would be called twice.
+    assert mock_billing.await_count == 1
