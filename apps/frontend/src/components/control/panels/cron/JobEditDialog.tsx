@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import cronstrue from "cronstrue";
+import { useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
+import { SchedulePicker, scheduleIsValid } from "./SchedulePicker";
 import type { CronJob, CronSchedule, CronScheduleKind } from "./types";
 
 // --- Form state ---
@@ -102,22 +101,7 @@ export function JobEditDialog({
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const cronValidation = useMemo<{ ok: boolean; description?: string; error?: string }>(() => {
-    const expr = form.cronExpr.trim();
-    if (!expr) return { ok: false };
-    try {
-      const description = cronstrue.toString(expr, { throwExceptionOnParseError: true });
-      return { ok: true, description };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Invalid cron expression" };
-    }
-  }, [form.cronExpr]);
-
-  const canSubmit = form.name.trim() && form.message.trim() && (
-    (form.scheduleKind === "cron" && cronValidation.ok) ||
-    (form.scheduleKind === "every" && form.everyValue > 0) ||
-    (form.scheduleKind === "at" && form.atDatetime)
-  );
+  const canSubmit = !!form.name.trim() && !!form.message.trim() && scheduleIsValid(form);
 
   const basicsBody = (
     <div className="space-y-4">
@@ -132,83 +116,16 @@ export function JobEditDialog({
         />
       </div>
 
-      {/* Schedule type selector */}
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-[#8a8578]">Schedule</label>
-        <div className="flex gap-1">
-          {(["cron", "every", "at"] as const).map((kind) => (
-            <Button
-              key={kind}
-              variant={form.scheduleKind === kind ? "default" : "outline"}
-              size="sm"
-              onClick={() => update("scheduleKind", kind)}
-              className="text-xs"
-            >
-              {kind === "cron" ? "Cron Expression" : kind === "every" ? "Interval" : "One-time"}
-            </Button>
-          ))}
-        </div>
-
-        {form.scheduleKind === "cron" && (
-          <div className="space-y-1.5">
-            <div className="flex gap-2">
-              <Input
-                value={form.cronExpr}
-                onChange={(e) => update("cronExpr", e.target.value)}
-                placeholder="0 9 * * *"
-                className={cn(
-                  "h-8 text-sm font-mono flex-1",
-                  form.cronExpr.trim() && !cronValidation.ok && "border-destructive focus-visible:ring-destructive",
-                )}
-              />
-              <Input
-                value={form.cronTz}
-                onChange={(e) => update("cronTz", e.target.value)}
-                placeholder="Timezone (optional)"
-                className="h-8 text-sm w-40"
-              />
-            </div>
-            {form.cronExpr.trim() && (
-              cronValidation.ok ? (
-                <p className="text-xs text-[#2d8a4e]">{cronValidation.description}</p>
-              ) : (
-                <p className="text-xs text-destructive">{cronValidation.error}</p>
-              )
-            )}
-          </div>
-        )}
-
-        {form.scheduleKind === "every" && (
-          <div className="flex gap-2 items-center">
-            <span className="text-sm text-[#8a8578]">Every</span>
-            <Input
-              type="number"
-              min={1}
-              value={form.everyValue}
-              onChange={(e) => update("everyValue", Math.max(1, parseInt(e.target.value) || 1))}
-              className="h-8 text-sm w-20"
-            />
-            <select
-              value={form.everyUnit}
-              onChange={(e) => update("everyUnit", e.target.value as "minutes" | "hours" | "days")}
-              className="h-8 rounded-md border border-[#e0dbd0] bg-[#faf7f2] px-2 text-sm"
-            >
-              <option value="minutes">minutes</option>
-              <option value="hours">hours</option>
-              <option value="days">days</option>
-            </select>
-          </div>
-        )}
-
-        {form.scheduleKind === "at" && (
-          <Input
-            type="datetime-local"
-            value={form.atDatetime}
-            onChange={(e) => update("atDatetime", e.target.value)}
-            className="h-8 text-sm"
-          />
-        )}
-      </div>
+      {/* Schedule picker */}
+      <SchedulePicker
+        scheduleKind={form.scheduleKind}
+        cronExpr={form.cronExpr}
+        cronTz={form.cronTz}
+        everyValue={form.everyValue}
+        everyUnit={form.everyUnit}
+        atDatetime={form.atDatetime}
+        onFieldChange={update}
+      />
 
       {/* Message */}
       <div className="space-y-1">
