@@ -21,68 +21,17 @@ import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import type {
+  CronJob,
+  CronListResponse,
+  CronRunsResponse,
+  CronSchedule,
+  CronScheduleKind,
+} from "./cron/types";
 
-// --- Types ---
+// --- Form-local types (retained here pending Task 11 refactor) ---
 
-interface CronSchedule {
-  kind: "cron" | "every" | "at";
-  expr?: string;
-  tz?: string;
-  everyMs?: number;
-  at?: string;
-}
-
-interface CronPayload {
-  kind: "agentTurn" | "systemEvent";
-  message?: string;
-  text?: string;
-}
-
-interface CronJobState {
-  lastRunAtMs?: number;
-  lastRunStatus?: "ok" | "error" | "skipped";
-  lastError?: string;
-  lastDurationMs?: number;
-  nextRunAtMs?: number;
-}
-
-interface CronJob {
-  id: string;
-  name: string;
-  description?: string;
-  enabled: boolean;
-  agentId?: string;
-  schedule: CronSchedule;
-  payload?: CronPayload;
-  state?: CronJobState;
-  createdAtMs?: number;
-  updatedAtMs?: number;
-}
-
-interface CronListResponse {
-  jobs?: CronJob[];
-  total?: number;
-  hasMore?: boolean;
-}
-
-interface CronRunEntry {
-  jobId: string;
-  jobName?: string;
-  triggeredAtMs: number;
-  completedAtMs?: number;
-  status: "ok" | "error" | "skipped";
-  error?: string;
-  summary?: string;
-  durationMs?: number;
-}
-
-interface CronRunsResponse {
-  entries?: CronRunEntry[];
-  total?: number;
-  hasMore?: boolean;
-}
-
-type ScheduleKind = "cron" | "every" | "at";
+type ScheduleKind = CronScheduleKind;
 
 interface FormState {
   name: string;
