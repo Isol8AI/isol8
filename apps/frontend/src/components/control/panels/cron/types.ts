@@ -50,6 +50,8 @@ export interface CronFailureAlert {
   accountId?: string;
 }
 
+export type CronHookExternalContentSource = "gmail" | "webhook";
+
 export interface CronAgentTurnPayload {
   kind: "agentTurn";
   message: string;
@@ -60,6 +62,7 @@ export interface CronAgentTurnPayload {
   lightContext?: boolean;
   toolsAllow?: string[];
   allowUnsafeExternalContent?: boolean;
+  externalContentSource?: CronHookExternalContentSource;
 }
 
 export interface CronSystemEventPayload {
@@ -74,6 +77,8 @@ export interface CronJobState {
   runningAtMs?: number;
   lastRunAtMs?: number;
   lastRunStatus?: CronRunStatus;
+  /** Back-compat alias for lastRunStatus emitted by older containers. */
+  lastStatus?: CronRunStatus;
   lastError?: string;
   lastErrorReason?: CronFailoverReason;
   lastDurationMs?: number;
@@ -119,6 +124,8 @@ export interface CronRunEntry {
   completedAtMs?: number;
   status: CronRunStatus;
   error?: string;
+  /** Classifier for execution errors (e.g., "delivery-target"). */
+  errorKind?: "delivery-target";
   summary?: string;
   runAtMs?: number;
   durationMs?: number;
@@ -145,14 +152,22 @@ export interface CronRunsResponse {
   hasMore?: boolean;
 }
 
+export type CronDeliveryPatch = Partial<CronDelivery>;
+
+export type CronPayloadPatch =
+  | ({ kind: "agentTurn" } & Partial<Omit<CronAgentTurnPayload, "kind" | "toolsAllow">> & {
+        toolsAllow?: string[] | null;
+      })
+  | ({ kind: "systemEvent" } & Partial<Omit<CronSystemEventPayload, "kind">>);
+
 export type CronJobPatch = Partial<
   Omit<CronJob, "id" | "createdAtMs" | "state" | "payload">
 > & {
-  payload?:
-    | ({ kind: "agentTurn" } & Partial<Omit<CronAgentTurnPayload, "kind" | "toolsAllow">> & {
-          toolsAllow?: string[] | null;
-        })
-    | ({ kind: "systemEvent" } & Partial<Omit<CronSystemEventPayload, "kind">>);
-  delivery?: Partial<CronDelivery>;
+  payload?: CronPayloadPatch;
+  delivery?: CronDeliveryPatch;
+  state?: Partial<CronJobState>;
+};
+
+export type CronJobCreate = Omit<CronJob, "id" | "createdAtMs" | "updatedAtMs" | "state"> & {
   state?: Partial<CronJobState>;
 };
