@@ -868,6 +868,7 @@ class GatewayConnectionPool:
             wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
         except Exception:
             logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
+            put_metric("gateway.record_activity.count", dimensions={"outcome": "error"})
             # Compute the backdate from a FRESH time.time() — not the pre-await
             # `now` — so a slow DDB call (e.g. partial outage) can't itself
             # consume the entire retry-floor window and admit the next ping
@@ -876,7 +877,11 @@ class GatewayConnectionPool:
             return
 
         if not wrote:
+            put_metric("gateway.record_activity.count", dimensions={"outcome": "noop"})
             _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+            return
+
+        put_metric("gateway.record_activity.count", dimensions={"outcome": "success"})
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
@@ -1022,6 +1027,36 @@ class GatewayConnectionPool:
 
         now_ts = time.time()
         stopped: list[str] = []
+        # Per-cycle billing cache: one DDB read per unique owner per cycle, even
+        # if the row appears in both the per-tier-breakdown count and the
+        # idle-eligible reap path below.
+        tier_cache: Dict[str, str] = {}
+
+        async def _resolve_tier(oid: str) -> str | None:
+            if oid in tier_cache:
+                return tier_cache[oid]
+            try:
+                account = await billing_repo.get_by_owner_id(oid)
+            except Exception:
+                logger.warning("idle_checker: billing lookup failed for %s, skipping", oid)
+                return None
+            plan_tier = (account or {}).get("plan_tier", "free")
+            tier_cache[oid] = plan_tier
+            return plan_tier
+
+        # Per-tier running-container breakdown — useful for at-a-glance
+        # "how many free vs paid are running right now" without log scraping.
+        tier_counts: Dict[str, int] = {}
+        for row in rows:
+            tier = await _resolve_tier(row["owner_id"])
+            if tier is None:
+                continue
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        try:
+            for tier, count in tier_counts.items():
+                gauge("gateway.running.count.by_tier", count, dimensions={"tier": tier})
+        except Exception:
+            pass
 
         for row in rows:
             owner_id = row["owner_id"]
@@ -1041,13 +1076,12 @@ class GatewayConnectionPool:
             if now_ts - last_active_epoch < _IDLE_TIMEOUT:
                 continue
 
-            # Resolve tier; missing billing row is treated as free (orphan policy).
-            try:
-                account = await billing_repo.get_by_owner_id(owner_id)
-            except Exception:
-                logger.warning("idle_checker: billing lookup failed for %s, skipping", owner_id)
+            # Tier was already resolved + cached above for the per-tier breakdown;
+            # this lookup hits the cache, no extra DDB read.
+            plan_tier = await _resolve_tier(owner_id)
+            if plan_tier is None:
+                # billing lookup failed earlier; skip this cycle (already logged).
                 continue
-            plan_tier = (account or {}).get("plan_tier", "free")
 
             if not TIER_CONFIG.get(plan_tier, {}).get("scale_to_zero", False):
                 continue

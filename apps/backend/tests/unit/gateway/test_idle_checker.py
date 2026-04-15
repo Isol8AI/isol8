@@ -286,3 +286,49 @@ async def test_reap_once_emits_both_gauges():
     open_call = next(c for c in mock_gauge.call_args_list if c.args[0] == "gateway.connection.open")
     assert running_call.args[1] == 1  # one row from get_by_status
     assert open_call.args[1] == 2  # two entries in pool._connections
+
+
+@pytest.mark.asyncio
+async def test_reap_once_emits_per_tier_running_count_breakdown():
+    """Observability: in addition to the single gateway.running.count gauge,
+    the reaper emits gateway.running.count.by_tier with a `tier` dimension so
+    we can answer 'how many free vs paid containers are running right now'
+    without log scraping."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    pool = GatewayConnectionPool(management_api=None)
+
+    rows = [
+        {"owner_id": "user_free_a", "status": "running"},
+        {"owner_id": "user_free_b", "status": "running"},
+        {"owner_id": "user_starter", "status": "running"},
+        {"owner_id": "user_orphan", "status": "running"},
+    ]
+
+    async def fake_billing(oid):
+        return {
+            "user_free_a": {"plan_tier": "free"},
+            "user_free_b": {"plan_tier": "free"},
+            "user_starter": {"plan_tier": "starter"},
+        }.get(oid)  # user_orphan returns None → defaults to "free"
+
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_status",
+            new_callable=AsyncMock,
+            return_value=rows,
+        ),
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(side_effect=fake_billing),
+        ),
+        patch("core.containers.get_ecs_manager"),
+        patch("core.gateway.connection_pool.gauge") as mock_gauge,
+    ):
+        await pool._reap_once()
+
+    # Filter only the by_tier gauge calls.
+    by_tier_calls = [c for c in mock_gauge.call_args_list if c.args and c.args[0] == "gateway.running.count.by_tier"]
+    breakdown = {c.kwargs.get("dimensions", {}).get("tier"): c.args[1] for c in by_tier_calls}
+    # Two free users + the orphan (defaulted to free) = 3 free, 1 starter.
+    assert breakdown == {"free": 3, "starter": 1}

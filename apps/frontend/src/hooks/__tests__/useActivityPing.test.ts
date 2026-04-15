@@ -12,6 +12,12 @@ vi.mock('../useGateway', () => ({
   useGateway: () => mockGatewayValue,
 }));
 
+// Mock posthog so we can assert capture() calls.
+const posthogCapture = vi.fn();
+vi.mock('posthog-js', () => ({
+  default: { capture: (...args: unknown[]) => posthogCapture(...args) },
+}));
+
 function setVisibility(state: 'visible' | 'hidden') {
   Object.defineProperty(document, 'visibilityState', {
     value: state,
@@ -30,6 +36,7 @@ describe('useActivityPing', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     send.mockReset();
+    posthogCapture.mockReset();
     mockGatewayValue = { send, isConnected: true };
     setVisibility('visible');
   });
@@ -147,5 +154,31 @@ describe('useActivityPing', () => {
     }).not.toThrow();
 
     expect(send).not.toHaveBeenCalled();
+  });
+
+  it('captures a posthog event for each ping with interval_ms', async () => {
+    const useActivityPing = await importHook();
+    renderHook(() => useActivityPing());
+
+    // First ping → interval_ms is null (no prior ping to measure from).
+    act(() => {
+      window.dispatchEvent(new MouseEvent('mousemove'));
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(posthogCapture).toHaveBeenCalledTimes(1);
+    expect(posthogCapture).toHaveBeenLastCalledWith('activity_ping_sent', {
+      interval_ms: null,
+    });
+
+    // Second ping → interval_ms is the elapsed time since the first.
+    act(() => {
+      vi.advanceTimersByTime(61_000);
+      window.dispatchEvent(new MouseEvent('mousemove'));
+      vi.advanceTimersByTime(6_000);
+    });
+    expect(posthogCapture).toHaveBeenCalledTimes(2);
+    const secondCall = posthogCapture.mock.calls[1];
+    expect(secondCall[0]).toBe('activity_ping_sent');
+    expect(secondCall[1].interval_ms).toBeGreaterThanOrEqual(60_000);
   });
 });

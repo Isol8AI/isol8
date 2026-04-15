@@ -13,6 +13,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
+from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, container_repo
 
 logger = logging.getLogger(__name__)
@@ -105,9 +106,13 @@ async def container_provision(
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing:
         if existing.get("status") == "stopped":
-            # Container was scaled to zero -- restart it
+            # Container was scaled to zero -- restart it. This is the
+            # cold-start path; emit a metric so we can answer "how often do
+            # users hit a cold start" and "how long does the restart take".
             try:
-                await get_ecs_manager().start_user_service(owner_id)
+                with timing("gateway.cold_start.latency"):
+                    await get_ecs_manager().start_user_service(owner_id)
+                put_metric("gateway.cold_start.count", dimensions={"outcome": "ok"})
                 logger.info("Restarted stopped container for owner %s", owner_id)
                 return {
                     "status": "provisioning",
@@ -116,6 +121,7 @@ async def container_provision(
                     "already_existed": True,
                 }
             except EcsManagerError as e:
+                put_metric("gateway.cold_start.count", dimensions={"outcome": "error"})
                 logger.error("Restart failed for stopped container, owner %s: %s", owner_id, e)
                 raise HTTPException(status_code=503, detail=str(e))
         return {
