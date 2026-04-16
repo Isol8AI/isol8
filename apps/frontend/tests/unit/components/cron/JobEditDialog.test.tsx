@@ -71,16 +71,31 @@ function renderDialog(overrides: Partial<ComponentProps<typeof JobEditDialog>> =
   return { ...utils, props };
 }
 
+// SchedulePicker now also renders a button labelled "Advanced" (the
+// renamed power-user cron tab). Section accordions are the only buttons
+// that carry `aria-expanded`, so this helper disambiguates them from the
+// schedule-picker tabs by name + presence of the attribute.
+function getSectionHeader(name: RegExp) {
+  const matches = screen.getAllByRole("button", { name });
+  const headers = matches.filter((el) => el.hasAttribute("aria-expanded"));
+  if (headers.length !== 1) {
+    throw new Error(
+      `Expected one section header for ${name}, got ${headers.length}`,
+    );
+  }
+  return headers[0]!;
+}
+
 describe("JobEditDialog", () => {
   it("renders Basics and Delivery sections open, others closed", () => {
     renderDialog();
 
     // All five section headers are present.
-    const basicsHeader = screen.getByRole("button", { name: /^Basics$/ });
-    const deliveryHeader = screen.getByRole("button", { name: /^Delivery$/ });
-    const agentHeader = screen.getByRole("button", { name: /^Agent execution$/ });
-    const failureHeader = screen.getByRole("button", { name: /^Failure alerts$/ });
-    const advancedHeader = screen.getByRole("button", { name: /^Advanced$/ });
+    const basicsHeader = getSectionHeader(/^Basics$/);
+    const deliveryHeader = getSectionHeader(/^Delivery$/);
+    const agentHeader = getSectionHeader(/^Agent execution$/);
+    const failureHeader = getSectionHeader(/^Failure alerts$/);
+    const advancedHeader = getSectionHeader(/^Advanced$/);
 
     expect(basicsHeader.getAttribute("aria-expanded")).toBe("true");
     expect(deliveryHeader.getAttribute("aria-expanded")).toBe("true");
@@ -119,8 +134,12 @@ describe("JobEditDialog", () => {
 
   // --- Task 16 ---
 
-  it("EMPTY_FORM create-defaults: scheduleKind=every, wakeMode=next-heartbeat, failureAlert off", () => {
-    expect(EMPTY_FORM.scheduleKind).toBe("every");
+  it("EMPTY_FORM create-defaults: scheduleKind=daily (every day at 9am), wakeMode=next-heartbeat, failureAlert off", () => {
+    expect(EMPTY_FORM.scheduleKind).toBe("daily");
+    expect(EMPTY_FORM.dailyTime).toBe("09:00");
+    expect(EMPTY_FORM.dailyDaysOfWeek).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    // Interval defaults are still seeded so flipping to the Interval tab
+    // gives a sane starting point.
     expect(EMPTY_FORM.everyValue).toBe(1);
     expect(EMPTY_FORM.everyUnit).toBe("days");
     expect(EMPTY_FORM.enabled).toBe(true);
@@ -155,7 +174,7 @@ describe("JobEditDialog", () => {
     expect(baseInitial.wakeMode).toBe("next-heartbeat");
 
     // Open Advanced section.
-    const advancedHeader = screen.getByRole("button", { name: /^Advanced$/ });
+    const advancedHeader = getSectionHeader(/^Advanced$/);
     fireEvent.click(advancedHeader);
 
     // Click "Now" to flip wakeMode.
@@ -171,7 +190,7 @@ describe("JobEditDialog", () => {
   it("Advanced: enabling deleteAfterRun shows inline confirmation", () => {
     renderDialog();
 
-    const advancedHeader = screen.getByRole("button", { name: /^Advanced$/ });
+    const advancedHeader = getSectionHeader(/^Advanced$/);
     fireEvent.click(advancedHeader);
 
     const toggle = screen.getByLabelText(/Delete after first successful run/);
@@ -196,7 +215,7 @@ describe("JobEditDialog", () => {
   it("Advanced: deleteAfterRun checkbox shows checked during confirm, reverts on Cancel", () => {
     renderDialog();
 
-    const advancedHeader = screen.getByRole("button", { name: /^Advanced$/ });
+    const advancedHeader = getSectionHeader(/^Advanced$/);
     fireEvent.click(advancedHeader);
 
     const toggle = screen.getByLabelText(/Delete after first successful run/);

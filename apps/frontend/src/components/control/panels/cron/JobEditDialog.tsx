@@ -77,6 +77,8 @@ export function JobEditDialog({
         everyValue={form.everyValue}
         everyUnit={form.everyUnit}
         atDatetime={form.atDatetime}
+        dailyTime={form.dailyTime}
+        dailyDaysOfWeek={form.dailyDaysOfWeek}
         onFieldChange={(key, value) =>
           // SchedulePickerFields is a strict subset of FormState, so the
           // key/value pairing is always valid at runtime. TS can't prove the

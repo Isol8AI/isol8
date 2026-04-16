@@ -6,6 +6,10 @@
 // Extracted from JobEditDialog.tsx in Task 13 so that multiple siblings
 // can reference the same FormState without cyclic imports.
 
+import {
+  buildDailyCronExpr,
+  parseDailyCronExpr,
+} from "./dailyPattern";
 import type {
   CronDelivery,
   CronFailureAlert,
@@ -14,11 +18,16 @@ import type {
   CronJobPatch,
   CronPayloadPatch,
   CronSchedule,
-  CronScheduleKind,
   CronWakeMode,
 } from "./types";
 
-export type ScheduleKind = CronScheduleKind;
+/**
+ * UI-level schedule kind. Wider than the wire `CronScheduleKind` because the
+ * "daily" friendly preset is a presentation choice that still serializes to a
+ * `{kind: "cron"}` schedule on the wire (see `buildSchedule`). Splitting the
+ * UI kind from the wire kind keeps `types.ts` faithful to the protocol.
+ */
+export type ScheduleKind = "daily" | "every" | "at" | "cron";
 
 export interface FormState {
   name: string;
@@ -28,6 +37,16 @@ export interface FormState {
   everyValue: number;
   everyUnit: "minutes" | "hours" | "days";
   atDatetime: string;
+  /**
+   * Daily/Weekly preset: time-of-day in HH:mm 24-hour form. Serialised into
+   * the cron expression's hour+minute fields by `buildSchedule`.
+   */
+  dailyTime: string;
+  /**
+   * Daily/Weekly preset: days of the week as Sunday-first integers (0-6).
+   * Serialised into the cron expression's day-of-week field by `buildSchedule`.
+   */
+  dailyDaysOfWeek: number[];
   message: string;
   enabled: boolean;
   /** Tracks whether this job is an agentTurn or systemEvent payload. */
@@ -90,14 +109,16 @@ export interface FormState {
 
 export const EMPTY_FORM: FormState = {
   name: "",
-  // Create-form defaults (Task 16): pick "Every 1 day" as the most common
-  // fresh-cron configuration. User can flip to cron/at in SchedulePicker.
-  scheduleKind: "every",
+  // Default new jobs to the friendly Daily/Weekly preset (every day at 9am)
+  // — matches what most first-time users want without needing cron syntax.
+  scheduleKind: "daily",
   cronExpr: "",
   cronTz: "",
   everyValue: 1,
   everyUnit: "days",
   atDatetime: "",
+  dailyTime: "09:00",
+  dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
   message: "",
   enabled: true,
   payloadKind: "agentTurn",
@@ -126,6 +147,14 @@ export function buildSchedule(form: FormState): CronSchedule {
   switch (form.scheduleKind) {
     case "cron":
       return { kind: "cron", expr: form.cronExpr, ...(form.cronTz ? { tz: form.cronTz } : {}) };
+    case "daily": {
+      // Daily/Weekly preset still serialises to a `kind: "cron"` schedule on
+      // the wire. Pass the form's tz through if present (round-tripping a
+      // cron-with-tz that we matched as daily) but the daily UI itself has no
+      // tz picker — see SchedulePicker.
+      const expr = buildDailyCronExpr(form.dailyTime, form.dailyDaysOfWeek);
+      return { kind: "cron", expr, ...(form.cronTz ? { tz: form.cronTz } : {}) };
+    }
     case "every": {
       const multipliers = { minutes: 60000, hours: 3600000, days: 86400000 };
       return { kind: "every", everyMs: form.everyValue * multipliers[form.everyUnit] };
@@ -213,7 +242,27 @@ export function jobToForm(job: CronJob): FormState {
     ...failureAlertFields,
   };
   if (s.kind === "cron") {
-    return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: s.expr ?? "", cronTz: s.tz ?? "" };
+    const expr = s.expr ?? "";
+    const tz = s.tz ?? "";
+    // If the cron expression matches the Daily/Weekly preset shape, load it
+    // into the friendly UI. Otherwise fall through to the Advanced (cron)
+    // tab so power-user expressions like `*/15 * * * *` stay editable.
+    const daily = parseDailyCronExpr(expr);
+    if (daily) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return {
+        ...EMPTY_FORM,
+        ...base,
+        scheduleKind: "daily",
+        dailyTime: `${pad(daily.hour)}:${pad(daily.minute)}`,
+        dailyDaysOfWeek: daily.daysOfWeek,
+        // Preserve the original expression + tz so switching to Advanced in
+        // the dialog reveals them unchanged.
+        cronExpr: expr,
+        cronTz: tz,
+      };
+    }
+    return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: expr, cronTz: tz };
   }
   if (s.kind === "every") {
     const ms = s.everyMs ?? 60000;

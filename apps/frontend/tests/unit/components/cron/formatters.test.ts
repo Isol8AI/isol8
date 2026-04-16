@@ -22,6 +22,44 @@ describe("formatSchedule", () => {
   it("formats one-shot 'at'", () => {
     expect(formatSchedule({ kind: "at", at: "2026-04-15T09:00:00Z" })).toMatch(/2026/);
   });
+
+  // --- Daily/Weekly preset rendering ---
+  it("formats daily 9am as 'Daily at 9:00 AM'", () => {
+    expect(formatSchedule({ kind: "cron", expr: "0 9 * * *" })).toBe(
+      "Daily at 9:00 AM",
+    );
+  });
+  it("formats weekdays 5pm range as 'Weekdays at 5:00 PM'", () => {
+    expect(formatSchedule({ kind: "cron", expr: "0 17 * * 1-5" })).toBe(
+      "Weekdays at 5:00 PM",
+    );
+  });
+  it("formats weekdays 5pm list as 'Weekdays at 5:00 PM'", () => {
+    expect(formatSchedule({ kind: "cron", expr: "0 17 * * 1,2,3,4,5" })).toBe(
+      "Weekdays at 5:00 PM",
+    );
+  });
+  it("formats weekends 8am as 'Weekends at 8:00 AM'", () => {
+    expect(formatSchedule({ kind: "cron", expr: "0 8 * * 0,6" })).toBe(
+      "Weekends at 8:00 AM",
+    );
+  });
+  it("formats arbitrary day subset as 'Mon, Wed, Fri at ...'", () => {
+    expect(formatSchedule({ kind: "cron", expr: "30 14 * * 1,3,5" })).toBe(
+      "Mon, Wed, Fri at 2:30 PM",
+    );
+  });
+  it("appends tz when present on a daily-pattern cron", () => {
+    expect(
+      formatSchedule({ kind: "cron", expr: "0 9 * * *", tz: "America/New_York" }),
+    ).toBe("Daily at 9:00 AM (America/New_York)");
+  });
+  it("falls back to cronstrue for non-daily cron expressions", () => {
+    // A stepped expression isn't a Daily/Weekly preset — must NOT be matched.
+    const out = formatSchedule({ kind: "cron", expr: "*/15 * * * *" });
+    expect(out).not.toMatch(/Daily|Weekdays|Weekends/);
+    expect(out.toLowerCase()).toContain("15 minutes");
+  });
 });
 
 describe("formatDelivery", () => {
