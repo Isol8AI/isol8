@@ -285,9 +285,11 @@ class EcsManager:
                 },
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
             )
-            # Only enable ECS Exec for non-production environments
-            if settings.ENVIRONMENT != "prod":
-                create_kwargs["enableExecuteCommand"] = True
+            # Enable ECS Exec for all environments so we can debug per-user
+            # OpenClaw containers (skill installs, workspace state, gateway
+            # health) without redeploying. Requires the task role to grant
+            # ssmmessages:CreateControlChannel/CreateDataChannel/OpenControlChannel/OpenDataChannel.
+            create_kwargs["enableExecuteCommand"] = True
             self._ecs.create_service(**create_kwargs)
             await self._update_container(user_id, substatus="service_created")
         except EcsManagerError:

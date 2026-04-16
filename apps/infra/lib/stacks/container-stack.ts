@@ -176,6 +176,22 @@ export class ContainerStack extends cdk.Stack {
       }),
     );
 
+    // ECS Exec — lets us aws ecs execute-command into per-user OpenClaw
+    // containers for live debugging (skill installs, workspace state, etc.).
+    // Paired with enableExecuteCommand=true on each per-user service in
+    // ecs_manager.py.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+        ],
+        resources: ["*"],
+      }),
+    );
+
     // Base OpenClaw task definition — the backend clones this per user,
     // replacing the EFS access point for data isolation.
     const env = props.environment;
@@ -224,6 +240,11 @@ export class ContainerStack extends cdk.Stack {
       environment: {
         HOME: "/home/node",
         CHOKIDAR_USEPOLLING: "true",
+        // Redirect clawhub installs to the OpenClaw managed-skills directory
+        // (~/.openclaw/skills) so they're scanned by every agent. Without
+        // this, clawhub falls through to agents.defaults.workspace and lands
+        // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
+        CLAWHUB_WORKDIR: "/home/node/.openclaw",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
