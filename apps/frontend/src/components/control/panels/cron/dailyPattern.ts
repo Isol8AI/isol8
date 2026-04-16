@@ -38,7 +38,7 @@ const DAILY_RE = /^(\d{1,2}) (\d{1,2}) \* \* ([0-7,\-*]+)$/;
  *  - `1-3,5`       → mixed list+range
  *
  * Rejected (returns null):
- *  - Steps (`*/2`, `1-5/2`)
+ *  - Steps (slash-notation like every-other-day)
  *  - Named days (`MON`, `mon`)
  *  - Reversed ranges (`5-2`)
  *  - Out-of-bounds values (`8`, `-1`)
