@@ -57,31 +57,32 @@ export function RunTranscript({ sessionKey }: { sessionKey: string | undefined }
 }
 
 /**
- * Tolerance (ms) applied when matching `afterTs` against message `ts`.
- * Run.triggeredAtMs and the message timestamp recorded by OpenClaw are
- * captured at slightly different points in the pipeline, so we allow a
- * small fudge factor before declaring a message "older than this run".
- */
-const FIRST_USER_MESSAGE_TS_TOLERANCE_MS = 5_000;
-
-/**
- * Returns the first user message in `messages`. When `afterTs` is provided,
- * skips messages whose `ts` is more than `FIRST_USER_MESSAGE_TS_TOLERANCE_MS`
- * earlier — which is what we want for multi-run sessions where the same
- * sessionKey contains prompts from previous runs. Falls back to the first
- * user message overall when `afterTs` isn't provided or no message satisfies
- * the bound (e.g. the adapter didn't get a `ts` from the history payload).
+ * Returns the first user message in `messages`.
+ *
+ * - When `afterTs` is provided, returns the first user message whose `ts`
+ *   is `>= afterTs` (and `<= beforeTs` if provided). No tolerance window:
+ *   in shared/non-isolated sessions with back-to-back manual reruns, a
+ *   tolerance can let the previous run's prompt slip in. If no message
+ *   has a `ts` in range, returns `undefined` (we deliberately do NOT fall
+ *   back to the earliest-overall message — that was the old too-permissive
+ *   behavior).
+ * - When `afterTs` is undefined, returns the first user message overall
+ *   without any `ts` check.
  */
 export function firstUserMessage(
   messages: AdaptedMessage[],
   afterTs?: number,
+  beforeTs?: number,
 ): string | undefined {
   if (afterTs !== undefined) {
-    const cutoff = afterTs - FIRST_USER_MESSAGE_TS_TOLERANCE_MS;
     const scoped = messages.find(
-      (m) => m.role === "user" && m.ts !== undefined && m.ts >= cutoff,
+      (m) =>
+        m.role === "user" &&
+        m.ts !== undefined &&
+        m.ts >= afterTs &&
+        (beforeTs === undefined || m.ts <= beforeTs),
     );
-    if (scoped) return scoped.content;
+    return scoped?.content;
   }
   return messages.find((m) => m.role === "user")?.content;
 }

@@ -84,6 +84,45 @@ describe("buildEditPayloadDiff", () => {
     });
   });
 
+  it("explicitly clears delivery.failureDestination with null when removed", () => {
+    // Original job has a nested failureDestination set on its delivery.
+    const jobWithFailureDest: CronJob = {
+      ...baseJob,
+      delivery: {
+        mode: "announce",
+        channel: "slack",
+        to: "#alerts",
+        failureDestination: {
+          mode: "webhook",
+          channel: "webhook",
+          to: "https://example.com/hook",
+        },
+      },
+    };
+    // Form: user kept the delivery but removed the nested failureDestination.
+    const form: FormState = {
+      ...jobToForm(jobWithFailureDest),
+      delivery: {
+        mode: "announce",
+        channel: "slack",
+        to: "#alerts",
+        // failureDestination omitted on purpose — DeliveryPicker sets it
+        // to undefined when the user clears the nested picker.
+      },
+    };
+
+    const patch = buildEditPayloadDiff(form, jobWithFailureDest);
+
+    // Patch must explicitly carry `failureDestination: null` so the backend
+    // clears the prior value (JSON.stringify drops undefined keys, so we
+    // need null, matching the P1 delivery clearing convention).
+    expect(patch.delivery).toBeDefined();
+    expect(
+      (patch.delivery as { failureDestination?: unknown } | undefined)
+        ?.failureDestination,
+    ).toBeNull();
+  });
+
   it("omits optional payload fields when neither form nor original had them", () => {
     const noOverridesJob: CronJob = {
       ...baseJob,

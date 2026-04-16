@@ -9,6 +9,7 @@
 import type {
   CronDelivery,
   CronFailureAlert,
+  CronFailureDestination,
   CronJob,
   CronJobPatch,
   CronPayloadPatch,
@@ -328,8 +329,27 @@ export function buildEditPayloadDiff(
 
   // delivery: spreading only when defined would let a previously-set
   // delivery linger. Send `{ mode: "none" }` when the user cleared it.
+  // Also: if the nested failureDestination was set on the original but
+  // is now undefined on the form, JSON.stringify would silently drop the
+  // key — explicitly clear it with `null` so the backend knows to remove
+  // the prior routing (matches OpenClaw's null-coalesces-to-clear pattern).
   if (form.delivery !== undefined) {
-    patch.delivery = form.delivery;
+    const originalFailureDest = original.delivery?.failureDestination;
+    if (
+      originalFailureDest !== undefined &&
+      form.delivery.failureDestination === undefined
+    ) {
+      // Narrow-cast so we can write `null` to clear (TS types
+      // failureDestination as `CronFailureDestination | undefined`; the
+      // OpenClaw cron.update handler coalesces null → clear, matching the
+      // P1 fix pattern for top-level `delivery`).
+      patch.delivery = {
+        ...form.delivery,
+        failureDestination: null as unknown as CronFailureDestination,
+      };
+    } else {
+      patch.delivery = form.delivery;
+    }
   } else if (original.delivery !== undefined) {
     patch.delivery = { mode: "none" };
   }

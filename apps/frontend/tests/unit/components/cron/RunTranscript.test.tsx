@@ -79,7 +79,7 @@ describe("firstUserMessage", () => {
     expect(firstUserMessage(messages)).toBe("first prompt");
   });
 
-  it("skips user messages older than afterTs (minus tolerance) in multi-run sessions", () => {
+  it("skips user messages older than afterTs in multi-run sessions", () => {
     const messages: AdaptedMessage[] = [
       // Old run: well before the cutoff.
       { id: "0", role: "user", content: "old prompt", ts: 1_000 },
@@ -91,11 +91,50 @@ describe("firstUserMessage", () => {
     expect(firstUserMessage(messages, 100_000)).toBe("current prompt");
   });
 
-  it("falls back to the first user message when no message has ts (afterTs unmatched)", () => {
+  it("returns undefined (not earliest) when no message has ts and afterTs is provided", () => {
+    // Tighter semantics: when afterTs is provided but no message has a ts
+    // satisfying the bound, we deliberately return undefined rather than
+    // falling back to the first user message overall. The old fallback was
+    // too permissive in shared-session reruns.
     const messages: AdaptedMessage[] = [
       { id: "0", role: "user", content: "no-ts prompt" },
       { id: "1", role: "assistant", content: "answer" },
     ];
-    expect(firstUserMessage(messages, 100_000)).toBe("no-ts prompt");
+    expect(firstUserMessage(messages, 100_000)).toBeUndefined();
+  });
+
+  it("returns undefined when no message is at-or-after afterTs", () => {
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "stale prompt", ts: 1_000 },
+      { id: "1", role: "assistant", content: "stale answer", ts: 1_500 },
+    ];
+    expect(firstUserMessage(messages, 100_000)).toBeUndefined();
+  });
+
+  it("rejects messages just before afterTs (no tolerance window)", () => {
+    // With the old 5s tolerance this would have matched. With the tighter
+    // semantics it must not — back-to-back manual reruns can otherwise
+    // surface the previous run's prompt.
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "previous run prompt", ts: 99_999 },
+      { id: "1", role: "user", content: "current run prompt", ts: 100_000 },
+    ];
+    expect(firstUserMessage(messages, 100_000)).toBe("current run prompt");
+  });
+
+  it("excludes messages after beforeTs upper bound", () => {
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "in-range prompt", ts: 100_500 },
+      { id: "1", role: "user", content: "out-of-range prompt", ts: 200_000 },
+    ];
+    // afterTs=100_000, beforeTs=101_000 → only the in-range prompt qualifies.
+    expect(firstUserMessage(messages, 100_000, 101_000)).toBe("in-range prompt");
+  });
+
+  it("returns undefined when only matches are after beforeTs", () => {
+    const messages: AdaptedMessage[] = [
+      { id: "0", role: "user", content: "next-run prompt", ts: 200_000 },
+    ];
+    expect(firstUserMessage(messages, 100_000, 101_000)).toBeUndefined();
   });
 });
