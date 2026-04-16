@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { AdvancedSection } from "./AdvancedSection";
-import { DeliveryPicker } from "./DeliveryPicker";
+import { DeliveryPicker, isValidWebhookUrl } from "./DeliveryPicker";
 import { FailureAlertsSection } from "./FailureAlertsSection";
 import { FallbackModelList } from "./FallbackModelList";
 import { JobEditSections, type JobEditSection } from "./JobEditSections";
@@ -43,7 +43,10 @@ export function JobEditDialog({
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
 
-  const canSubmit = !!form.name.trim() && !!form.message.trim() && scheduleIsValid(form);
+  const deliveryValid =
+    form.delivery?.mode !== "webhook" || isValidWebhookUrl(form.delivery?.to ?? "");
+  const canSubmit =
+    !!form.name.trim() && !!form.message.trim() && scheduleIsValid(form) && deliveryValid;
 
   const basicsBody = (
     <div className="space-y-4">

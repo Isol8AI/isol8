@@ -66,7 +66,7 @@ function useChannelOptions(): {
 
 // --- URL validation ---
 
-function isValidWebhookUrl(url: string): boolean {
+export function isValidWebhookUrl(url: string): boolean {
   if (!url.trim()) return false;
   try {
     const u = new URL(url.trim());
