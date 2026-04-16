@@ -136,7 +136,11 @@ export function RunDetailPanel({
       </div>
 
       <div className="flex-1 overflow-y-auto min-h-0">
-        <RunTranscript sessionKey={run.sessionKey} />
+        <RunTranscript
+          sessionKey={run.sessionKey}
+          afterTs={run.triggeredAtMs}
+          beforeTs={run.completedAtMs}
+        />
       </div>
 
       <RunMetadata run={run} nextRunAtMs={job?.state.nextRunAtMs} />

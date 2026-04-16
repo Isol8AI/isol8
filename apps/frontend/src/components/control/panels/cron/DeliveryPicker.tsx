@@ -142,23 +142,33 @@ export function DeliveryPicker({
   // --- Handlers ---
 
   function setMode(next: CronDeliveryMode) {
+    // Always preserve a previously-configured failureDestination across mode
+    // changes — toggling delivery mode must not silently drop the user's
+    // already-configured failure route. The nested picker's "Remove failure
+    // destination" button is the only way to clear it.
+    const carryFailure: Pick<CronDelivery, "failureDestination"> = delivery
+      .failureDestination
+      ? { failureDestination: delivery.failureDestination }
+      : {};
+
     if (next === "none") {
-      onChange({ mode: "none" });
+      onChange({ mode: "none", ...carryFailure });
       return;
     }
     if (next === "announce") {
       onChange({
         mode: "announce",
-        // Preserve any prior channel-specific fields when switching from webhook.
+        // Preserve any prior channel-specific fields when switching from
+        // announce back to announce (no-op guard for edge cases).
         ...(mode === "announce"
           ? {
               channel: delivery.channel,
               to: delivery.to,
               threadId: delivery.threadId,
               accountId: delivery.accountId,
-              failureDestination: delivery.failureDestination,
             }
           : {}),
+        ...carryFailure,
       });
       return;
     }
@@ -166,7 +176,7 @@ export function DeliveryPicker({
     onChange({
       mode: "webhook",
       to: mode === "webhook" ? delivery.to : "",
-      failureDestination: delivery.failureDestination,
+      ...carryFailure,
     });
   }
 

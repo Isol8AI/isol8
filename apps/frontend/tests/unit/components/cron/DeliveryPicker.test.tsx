@@ -141,6 +141,70 @@ describe("DeliveryPicker", () => {
     expect(onChange).toHaveBeenCalled();
   });
 
+  it("preserves failureDestination when toggling mode webhook -> announce -> none -> webhook", () => {
+    mockChannelAccounts = { telegram: [{ accountId: "a1" }] };
+
+    // Start with a webhook delivery that already has a configured failure
+    // destination (announce → telegram).
+    const observed: (CronDelivery | undefined)[] = [];
+    function Harness() {
+      const [value, setValue] = useState<CronDelivery | undefined>({
+        mode: "webhook",
+        to: "https://example.com/hook",
+        failureDestination: {
+          mode: "announce",
+          channel: "telegram",
+          accountId: "a1",
+          to: "@ops",
+        },
+      });
+      return (
+        <DeliveryPicker
+          value={value}
+          onChange={(d) => {
+            observed.push(d);
+            setValue(d);
+          }}
+        />
+      );
+    }
+    render(<Harness />);
+
+    // webhook -> announce: failureDestination must survive.
+    fireEvent.click(screen.getByRole("button", { name: /^Announce$/ }));
+    const afterToAnnounce = observed[observed.length - 1];
+    expect(afterToAnnounce?.mode).toBe("announce");
+    expect(afterToAnnounce?.failureDestination).toEqual({
+      mode: "announce",
+      channel: "telegram",
+      accountId: "a1",
+      to: "@ops",
+    });
+
+    // announce -> none: failureDestination must still survive (user can
+    // only clear it via the explicit "Remove failure destination" button).
+    fireEvent.click(screen.getByRole("button", { name: /^None$/ }));
+    const afterToNone = observed[observed.length - 1];
+    expect(afterToNone?.mode).toBe("none");
+    expect(afterToNone?.failureDestination).toEqual({
+      mode: "announce",
+      channel: "telegram",
+      accountId: "a1",
+      to: "@ops",
+    });
+
+    // none -> webhook: failureDestination must survive the round-trip.
+    fireEvent.click(screen.getByRole("button", { name: /^Webhook$/ }));
+    const afterToWebhook = observed[observed.length - 1];
+    expect(afterToWebhook?.mode).toBe("webhook");
+    expect(afterToWebhook?.failureDestination).toEqual({
+      mode: "announce",
+      channel: "telegram",
+      accountId: "a1",
+      to: "@ops",
+    });
+  });
+
   it("failure-destination toggle: open renders nested picker, change writes failureDestination and drops threadId/bestEffort", () => {
     mockChannelAccounts = { telegram: [{ accountId: "a1" }] };
 

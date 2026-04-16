@@ -8,7 +8,22 @@ interface ChatHistoryResp {
   messages?: unknown[];
 }
 
-export function RunTranscript({ sessionKey }: { sessionKey: string | undefined }) {
+export function RunTranscript({
+  sessionKey,
+  afterTs,
+  beforeTs,
+}: {
+  sessionKey: string | undefined;
+  /**
+   * When provided, filters transcript messages to those whose `ts` lies in
+   * `[afterTs, beforeTs]`. Messages with no `ts` are conservatively kept so
+   * older OpenClaw history formats (pre-ts) still render. Used by
+   * RunDetailPanel to scope the transcript to a specific run in multi-run
+   * sessions (non-isolated cron jobs share a sessionKey across runs).
+   */
+  afterTs?: number;
+  beforeTs?: number;
+}) {
   // Always call the hook (hooks rules). Pass `null` method to skip the fetch
   // when we have no sessionKey — useGatewayRpc short-circuits SWR on null.
   const { data, error, isLoading, mutate } = useGatewayRpc<ChatHistoryResp>(
@@ -44,7 +59,8 @@ export function RunTranscript({ sessionKey }: { sessionKey: string | undefined }
     );
   }
 
-  const messages = adaptSessionMessages(data?.messages);
+  const allMessages = adaptSessionMessages(data?.messages);
+  const messages = scopeMessagesToRun(allMessages, afterTs, beforeTs);
   if (messages.length === 0) {
     return (
       <div className="p-6 text-sm text-[#8a8578]">
@@ -54,6 +70,28 @@ export function RunTranscript({ sessionKey }: { sessionKey: string | undefined }
   }
 
   return <MessageList messages={messages} />;
+}
+
+/**
+ * Filters `messages` to those whose `ts` is within `[afterTs, beforeTs]`.
+ *
+ * - Messages with `ts === undefined` are kept conservatively (older history
+ *   formats that predate the timestamp field).
+ * - When `afterTs` is undefined, no lower bound is applied.
+ * - When `beforeTs` is undefined, no upper bound is applied.
+ */
+export function scopeMessagesToRun(
+  messages: AdaptedMessage[],
+  afterTs?: number,
+  beforeTs?: number,
+): AdaptedMessage[] {
+  if (afterTs === undefined && beforeTs === undefined) return messages;
+  return messages.filter((m) => {
+    if (m.ts === undefined) return true;
+    if (afterTs !== undefined && m.ts < afterTs) return false;
+    if (beforeTs !== undefined && m.ts > beforeTs) return false;
+    return true;
+  });
 }
 
 /**

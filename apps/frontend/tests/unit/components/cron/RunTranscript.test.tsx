@@ -19,7 +19,11 @@ vi.mock("@/hooks/useGatewayRpc", () => ({
   useGatewayRpcMutation: () => vi.fn(),
 }));
 
-import { RunTranscript, firstUserMessage } from "@/components/control/panels/cron/RunTranscript";
+import {
+  RunTranscript,
+  firstUserMessage,
+  scopeMessagesToRun,
+} from "@/components/control/panels/cron/RunTranscript";
 import type { AdaptedMessage } from "@/components/control/panels/cron/sessionMessageAdapter";
 
 beforeEach(() => {
@@ -66,6 +70,89 @@ describe("RunTranscript", () => {
     rpcState.data = { messages: [] };
     render(<RunTranscript sessionKey="session-abc" />);
     expect(screen.getByText(/no transcript available/i)).toBeInTheDocument();
+  });
+
+  it("filters out messages outside [afterTs, beforeTs] when scoping to a run", () => {
+    // Three messages across two runs on a shared (non-isolated) session.
+    // Only the middle pair falls inside this run's [afterTs, beforeTs] window.
+    rpcState.data = {
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "previous-run prompt" }],
+          ts: 500,
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: "in-range prompt" }],
+          ts: 100_200,
+        },
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "in-range answer" }],
+          ts: 100_800,
+        },
+        {
+          role: "user",
+          content: [{ type: "text", text: "next-run prompt" }],
+          ts: 200_000,
+        },
+      ],
+    };
+    render(
+      <RunTranscript
+        sessionKey="session-abc"
+        afterTs={100_000}
+        beforeTs={101_000}
+      />,
+    );
+    expect(screen.getByText("in-range prompt")).toBeInTheDocument();
+    expect(screen.getByText("in-range answer")).toBeInTheDocument();
+    expect(screen.queryByText("previous-run prompt")).toBeNull();
+    expect(screen.queryByText("next-run prompt")).toBeNull();
+  });
+});
+
+describe("scopeMessagesToRun", () => {
+  const messages: AdaptedMessage[] = [
+    { id: "0", role: "user", content: "before window", ts: 500 },
+    { id: "1", role: "user", content: "in window", ts: 100_500 },
+    { id: "2", role: "assistant", content: "also in window", ts: 100_800 },
+    { id: "3", role: "user", content: "after window", ts: 200_000 },
+    // Conservative: messages with no ts are kept (older history formats).
+    { id: "4", role: "user", content: "no-ts message" },
+  ];
+
+  it("returns all messages unchanged when both bounds are undefined", () => {
+    expect(scopeMessagesToRun(messages)).toEqual(messages);
+  });
+
+  it("filters strictly to [afterTs, beforeTs] while preserving ts-less messages", () => {
+    const scoped = scopeMessagesToRun(messages, 100_000, 101_000);
+    const contents = scoped.map((m) => m.content);
+    expect(contents).toContain("in window");
+    expect(contents).toContain("also in window");
+    expect(contents).toContain("no-ts message"); // conservative keep
+    expect(contents).not.toContain("before window");
+    expect(contents).not.toContain("after window");
+  });
+
+  it("applies only the lower bound when beforeTs is undefined", () => {
+    const scoped = scopeMessagesToRun(messages, 100_000);
+    const contents = scoped.map((m) => m.content);
+    expect(contents).toContain("in window");
+    expect(contents).toContain("after window");
+    expect(contents).toContain("no-ts message");
+    expect(contents).not.toContain("before window");
+  });
+
+  it("applies only the upper bound when afterTs is undefined", () => {
+    const scoped = scopeMessagesToRun(messages, undefined, 101_000);
+    const contents = scoped.map((m) => m.content);
+    expect(contents).toContain("before window");
+    expect(contents).toContain("in window");
+    expect(contents).toContain("no-ts message");
+    expect(contents).not.toContain("after window");
   });
 });
 
