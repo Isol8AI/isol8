@@ -154,8 +154,16 @@ describe("RunDetailPanel", () => {
   it("uses first user message from transcript as prompt when available", () => {
     rpcState.data = {
       messages: [
-        { role: "user", content: [{ type: "text", text: "original prompt here" }] },
-        { role: "assistant", content: [{ type: "text", text: "answer" }] },
+        {
+          role: "user",
+          ts: baseRun.triggeredAtMs + 500,
+          content: [{ type: "text", text: "original prompt here" }],
+        },
+        {
+          role: "assistant",
+          ts: baseRun.triggeredAtMs + 1000,
+          content: [{ type: "text", text: "answer" }],
+        },
       ],
     };
     render(
