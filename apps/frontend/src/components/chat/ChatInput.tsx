@@ -1,9 +1,12 @@
 "use client";
 
 import * as React from "react";
+import { usePostHog } from "posthog-js/react";
 import { Button } from "@/components/ui/button";
 import { SendHorizontal, Paperclip, X, FileIcon, Loader2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 
 interface PendingFile {
   file: File;
@@ -28,13 +31,66 @@ function formatFileSize(bytes: number): string {
 }
 
 export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isStreaming, suggestedMessage, budgetExceeded }: ChatInputProps) {
+  const posthog = usePostHog();
   const [input, setInput] = React.useState("");
   const [pendingFiles, setPendingFiles] = React.useState<PendingFile[]>([]);
+  const [sizeError, setSizeError] = React.useState<{ id: number; message: string } | null>(null);
+  const sizeErrorTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sizeErrorIdRef = React.useRef(0);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  // Clear timer on unmount
+  React.useEffect(() => {
+    return () => {
+      if (sizeErrorTimerRef.current) {
+        clearTimeout(sizeErrorTimerRef.current);
+      }
+    };
+  }, []);
+
+  const showSizeError = React.useCallback((message: string) => {
+    if (sizeErrorTimerRef.current) {
+      clearTimeout(sizeErrorTimerRef.current);
+      sizeErrorTimerRef.current = null;
+    }
+    sizeErrorIdRef.current += 1;
+    setSizeError({ id: sizeErrorIdRef.current, message });
+    sizeErrorTimerRef.current = setTimeout(() => {
+      setSizeError(null);
+      sizeErrorTimerRef.current = null;
+    }, 5000);
+  }, []);
+
+  const dismissSizeError = React.useCallback(() => {
+    if (sizeErrorTimerRef.current) {
+      clearTimeout(sizeErrorTimerRef.current);
+      sizeErrorTimerRef.current = null;
+    }
+    setSizeError(null);
+  }, []);
+
+  const filterOversizedFiles = React.useCallback((files: File[]): File[] => {
+    const valid: File[] = [];
+    const rejected: string[] = [];
+    for (const file of files) {
+      if (file.size > MAX_FILE_SIZE) {
+        rejected.push(file.name);
+      } else {
+        valid.push(file);
+      }
+    }
+    if (rejected.length > 0) {
+      showSizeError(
+        `${rejected.join(", ")} exceed${rejected.length === 1 ? "s" : ""} the 10MB limit`,
+      );
+    }
+    return valid;
+  }, [showSizeError]);
 
   const handleSend = () => {
     if (input.trim() || pendingFiles.length > 0) {
       const files = pendingFiles.map((pf) => pf.file);
+      posthog?.capture("chat_message_sent", { has_files: files.length > 0 });
       onSend(input, files.length > 0 ? files : undefined);
       setInput("");
       setPendingFiles([]);
@@ -57,11 +113,13 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
     const selected = e.target.files;
     if (!selected) return;
 
-    const newFiles: PendingFile[] = Array.from(selected).map((file) => ({
+    const valid = filterOversizedFiles(Array.from(selected));
+    const newFiles: PendingFile[] = valid.map((file) => ({
       file,
       id: crypto.randomUUID(),
     }));
     setPendingFiles((prev) => [...prev, ...newFiles].slice(0, 10));
+    posthog?.capture("chat_file_uploaded", { file_count: selected.length });
 
     // Reset input so the same file can be selected again
     if (fileInputRef.current) fileInputRef.current.value = "";
@@ -76,7 +134,8 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
     const dropped = e.dataTransfer.files;
     if (!dropped.length) return;
 
-    const newFiles: PendingFile[] = Array.from(dropped).map((file) => ({
+    const valid = filterOversizedFiles(Array.from(dropped));
+    const newFiles: PendingFile[] = valid.map((file) => ({
       file,
       id: crypto.randomUUID(),
     }));
@@ -116,6 +175,20 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {sizeError && (
+          <div className="flex items-center gap-1.5 mb-2 px-2 py-1.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+            <span>{sizeError.message}</span>
+            <button
+              type="button"
+              onClick={dismissSizeError}
+              className="ml-auto text-red-400 hover:text-red-600"
+              aria-label="Dismiss size error"
+            >
+              <X className="h-3 w-3" />
+            </button>
           </div>
         )}
 
@@ -163,7 +236,7 @@ export function ChatInput({ onSend, onStop, disabled, centered, isUploading, isS
               size="icon"
               variant="destructive"
               className="shrink-0 h-8 w-8 rounded-full"
-              onClick={onStop}
+              onClick={() => { posthog?.capture("chat_stopped"); onStop?.(); }}
               data-testid="stop-button"
               aria-label="Stop agent"
             >

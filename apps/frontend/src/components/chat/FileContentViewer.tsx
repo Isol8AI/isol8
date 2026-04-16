@@ -1,61 +1,75 @@
 "use client";
 
 import * as React from "react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import { Copy, Loader2 } from "lucide-react";
+import { Loader2, Save } from "lucide-react";
 import type { FileInfo } from "@/hooks/useWorkspaceFiles";
-
-const REMARK_PLUGINS = [remarkGfm];
-
-const LANGUAGE_MAP: Record<string, string> = {
-  py: "python", js: "javascript", ts: "typescript", tsx: "tsx", jsx: "jsx",
-  json: "json", yaml: "yaml", yml: "yaml", toml: "toml", sh: "bash",
-  bash: "bash", css: "css", html: "html", xml: "xml", sql: "sql",
-  rs: "rust", go: "go", java: "java", c: "c", cpp: "cpp", h: "c",
-  hpp: "cpp", rb: "ruby", php: "php", swift: "swift", kt: "kotlin",
-  r: "r", lua: "lua",
-};
-
-function CsvTable({ content }: { content: string }) {
-  const rows = content.trim().split("\n").map((row) => row.split(","));
-  if (rows.length === 0) return null;
-  const headers = rows[0];
-  const body = rows.slice(1);
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full border-collapse border border-[#e0dbd0] text-sm">
-        <thead className="bg-[#f3efe6]">
-          <tr>
-            {headers.map((h, i) => (
-              <th key={i} className="border border-[#e0dbd0] px-3 py-2 text-left font-medium">{h.trim()}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {body.map((row, ri) => (
-            <tr key={ri} className="even:bg-[#f3efe6]">
-              {row.map((cell, ci) => (
-                <td key={ci} className="border border-[#e0dbd0] px-3 py-2">{cell.trim()}</td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
 
 interface FileContentViewerProps {
   file: FileInfo | null;
   isLoading: boolean;
   error: Error | null;
+  onSave?: (content: string) => Promise<void>;
+  onDirtyChange?: (dirty: boolean) => void;
 }
 
-export function FileContentViewer({ file, isLoading, error }: FileContentViewerProps) {
+export function FileContentViewer({ file, isLoading, error, onSave, onDirtyChange }: FileContentViewerProps) {
+  const [editContent, setEditContent] = React.useState("");
+  const [originalContent, setOriginalContent] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const dirty = editContent !== originalContent;
+
+  // Report dirty state to parent so it can guard selection changes
+  React.useEffect(() => {
+    onDirtyChange?.(dirty);
+  }, [dirty, onDirtyChange]);
+
+  // Sync editor content when a new file loads. Parent is responsible for
+  // prompting the user about unsaved changes BEFORE changing the file prop.
+  React.useEffect(() => {
+    if (file?.content != null && !file.binary) {
+      setEditContent(file.content);
+      setOriginalContent(file.content);
+      setSaveError(null);
+    }
+  }, [file?.path, file?.content, file?.binary]);
+
+  const handleSave = React.useCallback(async () => {
+    if (!onSave || editContent === originalContent) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await onSave(editContent);
+      setOriginalContent(editContent);
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }, [onSave, editContent, originalContent]);
+
+  // Cmd/Ctrl+S save shortcut — refs avoid stale closure
+  const handleSaveRef = React.useRef(handleSave);
+  handleSaveRef.current = handleSave;
+
+  const canSaveRef = React.useRef(false);
+  canSaveRef.current = Boolean(
+    onSave && file && !file.binary && file.content != null,
+  );
+
+  React.useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === "s" && canSaveRef.current) {
+        e.preventDefault();
+        handleSaveRef.current();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-full text-[#8a8578]">
@@ -81,6 +95,7 @@ export function FileContentViewer({ file, isLoading, error }: FileContentViewerP
     );
   }
 
+  // Image preview (read-only)
   if (file.binary && file.mime_type.startsWith("image/") && file.content) {
     return (
       <div className="p-4 flex items-center justify-center">
@@ -93,6 +108,7 @@ export function FileContentViewer({ file, isLoading, error }: FileContentViewerP
     );
   }
 
+  // Binary file (read-only)
   if (file.binary || file.content === null) {
     return (
       <div className="flex items-center justify-center h-full text-[#8a8578] text-sm">
@@ -101,57 +117,32 @@ export function FileContentViewer({ file, isLoading, error }: FileContentViewerP
     );
   }
 
-  const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-
-  if (ext === "csv") {
-    return (
-      <div className="p-4 overflow-auto h-full">
-        <CsvTable content={file.content} />
-      </div>
-    );
-  }
-
-  if (ext === "md") {
-    return (
-      <div className="p-6 prose prose-sm max-w-none overflow-auto h-full">
-        <ReactMarkdown remarkPlugins={REMARK_PLUGINS}>
-          {file.content}
-        </ReactMarkdown>
-      </div>
-    );
-  }
-
-  const language = LANGUAGE_MAP[ext];
-  if (language) {
-    return (
-      <div className="overflow-auto h-full">
-        <div className="flex items-center justify-between px-4 py-2 bg-[#f3efe6] border-b border-[#e0dbd0]">
-          <span className="text-xs text-[#8a8578]">{language}</span>
+  // Editable text file
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex items-center justify-between px-3 py-1.5 bg-[#f3efe6] border-b border-[#e0dbd0] flex-shrink-0">
+        <span className="text-xs text-[#8a8578]">{file.name}</span>
+        <div className="flex items-center gap-2">
+          {dirty && <span className="text-[10px] text-amber-500 font-medium">unsaved</span>}
+          {saveError && <span className="text-[10px] text-red-500">{saveError}</span>}
           <button
-            onClick={() => { navigator.clipboard.writeText(file.content!).catch(() => {}); }}
-            className="text-xs text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex items-center gap-1"
+            onClick={handleSave}
+            disabled={!dirty || saving || !onSave}
+            className="flex items-center gap-1 px-2 py-1 text-xs rounded bg-[#06402B] text-white hover:bg-[#0a5c3e] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
-            <Copy className="h-3 w-3" />
-            Copy
+            {saving ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+            Save
           </button>
         </div>
-        <SyntaxHighlighter
-          style={oneDark}
-          language={language}
-          PreTag="div"
-          customStyle={{ margin: 0, borderRadius: 0, background: "#f8f5f0" }}
-        >
-          {file.content}
-        </SyntaxHighlighter>
       </div>
-    );
-  }
 
-  return (
-    <div className="p-4 overflow-auto h-full">
-      <pre className="text-sm font-mono whitespace-pre-wrap text-[#1a1a1a]">
-        {file.content}
-      </pre>
+      <textarea
+        ref={textareaRef}
+        value={editContent}
+        onChange={(e) => setEditContent(e.target.value)}
+        className="flex-1 w-full p-4 text-sm font-mono bg-white text-[#1a1a1a] resize-none focus:outline-none"
+        spellCheck={false}
+      />
     </div>
   );
 }

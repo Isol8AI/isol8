@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import { Loader2, Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
@@ -21,6 +22,7 @@ function normalizeToId(name: string): string {
 }
 
 export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreateFormProps) {
+  const posthog = usePostHog();
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -38,14 +40,25 @@ export function AgentCreateForm({ existingIds, onCreated, onCancel }: AgentCreat
     setError(null);
 
     try {
-      await callRpc("agents.create", { name: name.trim(), workspace: "agents/" + normalizedId });
+      await callRpc("agents.create", {
+        name: name.trim(),
+        // OpenClaw's agents.create requires a non-empty `workspace` string —
+        // it does NOT inherit agents.defaults.workspace at create time
+        // (only at runtime via resolveAgentWorkspaceDir). Pass the same
+        // path the default would resolve to, so the agent lands at
+        // .openclaw/workspaces/{id}/ on EFS — matching main's explicit
+        // workspaces/main override.
+        workspace: ".openclaw/workspaces/" + normalizedId,
+        reasoningDefault: "stream",
+      });
+      posthog?.capture("agent_created", { agent_name: name.trim() });
       onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCreating(false);
     }
-  }, [canCreate, callRpc, name, onCreated]);
+  }, [canCreate, callRpc, name, onCreated, posthog]);
 
   const clientError = isDuplicate
     ? "An agent with this name already exists"

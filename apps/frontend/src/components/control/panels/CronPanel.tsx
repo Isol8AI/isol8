@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback } from "react";
+import { usePostHog } from "posthog-js/react";
 import {
   Loader2,
   RefreshCw,
@@ -154,6 +155,7 @@ export function CronPanel() {
     { includeDisabled: true },
     { refreshInterval: 30_000, revalidateOnFocus: true },
   );
+  const posthog = usePostHog();
   const { agents: agentsData } = useAgents();
   const callRpc = useGatewayRpcMutation();
 
@@ -200,6 +202,7 @@ export function CronPanel() {
         ...(form.deleteAfterRun ? { deleteAfterRun: true } : {}),
         failureAlert: buildFailureAlertPayload(form),
       });
+      posthog?.capture("cron_job_created", { schedule: buildSchedule(form) });
       setMode("list");
       mutate();
       showFeedback("success", `Created "${form.name.trim()}"`);
@@ -237,6 +240,7 @@ export function CronPanel() {
   const handleDelete = async (id: string) => {
     try {
       await callRpc("cron.remove", { id });
+      posthog?.capture("cron_job_deleted");
       mutate();
       showFeedback("success", "Job deleted");
     } catch (err) {
@@ -251,6 +255,7 @@ export function CronPanel() {
     setEnabledOverrides((prev) => ({ ...prev, [id]: next }));
     try {
       await callRpc("cron.update", { id, patch: { enabled: next } });
+      posthog?.capture("cron_job_toggled", { enabled: next });
       mutate();
       // Clear the override; the revalidated server data becomes the source of truth.
       setEnabledOverrides((prev) => {
@@ -274,6 +279,7 @@ export function CronPanel() {
   const handleRun = async (id: string) => {
     try {
       await callRpc("cron.run", { id, mode: "force" });
+      posthog?.capture("cron_job_triggered");
       showFeedback("success", "Job triggered");
       mutate();
     } catch (err) {

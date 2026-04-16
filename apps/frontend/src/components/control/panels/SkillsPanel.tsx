@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { usePostHog } from "posthog-js/react";
 import {
   Loader2,
   RefreshCw,
@@ -484,6 +485,7 @@ function SkillCard({
   onRefresh: () => void;
   variant: "installed" | "available";
 }) {
+  const posthog = usePostHog();
   const [toggleLoading, setToggleLoading] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
@@ -504,6 +506,7 @@ function SkillCard({
         skillKey: skill.skillKey || skill.name,
         enabled: skill.disabled,
       });
+      posthog?.capture("skill_toggled", { skill: skill.name, enabled: skill.disabled });
       onRefresh();
     } catch (err) {
       console.error("Failed to toggle skill:", err);
@@ -532,6 +535,7 @@ function SkillCard({
         }
       }
 
+      posthog?.capture("skill_api_key_saved", { skill: skill.name });
       setSaveStatus("success");
       setApiKey("");
       onRefresh();
@@ -553,6 +557,7 @@ function SkillCard({
         installId: spec.id,
         timeoutMs: 120000,
       });
+      posthog?.capture("skill_installed", { skill: skill.name });
       onRefresh();
     } catch (err) {
       console.error("Failed to install:", err);

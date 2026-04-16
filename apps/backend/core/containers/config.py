@@ -339,7 +339,35 @@ def write_openclaw_config(
                 "llm": {
                     "idleTimeoutSeconds": 300,
                 },
+                # verboseDefault="full" keeps tool result/partialResult in
+                # agent events so the frontend can show tool input + output.
+                # OpenClaw defaults to "off" which strips those fields before
+                # they reach our WebSocket subscriber.
+                "verboseDefault": "full",
             },
+            # Per-agent settings. reasoningDefault is not allowed in
+            # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so
+            # we declare the implicit "main" agent explicitly here to opt it
+            # into real-time thinking streams. User-created agents inherit it
+            # via AgentCreateForm passing reasoningDefault: "stream" on
+            # agents.create.
+            "list": [
+                {
+                    "id": "main",
+                    "default": True,
+                    "reasoningDefault": "stream",
+                    # Explicit override so main lands at .openclaw/workspaces/main/
+                    # — inside the EFS mount — matching the
+                    # {defaults.workspace}/{agentId} path custom agents get
+                    # automatically. The ".openclaw/" prefix is REQUIRED: OpenClaw
+                    # resolves per-agent workspace values via path.resolve() against
+                    # the process cwd (/home/node). A bare "workspaces/main" would
+                    # land at /home/node/workspaces/main/ — outside the EFS mount
+                    # at /home/node/.openclaw/ — and be ephemeral (lost on restart).
+                    # See docs/superpowers/specs/2026-04-14-agent-workspace-normalization-design.md
+                    "workspace": ".openclaw/workspaces/main",
+                },
+            ],
         },
         "memory": {
             "backend": "qmd",

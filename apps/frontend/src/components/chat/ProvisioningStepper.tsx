@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
 import {
   Loader2,
@@ -137,6 +138,7 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
+  const posthog = usePostHog();
   const { organization, membership, isLoaded: orgLoaded } = useOrganization();
   const isOrg = !!organization;
   // Personal accounts (no org) and explicit org admins manage channels.
@@ -284,7 +286,7 @@ export function ProvisioningStepper({
             provider={wizardProvider}
             agentId="main"
             botUsername={wizardBotUsername}
-            onComplete={() => setOnboardingComplete(true)}
+            onComplete={() => { posthog?.capture("onboarding_completed"); setOnboardingComplete(true); }}
             onCancel={() => setOnboardingComplete(true)}
           />
         </div>
@@ -304,6 +306,7 @@ export function ProvisioningStepper({
   // Not subscribed and not free — show pricing
   if (!isSubscribed && !isFree) {
     return <PricingCards checkoutLoading={checkoutLoading} isOrg={isOrg} orgName={organization?.name} onCheckout={async (tier) => {
+      posthog?.capture("checkout_started", { tier });
       setCheckoutLoading(tier);
       try {
         await createCheckout(tier);

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useState } from "react";
+import { usePostHog } from "posthog-js/react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -221,6 +222,7 @@ export function BotSetupWizard({
   onComplete,
   onCancel,
 }: BotSetupWizardProps) {
+  const posthog = usePostHog();
   const api = useApi();
   const callRpc = useGatewayRpcMutation();
 
@@ -445,6 +447,7 @@ export function BotSetupWizard({
         agent_id: agentId,
         code: trimmed,
       })) as { status: string; peer_id: string };
+      posthog?.capture("channel_connected", { provider });
       setStepIndex(steps.indexOf("done"));
       onComplete({ peer_id: result.peer_id });
     } catch (e) {

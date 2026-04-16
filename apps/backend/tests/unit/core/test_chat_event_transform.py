@@ -85,25 +85,71 @@ class TestTransformAgentEvent:
 
     def test_tool_stream_start_phase(self):
         result = GatewayConnection._transform_agent_event(
+            {
+                "stream": "tool",
+                "data": {
+                    "name": "web_search",
+                    "phase": "start",
+                    "toolCallId": "abc-123",
+                    "args": {"query": "weather in Berwyn"},
+                },
+            }
+        )
+        assert result == {
+            "type": "tool_start",
+            "tool": "web_search",
+            "toolCallId": "abc-123",
+            "args": {"query": "weather in Berwyn"},
+        }
+
+    def test_tool_stream_start_without_args(self):
+        """args key missing — output omits it rather than sending null."""
+        result = GatewayConnection._transform_agent_event(
             {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"}}
         )
         assert result == {"type": "tool_start", "tool": "web_search", "toolCallId": "abc-123"}
 
     def test_tool_stream_result_phase(self):
         result = GatewayConnection._transform_agent_event(
-            {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123"}}
+            {
+                "stream": "tool",
+                "data": {
+                    "name": "web_search",
+                    "phase": "result",
+                    "toolCallId": "abc-123",
+                    "result": [{"type": "text", "text": "72°F"}],
+                    "meta": "Berwyn, PA",
+                },
+            }
         )
-        assert result == {"type": "tool_end", "tool": "web_search", "toolCallId": "abc-123"}
+        assert result == {
+            "type": "tool_end",
+            "tool": "web_search",
+            "toolCallId": "abc-123",
+            "result": [{"type": "text", "text": "72°F"}],
+            "meta": "Berwyn, PA",
+        }
 
     def test_tool_stream_result_with_is_error(self):
         """OpenClaw signals tool errors via isError on the result phase."""
         result = GatewayConnection._transform_agent_event(
             {
                 "stream": "tool",
-                "data": {"name": "web_search", "phase": "result", "toolCallId": "abc-123", "isError": True},
+                "data": {
+                    "name": "web_search",
+                    "phase": "result",
+                    "toolCallId": "abc-123",
+                    "isError": True,
+                    "result": [{"type": "text", "text": "Perplexity API 404"}],
+                },
             }
         )
-        assert result == {"type": "tool_error", "tool": "web_search", "toolCallId": "abc-123"}
+        assert result == {
+            "type": "tool_error",
+            "tool": "web_search",
+            "toolCallId": "abc-123",
+            "result": [{"type": "text", "text": "Perplexity API 404"}],
+        }
 
     def test_tool_stream_update_phase_ignored(self):
         """Intermediate tool updates are not forwarded."""

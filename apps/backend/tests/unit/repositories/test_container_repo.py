@@ -151,6 +151,44 @@ async def test_get_by_status(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_get_by_status_paginates_through_last_evaluated_key():
+    """Regression: DDB Query caps at 1MB per page. get_by_status must follow
+    LastEvaluatedKey so the reaper doesn't silently miss users past the first
+    page once the fleet grows."""
+    from unittest.mock import MagicMock, patch
+
+    from core.repositories import container_repo
+
+    page1 = {
+        "Items": [{"owner_id": "user_page1_a"}, {"owner_id": "user_page1_b"}],
+        "LastEvaluatedKey": {"owner_id": "user_page1_b"},
+    }
+    page2 = {
+        "Items": [{"owner_id": "user_page2_a"}],
+        # no LastEvaluatedKey → loop terminates
+    }
+
+    fake_table = MagicMock()
+    fake_table.query = MagicMock(side_effect=[page1, page2])
+
+    with patch("core.repositories.container_repo._get_table", return_value=fake_table):
+        results = await container_repo.get_by_status("running")
+
+    assert [r["owner_id"] for r in results] == [
+        "user_page1_a",
+        "user_page1_b",
+        "user_page2_a",
+    ]
+    assert fake_table.query.call_count == 2
+    # First call must NOT include ExclusiveStartKey; second call MUST include
+    # the key returned by the first page.
+    first_kwargs = fake_table.query.call_args_list[0].kwargs
+    second_kwargs = fake_table.query.call_args_list[1].kwargs
+    assert "ExclusiveStartKey" not in first_kwargs
+    assert second_kwargs["ExclusiveStartKey"] == {"owner_id": "user_page1_b"}
+
+
+@pytest.mark.asyncio
 async def test_update_status(dynamodb_table):
     from core.repositories import container_repo
 
@@ -220,3 +258,79 @@ async def test_get_by_owner_id_alias(dynamodb_table):
     item = await container_repo.get_by_owner_id("org_456")
     assert item is not None
     assert item["owner_type"] == "org"
+
+
+@pytest.mark.asyncio
+async def test_update_last_active_sets_timestamp_on_running_container(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_1", {"status": "running", "gateway_token": "t1"})
+
+    wrote = await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
+
+    assert wrote is True
+    row = await container_repo.get_by_owner_id("user_1")
+    assert row["last_active_at"] == "2026-04-13T20:30:00+00:00"
+
+
+@pytest.mark.asyncio
+async def test_update_last_active_noop_when_stopped(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_1", {"status": "stopped", "gateway_token": "t1"})
+
+    # Must not raise; must return False so callers (record_activity) can
+    # release their cooldown and retry on the next ping.
+    wrote = await container_repo.update_last_active("user_1", "2026-04-13T20:30:00+00:00")
+
+    assert wrote is False
+    row = await container_repo.get_by_owner_id("user_1")
+    assert "last_active_at" not in row
+    assert row["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_update_last_active_noop_when_row_missing(dynamodb_table):
+    from core.repositories import container_repo
+
+    # Must not raise on missing row (late ping for a user who was fully deleted).
+    wrote = await container_repo.update_last_active("user_never_existed", "2026-04-13T20:30:00+00:00")
+
+    assert wrote is False
+    row = await container_repo.get_by_owner_id("user_never_existed")
+    assert row is None
+
+
+@pytest.mark.asyncio
+async def test_mark_stopped_if_running_flips_running_to_stopped(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_1", {"status": "running", "gateway_token": "t1"})
+
+    flipped = await container_repo.mark_stopped_if_running("user_1")
+
+    assert flipped is True
+    row = await container_repo.get_by_owner_id("user_1")
+    assert row["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_mark_stopped_if_running_noop_when_already_stopped(dynamodb_table):
+    from core.repositories import container_repo
+
+    await container_repo.upsert("user_1", {"status": "stopped", "gateway_token": "t1"})
+
+    flipped = await container_repo.mark_stopped_if_running("user_1")
+
+    assert flipped is False
+    row = await container_repo.get_by_owner_id("user_1")
+    assert row["status"] == "stopped"
+
+
+@pytest.mark.asyncio
+async def test_mark_stopped_if_running_noop_when_row_missing(dynamodb_table):
+    from core.repositories import container_repo
+
+    flipped = await container_repo.mark_stopped_if_running("user_never_existed")
+
+    assert flipped is False

@@ -13,10 +13,12 @@ import json
 import logging
 import time
 import uuid
+from datetime import datetime
 from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
+from core.config import TIER_CONFIG
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 
@@ -29,6 +31,12 @@ _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
 _IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
 _IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
+_DDB_WRITE_COOLDOWN = 30.0  # seconds between per-owner last_active_at writes
+_DDB_WRITE_RETRY_FLOOR = 2.0  # minimum seconds between retries after a no-op / exception
+
+# Per-owner cooldown map. Module-level so it survives pool reconstruction in tests
+# and across pool singletons. Values are the last epoch-seconds we wrote to DDB.
+_LAST_DDB_WRITE: Dict[str, float] = {}
 
 
 class GatewayConnection:
@@ -311,17 +319,27 @@ class GatewayConnection:
                 return None
             tool_call_id = data.get("toolCallId", "")
             if phase == "start":
+                # OpenClaw never strips `args` — it's safe to forward at any
+                # verboseLevel. Shows the user what the tool was called with.
                 msg: dict = {"type": "tool_start", "tool": name}
                 if tool_call_id:
                     msg["toolCallId"] = tool_call_id
+                if "args" in data:
+                    msg["args"] = data["args"]
                 return msg
             if phase == "result":
                 # OpenClaw signals tool errors via isError flag on the result
-                # phase, not a separate "error" phase.
+                # phase, not a separate "error" phase. `result` and `meta`
+                # are only populated when verboseLevel is "full" (set in
+                # agents.defaults.verboseDefault).
                 is_error = bool(data.get("isError"))
                 msg = {"type": "tool_error" if is_error else "tool_end", "tool": name}
                 if tool_call_id:
                     msg["toolCallId"] = tool_call_id
+                if "result" in data:
+                    msg["result"] = data["result"]
+                if data.get("meta"):
+                    msg["meta"] = data["meta"]
                 return msg
             return None
 
@@ -818,11 +836,52 @@ class GatewayConnectionPool:
         self._conn_member_map: Dict[str, str] = {}  # connection_id -> member_user_id
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
-        self._last_activity: Dict[str, float] = {}  # user_id -> last activity timestamp
 
-    def touch_activity(self, user_id: str) -> None:
-        """Update last activity timestamp for a user. Called on agent_chat."""
-        self._last_activity[user_id] = time.time()
+    async def record_activity(self, owner_id: str) -> None:
+        """Record a user-interaction event.
+
+        Throttles DDB writes to at most one per owner per _DDB_WRITE_COOLDOWN
+        seconds. Callers are not expected to throttle; fire for every event.
+
+        Cooldown is claimed *before* the await to deflect a thundering herd of
+        concurrent pings. On a no-op write (row missing or still `status=stopped`)
+        or an exception, the cooldown is *backdated* so the next retry is allowed
+        in ~_DDB_WRITE_RETRY_FLOOR seconds — not immediately. Two reasons:
+
+        1. Cold-start UX: when a user returns after idle, their first ping may
+           land while the row is still flipping from `stopped` to `running`.
+           Retry quickly, but don't wait a full 30s.
+        2. Abuse floor: an authenticated user flooding `user_active` against
+           their own stopped container can't burn unbounded DDB WCU on
+           conditional-check failures — retries bounded to 1 per _DDB_WRITE_RETRY_FLOOR.
+        """
+        now = time.time()
+        last = _LAST_DDB_WRITE.get(owner_id, 0.0)
+        if now - last < _DDB_WRITE_COOLDOWN:
+            return
+        _LAST_DDB_WRITE[owner_id] = now
+
+        from core.dynamodb import utc_now_iso
+        from core.repositories import container_repo
+
+        try:
+            wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
+        except Exception:
+            logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
+            put_metric("gateway.record_activity.count", dimensions={"outcome": "error"})
+            # Compute the backdate from a FRESH time.time() — not the pre-await
+            # `now` — so a slow DDB call (e.g. partial outage) can't itself
+            # consume the entire retry-floor window and admit the next ping
+            # immediately. Codex P2 on PR #269.
+            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+            return
+
+        if not wrote:
+            put_metric("gateway.record_activity.count", dimensions={"outcome": "noop"})
+            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
+            return
+
+        put_metric("gateway.record_activity.count", dimensions={"outcome": "success"})
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
@@ -922,7 +981,6 @@ class GatewayConnectionPool:
             await conn.close()
         self._frontend_connections.pop(user_id, None)
         self._grace_tasks.pop(user_id, None)
-        self._last_activity.pop(user_id, None)
 
     async def broadcast_to_user(self, user_id: str, message: dict) -> None:
         """Send a message to all frontend connections for a user."""
@@ -935,61 +993,130 @@ class GatewayConnectionPool:
         for user_id in list(self._connections.keys()):
             await self.close_user(user_id)
 
-    async def run_idle_checker(self) -> None:
-        """Background task: stop free-tier containers after 5 minutes of no chat activity.
+    async def _reap_once(self) -> list[str]:
+        """One pass of the reaper. Returns the list of owner_ids that were stopped.
 
-        Runs every 60 seconds. For each user in the pool, checks:
-        1. No chat activity for 5 minutes (only agent_chat updates the timer)
-        2. User is on free tier (billing_repo.get_by_owner_id)
+        Extracted so the loop body is trivially testable — the test calls
+        `_reap_once` directly without running the outer `asyncio.sleep` loop.
 
-        If all conditions are met, stops the container via ECS and closes
-        the gateway connection. The browser may still be open — that's fine,
-        the stepper will restart the container when the user sends a message.
+        Walks DDB (container_repo.get_by_status("running")) rather than the
+        in-memory connection pool, so disconnected users whose browsers have
+        closed remain candidates for reaping. That was the root bug: the old
+        loop walked `self._connections`, and a user who closed their tab was
+        evicted from the dict before the 5-minute timer fired — so their
+        container ran forever.
         """
+        from core.containers import get_ecs_manager
         from core.containers.ecs_manager import EcsManagerError
+        from core.repositories import billing_repo, container_repo
 
-        logger.info("Idle checker started (interval=%ds, timeout=%ds)", _IDLE_CHECK_INTERVAL, _IDLE_TIMEOUT)
+        try:
+            rows = await container_repo.get_by_status("running")
+        except Exception:
+            logger.exception("idle_checker: get_by_status failed")
+            return []
+
+        try:
+            gauge("gateway.running.count", len(rows))
+            # Preserve the legacy metric so the W5 alarm on gateway.connection.open
+            # keeps getting datapoints. Measures active backend↔container gateway
+            # WS connections (distinct from running.count, which is DDB-backed).
+            gauge("gateway.connection.open", len(self._connections))
+        except Exception:
+            pass
+
+        now_ts = time.time()
+        stopped: list[str] = []
+        # Per-cycle billing cache: one DDB read per unique owner per cycle, even
+        # if the row appears in both the per-tier-breakdown count and the
+        # idle-eligible reap path below. `failed_lookups` caches the negative
+        # case so a transient billing outage doesn't double the read amp +
+        # log noise (Codex P2 on PR #273).
+        tier_cache: Dict[str, str] = {}
+        failed_lookups: set[str] = set()
+
+        async def _resolve_tier(oid: str) -> str | None:
+            if oid in tier_cache:
+                return tier_cache[oid]
+            if oid in failed_lookups:
+                return None
+            try:
+                account = await billing_repo.get_by_owner_id(oid)
+            except Exception:
+                logger.warning("idle_checker: billing lookup failed for %s, skipping", oid)
+                failed_lookups.add(oid)
+                return None
+            plan_tier = (account or {}).get("plan_tier", "free")
+            tier_cache[oid] = plan_tier
+            return plan_tier
+
+        # Per-tier running-container breakdown — useful for at-a-glance
+        # "how many free vs paid are running right now" without log scraping.
+        tier_counts: Dict[str, int] = {}
+        for row in rows:
+            tier = await _resolve_tier(row["owner_id"])
+            if tier is None:
+                continue
+            tier_counts[tier] = tier_counts.get(tier, 0) + 1
+        try:
+            for tier, count in tier_counts.items():
+                gauge("gateway.running.count.by_tier", count, dimensions={"tier": tier})
+        except Exception:
+            pass
+
+        for row in rows:
+            owner_id = row["owner_id"]
+            last_active_str = row.get("last_active_at")
+            if last_active_str:
+                try:
+                    # Our writer emits `+00:00`, but replace a trailing `Z` so
+                    # any external writer (or pre-3.11 Python) parses cleanly.
+                    last_active_epoch = datetime.fromisoformat(last_active_str.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    last_active_epoch = 0.0
+            else:
+                # Deploy-day path: pre-change rows have no last_active_at.
+                # Treat as epoch 0 so they're reaped on the first cycle.
+                last_active_epoch = 0.0
+
+            if now_ts - last_active_epoch < _IDLE_TIMEOUT:
+                continue
+
+            # Tier was already resolved + cached above for the per-tier breakdown;
+            # this lookup hits the cache, no extra DDB read.
+            plan_tier = await _resolve_tier(owner_id)
+            if plan_tier is None:
+                # billing lookup failed earlier; skip this cycle (already logged).
+                continue
+
+            if not TIER_CONFIG.get(plan_tier, {}).get("scale_to_zero", False):
+                continue
+
+            try:
+                await get_ecs_manager().stop_user_service(owner_id)
+                await container_repo.mark_stopped_if_running(owner_id)
+                put_metric("gateway.idle.scale_to_zero", dimensions={"tier": plan_tier})
+                logger.info("scale-to-zero: stopped %s (tier=%s)", owner_id, plan_tier)
+                stopped.append(owner_id)
+            except EcsManagerError as e:
+                logger.error("scale-to-zero: ECS stop failed for %s: %s", owner_id, e)
+            except Exception:
+                logger.exception("scale-to-zero: unexpected error for %s", owner_id)
+
+        return stopped
+
+    async def run_idle_checker(self) -> None:
+        """Background task: every _IDLE_CHECK_INTERVAL seconds, reap idle
+        free-tier (or orphan) containers using DDB as source of truth."""
+        logger.info(
+            "Idle checker started (interval=%ds, timeout=%ds)",
+            _IDLE_CHECK_INTERVAL,
+            _IDLE_TIMEOUT,
+        )
         try:
             while True:
                 await asyncio.sleep(_IDLE_CHECK_INTERVAL)
-                # Emit open-connection gauge every cycle
-                try:
-                    gauge("gateway.connection.open", len(self._connections))
-                except Exception:
-                    pass
-                now = time.time()
-
-                # Snapshot user_ids with active connections
-                user_ids = list(self._connections.keys())
-                for user_id in user_ids:
-                    # Skip if recent chat activity
-                    last = self._last_activity.get(user_id, now)
-                    if now - last < _IDLE_TIMEOUT:
-                        continue
-
-                    # Check if user is on the free tier
-                    try:
-                        from core.repositories import billing_repo
-
-                        account = await billing_repo.get_by_owner_id(user_id)
-                        if not account or account.get("plan_tier") != "free":
-                            continue
-                    except Exception:
-                        logger.warning("Idle checker: failed to look up billing for user %s, skipping", user_id)
-                        continue
-
-                    # Scale to zero
-                    try:
-                        from core.containers import get_ecs_manager
-
-                        put_metric("gateway.idle.scale_to_zero")
-                        await get_ecs_manager().stop_user_service(user_id)
-                        await self.close_user(user_id)
-                        logger.info("Scale-to-zero: stopped container for idle free user %s", user_id)
-                    except EcsManagerError as e:
-                        logger.error("Scale-to-zero: failed to stop container for user %s: %s", user_id, e)
-                    except Exception:
-                        logger.exception("Scale-to-zero: unexpected error for user %s", user_id)
+                await self._reap_once()
         except asyncio.CancelledError:
             logger.info("Idle checker stopped")
             return

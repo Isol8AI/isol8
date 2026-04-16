@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePostHog } from "posthog-js/react";
 
 import { ChatInput } from "./ChatInput";
 import { MessageList, MessageListHandle } from "./MessageList";
@@ -35,6 +36,7 @@ function BudgetExceededBanner({
 }: {
   budgetError: BudgetExceededPayload;
 }) {
+  const posthog = usePostHog();
   const { account, createCheckout, toggleOverage } = useBilling();
   const { organization, membership } = useOrganization();
   const [loading, setLoading] = useState(false);
@@ -46,8 +48,10 @@ function BudgetExceededBanner({
     setLoading(true);
     try {
       if (!budgetError.is_subscribed) {
+        posthog?.capture("overage_enabled_from_banner", { action: "subscribe" });
         await createCheckout("starter");
       } else if (budgetError.overage_available && !budgetError.overage_enabled) {
+        posthog?.capture("overage_enabled_from_banner", { action: "enable_paygo" });
         await toggleOverage(true);
       }
     } catch (err) {
@@ -55,7 +59,7 @@ function BudgetExceededBanner({
     } finally {
       setLoading(false);
     }
-  }, [budgetError, createCheckout, toggleOverage]);
+  }, [budgetError, createCheckout, toggleOverage, posthog]);
 
   let message: string;
   let subtext: string | null = null;
@@ -202,6 +206,7 @@ interface PendingUpdate {
 
 
 function UpdateBanner() {
+  const posthog = usePostHog();
   const api = useApi();
   const { organization, membership } = useOrganization();
   const { onChatMessage } = useGateway();
@@ -246,6 +251,7 @@ function UpdateBanner() {
       setApplying(true);
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
+        posthog?.capture("update_applied");
         setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to apply update:", err);
@@ -253,19 +259,20 @@ function UpdateBanner() {
         setApplying(false);
       }
     },
-    [api],
+    [api, posthog],
   );
 
   const handleScheduleTonight = useCallback(
     async (updateId: string) => {
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
+        posthog?.capture("update_scheduled");
         setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to schedule update:", err);
       }
     },
-    [api],
+    [api, posthog],
   );
 
   const handleRemindLater = useCallback(
@@ -450,7 +457,8 @@ export function AgentChatWindow({
         if (files && files.length > 0) {
           setIsUploading(true);
           try {
-            const result = await api.uploadFiles(files);
+            if (!agentId) throw new Error("No agent selected");
+            const result = await api.uploadFiles(files, agentId);
             const fileList = result.uploaded
               .map((f) => `- ${f.filename} → ${f.path}`)
               .join("\n");
@@ -474,7 +482,7 @@ export function AgentChatWindow({
         console.error("Failed to send message:", err);
       }
     },
-    [sendMessage, api],
+    [sendMessage, api, agentId],
   );
 
   const messages: Message[] = useMemo(

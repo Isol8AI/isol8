@@ -3,6 +3,7 @@ import { ScrollManager } from "@/components/landing/ScrollManager";
 import { Navbar } from "@/components/landing/Navbar";
 import { Hero } from "@/components/landing/Hero";
 import { Features } from "@/components/landing/Features";
+import { OurAgents } from "@/components/landing/OurAgents";
 import { Skills } from "@/components/landing/Skills";
 import { Pricing } from "@/components/landing/Pricing";
 import { FAQ } from "@/components/landing/FAQ";
@@ -17,6 +18,7 @@ export default function LandingPage() {
         <Navbar />
         <Hero />
         <Features />
+        <OurAgents />
         <Skills />
         <Pricing />
         <FAQ />

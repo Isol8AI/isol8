@@ -3,6 +3,7 @@ import { Geist, Geist_Mono, Host_Grotesk, DM_Sans, Lora, Press_Start_2P, Epilogu
 import { ClerkProvider } from "@clerk/nextjs";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { DesktopAuthListener } from "@/components/DesktopAuthListener";
+import { PostHogProvider } from "@/components/PostHogProvider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -63,8 +64,10 @@ export default function RootLayout({
           className={`${geistSans.variable} ${geistMono.variable} ${hostGrotesk.variable} ${dmSans.variable} ${lora.variable} ${pressStart2P.variable} ${epilogue.variable} antialiased`}
         >
           <ErrorBoundary>
-            <DesktopAuthListener />
-            {children}
+            <PostHogProvider>
+              <DesktopAuthListener />
+              {children}
+            </PostHogProvider>
           </ErrorBoundary>
         </body>
       </html>

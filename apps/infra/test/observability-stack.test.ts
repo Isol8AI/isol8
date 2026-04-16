@@ -157,4 +157,47 @@ describe("ObservabilityStack", () => {
       },
     });
   });
+
+  // ---------------------------------------------------------------------
+  // Free-tier scale-to-zero reaper alarms
+  // ---------------------------------------------------------------------
+
+  test("creates the reaper heartbeat alarm on SampleCount(gateway.running.count)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "gateway.running.count",
+      Namespace: "Isol8",
+      Statistic: "SampleCount",
+      ComparisonOperator: "LessThanThreshold",
+      Threshold: 5,
+      TreatMissingData: "breaching",
+    });
+  });
+
+  test("creates the reaper-crash alarm on Sum(gateway.idle_checker.crash)", () => {
+    template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+      MetricName: "gateway.idle_checker.crash",
+      Namespace: "Isol8",
+      Statistic: "Sum",
+      Threshold: 1,
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Scale-to-zero dashboard widgets (smoke tests — confirm rendered into
+  // the CloudFormation Dashboard body, not a typo)
+  // ---------------------------------------------------------------------
+
+  test("dashboard widgets reference the new scale-to-zero metrics", () => {
+    const dashboards = template.findResources("AWS::CloudWatch::Dashboard");
+    const bodies = Object.values(dashboards).map((r) =>
+      JSON.stringify(r.Properties.DashboardBody),
+    );
+    const allBodies = bodies.join("");
+
+    // Each new metric should appear at least once in the dashboard body.
+    expect(allBodies).toContain("gateway.running.count.by_tier");
+    expect(allBodies).toContain("gateway.cold_start.count");
+    expect(allBodies).toContain("gateway.cold_start.latency");
+    expect(allBodies).toContain("gateway.record_activity.count");
+  });
 });

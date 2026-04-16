@@ -382,6 +382,77 @@ export class ObservabilityStack extends cdk.Stack {
     p10.addAlarmAction(new cloudwatch_actions.SnsAction(this.pageTopic));
 
     // P11: chat-canary-fail — deferred (requires canary infrastructure)
+
+    // -------------------------------------------------------------------
+    // Free-tier scale-to-zero reaper alarms
+    // -------------------------------------------------------------------
+    // Two alarms protect the free-tier idle-reaper:
+    //   P12 (heartbeat): sample-count of gateway.running.count over the last
+    //        10 min. Task 5's reaper emits gauge("gateway.running.count", ...)
+    //        unconditionally every 60s cycle, so sample presence IS the
+    //        heartbeat. Alive => ~10 samples/10min; dead => 0 samples => alarm.
+    //        This replaces an earlier allOf(no-stops, has-running) composite
+    //        that false-paged in legitimate scenarios (e.g., free user stays
+    //        active so running.count>=1 but no one goes idle 5+ min, or a
+    //        fresh deploy before any reap has occurred).
+    //   P13 (crash): any gateway.idle_checker.crash in the last 5 min.
+    //
+    // Metric names MUST match the backend exactly:
+    //   - gateway.running.count       (emitted by the DDB-backed reaper, Task 5)
+    //   - gateway.idle_checker.crash  (emitted at main.py:~62)
+    const reaperDims = { env: this.envName, service: "isol8-backend" };
+
+    // P12: reaper heartbeat. SampleCount on gateway.running.count.
+    // Reaper emits this gauge every ~60s regardless of workload, so absence
+    // of samples = reaper loop is dead. Expect ~10 samples per 10-min window
+    // when healthy; threshold 5 tolerates one skipped cycle.
+    const heartbeatMetric = new cloudwatch.Metric({
+      namespace: "Isol8",
+      metricName: "gateway.running.count",
+      statistic: "SampleCount",
+      period: cdk.Duration.minutes(10),
+      dimensionsMap: reaperDims,
+    });
+
+    const heartbeatAlarm = new cloudwatch.Alarm(this, "ReaperHeartbeatAlarm", {
+      alarmName: `isol8-${this.envName}-P12-reaper-dead`,
+      alarmDescription:
+        "PAGE: free-tier reaper has emitted no heartbeat in 10 minutes. " +
+        "Task 5 emits gateway.running.count every 60s regardless of whether " +
+        "any container was actually reaped, so absence of samples = reaper " +
+        "loop is dead.",
+      metric: heartbeatMetric,
+      threshold: 5,
+      evaluationPeriods: 1,
+      comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.BREACHING,
+    });
+    heartbeatAlarm.addAlarmAction(
+      new cloudwatch_actions.SnsAction(this.pageTopic),
+    );
+
+    // P13: any reaper crash in the last 5 min.
+    const crashMetric = new cloudwatch.Metric({
+      namespace: "Isol8",
+      metricName: "gateway.idle_checker.crash",
+      statistic: "Sum",
+      period: cdk.Duration.minutes(5),
+      dimensionsMap: reaperDims,
+    });
+
+    const reaperCrashAlarm = new cloudwatch.Alarm(this, "ReaperCrashAlarm", {
+      alarmName: `isol8-${this.envName}-P13-reaper-crash`,
+      alarmDescription: "PAGE: free-tier reaper threw an exception.",
+      metric: crashMetric,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator:
+        cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+    });
+    reaperCrashAlarm.addAlarmAction(
+      new cloudwatch_actions.SnsAction(this.pageTopic),
+    );
   }
 
   // =========================================================================
@@ -1679,6 +1750,132 @@ def handler(event, context):
           }),
         ],
         width: 8,
+        height: 6,
+      }),
+    );
+
+    // ----- Row 3.5: Free-tier scale-to-zero (4 widgets) -----
+    // Source-of-truth for the heartbeat is the P12 alarm (reaper-dead) — these
+    // widgets are for at-a-glance visibility, not gating.
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: "Running containers (gauge)",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count",
+            statistic: "Maximum",
+            dimensionsMap: dims,
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Running by tier",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "free" },
+            label: "free",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "starter" },
+            label: "starter",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "pro" },
+            label: "pro",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.running.count.by_tier",
+            statistic: "Maximum",
+            dimensionsMap: { ...dims, tier: "enterprise" },
+            label: "enterprise",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "Cold starts & latency",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "ok" },
+            label: "cold starts (ok)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "error" },
+            label: "cold starts (error)",
+          }),
+        ],
+        right: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.latency",
+            statistic: "p50",
+            dimensionsMap: dims,
+            label: "p50 latency",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.cold_start.latency",
+            statistic: "p99",
+            dimensionsMap: dims,
+            label: "p99 latency",
+          }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: "record_activity outcomes & scale-to-zero events",
+        left: [
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "success" },
+            label: "success",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "noop" },
+            label: "noop (cold-start race)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.record_activity.count",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, outcome: "error" },
+            label: "error (DDB)",
+          }),
+          new cloudwatch.Metric({
+            namespace: "Isol8",
+            metricName: "gateway.idle.scale_to_zero",
+            statistic: "Sum",
+            dimensionsMap: { ...dims, tier: "free" },
+            label: "scale-to-zero (free)",
+          }),
+        ],
+        width: 6,
         height: 6,
       }),
     );

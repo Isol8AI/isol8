@@ -40,15 +40,41 @@ export interface BudgetExceededPayload {
   tier: string;
 }
 
+/**
+ * OpenClaw tool result content blocks — text blocks or image refs. Image
+ * data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer.
+ */
+export type ToolResultBlock = { type: string; text?: string; bytes?: number; omitted?: boolean };
+
 export type ChatIncomingMessage =
   | { type: "chunk"; content: string; agent_id?: string }
   | { type: "thinking"; content: string; agent_id?: string }
   | { type: "done"; agent_id?: string }
   | { type: "error"; message: string; code?: string; agent_id?: string } & Partial<BudgetExceededPayload>
   | { type: "heartbeat" }
-  | { type: "tool_start"; tool: string; toolCallId?: string; agent_id?: string }
-  | { type: "tool_end"; tool: string; toolCallId?: string; agent_id?: string }
-  | { type: "tool_error"; tool: string; toolCallId?: string; agent_id?: string }
+  | {
+      type: "tool_start";
+      tool: string;
+      toolCallId?: string;
+      args?: Record<string, unknown>;
+      agent_id?: string;
+    }
+  | {
+      type: "tool_end";
+      tool: string;
+      toolCallId?: string;
+      result?: ToolResultBlock[];
+      meta?: string;
+      agent_id?: string;
+    }
+  | {
+      type: "tool_error";
+      tool: string;
+      toolCallId?: string;
+      result?: ToolResultBlock[];
+      meta?: string;
+      agent_id?: string;
+    }
   | { type: "update_available" };
 
 /** Gateway event forwarded from OpenClaw */
@@ -69,6 +95,7 @@ interface GatewayContextValue {
   nodeConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
+  send: (payload: unknown) => void;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   sendChat: (agentId: string, message: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
@@ -385,6 +412,19 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // ---- send (raw fire-and-forget) ----
+
+  // Fire-and-forget send for best-effort signals (e.g. user_active pings
+  // for the free-tier scale-to-zero reaper). Silent no-op when the socket
+  // isn't open — callers retry on their own cadence.
+  const send = useCallback((payload: unknown): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    ws.send(JSON.stringify(payload));
+  }, []);
+
   // ---- Subscription helpers ----
 
   const onEvent = useCallback(
@@ -408,8 +448,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
-    [isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
+    () => ({ isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
+    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect],
   );
 
   return (

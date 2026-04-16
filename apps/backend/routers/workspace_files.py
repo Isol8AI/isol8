@@ -1,8 +1,10 @@
 """REST endpoints for browsing agent workspace files on EFS."""
 
 import logging
+from pathlib import PurePosixPath
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_workspace
@@ -11,6 +13,49 @@ from core.containers.workspace import WorkspaceError
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _validate_relative_path(path: str) -> None:
+    """Reject empty paths, absolute paths, dot-only paths, and any segment equal to '..'.
+
+    Raises ValueError with a message suitable for surfacing as a 400 detail.
+    """
+    if not path or path.startswith(("/", "\\")):
+        raise ValueError("path must be a non-empty relative path")
+
+    normalized = path.replace("\\", "/")
+    # Reject dot-only paths: '.', './', './.', etc. collapse to empty parts.
+    segments = [s for s in normalized.split("/") if s != ""]
+    if not segments or all(s == "." for s in segments):
+        raise ValueError("path must not be a dot-only path")
+    if any(s == ".." for s in segments):
+        raise ValueError("path must not contain '..' segments")
+    # Existing PurePosixPath-based checks are still useful as belt-and-suspenders
+    parts = PurePosixPath(path).parts
+    if any(part in ("..", "") for part in parts):
+        raise ValueError("path must not contain '..' segments")
+
+
+def _ensure_within_subtree(workspace, owner_id: str, full_path: str, subtree: str) -> None:
+    """Resolve full_path (following symlinks) and verify it remains within
+    {user_root}/{subtree}.
+
+    This blocks symlink-based escapes that would otherwise pass
+    `Workspace._resolve_user_file`, which only pins writes to the user root.
+
+    Raises:
+        ValueError: if the resolved target escapes the subtree.
+    """
+    user_root = workspace.user_path(owner_id).resolve()
+    subtree_root = (user_root / subtree).resolve()
+    # strict=False lets us resolve paths whose leaf doesn't exist yet (the file
+    # being created). Intermediate symlinks in the parent chain are still
+    # resolved.
+    target = (user_root / full_path).resolve(strict=False)
+    try:
+        target.relative_to(subtree_root)
+    except ValueError:
+        raise ValueError(f"path escapes agent subtree: {full_path!r}")
 
 
 def _agent_workspace_path(owner_id: str, agent_id: str) -> str:
@@ -34,6 +79,78 @@ def _collect_recursive(workspace, owner_id: str, path: str, entries: list, max_d
             _collect_recursive(workspace, owner_id, item["path"], entries, max_depth - 1)
 
 
+def _strip_agent_prefix(entries: list[dict], agent_id: str) -> list[dict]:
+    """Rewrite entry paths from user-root-relative to agent-workspace-relative.
+
+    Input paths look like `workspaces/{agent_id}/foo/bar.md`. Output paths
+    strip the `workspaces/{agent_id}/` prefix so they match the contract
+    expected by the read/write endpoints.
+    """
+    prefix = f"workspaces/{agent_id}/"
+    out = []
+    for entry in entries:
+        p = entry["path"]
+        if p == f"workspaces/{agent_id}":
+            # The agent root itself — present when the workspace dir is listed at depth 0.
+            new_path = ""
+        elif p.startswith(prefix):
+            new_path = p[len(prefix) :]
+        else:
+            # Shouldn't happen — log and keep as-is.
+            logger.warning("Unexpected workspace path %r for agent %s", p, agent_id)
+            new_path = p
+        out.append({**entry, "path": new_path})
+    return out
+
+
+# The 7 config files OpenClaw seeds in every agent workspace.
+# Source: desktop/openclaw/src/agents/workspace.ts:26-34. These are the only
+# filenames the Config tab treats as first-class personality/config files;
+# writes via tab="config" are restricted to this set.
+CONFIG_ALLOWLIST: set[str] = {
+    "SOUL.md",
+    "MEMORY.md",
+    "TOOLS.md",
+    "IDENTITY.md",
+    "USER.md",
+    "HEARTBEAT.md",
+    "AGENTS.md",
+}
+
+MAX_WRITE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def _list_config_files(workspace, owner_id: str, agent_id: str) -> list[dict]:
+    """List only allowlisted config files from the agent's workspace.
+
+    Config files (SOUL.md, MEMORY.md, etc.) live inside workspaces/{agent_id}/
+    alongside the agent's working files. They are NOT stored in agents/{agent_id}/
+    — that directory holds OpenClaw runtime metadata (sessions, models) which
+    is intentionally unreachable from the file viewer.
+    """
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        return []
+    user_root = workspace.user_path(owner_id)
+    agent_dir = user_root / "workspaces" / agent_id
+    if not agent_dir.exists() or not agent_dir.is_dir():
+        return []
+    results = []
+    for name in sorted(CONFIG_ALLOWLIST):
+        fpath = agent_dir / name
+        if fpath.exists() and fpath.is_file():
+            stat = fpath.stat()
+            results.append(
+                {
+                    "name": name,
+                    "path": name,
+                    "type": "file",
+                    "size": stat.st_size,
+                    "modified_at": stat.st_mtime,
+                }
+            )
+    return results
+
+
 @router.get("/workspace/{agent_id}/tree")
 async def list_workspace_tree(
     agent_id: str,
@@ -51,7 +168,7 @@ async def list_workspace_tree(
     if recursive:
         all_entries: list = []
         _collect_recursive(workspace, owner_id, full_path, all_entries)
-        return {"files": all_entries}
+        return {"files": _strip_agent_prefix(all_entries, agent_id)}
     else:
         try:
             entries = workspace.list_directory(owner_id, full_path)
@@ -62,7 +179,7 @@ async def list_workspace_tree(
                 raise HTTPException(status_code=403, detail="Access denied")
             raise HTTPException(status_code=500, detail=str(exc))
 
-        return {"files": entries}
+        return {"files": _strip_agent_prefix(entries, agent_id)}
 
 
 @router.get("/workspace/{agent_id}/file")
@@ -88,3 +205,103 @@ async def read_workspace_file(
         raise HTTPException(status_code=500, detail=str(exc))
 
     return info
+
+
+@router.get("/workspace/{agent_id}/config-files")
+async def list_config_files(
+    agent_id: str,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """List allowlisted agent config files (SOUL.md, MEMORY.md, etc.)."""
+    owner_id = resolve_owner_id(auth)
+    workspace = get_workspace()
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    return {"files": _list_config_files(workspace, owner_id, agent_id)}
+
+
+@router.get("/workspace/{agent_id}/config-file")
+async def read_config_file(
+    agent_id: str,
+    path: str = Query(..., description="Config filename (must be allowlisted)"),
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Read a single allowlisted agent config file."""
+    owner_id = resolve_owner_id(auth)
+    if path not in CONFIG_ALLOWLIST:
+        raise HTTPException(status_code=400, detail=f"File not in allowlist: {path}")
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    workspace = get_workspace()
+    full_path = f"workspaces/{agent_id}/{path}"
+    try:
+        info = workspace.read_file_info(owner_id, full_path)
+    except WorkspaceError as exc:
+        if "not found" in str(exc).lower():
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=500, detail=str(exc))
+    return info
+
+
+class WriteFileRequest(BaseModel):
+    path: str
+    content: str
+    tab: str  # "workspace" or "config"
+
+
+def _write_file(workspace, owner_id: str, agent_id: str, path: str, content: str, tab: str) -> str:
+    """Write a file into the agent's workspace. Returns the user-root-relative path.
+
+    Both tabs ("workspace" and "config") write under the same subtree:
+    workspaces/{agent_id}/. The tab controls the allowlist gate only — the
+    config tab is restricted to the 7 personality files (SOUL.md etc.), the
+    workspace tab accepts arbitrary relative paths.
+    """
+    encoded = content.encode("utf-8")
+    if len(encoded) > MAX_WRITE_SIZE:
+        raise ValueError(f"content exceeds {MAX_WRITE_SIZE // (1024 * 1024)}MB limit")
+
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise ValueError(f"Invalid agent_id: {agent_id!r}")
+
+    _validate_relative_path(path)
+
+    if tab == "config":
+        if path not in CONFIG_ALLOWLIST:
+            raise ValueError(f"File not in allowlist: {path}")
+    elif tab != "workspace":
+        raise ValueError(f"Invalid tab: {tab!r}")
+
+    subtree = f"workspaces/{agent_id}"
+    full_path = f"{subtree}/{path}"
+    _ensure_within_subtree(workspace, owner_id, full_path, subtree)
+
+    workspace.write_file(owner_id, full_path, content)
+    return full_path
+
+
+@router.put("/workspace/{agent_id}/file")
+async def write_workspace_file(
+    agent_id: str,
+    body: WriteFileRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    """Write a file to the agent's workspace or config directory."""
+    owner_id = resolve_owner_id(auth)
+    if "/" in agent_id or "\\" in agent_id or ".." in agent_id:
+        raise HTTPException(status_code=400, detail="Invalid agent_id")
+    if body.tab not in ("workspace", "config"):
+        raise HTTPException(status_code=400, detail="tab must be 'workspace' or 'config'")
+
+    workspace = get_workspace()
+    try:
+        written_path = _write_file(workspace, owner_id, agent_id, body.path, body.content, body.tab)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except WorkspaceError as exc:
+        if "traversal" in str(exc).lower():
+            raise HTTPException(status_code=403, detail="Access denied")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    logger.info("Wrote %s for user %s (tab=%s)", written_path, owner_id, body.tab)
+    return {"status": "ok", "path": written_path}

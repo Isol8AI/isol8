@@ -13,7 +13,12 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import { useGateway, type ChatIncomingMessage, type BudgetExceededPayload } from "@/hooks/useGateway";
+import {
+  useGateway,
+  type ChatIncomingMessage,
+  type BudgetExceededPayload,
+  type ToolResultBlock,
+} from "@/hooks/useGateway";
 
 // =============================================================================
 // Friendly error messages
@@ -73,6 +78,9 @@ export interface ToolUse {
   tool: string;
   toolCallId?: string;
   status: "running" | "done" | "error";
+  args?: Record<string, unknown>;
+  result?: ToolResultBlock[];
+  meta?: string;
 }
 
 export interface AgentMessage {
@@ -328,6 +336,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
                         tool: msg.tool,
                         toolCallId: msg.toolCallId,
                         status: "running" as const,
+                        ...(msg.args ? { args: msg.args } : {}),
                       },
                     ],
                   }
@@ -351,9 +360,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
                 const matchesName =
                   msg.toolCallId === undefined && t.tool === msg.tool;
                 const isRunning = t.status === "running";
-                return isRunning && (matchesCallId || matchesName)
-                  ? { ...t, status: nextStatus as "done" | "error" }
-                  : t;
+                if (isRunning && (matchesCallId || matchesName)) {
+                  return {
+                    ...t,
+                    status: nextStatus as "done" | "error",
+                    ...(msg.result ? { result: msg.result } : {}),
+                    ...(msg.meta ? { meta: msg.meta } : {}),
+                  };
+                }
+                return t;
               });
               return { ...m, toolUses };
             }),

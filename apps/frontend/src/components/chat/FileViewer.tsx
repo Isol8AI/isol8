@@ -1,16 +1,29 @@
 "use client";
 
 import * as React from "react";
-import { X, Copy, FolderOpen } from "lucide-react";
+import { X, Copy } from "lucide-react";
 import { FileTree } from "@/components/chat/FileTree";
 import { FileContentViewer } from "@/components/chat/FileContentViewer";
-import { useWorkspaceTree, useWorkspaceFile } from "@/hooks/useWorkspaceFiles";
+import { useWorkspaceTree, useWorkspaceFile, useConfigFiles, useConfigFile } from "@/hooks/useWorkspaceFiles";
+import { useApi } from "@/lib/api";
+
+const CONFIG_ALLOWLIST = [
+  "SOUL.md",
+  "MEMORY.md",
+  "TOOLS.md",
+  "IDENTITY.md",
+  "USER.md",
+  "HEARTBEAT.md",
+  "AGENTS.md",
+];
 
 interface FileViewerProps {
   agentId: string | null;
   initialFilePath?: string | null;
   onClose: () => void;
 }
+
+type ViewerTab = "workspace" | "config";
 
 function Breadcrumbs({ path, onNavigate }: { path: string; onNavigate: (segment: string) => void }) {
   const segments = path.split("/");
@@ -42,22 +55,92 @@ function formatDate(timestamp: number): string {
 }
 
 export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProps) {
+  const [activeTab, setActiveTab] = React.useState<ViewerTab>("workspace");
   const [selectedPath, setSelectedPath] = React.useState<string | null>(initialFilePath ?? null);
+  const [editorDirty, setEditorDirty] = React.useState(false);
 
-  const relativeFilePath = React.useMemo(() => {
-    if (!selectedPath) return null;
-    const prefix = `agents/${agentId}/`;
-    return selectedPath.startsWith(prefix) ? selectedPath.slice(prefix.length) : selectedPath;
-  }, [selectedPath, agentId]);
+  const relativeFilePath = selectedPath;
 
-  const { files, isLoading: treeLoading, refresh } = useWorkspaceTree(agentId);
-  const { file, isLoading: fileLoading, error: fileError } = useWorkspaceFile(agentId, relativeFilePath);
+  // Workspace tab data
+  const { files: wsRawFiles, isLoading: wsTreeLoading, refresh: wsRefresh } = useWorkspaceTree(agentId);
+  // Hide top-level allowlisted config files from the Workspace tab — they
+  // already get a curated home in the Config tab. Nested files of the same
+  // name (e.g. uploads/SOUL.md) still show; the filter is path-aware.
+  const wsFiles = React.useMemo(
+    () => wsRawFiles.filter((f) => !(CONFIG_ALLOWLIST.includes(f.name) && !f.path.includes("/"))),
+    [wsRawFiles],
+  );
+  const { file: wsFile, isLoading: wsFileLoading, error: wsFileError } = useWorkspaceFile(
+    activeTab === "workspace" ? agentId : null,
+    activeTab === "workspace" ? relativeFilePath : null,
+  );
+
+  // Config tab data
+  const { files: cfgFiles, isLoading: cfgTreeLoading, refresh: cfgRefresh } = useConfigFiles(agentId);
+  const { file: cfgFile, isLoading: cfgFileLoading, error: cfgFileError } = useConfigFile(
+    activeTab === "config" ? agentId : null,
+    activeTab === "config" ? relativeFilePath : null,
+  );
+
+  const files = activeTab === "workspace" ? wsFiles : cfgFiles;
+  const treeLoading = activeTab === "workspace" ? wsTreeLoading : cfgTreeLoading;
+  const refresh = activeTab === "workspace" ? wsRefresh : cfgRefresh;
+  const file = activeTab === "workspace" ? wsFile : cfgFile;
+  const fileLoading = activeTab === "workspace" ? wsFileLoading : cfgFileLoading;
+  const fileError = activeTab === "workspace" ? wsFileError : cfgFileError;
+
+  const api = useApi();
+
+  const handleSave = React.useCallback(
+    async (content: string) => {
+      if (!agentId || !relativeFilePath) return;
+      await api.saveWorkspaceFile(agentId, relativeFilePath, content, activeTab);
+      // Refresh the tree to pick up size/date changes
+      refresh();
+    },
+    [agentId, relativeFilePath, activeTab, api, refresh],
+  );
+
+  const confirmDiscardIfDirty = React.useCallback((): boolean => {
+    if (!editorDirty) return true;
+    return window.confirm("You have unsaved changes. Discard them?");
+  }, [editorDirty]);
+
+  // Ref-guard against prompting on the initial mount when editorDirty is
+  // already false; we still want to prompt on prop-driven switches that
+  // happen AFTER the user has unsaved edits.
+  const confirmDiscardIfDirtyRef = React.useRef(confirmDiscardIfDirty);
+  confirmDiscardIfDirtyRef.current = confirmDiscardIfDirty;
 
   React.useEffect(() => {
-    if (initialFilePath) {
-      setSelectedPath(initialFilePath);
-    }
-  }, [initialFilePath]);
+    if (!initialFilePath) return;
+    if (initialFilePath === selectedPath) return;
+    if (!confirmDiscardIfDirtyRef.current()) return;
+    setSelectedPath(initialFilePath);
+    setActiveTab("workspace"); // chat-detected paths are always workspace paths
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialFilePath]); // intentionally omitting selectedPath to preserve original trigger semantics
+
+  const handleSelectFile = React.useCallback(
+    (path: string) => {
+      if (path === selectedPath) return;
+      if (!confirmDiscardIfDirty()) return;
+      setSelectedPath(path);
+    },
+    [selectedPath, confirmDiscardIfDirty],
+  );
+
+  function handleTabChange(tab: ViewerTab) {
+    if (tab === activeTab) return;
+    if (!confirmDiscardIfDirty()) return;
+    setActiveTab(tab);
+    setSelectedPath(null);
+  }
+
+  const handleCloseRequested = React.useCallback(() => {
+    if (!confirmDiscardIfDirty()) return;
+    onClose();
+  }, [confirmDiscardIfDirty, onClose]);
 
   function handleCopyContent() {
     if (file?.content) {
@@ -104,52 +187,89 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
       `}</style>
 
       <div className="file-viewer-header">
-        <FolderOpen className="h-4 w-4 text-[#8a8578] flex-shrink-0" />
-        {selectedPath ? (
+        <div role="tablist" aria-label="File viewer tabs" className="flex items-center gap-1">
+          <button
+            id="file-viewer-tab-workspace"
+            role="tab"
+            aria-selected={activeTab === "workspace"}
+            aria-controls="file-viewer-tabpanel"
+            onClick={() => handleTabChange("workspace")}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              activeTab === "workspace"
+                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
+                : "text-[#8a8578] hover:text-[#1a1a1a]"
+            }`}
+          >
+            Workspace
+          </button>
+          <button
+            id="file-viewer-tab-config"
+            role="tab"
+            aria-selected={activeTab === "config"}
+            aria-controls="file-viewer-tabpanel"
+            onClick={() => handleTabChange("config")}
+            className={`px-3 py-1 text-sm rounded-md transition-colors ${
+              activeTab === "config"
+                ? "bg-white text-[#1a1a1a] shadow-sm font-medium"
+                : "text-[#8a8578] hover:text-[#1a1a1a]"
+            }`}
+          >
+            Config
+          </button>
+        </div>
+
+        <div className="flex-1" />
+
+        {selectedPath && file && (
           <>
-            <Breadcrumbs
-              path={relativeFilePath ?? selectedPath}
-              onNavigate={() => {}}
-            />
-            <div className="flex-1" />
-            {file && (
-              <span className="text-xs text-[#8a8578] flex-shrink-0">
-                {formatFileSize(file.size)} · {formatDate(file.modified_at)}
-              </span>
-            )}
-            {file?.content && (
+            <Breadcrumbs path={relativeFilePath ?? selectedPath} onNavigate={() => {}} />
+            <span className="text-xs text-[#8a8578] flex-shrink-0 ml-2">
+              {formatFileSize(file.size)} · {formatDate(file.modified_at)}
+            </span>
+            {file.content && (
               <button
                 onClick={handleCopyContent}
-                className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0"
+                className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
                 title="Copy file content"
               >
                 <Copy className="h-4 w-4" />
               </button>
             )}
           </>
-        ) : (
-          <>
-            <span className="text-sm text-[#8a8578]">Workspace</span>
-            <div className="flex-1" />
-          </>
         )}
+
         <button
-          onClick={onClose}
-          className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0"
+          onClick={handleCloseRequested}
+          className="text-[#8a8578] hover:text-[#1a1a1a] transition-colors flex-shrink-0 ml-2"
           title="Close file viewer"
         >
           <X className="h-4 w-4" />
         </button>
       </div>
 
-      <div className="file-viewer-body">
+      <div
+        className="file-viewer-body"
+        id="file-viewer-tabpanel"
+        role="tabpanel"
+        aria-labelledby={
+          activeTab === "workspace"
+            ? "file-viewer-tab-workspace"
+            : "file-viewer-tab-config"
+        }
+      >
         <div className="file-viewer-tree">
           <FileTree
             files={files}
             selectedPath={selectedPath}
-            onSelect={setSelectedPath}
+            onSelect={handleSelectFile}
             onRefresh={() => refresh()}
             isLoading={treeLoading}
+            emptyMessage={
+              activeTab === "workspace"
+                ? "No files yet. Your agent will create files here as it works."
+                : "No config files found."
+            }
+            allowlist={activeTab === "config" ? CONFIG_ALLOWLIST : undefined}
           />
         </div>
         <div className="file-viewer-content">
@@ -157,6 +277,8 @@ export function FileViewer({ agentId, initialFilePath, onClose }: FileViewerProp
             file={file}
             isLoading={fileLoading}
             error={fileError ?? null}
+            onSave={selectedPath ? handleSave : undefined}
+            onDirtyChange={setEditorDirty}
           />
         </div>
       </div>
