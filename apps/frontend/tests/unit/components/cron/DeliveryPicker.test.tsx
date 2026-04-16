@@ -171,7 +171,8 @@ describe("DeliveryPicker", () => {
     render(<Harness />);
 
     // webhook -> announce: failureDestination must survive.
-    fireEvent.click(screen.getByRole("button", { name: /^Announce$/ }));
+    // The nested picker also has an "Announce" button, so take the outer (first) one.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Announce$/ })[0]);
     const afterToAnnounce = observed[observed.length - 1];
     expect(afterToAnnounce?.mode).toBe("announce");
     expect(afterToAnnounce?.failureDestination).toEqual({
@@ -183,6 +184,7 @@ describe("DeliveryPicker", () => {
 
     // announce -> none: failureDestination must still survive (user can
     // only clear it via the explicit "Remove failure destination" button).
+    // "None" mode is suppressed on the nested picker so there's only one.
     fireEvent.click(screen.getByRole("button", { name: /^None$/ }));
     const afterToNone = observed[observed.length - 1];
     expect(afterToNone?.mode).toBe("none");
@@ -194,7 +196,9 @@ describe("DeliveryPicker", () => {
     });
 
     // none -> webhook: failureDestination must survive the round-trip.
-    fireEvent.click(screen.getByRole("button", { name: /^Webhook$/ }));
+    // After mode switches to "none", the nested picker is re-rendered when we
+    // return to announce/webhook. Use getAllBy and take the outer (first) button.
+    fireEvent.click(screen.getAllByRole("button", { name: /^Webhook$/ })[0]);
     const afterToWebhook = observed[observed.length - 1];
     expect(afterToWebhook?.mode).toBe("webhook");
     expect(afterToWebhook?.failureDestination).toEqual({
