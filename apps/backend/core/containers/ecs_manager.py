@@ -894,87 +894,129 @@ class EcsManager:
         self,
         user_id: str,
         *,
-        max_attempts: int = 30,
-        interval_s: float = 4.0,
+        interval_s: float = 10.0,
     ) -> None:
-        """Background poller that drives provisioning → running eagerly.
+        """Durable background poller that drives provisioning -> running.
 
-        Polls ECS for the task's private IP, then TCP-connects to the gateway
-        port, then writes status=running once both succeed. Also stores the
-        task ARN on the row (previously never written because the old code
-        path only updated status, not task_arn).
+        Exits on one of four conditions:
 
-        Exits quietly on timeout — the next user request will still retry
-        via `resolve_running_container`, so this is strictly an optimization
-        for the happy path.
+        1. Container is reachable (ECS task RUNNING + gateway port open):
+           write status=running, substatus=gateway_healthy, store task_arn,
+           return.
+        2. DDB status is no longer "provisioning" (external state change --
+           admin stop, re-provision, reaper, etc.): return silently.
+        3. ECS deployment rolloutState=FAILED (circuit breaker tripped -- the
+           provision will never succeed): write status=error, return.
+        4. asyncio.CancelledError (backend shutdown): propagate.
+
+        No fixed timeout. The container can take 10s or 10 minutes to become
+        healthy -- the poller keeps going until one of the above happens.
         """
-        for attempt in range(max_attempts):
+        while True:
             try:
                 container = await container_repo.get_by_owner_id(user_id)
                 if not container or container.get("status") != "provisioning":
-                    # Already transitioned (or the row is gone) — nothing to do.
+                    # External state change or row gone -- nothing to do.
                     return
 
                 service_name = container["service_name"]
-                list_resp = self._ecs.list_tasks(
-                    cluster=self._cluster,
-                    serviceName=service_name,
-                    desiredStatus="RUNNING",
-                )
-                task_arns = list_resp.get("taskArns", [])
-                if not task_arns:
-                    await asyncio.sleep(interval_s)
-                    continue
 
-                task_arn = task_arns[0]
-                desc_resp = self._ecs.describe_tasks(
-                    cluster=self._cluster,
-                    tasks=[task_arn],
-                )
-                tasks = desc_resp.get("tasks", [])
-                if not tasks or tasks[0].get("lastStatus") != "RUNNING":
-                    await asyncio.sleep(interval_s)
-                    continue
+                # Try to find a healthy running task.
+                task_arn, ip = await self._poll_running_task(service_name)
+                if task_arn and ip and self.is_healthy(ip):
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "running",
+                            "substatus": "gateway_healthy",
+                            "task_arn": task_arn,
+                        },
+                    )
+                    logger.info(
+                        "Transitioned container %s to running (user=%s, task=%s)",
+                        service_name,
+                        user_id,
+                        task_arn.split("/")[-1],
+                    )
+                    return
 
-                ip = None
-                for attachment in tasks[0].get("attachments", []):
-                    if attachment.get("type") == "ElasticNetworkInterface":
-                        for detail in attachment.get("details", []):
-                            if detail.get("name") == "privateIPv4Address":
-                                ip = detail.get("value")
-                                break
-                if not ip or not self.is_healthy(ip):
-                    await asyncio.sleep(interval_s)
-                    continue
+                # No healthy task yet -- check whether the circuit breaker tripped.
+                # We only issue this describe_services call on the slow path so
+                # the happy path stays cheap (ECS DescribeServices is 20 req/s).
+                if await self._deployment_failed(service_name):
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "error",
+                            "substatus": "deployment_failed",
+                        },
+                    )
+                    logger.error(
+                        "Deployment circuit breaker tripped for container %s (user=%s); marking error",
+                        service_name,
+                        user_id,
+                    )
+                    return
 
-                await container_repo.update_fields(
-                    user_id,
-                    {
-                        "status": "running",
-                        "substatus": "gateway_healthy",
-                        "task_arn": task_arn,
-                    },
-                )
-                logger.info(
-                    "Eagerly transitioned container %s to running (user=%s, task=%s)",
-                    service_name,
-                    user_id,
-                    task_arn.split("/")[-1],
-                )
-                return
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception(
-                    "Unexpected error in eager running transition for %s (attempt %d)",
+                    "Unexpected error in _await_running_transition for %s; will retry",
                     user_id,
-                    attempt,
                 )
-                await asyncio.sleep(interval_s)
 
-        logger.warning(
-            "Eager provisioning -> running transition timed out for user %s after %d attempts",
-            user_id,
-            max_attempts,
+            await asyncio.sleep(interval_s)
+
+    async def _poll_running_task(self, service_name: str) -> tuple[str | None, str | None]:
+        """Find a RUNNING task for the service and return (task_arn, ip).
+
+        Returns (None, None) when no RUNNING task has an IP yet. Caller uses
+        this to decide whether to check for circuit-breaker failure.
+        """
+        list_resp = self._ecs.list_tasks(
+            cluster=self._cluster,
+            serviceName=service_name,
+            desiredStatus="RUNNING",
         )
+        task_arns = list_resp.get("taskArns", [])
+        if not task_arns:
+            return None, None
+
+        desc_resp = self._ecs.describe_tasks(
+            cluster=self._cluster,
+            tasks=[task_arns[0]],
+        )
+        tasks = desc_resp.get("tasks", [])
+        if not tasks or tasks[0].get("lastStatus") != "RUNNING":
+            return None, None
+
+        for attachment in tasks[0].get("attachments", []):
+            if attachment.get("type") != "ElasticNetworkInterface":
+                continue
+            for detail in attachment.get("details", []):
+                if detail.get("name") == "privateIPv4Address":
+                    return task_arns[0], detail.get("value")
+        return None, None
+
+    async def _deployment_failed(self, service_name: str) -> bool:
+        """True when ECS has marked the service's latest deployment FAILED."""
+        try:
+            resp = self._ecs.describe_services(
+                cluster=self._cluster,
+                services=[service_name],
+            )
+            services = resp.get("services", [])
+            if not services:
+                return False
+            deployments = services[0].get("deployments", [])
+            if not deployments:
+                return False
+            return deployments[0].get("rolloutState") == "FAILED"
+        except Exception:
+            # If describe_services fails, don't flip to error -- retry next cycle.
+            logger.warning("describe_services failed for %s; assuming not-failed", service_name)
+            return False
 
     async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.

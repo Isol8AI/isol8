@@ -53,6 +53,16 @@ def mock_ecs_client():
     client.register_task_definition.return_value = {
         "taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw:42"}
     }
+    client.describe_services.return_value = {
+        "services": [
+            {
+                "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                "deployments": [{"rolloutState": "IN_PROGRESS"}],
+            }
+        ]
+    }
+    client.list_tasks.return_value = {"taskArns": []}
+    client.describe_tasks.return_value = {"tasks": []}
     client.deregister_task_definition.return_value = {}
     return client
 
@@ -855,3 +865,205 @@ class TestEcsManagerError:
         """EcsManagerError defaults user_id to empty string."""
         err = EcsManagerError("generic failure")
         assert err.user_id == ""
+
+
+# ---------------------------------------------------------------------------
+# _await_running_transition (durable provisioning -> running poller)
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitRunningTransition:
+    """The poller that drives provisioning -> running in the background.
+
+    Must be durable (no fixed timeout) and have proper exit conditions so a
+    container can never be left stuck at status=provisioning forever while
+    actually running in ECS.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transitions_to_running_when_task_healthy(self, manager, mock_ecs_client):
+        """Container becomes reachable -> write status=running and exit."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "running"
+            assert fields["substatus"] == "gateway_healthy"
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/abc"
+
+    @pytest.mark.asyncio
+    async def test_transitions_to_error_when_circuit_breaker_trips(self, manager, mock_ecs_client):
+        """ECS deployment rolloutState=FAILED -> write status=error and exit.
+
+        This is the definitive failure signal: the circuit breaker only trips
+        after N failed task placements, so we know the provision will never
+        succeed on its own (bad image, crash loop, etc.)."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        mock_ecs_client.describe_services.return_value = {"services": [{"deployments": [{"rolloutState": "FAILED"}]}]}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_exits_silently_when_ddb_status_changed_externally(self, manager, mock_ecs_client):
+        """If another actor (admin, reaper, re-provision) changed the DDB status
+        under us, exit without writing anything -- our job is done or obsolete."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exits_silently_when_row_missing(self, manager, mock_ecs_client):
+        """Container row deleted -> exit. No row to transition."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keeps_polling_when_task_not_yet_healthy(self, manager, mock_ecs_client):
+        """On iteration N no running task, on iteration N+1 it's healthy -> transition.
+
+        Regression for the 120s timeout bug: a container that takes >2 minutes
+        to become reachable MUST still get transitioned when it eventually is."""
+        # First poll: no tasks. Second poll: a healthy task.
+        mock_ecs_client.list_tasks.side_effect = [
+            {"taskArns": []},
+            {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]},
+        ]
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_skips_describe_services_on_happy_path(self, manager, mock_ecs_client):
+        """When a healthy task is found immediately, we should NOT call
+        describe_services -- that call is only needed when we're waiting and
+        need to check for failure. Avoids hitting the 20 req/s limit on
+        describe_services when many containers are provisioning concurrently."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_ecs_client.describe_services.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_respects_cancellation(self, manager, mock_ecs_client):
+        """Clean shutdown: if the event loop cancels the task (backend restart),
+        the poller exits without raising into the caller and without writing
+        a status transition."""
+        import asyncio as _asyncio
+
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"deployments": [{"rolloutState": "IN_PROGRESS"}]}]
+        }
+
+        # asyncio.sleep raises CancelledError inside the poller loop.
+        async def cancel_on_sleep(*args, **kwargs):
+            raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=cancel_on_sleep),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            # Must not swallow CancelledError -- asyncio task cancellation
+            # semantics require it to propagate out.
+            with pytest.raises(_asyncio.CancelledError):
+                await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
