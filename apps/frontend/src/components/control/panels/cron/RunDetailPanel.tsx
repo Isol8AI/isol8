@@ -139,7 +139,7 @@ export function RunDetailPanel({
         <RunTranscript
           sessionKey={run.sessionKey}
           afterTs={run.triggeredAtMs}
-          beforeTs={run.completedAtMs}
+          beforeTs={run.completedAtMs ?? (run.durationMs != null ? run.triggeredAtMs + run.durationMs : undefined)}
         />
       </div>
 

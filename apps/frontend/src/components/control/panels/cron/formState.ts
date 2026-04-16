@@ -30,6 +30,8 @@ export interface FormState {
   atDatetime: string;
   message: string;
   enabled: boolean;
+  /** Tracks whether this job is an agentTurn or systemEvent payload. */
+  payloadKind: "agentTurn" | "systemEvent";
   /**
    * Delivery destination for job results. When undefined at create-time,
    * EMPTY_FORM seeds a default of `{ mode: "announce" }` (Chat).
@@ -98,6 +100,7 @@ export const EMPTY_FORM: FormState = {
   atDatetime: "",
   message: "",
   enabled: true,
+  payloadKind: "agentTurn",
   // Default: announce to in-chat. Channel dropdown inside DeliveryPicker
   // defaults to "__chat__" which leaves `channel` undefined.
   delivery: { mode: "announce" },
@@ -176,6 +179,7 @@ export function buildFailureAlertPayload(form: FormState): CronFailureAlert | fa
 
 export function jobToForm(job: CronJob): FormState {
   const s = job.schedule;
+  const payloadKind: "agentTurn" | "systemEvent" = job.payload?.kind === "systemEvent" ? "systemEvent" : "agentTurn";
   const msg = job.payload?.kind === "agentTurn" ? (job.payload.message ?? "") : (job.payload?.text ?? "");
   const agentExec =
     job.payload?.kind === "agentTurn"
@@ -200,6 +204,7 @@ export function jobToForm(job: CronJob): FormState {
     name: job.name,
     message: msg,
     enabled: job.enabled,
+    payloadKind,
     delivery: job.delivery,
     agentId: job.agentId,
     deleteAfterRun: job.deleteAfterRun ?? false,
@@ -212,14 +217,33 @@ export function jobToForm(job: CronJob): FormState {
   }
   if (s.kind === "every") {
     const ms = s.everyMs ?? 60000;
-    if (ms >= 86400000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 86400000), everyUnit: "days" };
-    if (ms >= 3600000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 3600000), everyUnit: "hours" };
-    return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 60000), everyUnit: "minutes" };
+    // P1a: lossless unit selection — pick the largest unit that divides evenly.
+    // Falls back to minutes (always exact for ms divisible by 60000; uses
+    // Math.round only for sub-minute intervals which the UI can't represent).
+    let everyValue: number;
+    let everyUnit: "minutes" | "hours" | "days";
+    if (ms >= 86_400_000 && ms % 86_400_000 === 0) {
+      everyValue = ms / 86_400_000;
+      everyUnit = "days";
+    } else if (ms >= 3_600_000 && ms % 3_600_000 === 0) {
+      everyValue = ms / 3_600_000;
+      everyUnit = "hours";
+    } else {
+      everyValue = ms % 60_000 === 0 ? ms / 60_000 : Math.round(ms / 60_000);
+      everyUnit = "minutes";
+    }
+    return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue, everyUnit };
   }
   if (s.kind === "at") {
     let atDatetime = "";
     try {
-      atDatetime = s.at ? new Date(s.at).toISOString().slice(0, 16) : "";
+      // P1b: convert to local wall-clock time so <input type="datetime-local">
+      // displays the correct time regardless of the user's timezone.
+      if (s.at) {
+        const d = new Date(s.at);
+        const pad = (n: number) => String(n).padStart(2, "0");
+        atDatetime = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
     } catch { /* ignore */ }
     return { ...EMPTY_FORM, ...base, scheduleKind: "at", atDatetime };
   }
@@ -259,6 +283,51 @@ export function buildEditPayloadDiff(
     form.fallbacks?.map((s) => s.trim()).filter(Boolean),
   );
   const cleanToolsAllow = nonEmptyArray(form.toolsAllow);
+
+  // P1c: respect the form's payloadKind so editing a systemEvent job doesn't
+  // silently convert it to agentTurn.
+  if (form.payloadKind === "systemEvent") {
+    const payload: CronPayloadPatch = {
+      kind: "systemEvent",
+      text: form.message.trim(),
+    };
+
+    const patch: CronJobPatch = {
+      name: form.name.trim(),
+      schedule: buildSchedule(form),
+      payload,
+      enabled: form.enabled,
+      wakeMode: form.wakeMode,
+      deleteAfterRun: form.deleteAfterRun,
+      failureAlert: buildFailureAlertPayload(form),
+    };
+
+    // delivery handling (same logic as agentTurn path below).
+    if (form.delivery !== undefined) {
+      const originalFailureDest = original.delivery?.failureDestination;
+      if (
+        originalFailureDest !== undefined &&
+        form.delivery.failureDestination === undefined
+      ) {
+        patch.delivery = {
+          ...form.delivery,
+          failureDestination: null as unknown as CronFailureDestination,
+        };
+      } else {
+        patch.delivery = form.delivery;
+      }
+    } else if (original.delivery !== undefined) {
+      patch.delivery = { mode: "none" };
+    }
+
+    if (form.agentId) {
+      patch.agentId = form.agentId;
+    } else if (original.agentId) {
+      (patch as { agentId?: string | null }).agentId = null;
+    }
+
+    return patch;
+  }
 
   const origPayload =
     original.payload?.kind === "agentTurn" ? original.payload : undefined;
