@@ -1,414 +1,148 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback } from "react";
 import { usePostHog } from "posthog-js/react";
-import cronstrue from "cronstrue";
 import {
   Loader2,
   RefreshCw,
-  Clock,
-  Play,
-  Plus,
-  Pencil,
-  Trash2,
-  ChevronDown,
-  ChevronRight,
-  CheckCircle2,
-  XCircle,
-  MinusCircle,
   X,
 } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { useAgents } from "@/hooks/useAgents";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { JobList } from "./cron/JobList";
+import { RunList } from "./cron/RunList";
+import { RunDetailPanel } from "./cron/RunDetailPanel";
+import {
+  JobEditDialog,
+  EMPTY_FORM,
+  buildSchedule,
+  buildFailureAlertPayload,
+  jobToForm,
+  type FormState,
+} from "./cron/JobEditDialog";
+import { buildEditPayloadDiff } from "./cron/formState";
+import type { RunStatusFilter } from "./cron/RunFilters";
+import type {
+  CronJob,
+  CronListResponse,
+  CronRunEntry,
+  CronRunsResponse,
+} from "./cron/types";
 
-// --- Types ---
+// --- View state ---
 
-interface CronSchedule {
-  kind: "cron" | "every" | "at";
-  expr?: string;
-  tz?: string;
-  everyMs?: number;
-  at?: string;
-}
+type ViewState =
+  | { kind: "overview" }
+  | { kind: "runs"; jobId: string; selectedRunTs: number | null };
 
-interface CronPayload {
-  kind: "agentTurn" | "systemEvent";
-  message?: string;
-  text?: string;
-}
+// --- State B shell (runs list + placeholder detail) ---
 
-interface CronJobState {
-  lastRunAtMs?: number;
-  lastRunStatus?: "ok" | "error" | "skipped";
-  lastError?: string;
-  lastDurationMs?: number;
-  nextRunAtMs?: number;
-}
-
-interface CronJob {
-  id: string;
-  name: string;
-  description?: string;
-  enabled: boolean;
-  agentId?: string;
-  schedule: CronSchedule;
-  payload?: CronPayload;
-  state?: CronJobState;
-  createdAtMs?: number;
-  updatedAtMs?: number;
-}
-
-interface CronListResponse {
-  jobs?: CronJob[];
-  total?: number;
-  hasMore?: boolean;
-}
-
-interface CronRunEntry {
-  jobId: string;
-  jobName?: string;
-  triggeredAtMs: number;
-  completedAtMs?: number;
-  status: "ok" | "error" | "skipped";
-  error?: string;
-  summary?: string;
-  durationMs?: number;
-}
-
-interface CronRunsResponse {
-  entries?: CronRunEntry[];
-  total?: number;
-  hasMore?: boolean;
-}
-
-type ScheduleKind = "cron" | "every" | "at";
-
-interface FormState {
-  name: string;
-  scheduleKind: ScheduleKind;
-  cronExpr: string;
-  cronTz: string;
-  everyValue: number;
-  everyUnit: "minutes" | "hours" | "days";
-  atDatetime: string;
-  message: string;
-  enabled: boolean;
-}
-
-const EMPTY_FORM: FormState = {
-  name: "",
-  scheduleKind: "cron",
-  cronExpr: "",
-  cronTz: "",
-  everyValue: 30,
-  everyUnit: "minutes",
-  atDatetime: "",
-  message: "",
-  enabled: true,
-};
-
-// --- Helpers ---
-
-function formatSchedule(schedule: CronSchedule): string {
-  if (!schedule || !schedule.kind) return "\u2014";
-  switch (schedule.kind) {
-    case "cron":
-      return schedule.expr ? `cron: ${schedule.expr}${schedule.tz ? ` (${schedule.tz})` : ""}` : "\u2014";
-    case "every": {
-      if (!schedule.everyMs) return "\u2014";
-      const ms = schedule.everyMs;
-      if (ms >= 86400000) return `Every ${Math.round(ms / 86400000)} day${ms >= 172800000 ? "s" : ""}`;
-      if (ms >= 3600000) return `Every ${Math.round(ms / 3600000)} hour${ms >= 7200000 ? "s" : ""}`;
-      return `Every ${Math.round(ms / 60000)} minute${ms >= 120000 ? "s" : ""}`;
-    }
-    case "at":
-      if (!schedule.at) return "\u2014";
-      try {
-        return `Once at ${new Date(schedule.at).toLocaleString()}`;
-      } catch {
-        return `Once at ${schedule.at}`;
-      }
-    default:
-      return JSON.stringify(schedule);
-  }
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms / 60000)}m`;
-}
-
-function formatTimestamp(ms: number): string {
-  try {
-    return new Date(ms).toLocaleString();
-  } catch {
-    return String(ms);
-  }
-}
-
-function buildSchedule(form: FormState): CronSchedule {
-  switch (form.scheduleKind) {
-    case "cron":
-      return { kind: "cron", expr: form.cronExpr, ...(form.cronTz ? { tz: form.cronTz } : {}) };
-    case "every": {
-      const multipliers = { minutes: 60000, hours: 3600000, days: 86400000 };
-      return { kind: "every", everyMs: form.everyValue * multipliers[form.everyUnit] };
-    }
-    case "at":
-      return { kind: "at", at: new Date(form.atDatetime).toISOString() };
-  }
-}
-
-function jobToForm(job: CronJob): FormState {
-  const s = job.schedule;
-  const msg = job.payload?.kind === "agentTurn" ? (job.payload.message ?? "") : (job.payload?.text ?? "");
-  const base = { name: job.name, message: msg, enabled: job.enabled };
-  if (s.kind === "cron") {
-    return { ...EMPTY_FORM, ...base, scheduleKind: "cron", cronExpr: s.expr ?? "", cronTz: s.tz ?? "" };
-  }
-  if (s.kind === "every") {
-    const ms = s.everyMs ?? 60000;
-    if (ms >= 86400000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 86400000), everyUnit: "days" };
-    if (ms >= 3600000) return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 3600000), everyUnit: "hours" };
-    return { ...EMPTY_FORM, ...base, scheduleKind: "every", everyValue: Math.round(ms / 60000), everyUnit: "minutes" };
-  }
-  if (s.kind === "at") {
-    let atDatetime = "";
-    try {
-      atDatetime = s.at ? new Date(s.at).toISOString().slice(0, 16) : "";
-    } catch { /* ignore */ }
-    return { ...EMPTY_FORM, ...base, scheduleKind: "at", atDatetime };
-  }
-  return { ...EMPTY_FORM, ...base };
-}
-
-// --- Status badge ---
-
-function StatusBadge({ status }: { status?: "ok" | "error" | "skipped" }) {
-  if (!status) return null;
-  const config = {
-    ok: { icon: CheckCircle2, label: "OK", className: "text-[#2d8a4e]" },
-    error: { icon: XCircle, label: "Error", className: "text-red-500" },
-    skipped: { icon: MinusCircle, label: "Skipped", className: "text-yellow-500" },
-  };
-  const { icon: Icon, label, className } = config[status];
-  return (
-    <span className={cn("inline-flex items-center gap-1 text-xs", className)}>
-      <Icon className="h-3 w-3" />
-      {label}
-    </span>
-  );
-}
-
-// --- Create/Edit form ---
-
-function CronJobForm({
-  initial,
-  onSave,
-  onCancel,
-  saving,
+function StateBShell({
+  jobId,
+  selectedRunTs,
+  onSelectRun,
+  onBack,
+  jobName,
+  job,
+  onCloseRun,
+  onRunNow,
+  onEdit,
 }: {
-  initial: FormState;
-  onSave: (form: FormState) => void;
-  onCancel: () => void;
-  saving: boolean;
+  jobId: string;
+  selectedRunTs: number | null;
+  onSelectRun: (run: CronRunEntry) => void;
+  onBack: () => void;
+  jobName: string;
+  job: CronJob | undefined;
+  onCloseRun: () => void;
+  onRunNow: () => void;
+  onEdit: () => void;
 }) {
-  const [form, setForm] = useState<FormState>(initial);
-  const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+  const [statusFilter, setStatusFilter] = useState<RunStatusFilter>("all");
+  const [queryFilter, setQueryFilter] = useState("");
+  const [limit, setLimit] = useState(50);
 
-  const cronValidation = useMemo<{ ok: boolean; description?: string; error?: string }>(() => {
-    const expr = form.cronExpr.trim();
-    if (!expr) return { ok: false };
-    try {
-      const description = cronstrue.toString(expr, { throwExceptionOnParseError: true });
-      return { ok: true, description };
-    } catch (e) {
-      return { ok: false, error: e instanceof Error ? e.message : "Invalid cron expression" };
-    }
-  }, [form.cronExpr]);
-
-  const canSubmit = form.name.trim() && form.message.trim() && (
-    (form.scheduleKind === "cron" && cronValidation.ok) ||
-    (form.scheduleKind === "every" && form.everyValue > 0) ||
-    (form.scheduleKind === "at" && form.atDatetime)
+  const { data, error, isLoading, mutate } = useGatewayRpc<CronRunsResponse>(
+    "cron.runs",
+    {
+      scope: "job",
+      id: jobId,
+      limit,
+      sortDir: "desc",
+      ...(statusFilter !== "all" ? { statuses: [statusFilter] } : {}),
+      ...(queryFilter ? { query: queryFilter } : {}),
+    },
+    { refreshInterval: 30_000, revalidateOnFocus: true },
   );
+  const runs = data?.entries ?? [];
+  const hasMore = data?.hasMore ?? false;
+  const selectedRun =
+    selectedRunTs !== null
+      ? runs.find((r) => r.triggeredAtMs === selectedRunTs)
+      : undefined;
+  const jobDeleted = !job;
 
   return (
-    <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-4 bg-white/80">
-      {/* Name */}
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-[#8a8578]">Name</label>
-        <Input
-          value={form.name}
-          onChange={(e) => update("name", e.target.value)}
-          placeholder="e.g. Daily summary"
-          className="h-8 text-sm"
-        />
+    <div className="flex flex-col h-full">
+      <div className="flex items-center gap-3 px-4 h-12 border-b border-[#e0dbd0]">
+        <Button size="sm" variant="ghost" onClick={onBack}>
+          ← Back to jobs
+        </Button>
+        <span className="text-sm font-medium">{jobName}</span>
+        {jobDeleted && (
+          <span className="px-2 py-0.5 rounded text-xs uppercase bg-[#f3efe6] text-[#8a8578]">
+            (deleted)
+          </span>
+        )}
       </div>
-
-      {/* Schedule type selector */}
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-[#8a8578]">Schedule</label>
-        <div className="flex gap-1">
-          {(["cron", "every", "at"] as const).map((kind) => (
-            <Button
-              key={kind}
-              variant={form.scheduleKind === kind ? "default" : "outline"}
-              size="sm"
-              onClick={() => update("scheduleKind", kind)}
-              className="text-xs"
+      <div className="flex-1 grid grid-cols-[320px_1fr] min-h-0">
+        <div className="border-r border-[#e0dbd0] min-h-0 flex flex-col">
+          {error && (
+            <div
+              role="alert"
+              className="m-3 flex items-center justify-between gap-2 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-xs text-destructive"
             >
-              {kind === "cron" ? "Cron Expression" : kind === "every" ? "Interval" : "One-time"}
-            </Button>
-          ))}
-        </div>
-
-        {form.scheduleKind === "cron" && (
-          <div className="space-y-1.5">
-            <div className="flex gap-2">
-              <Input
-                value={form.cronExpr}
-                onChange={(e) => update("cronExpr", e.target.value)}
-                placeholder="0 9 * * *"
-                className={cn(
-                  "h-8 text-sm font-mono flex-1",
-                  form.cronExpr.trim() && !cronValidation.ok && "border-destructive focus-visible:ring-destructive",
-                )}
-              />
-              <Input
-                value={form.cronTz}
-                onChange={(e) => update("cronTz", e.target.value)}
-                placeholder="Timezone (optional)"
-                className="h-8 text-sm w-40"
-              />
+              <span>Failed to load runs</span>
+              <Button size="sm" variant="outline" onClick={() => mutate()}>
+                <RefreshCw className="h-3 w-3 mr-1" /> Retry
+              </Button>
             </div>
-            {form.cronExpr.trim() && (
-              cronValidation.ok ? (
-                <p className="text-xs text-[#2d8a4e]">{cronValidation.description}</p>
-              ) : (
-                <p className="text-xs text-destructive">{cronValidation.error}</p>
-              )
-            )}
-          </div>
-        )}
-
-        {form.scheduleKind === "every" && (
-          <div className="flex gap-2 items-center">
-            <span className="text-sm text-[#8a8578]">Every</span>
-            <Input
-              type="number"
-              min={1}
-              value={form.everyValue}
-              onChange={(e) => update("everyValue", Math.max(1, parseInt(e.target.value) || 1))}
-              className="h-8 text-sm w-20"
-            />
-            <select
-              value={form.everyUnit}
-              onChange={(e) => update("everyUnit", e.target.value as "minutes" | "hours" | "days")}
-              className="h-8 rounded-md border border-[#e0dbd0] bg-[#faf7f2] px-2 text-sm"
-            >
-              <option value="minutes">minutes</option>
-              <option value="hours">hours</option>
-              <option value="days">days</option>
-            </select>
-          </div>
-        )}
-
-        {form.scheduleKind === "at" && (
-          <Input
-            type="datetime-local"
-            value={form.atDatetime}
-            onChange={(e) => update("atDatetime", e.target.value)}
-            className="h-8 text-sm"
+          )}
+          <RunList
+            runs={runs}
+            selectedTs={selectedRunTs}
+            onSelect={onSelectRun}
+            statusFilter={statusFilter}
+            queryFilter={queryFilter}
+            onStatusFilterChange={(s) => {
+              setStatusFilter(s);
+              setLimit(50);
+            }}
+            onQueryFilterChange={(q) => {
+              setQueryFilter(q);
+              setLimit(50);
+            }}
+            hasMore={hasMore}
+            onLoadMore={() => setLimit((n) => n + 50)}
+            isLoading={isLoading}
           />
+        </div>
+        {selectedRun ? (
+          <RunDetailPanel
+            run={selectedRun}
+            job={job}
+            onClose={onCloseRun}
+            onRunNow={onRunNow}
+            onEdit={onEdit}
+          />
+        ) : (
+          <div className="flex items-center justify-center h-full text-[#8a8578]">
+            Select a run to vet
+          </div>
         )}
       </div>
-
-      {/* Message */}
-      <div className="space-y-1">
-        <label className="text-xs font-medium text-[#8a8578]">Agent message</label>
-        <textarea
-          value={form.message}
-          onChange={(e) => update("message", e.target.value)}
-          placeholder="What should the agent do?"
-          rows={3}
-          className="w-full rounded-md border border-[#e0dbd0] bg-[#faf7f2] px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-[#06402B]/20"
-        />
-      </div>
-
-      {/* Enabled toggle */}
-      <label className="flex items-center gap-2 cursor-pointer">
-        <input
-          type="checkbox"
-          checked={form.enabled}
-          onChange={(e) => update("enabled", e.target.checked)}
-          className="rounded"
-        />
-        <span className="text-sm">Enabled</span>
-      </label>
-
-      {/* Actions */}
-      <div className="flex gap-2 justify-end">
-        <Button variant="outline" size="sm" onClick={onCancel} disabled={saving}>
-          Cancel
-        </Button>
-        <Button size="sm" onClick={() => onSave(form)} disabled={!canSubmit || saving}>
-          {saving && <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />}
-          Save
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-// --- Run history ---
-
-function RunHistory({ jobId }: { jobId: string }) {
-  const { data, error, isLoading } = useGatewayRpc<CronRunsResponse>("cron.runs", {
-    scope: "job",
-    id: jobId,
-    limit: 10,
-    sortDir: "desc",
-  });
-
-  if (isLoading) {
-    return (
-      <div className="flex items-center gap-2 py-2 text-xs text-[#8a8578]">
-        <Loader2 className="h-3 w-3 animate-spin" /> Loading history...
-      </div>
-    );
-  }
-
-  if (error) {
-    return <p className="text-xs text-destructive py-1">Failed to load history</p>;
-  }
-
-  const entries = data?.entries ?? [];
-  if (entries.length === 0) {
-    return <p className="text-xs text-[#8a8578] py-1">No runs yet</p>;
-  }
-
-  return (
-    <div className="space-y-1">
-      {entries.map((entry, i) => (
-        <div key={i} className="flex items-center gap-3 text-xs py-1 border-t border-[#e0dbd0]">
-          <StatusBadge status={entry.status} />
-          <span className="text-[#8a8578]">{formatTimestamp(entry.triggeredAtMs)}</span>
-          {entry.durationMs != null && (
-            <span className="text-[#8a8578]">{formatDuration(entry.durationMs)}</span>
-          )}
-          {entry.summary && (
-            <span className="text-[#5a5549] truncate flex-1">{entry.summary}</span>
-          )}
-          {entry.error && (
-            <span className="text-destructive truncate flex-1">{entry.error}</span>
-          )}
-        </div>
-      ))}
     </div>
   );
 }
@@ -416,18 +150,27 @@ function RunHistory({ jobId }: { jobId: string }) {
 // --- Main panel ---
 
 export function CronPanel() {
+  const { data, error, isLoading, mutate } = useGatewayRpc<CronListResponse>(
+    "cron.list",
+    { includeDisabled: true },
+    { refreshInterval: 30_000, revalidateOnFocus: true },
+  );
   const posthog = usePostHog();
-  const { data, error, isLoading, mutate } = useGatewayRpc<CronListResponse>("cron.list", {
-    includeDisabled: true,
-  });
+  const { agents: agentsData } = useAgents();
   const callRpc = useGatewayRpcMutation();
 
   const [mode, setMode] = useState<"list" | "create" | "edit">("list");
   const [editingJob, setEditingJob] = useState<CronJob | null>(null);
   const [expandedJob, setExpandedJob] = useState<string | null>(null);
-  const [deletingJob, setDeletingJob] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
+  const [view, setView] = useState<ViewState>({ kind: "overview" });
+  // Optimistic overrides for the enabled flag keyed by job id. When set, the
+  // JobCard reads from here instead of the server data; the entry is cleared
+  // on successful revalidation (or on error to roll back).
+  const [enabledOverrides, setEnabledOverrides] = useState<Record<string, boolean>>({});
+
+  const noAgents = (agentsData ?? []).length === 0;
 
   const showFeedback = useCallback((type: "success" | "error", message: string) => {
     setFeedback({ type, message });
@@ -437,13 +180,27 @@ export function CronPanel() {
   const handleCreate = async (form: FormState) => {
     setSaving(true);
     try {
+      const cleanFallbacks = form.fallbacks?.map((s) => s.trim()).filter(Boolean) ?? [];
       await callRpc("cron.add", {
         name: form.name.trim(),
         schedule: buildSchedule(form),
-        payload: { kind: "agentTurn", message: form.message.trim() },
+        payload: {
+          kind: "agentTurn",
+          message: form.message.trim(),
+          ...(form.model ? { model: form.model } : {}),
+          ...(cleanFallbacks.length > 0 ? { fallbacks: cleanFallbacks } : {}),
+          ...(form.timeoutSeconds != null ? { timeoutSeconds: form.timeoutSeconds } : {}),
+          ...(form.thinking ? { thinking: form.thinking } : {}),
+          ...(form.lightContext ? { lightContext: true } : {}),
+          ...(form.toolsAllow && form.toolsAllow.length > 0 ? { toolsAllow: form.toolsAllow } : {}),
+        },
         enabled: form.enabled,
         sessionTarget: "isolated",
-        wakeMode: "now",
+        wakeMode: form.wakeMode,
+        ...(form.delivery ? { delivery: form.delivery } : {}),
+        ...(form.agentId ? { agentId: form.agentId } : {}),
+        ...(form.deleteAfterRun ? { deleteAfterRun: true } : {}),
+        failureAlert: buildFailureAlertPayload(form),
       });
       posthog?.capture("cron_job_created", { schedule: buildSchedule(form) });
       setMode("list");
@@ -460,14 +217,14 @@ export function CronPanel() {
     if (!editingJob) return;
     setSaving(true);
     try {
+      // buildEditPayloadDiff diffs the form against the original job so that
+      // optional overrides the user cleared (model, fallbacks, timeoutSeconds,
+      // thinking, lightContext, toolsAllow, delivery, agentId, deleteAfterRun)
+      // are sent as explicit clearing values instead of being silently
+      // omitted.
       await callRpc("cron.update", {
         id: editingJob.id,
-        patch: {
-          name: form.name.trim(),
-          schedule: buildSchedule(form),
-          payload: { kind: "agentTurn", message: form.message.trim() },
-          enabled: form.enabled,
-        },
+        patch: buildEditPayloadDiff(form, editingJob),
       });
       setMode("list");
       setEditingJob(null);
@@ -484,7 +241,6 @@ export function CronPanel() {
     try {
       await callRpc("cron.remove", { id });
       posthog?.capture("cron_job_deleted");
-      setDeletingJob(null);
       mutate();
       showFeedback("success", "Job deleted");
     } catch (err) {
@@ -493,11 +249,29 @@ export function CronPanel() {
   };
 
   const handleToggle = async (id: string, currentlyEnabled: boolean) => {
+    const next = !currentlyEnabled;
+    // Optimistic flip: update local override immediately so the badge toggles
+    // without waiting for the RPC round-trip.
+    setEnabledOverrides((prev) => ({ ...prev, [id]: next }));
     try {
-      await callRpc("cron.update", { id, patch: { enabled: !currentlyEnabled } });
-      posthog?.capture("cron_job_toggled", { enabled: !currentlyEnabled });
+      await callRpc("cron.update", { id, patch: { enabled: next } });
+      posthog?.capture("cron_job_toggled", { enabled: next });
       mutate();
+      // Clear the override; the revalidated server data becomes the source of truth.
+      setEnabledOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[id];
+        return rest;
+      });
     } catch (err) {
+      // Roll back: drop the override so the UI reverts to the server state.
+      setEnabledOverrides((prev) => {
+        if (!(id in prev)) return prev;
+        const rest = { ...prev };
+        delete rest[id];
+        return rest;
+      });
       showFeedback("error", `Failed to toggle: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
@@ -522,8 +296,10 @@ export function CronPanel() {
     );
   }
 
-  // Error state
-  if (error) {
+  // Error state -- only take over the panel when we have no data yet. When
+  // a revalidation fails after a successful fetch, we keep rendering the
+  // stale jobs and surface the failure as an inline banner below.
+  if (error && !data) {
     return (
       <div className="p-6 space-y-3">
         <p className="text-sm text-destructive">{error.message}</p>
@@ -534,7 +310,15 @@ export function CronPanel() {
     );
   }
 
-  const jobs = data?.jobs ?? (Array.isArray(data) ? (data as unknown as CronJob[]) : []);
+  const rawJobs =
+    data?.jobs ?? (Array.isArray(data) ? (data as unknown as CronJob[]) : []);
+  // Apply optimistic enabled overrides before handing jobs off to JobList /
+  // StateBShell so the toggle UI flips immediately.
+  const jobs = rawJobs.map((j) =>
+    Object.prototype.hasOwnProperty.call(enabledOverrides, j.id)
+      ? { ...j, enabled: enabledOverrides[j.id] }
+      : j,
+  );
 
   return (
     <div className="p-6 space-y-4">
@@ -545,13 +329,21 @@ export function CronPanel() {
           <Button variant="ghost" size="sm" onClick={() => mutate()}>
             <RefreshCw className="h-3.5 w-3.5" />
           </Button>
-          {mode === "list" && (
-            <Button size="sm" onClick={() => setMode("create")}>
-              <Plus className="h-3.5 w-3.5 mr-1.5" /> New Job
-            </Button>
-          )}
         </div>
       </div>
+
+      {/* Stale-data error banner (revalidation failed after a successful load) */}
+      {error && data && (
+        <div
+          role="alert"
+          className="flex items-center justify-between gap-2 rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2 text-sm text-destructive"
+        >
+          <span>Failed to refresh cron jobs: {error.message}</span>
+          <Button size="sm" variant="outline" onClick={() => mutate()}>
+            <RefreshCw className="h-3 w-3 mr-1" /> Retry
+          </Button>
+        </div>
+      )}
 
       {/* Feedback banner */}
       {feedback && (
@@ -572,7 +364,7 @@ export function CronPanel() {
 
       {/* Create form */}
       {mode === "create" && (
-        <CronJobForm
+        <JobEditDialog
           initial={EMPTY_FORM}
           onSave={handleCreate}
           onCancel={() => setMode("list")}
@@ -582,7 +374,7 @@ export function CronPanel() {
 
       {/* Edit form */}
       {mode === "edit" && editingJob && (
-        <CronJobForm
+        <JobEditDialog
           initial={jobToForm(editingJob)}
           onSave={handleEdit}
           onCancel={() => {
@@ -593,148 +385,56 @@ export function CronPanel() {
         />
       )}
 
-      {/* Job list */}
-      {mode === "list" && jobs.length === 0 && (
-        <div className="text-center py-8 space-y-2">
-          <Clock className="h-8 w-8 mx-auto opacity-30" />
-          <p className="text-sm text-[#8a8578]">No cron jobs configured.</p>
-          <p className="text-xs text-[#5a5549]">Create a job to schedule recurring agent tasks.</p>
-        </div>
-      )}
-
-      {mode === "list" && jobs.length > 0 && (
-        <div className="space-y-2">
-          {jobs.map((job) => {
-            const isExpanded = expandedJob === job.id;
-            const isDeleting = deletingJob === job.id;
-
-            return (
-              <div key={job.id} className="rounded-lg border border-[#e0dbd0] overflow-hidden">
-                {/* Job header */}
-                <div className="p-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <button
-                      className="flex items-center gap-2 text-left flex-1 min-w-0"
-                      onClick={() => setExpandedJob(isExpanded ? null : job.id)}
-                    >
-                      {isExpanded ? (
-                        <ChevronDown className="h-3.5 w-3.5 opacity-50 shrink-0" />
-                      ) : (
-                        <ChevronRight className="h-3.5 w-3.5 opacity-50 shrink-0" />
-                      )}
-                      <Clock className="h-3.5 w-3.5 opacity-50 shrink-0" />
-                      <span className="text-sm font-medium truncate">{job.name || job.id}</span>
-                      <span
-                        className={cn(
-                          "text-[10px] px-1.5 py-0.5 rounded-full shrink-0",
-                          job.enabled
-                            ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                            : "bg-[#f3efe6] text-[#8a8578]",
-                        )}
-                      >
-                        {job.enabled ? "active" : "paused"}
-                      </span>
-                    </button>
-                    <div className="flex gap-1 shrink-0">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleRun(job.id)}
-                        title="Run now"
-                      >
-                        <Play className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => {
-                          setEditingJob(job);
-                          setMode("edit");
-                        }}
-                        title="Edit"
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </Button>
-                      <Button
-                        variant={job.enabled ? "outline" : "default"}
-                        size="sm"
-                        onClick={() => handleToggle(job.id, !!job.enabled)}
-                      >
-                        {job.enabled ? "Disable" : "Enable"}
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setDeletingJob(isDeleting ? null : job.id)}
-                        title="Delete"
-                        className="text-destructive/70 hover:text-destructive"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  </div>
-
-                  {/* Schedule + last run info */}
-                  <div className="flex items-center gap-3 text-xs text-[#8a8578] pl-7">
-                    <span>{formatSchedule(job.schedule)}</span>
-                    {job.state?.lastRunStatus && (
-                      <>
-                        <span>&middot;</span>
-                        <StatusBadge status={job.state.lastRunStatus} />
-                      </>
-                    )}
-                    {job.state?.nextRunAtMs && (
-                      <>
-                        <span>&middot;</span>
-                        <span>Next: {formatTimestamp(job.state.nextRunAtMs)}</span>
-                      </>
-                    )}
-                  </div>
-
-                  {job.description && (
-                    <div className="text-xs text-[#5a5549] pl-7">{job.description}</div>
-                  )}
-                </div>
-
-                {/* Delete confirmation */}
-                {isDeleting && (
-                  <div className="px-3 pb-3">
-                    <div className="flex items-center justify-between rounded-md bg-destructive/10 border border-destructive/20 px-3 py-2">
-                      <span className="text-sm text-destructive">
-                        Delete &ldquo;{job.name || job.id}&rdquo;? This cannot be undone.
-                      </span>
-                      <div className="flex gap-1">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setDeletingJob(null)}
-                        >
-                          Cancel
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => handleDelete(job.id)}
-                        >
-                          Delete
-                        </Button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Expanded: run history */}
-                {isExpanded && (
-                  <div className="px-3 pb-3 pl-7 border-t border-[#e0dbd0]">
-                    <p className="text-xs font-medium text-[#8a8578] pt-2 pb-1">Run History</p>
-                    <RunHistory jobId={job.id} />
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Job list or runs drill-in */}
+      {mode === "list" && (view.kind === "overview" ? (
+        <JobList
+          jobs={jobs}
+          expandedJobId={expandedJob}
+          onToggleExpand={(jobId) =>
+            setExpandedJob(expandedJob === jobId ? null : jobId)
+          }
+          onCreate={() => setMode("create")}
+          onEdit={(job) => {
+            setEditingJob(job);
+            setMode("edit");
+          }}
+          onPauseResume={(job) => handleToggle(job.id, !!job.enabled)}
+          onRunNow={(job) => handleRun(job.id)}
+          onDelete={(job) => handleDelete(job.id)}
+          onSelectRun={(job, run) => {
+            setMode("list");
+            setView({ kind: "runs", jobId: job.id, selectedRunTs: run.triggeredAtMs });
+          }}
+          createDisabled={noAgents}
+          createHelperText={noAgents ? "Create an agent first" : undefined}
+        />
+      ) : (
+        (() => {
+          const selectedJob = jobs.find((j) => j.id === view.jobId);
+          return (
+            <StateBShell
+              jobId={view.jobId}
+              selectedRunTs={view.selectedRunTs}
+              onSelectRun={(run) => setView({ ...view, selectedRunTs: run.triggeredAtMs })}
+              onBack={() => setView({ kind: "overview" })}
+              jobName={selectedJob?.name ?? view.jobId}
+              job={selectedJob}
+              onCloseRun={() =>
+                setView({ kind: "runs", jobId: view.jobId, selectedRunTs: null })
+              }
+              onRunNow={() => {
+                if (selectedJob) handleRun(selectedJob.id);
+              }}
+              onEdit={() => {
+                if (selectedJob) {
+                  setEditingJob(selectedJob);
+                  setMode("edit");
+                }
+              }}
+            />
+          );
+        })()
+      ))}
     </div>
   );
 }
