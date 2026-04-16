@@ -126,9 +126,10 @@ export function JobCard({
 }: JobCardProps) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
 
+  const lastRunStatus = job.state?.lastRunStatus ?? job.state?.lastStatus;
   const consecutiveErrors = job.state?.consecutiveErrors ?? 0;
   const showErrorBadge =
-    job.enabled && consecutiveErrors >= 1 && job.state?.lastRunStatus === "error";
+    job.enabled && consecutiveErrors >= 1 && lastRunStatus === "error";
   const isRunning = Boolean(job.state?.runningAtMs);
 
   return (
@@ -237,10 +238,10 @@ export function JobCard({
         {/* Schedule + last run info + delivery */}
         <div className="flex items-center gap-3 text-xs text-[#8a8578] pl-7 flex-wrap">
           <span>{formatSchedule(job.schedule)}</span>
-          {job.state?.lastRunStatus && (
+          {lastRunStatus && (
             <>
               <span>&middot;</span>
-              <StatusBadge status={job.state.lastRunStatus} />
+              <StatusBadge status={lastRunStatus} />
             </>
           )}
           {job.state?.nextRunAtMs && (
