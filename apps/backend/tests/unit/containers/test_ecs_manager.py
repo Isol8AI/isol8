@@ -521,6 +521,29 @@ class TestStartUserService:
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
     @pytest.mark.asyncio
+    async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
+        """Cold-start restart MUST fire _await_running_transition, or the cold-
+        started container will get stuck at status=provisioning forever when
+        its ECS task takes >10s to become healthy and the user leaves before
+        making another request."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.start_user_service("user_test_123")
+
+            # Give the fire-and-forget task a chance to be scheduled.
+            # asyncio.create_task schedules it immediately; a yield is enough.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
     async def test_start_no_db_record(self, manager, mock_ecs_client):
         """start_user_service with no repo record still calls ECS."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:

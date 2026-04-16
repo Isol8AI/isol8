@@ -371,6 +371,11 @@ class EcsManager:
     async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running) with forced new deployment.
 
+        Fires _await_running_transition afterwards so the provisioning -> running
+        transition happens eventually even if the user disconnects before the
+        ECS task finishes warming up. Without this, cold-start restart rows
+        get stuck at status=provisioning forever.
+
         Args:
             user_id: Clerk user ID.
 
@@ -402,6 +407,11 @@ class EcsManager:
             await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
+
+        # Fire the durable poller. Any code path that sets status=provisioning
+        # MUST ensure a transition poller is running, otherwise a slow ECS
+        # cold-start leaves the row stuck.
+        asyncio.create_task(self._await_running_transition(user_id))
 
     async def resize_user_container(
         self,
