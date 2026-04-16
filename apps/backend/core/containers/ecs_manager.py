@@ -284,6 +284,12 @@ class EcsManager:
                     }
                 },
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
             )
             # Enable ECS Exec for all environments so we can debug per-user
             # OpenClaw containers (skill installs, workspace state, gateway

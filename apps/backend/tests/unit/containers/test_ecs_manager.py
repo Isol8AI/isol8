@@ -323,6 +323,28 @@ class TestCreateUserService:
             assert mock_repo.update_fields.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_create_service_enables_deployment_circuit_breaker(self, manager, mock_ecs_client, mock_efs_client):
+        """create_service MUST pass deploymentCircuitBreaker so ECS surfaces a
+        rolloutState=FAILED signal when a per-user provision fails (bad image,
+        crash loop). Without this, _await_running_transition has no way to
+        distinguish a slow start from a permanent failure."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            call_kwargs = mock_ecs_client.create_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True, (
+                "Deployment circuit breaker must be enabled so rolloutState=FAILED "
+                "can be used as the failure signal by _await_running_transition."
+            )
+            # rollback=False: no previous deployment to roll back to on first deploy.
+            assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
         """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
