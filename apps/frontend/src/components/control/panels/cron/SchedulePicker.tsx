@@ -44,10 +44,17 @@ export function scheduleIsValid(fields: SchedulePickerFields): boolean {
       if (!expr) return false;
       try {
         cronstrue.toString(expr, { throwExceptionOnParseError: true });
-        return true;
       } catch {
         return false;
       }
+      if (fields.cronTz.trim()) {
+        try {
+          CronExpressionParser.parse(expr, { tz: fields.cronTz.trim() });
+        } catch {
+          return false;
+        }
+      }
+      return true;
     }
     case "every":
       return fields.everyValue > 0;
