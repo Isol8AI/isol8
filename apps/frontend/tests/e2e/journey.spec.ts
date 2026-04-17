@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
-import { cancelSubscriptionIfExists, getBackendStripeCustomerId, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
+import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
@@ -44,8 +44,15 @@ test.describe('E2E Gate: Full User Journey', () => {
   let sharedPage: Page;
   let clerkUserId: string;
 
-  /** Get a fresh Clerk JWT from the browser (tokens expire after 60s). */
+  /** Get a fresh Clerk JWT from the browser (tokens expire after 60s).
+   *  Waits for Clerk to be loaded and session to exist before requesting. */
   async function getToken(): Promise<string> {
+    // Ensure Clerk is loaded on the current page (may have navigated)
+    await sharedPage.waitForFunction(() => {
+      const w = window as Window & { Clerk?: { loaded?: boolean; session?: unknown } };
+      return w.Clerk?.loaded === true && w.Clerk?.session != null;
+    }, { timeout: 30_000 });
+
     return sharedPage.evaluate(async () => {
       const w = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
       return (await w.Clerk?.session?.getToken()) ?? '';
@@ -169,11 +176,16 @@ test.describe('E2E Gate: Full User Journey', () => {
         headers: { Authorization: `Bearer ${token}` },
       });
       console.log('[e2e] User sync:', res.status);
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`User sync failed: ${res.status} — ${body}`);
+      }
     }, { timeout: 30_000 });
     await test.step('Create Stripe subscription via backend customer', async () => {
-      // Get the Stripe customer ID the backend uses (searches by owner_id metadata)
-      const customerId = await getBackendStripeCustomerId(clerkUserId, API_URL, getToken);
-      console.log('[e2e] Backend Stripe customer:', customerId);
+      // Trigger customer creation via POST /billing/checkout (creates both
+      // the Stripe customer and the DynamoDB billing account row)
+      const customerId = await ensureBillingCustomer(API_URL, getToken, clerkUserId);
+      console.log('[e2e] Stripe customer:', customerId);
       await createSubscription(customerId, DEV_STARTER_PRICE_ID);
     }, { timeout: 60_000 });
     await test.step('Wait for subscription to propagate to backend', async () => {
@@ -211,9 +223,34 @@ test.describe('E2E Gate: Full User Journey', () => {
     }, { timeout: 12 * 60_000 });
   });
 
-  // Step 5 (Chat) is skipped for now — the WebSocket API Gateway returns 500
-  // during the handshake in CI (works locally). The Lambda authorizer or
-  // VPC Link path needs investigation via CloudWatch logs.
-  // TODO: Re-enable once WebSocket 500 is resolved.
-  // See: WebSocket error: "Unexpected response code: 500" from wss://ws-dev.isol8.co
+  test('Step 5: Chat', async () => {
+    test.setTimeout(3 * 60_000);
+
+    await test.step('Navigate to /chat and wait for WebSocket connection', async () => {
+      // Ensure we're on the chat page
+      if (!sharedPage.url().includes('/chat')) {
+        await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+      }
+
+      // Wait for "Connected" indicator — means the WebSocket handshake succeeded
+      // and the gateway pool is healthy.
+      await sharedPage.getByText('Connected').waitFor({ state: 'visible', timeout: 60_000 });
+    }, { timeout: 90_000 });
+
+    await test.step('Send a message and receive a response', async () => {
+      // Type a simple message into the chat input
+      const input = sharedPage.getByPlaceholder('Ask anything');
+      await input.waitFor({ state: 'visible', timeout: 10_000 });
+      await input.fill('Say "hello" and nothing else.');
+
+      // Click send
+      await sharedPage.getByTestId('send-button').click();
+
+      // Wait for an assistant response. Messages have data-role="assistant".
+      const assistantMsg = sharedPage.locator('[data-role="assistant"]').last();
+      await assistantMsg.waitFor({ state: 'visible', timeout: 90_000 });
+      // Verify it has some text content (not an empty/error state)
+      await expect(assistantMsg).not.toBeEmpty();
+    }, { timeout: 120_000 });
+  });
 });
