@@ -504,8 +504,15 @@ class TestStartUserService:
     """Test scaling service to 1."""
 
     @pytest.mark.asyncio
-    async def test_start_scales_to_one(self, manager, mock_ecs_client):
-        """start_user_service calls update_service with desiredCount=1 and force."""
+    async def test_start_scales_to_one_without_force_new_deployment(self, manager, mock_ecs_client):
+        """start_user_service calls update_service with desiredCount=1 ONLY.
+
+        forceNewDeployment is NOT passed: when stop_user_service has just run
+        but ECS hasn't yet stopped the old task, a follow-up start_user_service
+        with forceNewDeployment=True would terminate the still-running task
+        and produce a ~30s post-login outage. Plain desiredCount=1 lets ECS
+        keep the existing healthy task if there is one.
+        """
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
@@ -519,13 +526,18 @@ class TestStartUserService:
                 cluster=manager._cluster,
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=1,
-                forceNewDeployment=True,
                 deploymentConfiguration={
                     "deploymentCircuitBreaker": {
                         "enable": True,
                         "rollback": False,
                     }
                 },
+            )
+            # Belt + suspenders: forceNewDeployment must NOT be in kwargs.
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            assert "forceNewDeployment" not in call_kwargs, (
+                "start_user_service must not force a new deployment — kills "
+                "still-running tasks during the stop -> start race"
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
