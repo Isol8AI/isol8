@@ -179,3 +179,43 @@ async def test_get_user_node_returns_none_when_disconnected(
 ):
     """get_user_node returns None for users without a connected node."""
     assert get_user_node("user_nobody") is None
+
+
+@pytest.mark.asyncio
+async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
+    mock_ecs,
+    mock_pool,
+    mock_upstream,
+    mock_config_patcher,
+):
+    """A late close on the OLD socket must not clear the newer connection's state
+    or emit a false 'disconnected' to the UI."""
+    mgmt = MagicMock()
+
+    # Alice connects on conn_old, then quickly reconnects on conn_new.
+    await handle_node_connect(
+        owner_id="org_123",
+        user_id="user_alice",
+        connection_id="conn_old",
+        connect_params={},
+        management_api=mgmt,
+    )
+    await handle_node_connect(
+        owner_id="org_123",
+        user_id="user_alice",
+        connection_id="conn_new",
+        connect_params={},
+        management_api=mgmt,
+    )
+    mock_pool.broadcast_to_member.reset_mock()
+
+    # The old socket's close event fires after the reconnect landed.
+    await handle_node_disconnect("conn_old", "org_123", "user_alice")
+
+    # The live mapping must still point at the new connection.
+    stored = get_user_node("user_alice")
+    assert stored is not None
+    assert stored["connection_id"] == "conn_new"
+
+    # And no phantom "disconnected" must have been emitted.
+    mock_pool.broadcast_to_member.assert_not_called()

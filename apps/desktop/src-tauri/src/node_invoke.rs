@@ -350,12 +350,15 @@ fn parse_params<T: serde::de::DeserializeOwned>(
 }
 
 fn truncate_output(bytes: &[u8]) -> String {
-    let s = String::from_utf8_lossy(bytes);
-    if s.len() > OUTPUT_CAP {
-        s[..OUTPUT_CAP].to_string()
+    // Cap on bytes (not chars) and convert via from_utf8_lossy so a boundary
+    // landing mid-codepoint becomes a replacement char instead of a panic
+    // (release builds use panic = "abort", so this would crash the app).
+    let slice = if bytes.len() > OUTPUT_CAP {
+        &bytes[..OUTPUT_CAP]
     } else {
-        s.into_owned()
-    }
+        bytes
+    };
+    String::from_utf8_lossy(slice).into_owned()
 }
 
 fn sanitize_env() -> HashMap<String, String> {

@@ -155,29 +155,41 @@ async def handle_node_disconnect(
     if upstream:
         await upstream.close()
 
-    # Remove per-user mapping
-    _user_nodes.pop(user_id, None)
+    # Only clear per-user state when the stored mapping still points at THIS
+    # connection. If the user reconnected first, _user_nodes[user_id] now holds
+    # the new connection_id — the old socket's close event must not clobber it,
+    # clear its patched sessions, or emit a false "disconnected" to the UI.
+    stored = _user_nodes.get(user_id)
+    is_owning_close = stored is not None and stored.get("connection_id") == connection_id
 
-    # Clear patched sessions for this user (we'll clear execNode on them below)
-    cleared_sessions = clear_patched_sessions_for_user(user_id)
-    if cleared_sessions:
-        pool = get_gateway_pool()
-        # Best-effort: clear execNode on sessions. If container is down, skip.
-        for sk in cleared_sessions:
-            try:
-                container, ip = await get_ecs_manager().resolve_running_container(owner_id)
-                await pool.send_rpc(
-                    user_id=owner_id,
-                    req_id=f"clear-exec-{sk}",
-                    method="sessions.patch",
-                    params={"sessionKey": sk, "execNode": None, "execHost": None},
-                    ip=ip,
-                    token=container["gateway_token"],
-                )
-            except Exception:
-                logger.debug("Failed to clear execNode on session %s (container may be down)", sk)
+    if is_owning_close:
+        _user_nodes.pop(user_id, None)
 
-    # Reference-counted config patching: disable node tools on last disconnect
+        # Clear patched sessions for this user and tell the container to drop execNode.
+        cleared_sessions = clear_patched_sessions_for_user(user_id)
+        if cleared_sessions:
+            pool = get_gateway_pool()
+            # Best-effort: clear execNode on sessions. If container is down, skip.
+            for sk in cleared_sessions:
+                try:
+                    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+                    await pool.send_rpc(
+                        user_id=owner_id,
+                        req_id=f"clear-exec-{sk}",
+                        method="sessions.patch",
+                        params={"sessionKey": sk, "execNode": None, "execHost": None},
+                        ip=ip,
+                        token=container["gateway_token"],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to clear execNode on session %s (container may be down)",
+                        sk,
+                    )
+
+    # Reference-counted config patching: each upstream socket contributes one,
+    # so we always decrement even if a newer connection has taken ownership of
+    # the user mapping (the newer one has its own +1 counted at connect time).
     count = _node_count.get(owner_id, 1)
     new_count = max(0, count - 1)
     _node_count[owner_id] = new_count
@@ -188,15 +200,23 @@ async def handle_node_disconnect(
             logger.debug("Failed to re-disable node tools for %s (container may be down)", owner_id)
         _node_count.pop(owner_id, None)
 
-    # Per-user broadcast
-    pool = get_gateway_pool()
-    await pool.broadcast_to_member(
-        owner_id,
-        user_id,
-        {"type": "node_status", "status": "disconnected"},
-    )
+    # Only broadcast "disconnected" when this close actually ended the user's
+    # active node — otherwise the UI flickers to disconnected even though the
+    # new socket is live.
+    if is_owning_close:
+        pool = get_gateway_pool()
+        await pool.broadcast_to_member(
+            owner_id,
+            user_id,
+            {"type": "node_status", "status": "disconnected"},
+        )
 
-    logger.info("Node proxy closed: user=%s conn=%s", user_id, connection_id)
+    logger.info(
+        "Node proxy closed: user=%s conn=%s owning=%s",
+        user_id,
+        connection_id,
+        is_owning_close,
+    )
 
 
 def is_node_connection(connection_id: str) -> bool:

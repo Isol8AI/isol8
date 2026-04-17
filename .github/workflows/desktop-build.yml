@@ -21,27 +21,29 @@ jobs:
           node-version: 22
           cache: pnpm
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
       - name: Install dependencies
         run: pnpm install
 
+      # tauri-action builds, signs/notarizes (when Apple env vars are present),
+      # and — when tagName is set — creates a GitHub release and uploads the
+      # produced .dmg + .app.tar.gz. On workflow_dispatch we build without
+      # releasing.
       - name: Build desktop app
-        working-directory: apps/desktop
-        run: pnpm run build
+        uses: tauri-apps/tauri-action@v0
+        with:
+          projectPath: apps/desktop
+          tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
+          releaseName: 'Isol8 Desktop ${{ github.ref_name }}'
+          releaseDraft: true
+          prerelease: true
+          args: --target universal-apple-darwin
         env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: desktop-dmg
-          path: apps/desktop/out/make/**/*.dmg
-
-      - name: Publish to GitHub Releases
-        if: startsWith(github.ref, 'refs/tags/')
-        working-directory: apps/desktop
-        run: pnpm run publish
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
