@@ -99,7 +99,9 @@ class TestConnectEndpoint:
         )
 
     @pytest.mark.asyncio
-    async def test_connect_records_activity_for_personal_owner(self, test_app, mock_connection_service, mock_gateway_pool):
+    async def test_connect_records_activity_for_personal_owner(
+        self, test_app, mock_connection_service, mock_gateway_pool
+    ):
         """Connect must call record_activity(owner_id) so the scale-to-zero
         idle reaper sees a fresh last_active_at immediately after login.
 
