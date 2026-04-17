@@ -11,9 +11,9 @@ Built and pushed to ECR `isol8/openclaw-extended` by `.github/workflows/build-op
    - Change `FROM alpine/openclaw:<old>` to `FROM alpine/openclaw:<new>`
 3. Edit `<repo-root>/openclaw-version.json`:
    - Change `"upstream": "alpine/openclaw:<old>"` to `<new>`
-4. Build locally to verify:
+4. Build locally to verify (`--platform linux/amd64` is required so the build matches what CI/Fargate run; ARM64 binaries like 1Password CLI's apt repo aren't available):
    ```bash
-   docker build -t openclaw-extended:local apps/infra/openclaw/
+   docker build --platform linux/amd64 -t openclaw-extended:local apps/infra/openclaw/
    ```
 5. PR the change; CI rebuilds and pushes a new tag (`{upstream}-{short-sha}`)
 6. After CI completes, find the new tag in ECR (or in the workflow output) and bump `openclaw-version.json#dev.tag` in another PR

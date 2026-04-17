@@ -1,10 +1,10 @@
 {
   "$schema": "https://json-schema.org/draft-07/schema#",
   "title": "OpenClaw image version",
-  "description": "Per-environment image tags for the extended OpenClaw container image.",
+  "description": "Pinned OpenClaw images. Includes both the legacy upstream image (used by current container-stack.ts) and the new extended image with per-env tags (used after the migration completes).",
   "type": "object",
   "additionalProperties": false,
-  "required": ["upstream", "image", "dev", "prod"],
+  "required": ["upstream", "image", "tag", "full", "extendedImage", "dev", "prod"],
   "properties": {
     "$schema": { "type": "string" },
     "upstream": {
@@ -14,7 +14,22 @@
     },
     "image": {
       "type": "string",
-      "description": "ECR repository URI for the extended image (without tag).",
+      "description": "Legacy: upstream Docker Hub repo name (no tag). Used by current container-stack.ts before the extended-image migration.",
+      "pattern": "^[a-zA-Z0-9._/-]+$"
+    },
+    "tag": {
+      "type": "string",
+      "description": "Legacy: tag for the upstream image. Used by current container-stack.ts.",
+      "pattern": "^[a-zA-Z0-9._-]+$"
+    },
+    "full": {
+      "type": "string",
+      "description": "Legacy: full upstream reference (image:tag). Used by current container-stack.ts.",
+      "pattern": "^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
+    },
+    "extendedImage": {
+      "type": "string",
+      "description": "ECR repository URI for the custom extended image (without tag).",
       "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
     },
     "dev": {
