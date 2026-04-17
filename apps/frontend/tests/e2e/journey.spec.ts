@@ -1,7 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
-import { deprovisionIfExists, waitForRunning } from './helpers/provision';
+import { waitForRunning } from './helpers/provision';
 import { markUserOnboarded } from './helpers/clerk';
 import { dismissChannelSetupIfPresent } from './helpers/onboarding';
 
@@ -124,33 +124,14 @@ test.describe('E2E Gate: Full User Journey', () => {
   });
 
   test.afterAll(async () => {
-    // Retry cancellation up to 3 times with exponential backoff. If all retries
-    // fail, log loudly so a human can clean up manually — but do not throw, since
-    // the test itself may have passed and we don't want to mask the real result.
-    const backoffs = [1_000, 2_000, 4_000];
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < backoffs.length; attempt++) {
-      try {
-        await cancelSubscriptionIfExists(E2E_EMAIL);
-        lastErr = undefined;
-        break;
-      } catch (err) {
-        lastErr = err;
-        console.error(`[e2e] afterAll cancelSubscriptionIfExists attempt ${attempt + 1} failed:`, err);
-        if (attempt < backoffs.length - 1) {
-          await new Promise((r) => setTimeout(r, backoffs[attempt]));
-        }
-      }
-    }
-    if (lastErr !== undefined) {
-      console.error(
-        `[e2e] CRITICAL: afterAll cleanup FAILED after ${backoffs.length} retries for ${E2E_EMAIL}. ` +
-          `A subscription may be leaked. Manual cleanup required. Last error:`,
-        lastErr,
-      );
-    }
-    // Don't deprovision — leave the container running for the next run.
-    // This avoids triggering ECS drain cycles that cause long timeouts.
+    // Intentionally leave the Stripe subscription active so the chat-smoke test
+    // (runs on every frontend PR) can assume a steady subscribed state without
+    // re-running the full billing setup. beforeAll + Step 1 cancel any stale
+    // subscription at the start of the next journey run, so only one sub is
+    // ever live at a time. Test-mode customers accumulating is harmless.
+    //
+    // Container is also left running — avoids triggering ECS drain cycles that
+    // cause long timeouts.
     await sharedPage?.context().close();
   });
 
