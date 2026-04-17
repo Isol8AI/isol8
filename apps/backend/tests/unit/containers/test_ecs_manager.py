@@ -946,6 +946,7 @@ class TestAwaitRunningTransition:
             "tasks": [
                 {
                     "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
                     "attachments": [
                         {
                             "type": "ElasticNetworkInterface",
@@ -1041,6 +1042,7 @@ class TestAwaitRunningTransition:
             "tasks": [
                 {
                     "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
                     "attachments": [
                         {
                             "type": "ElasticNetworkInterface",
@@ -1075,6 +1077,7 @@ class TestAwaitRunningTransition:
             "tasks": [
                 {
                     "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
                     "attachments": [
                         {
                             "type": "ElasticNetworkInterface",
@@ -1134,6 +1137,7 @@ class TestAwaitRunningTransition:
             "tasks": [
                 {
                     "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
                     "attachments": [
                         {
                             "type": "ElasticNetworkInterface",
@@ -1154,15 +1158,132 @@ class TestAwaitRunningTransition:
 
             await manager._await_running_transition("user_test_123")
 
-            # list_tasks must have been called with startedBy=<primary-id>.
+            # list_tasks must NOT pass startedBy; AWS rejects it combined with
+            # serviceName. Filtering is done in-code using describe_tasks.
             list_kwargs = mock_ecs_client.list_tasks.call_args.kwargs
-            assert list_kwargs.get("startedBy") == "ecs-svc/new", (
-                f"Expected startedBy='ecs-svc/new', got {list_kwargs.get('startedBy')!r}. "
-                "Must filter to the PRIMARY deployment's tasks so an old "
-                "drain-phase task doesn't trigger a premature status=running."
+            assert "startedBy" not in list_kwargs, (
+                "list_tasks must not pass startedBy; AWS rejects it combined with serviceName."
             )
 
-            # With the filter correctly applied, the new task's ARN is recorded.
+            # With the in-code filter correctly applied, the new task's ARN is recorded.
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/new-task"
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_does_not_pass_startedby(self, manager, mock_ecs_client):
+        """ECS ListTasks rejects startedBy combined with serviceName:
+        `InvalidParameterException: cannot specify startedBy with other
+        arguments`. We must filter by deployment-id in-code (from
+        describe_tasks' startedBy field), not via the API filter."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                    ]
+                }
+            ]
+        }
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.99"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # list_tasks must NOT pass startedBy (AWS rejects it).
+            list_kwargs = mock_ecs_client.list_tasks.call_args.kwargs
+            assert "startedBy" not in list_kwargs, (
+                f"list_tasks must not pass startedBy; AWS rejects it combined "
+                f"with serviceName. Got kwargs: {list_kwargs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_ignores_old_deployment_tasks_via_in_code_filter(self, manager, mock_ecs_client):
+        """During a rollout overlap, list_tasks returns both the OLD
+        drain-phase task and the NEW task. Filter in-code using each task's
+        startedBy from describe_tasks so we ignore the old task."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                    ]
+                }
+            ]
+        }
+        # Two running tasks come back; old one listed first.
+        mock_ecs_client.list_tasks.return_value = {
+            "taskArns": [
+                "arn:aws:ecs:us-east-1:123:task/cluster/old-task",
+                "arn:aws:ecs:us-east-1:123:task/cluster/new-task",
+            ]
+        }
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/old-task",
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/old",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.1"}],
+                        }
+                    ],
+                },
+                {
+                    "taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/new-task",
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.2"}],
+                        }
+                    ],
+                },
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # We must have transitioned using the NEW task, not the OLD one.
             fields = mock_repo.update_fields.call_args.args[1]
             assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/new-task"
 

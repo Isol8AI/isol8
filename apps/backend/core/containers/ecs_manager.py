@@ -1083,12 +1083,13 @@ class EcsManager:
     async def _poll_running_task(self, service_name: str, deployment_id: str | None) -> tuple[str | None, str | None]:
         """Find a RUNNING task from the given deployment and return (task_arn, ip).
 
-        Filters list_tasks by startedBy=<deployment-id> so old drain-phase
-        tasks from a previous deployment are excluded. If deployment_id is
-        None (defensive: no PRIMARY visible), returns (None, None).
+        Lists ALL running tasks for the service, then filters in-code to
+        tasks whose `startedBy` matches the primary deployment's id. ECS
+        tags service-launched tasks with startedBy=ecs-svc/<deployment-id>.
+        We can't filter via the ListTasks API because ECS rejects startedBy
+        combined with serviceName (InvalidParameterException).
 
-        Returns (None, None) when no RUNNING task has an IP yet. Caller
-        uses this as "not ready yet" and sleeps another tick.
+        Returns (None, None) when no qualifying task has an IP yet.
         """
         if not deployment_id:
             return None, None
@@ -1097,7 +1098,6 @@ class EcsManager:
             cluster=self._cluster,
             serviceName=service_name,
             desiredStatus="RUNNING",
-            startedBy=deployment_id,
         )
         task_arns = list_resp.get("taskArns", [])
         if not task_arns:
@@ -1105,18 +1105,20 @@ class EcsManager:
 
         desc_resp = self._ecs.describe_tasks(
             cluster=self._cluster,
-            tasks=[task_arns[0]],
+            tasks=task_arns,
         )
-        tasks = desc_resp.get("tasks", [])
-        if not tasks or tasks[0].get("lastStatus") != "RUNNING":
-            return None, None
-
-        for attachment in tasks[0].get("attachments", []):
-            if attachment.get("type") != "ElasticNetworkInterface":
+        for task in desc_resp.get("tasks", []):
+            if task.get("startedBy") != deployment_id:
                 continue
-            for detail in attachment.get("details", []):
-                if detail.get("name") == "privateIPv4Address":
-                    return task_arns[0], detail.get("value")
+            if task.get("lastStatus") != "RUNNING":
+                continue
+            for attachment in task.get("attachments", []):
+                if attachment.get("type") != "ElasticNetworkInterface":
+                    continue
+                for detail in attachment.get("details", []):
+                    if detail.get("name") == "privateIPv4Address":
+                        task_arn = task.get("taskArn") or task_arns[0]
+                        return task_arn, detail.get("value")
         return None, None
 
     async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
