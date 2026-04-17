@@ -119,16 +119,23 @@ class NodeUpstreamConnection:
         if challenge.get("event") != "connect.challenge":
             raise RuntimeError(f"Expected connect.challenge, got {challenge}")
 
-        # Step 2: extract nonce and sign with persistent device key
+        # Step 2: extract nonce and sign with persistent device key.
+        #
+        # Security-critical: the v2 device-signature payload bakes in
+        # connect_params.auth.token (see _build_device_identity). The Rust
+        # desktop client sends auth:{} — if we signed BEFORE overwriting, the
+        # signature would be computed with an empty token while the wire
+        # message carried the real token, and the container's re-verification
+        # would reject the handshake. So we set the real token into params
+        # FIRST, then sign, then forward the same params upstream.
         payload = challenge.get("payload", challenge)
         nonce = payload.get("nonce", challenge.get("nonce", ""))
+        self.node_connect_params["auth"] = {"token": self.gateway_token}
         device = _build_device_identity(private_key, nonce, self.node_connect_params)
         self.device_id = device["id"]  # SHA-256 hex of Ed25519 public key
 
-        # Step 3: send connect with role:node + device identity + token auth.
-        # Nodes always require device identity (OpenClaw doesn't allow nodes
-        # to skip via shared auth), but token auth still needs to pass for the
-        # primary auth check in token mode.
+        # Step 3: send connect with role:node + device identity. auth already
+        # carries the real token from the mutation above.
         req_id = str(uuid.uuid4())
         connect_msg = {
             "type": "req",
@@ -139,7 +146,6 @@ class NodeUpstreamConnection:
                 "maxProtocol": 3,
                 **self.node_connect_params,
                 "device": device,
-                "auth": {"token": self.gateway_token},
             },
         }
         await self._ws.send(json.dumps(connect_msg))

@@ -147,83 +147,89 @@ async fn connection_loop(
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
 
+    // write_rx lives for the entire loop so that it stays paired with the
+    // write_tx held by NodeClient. Prior design moved it into a per-connection
+    // spawn and replaced it with a brand-new unpaired channel on reconnect —
+    // after the first drop, every send_frame silently went nowhere. Keeping
+    // ownership here and multiplexing via tokio::select! avoids that entirely.
     loop {
         // Snapshot the current URL so a mid-connect token update is picked up
         // on the very next reconnect attempt.
         let current_url = url.read().unwrap().clone();
         println!("[node-client] Connecting...");
 
-        match connect_async(&current_url).await {
-            Ok((ws, _)) => {
-                println!("[node-client] WebSocket connected");
-                reconnect_delay = std::time::Duration::from_secs(1);
-
-                let (mut ws_write, mut ws_read) = ws.split();
-
-                // Drain pending writes
-                let write_tx_clone = write_tx.clone();
-                let write_task = tokio::spawn(async move {
-                    while let Some(msg) = write_rx.recv().await {
-                        if ws_write.send(msg).await.is_err() {
-                            break;
-                        }
+        let ws = tokio::select! {
+            _ = &mut stop_rx => {
+                println!("[node-client] Stop signal received during connect");
+                return;
+            }
+            res = connect_async(&current_url) => match res {
+                Ok((ws, _)) => ws,
+                Err(e) => {
+                    eprintln!("[node-client] Connection failed: {}", e);
+                    // Backoff, respecting stop.
+                    tokio::select! {
+                        _ = &mut stop_rx => return,
+                        _ = tokio::time::sleep(reconnect_delay) => {}
                     }
-                    // Return the receiver so we can reuse it
-                    write_rx
-                });
+                    reconnect_delay = std::cmp::min(reconnect_delay * 2, max_delay);
+                    continue;
+                }
+            }
+        };
 
-                // Read messages
-                let invoke_tx_clone = invoke_tx.clone();
-                let pending_clone = pending.clone();
-                let display_name_clone = display_name.clone();
-                let write_tx_for_read = write_tx_clone.clone();
+        println!("[node-client] WebSocket connected");
+        reconnect_delay = std::time::Duration::from_secs(1);
 
-                let read_task = tokio::spawn(async move {
-                    while let Some(Ok(msg)) = ws_read.next().await {
-                        if let Message::Text(text) = msg {
+        let (mut ws_write, mut ws_read) = ws.split();
+
+        // Process messages until either the socket dies or we get a stop.
+        // write_rx stays borrowed from the outer scope — no ownership move, no
+        // pairing loss on reconnect.
+        let drop_reason = loop {
+            tokio::select! {
+                // Clean shutdown.
+                _ = &mut stop_rx => {
+                    let _ = ws_write.close().await;
+                    return;
+                }
+
+                // Outbound frame from NodeClient → push to the socket.
+                Some(msg) = write_rx.recv() => {
+                    if let Err(e) = ws_write.send(msg).await {
+                        break format!("ws_write failed: {}", e);
+                    }
+                }
+
+                // Inbound frame from the gateway → dispatch.
+                next = ws_read.next() => {
+                    match next {
+                        Some(Ok(Message::Text(text))) => {
                             handle_message(
                                 &text,
-                                &display_name_clone,
-                                &invoke_tx_clone,
-                                &pending_clone,
-                                &write_tx_for_read,
+                                &display_name,
+                                &invoke_tx,
+                                &pending,
+                                &write_tx,
                             ).await;
                         }
-                    }
-                });
-
-                // Wait for stop signal or connection close
-                let read_abort = read_task.abort_handle();
-                let write_abort = write_task.abort_handle();
-                tokio::select! {
-                    _ = &mut stop_rx => {
-                        println!("[node-client] Stop signal received");
-                        read_abort.abort();
-                        write_abort.abort();
-                        return;
-                    }
-                    _ = read_task => {
-                        println!("[node-client] Read task ended, will reconnect");
-                        write_abort.abort();
-                        write_rx = write_task.await.unwrap_or_else(|_| {
-                            let (_, rx) = mpsc::unbounded_channel();
-                            rx
-                        });
+                        Some(Ok(_)) => {
+                            // Ignore non-text frames (ping/pong handled by the lib).
+                        }
+                        Some(Err(e)) => break format!("ws_read error: {}", e),
+                        None => break "ws_read closed".to_string(),
                     }
                 }
             }
-            Err(e) => {
-                eprintln!("[node-client] Connection failed: {}", e);
-            }
-        }
+        };
 
-        // Check stop before reconnecting
-        if stop_rx.try_recv().is_ok() {
-            return;
-        }
+        eprintln!("[node-client] Disconnected ({}); reconnecting", drop_reason);
 
-        println!("[node-client] Reconnecting in {:?}...", reconnect_delay);
-        tokio::time::sleep(reconnect_delay).await;
+        // Backoff before the next reconnect, respecting stop.
+        tokio::select! {
+            _ = &mut stop_rx => return,
+            _ = tokio::time::sleep(reconnect_delay) => {}
+        }
         reconnect_delay = std::cmp::min(reconnect_delay * 2, max_delay);
     }
 }

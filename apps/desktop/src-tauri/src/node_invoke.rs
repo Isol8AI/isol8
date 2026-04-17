@@ -16,6 +16,11 @@ const OUTPUT_CAP: usize = 200 * 1024;
 
 #[derive(Deserialize)]
 struct SystemRunParams {
+    // OpenClaw's agent passes argv as `command: string[]`; see
+    // openclaw/src/node-host/invoke-types.ts:3-17 and the caller at
+    // openclaw/src/agents/bash-tools.exec-host-node.ts:107. Keep the Rust
+    // field name short but alias on the wire.
+    #[serde(rename = "command")]
     argv: Vec<String>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
@@ -26,6 +31,9 @@ struct SystemRunParams {
 
 #[derive(Deserialize)]
 struct WhichParams {
+    // OpenClaw's SystemWhichParams uses `bins: string[]`; see
+    // openclaw/src/node-host/invoke.ts:53-55.
+    #[serde(rename = "bins")]
     names: Vec<String>,
 }
 
@@ -216,12 +224,20 @@ async fn handle_system_run(
     let stdout = truncate_output(&output.stdout);
     let stderr = truncate_output(&output.stderr);
     let exit_code = output.status.code();
+    // OpenClaw's RunResult.success is `exitCode === 0 && !timedOut && !error`
+    // (openclaw/src/node-host/invoke.ts:268). Spawn errors would have returned
+    // earlier with ok:false, so we just check exit + timeout here. The agent
+    // reads this field directly (bash-tools.exec-host-node.ts:443,453) and
+    // marks any run missing it or with false as failed.
+    let success = exit_code == Some(0) && !timed_out;
 
     let payload = serde_json::json!({
         "exitCode": exit_code,
         "stdout": stdout,
         "stderr": stderr,
         "timedOut": timed_out,
+        "success": success,
+        "error": null,
     });
 
     Ok(NodeInvokeResult {
@@ -262,16 +278,25 @@ async fn handle_system_which(
 ) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
     let params: WhichParams = parse_params(&request.params_json)?;
 
-    let mut results = HashMap::new();
+    // Match OpenClaw's shape: { bins: { name: path } } containing ONLY the
+    // names that resolved. See openclaw/src/node-host/invoke.ts:316-326.
+    let mut found: HashMap<String, String> = HashMap::new();
     for name in &params.names {
-        results.insert(name.clone(), which(name).await);
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(path) = which(trimmed).await {
+            found.insert(trimmed.to_string(), path);
+        }
     }
 
+    let payload = serde_json::json!({ "bins": found });
     Ok(NodeInvokeResult {
         id: request.id.clone(),
         node_id: request.node_id.clone(),
         ok: true,
-        payload_json: Some(serde_json::to_string(&results)?),
+        payload_json: Some(payload.to_string()),
         error: None,
     })
 }
