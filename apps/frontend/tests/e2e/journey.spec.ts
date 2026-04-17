@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
-import { cancelSubscriptionIfExists, getBackendStripeCustomerId, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
+import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
@@ -182,9 +182,10 @@ test.describe('E2E Gate: Full User Journey', () => {
       }
     }, { timeout: 30_000 });
     await test.step('Create Stripe subscription via backend customer', async () => {
-      // Get the Stripe customer ID the backend uses (searches by owner_id metadata)
-      const customerId = await getBackendStripeCustomerId(clerkUserId, API_URL, getToken);
-      console.log('[e2e] Backend Stripe customer:', customerId);
+      // Trigger customer creation via POST /billing/checkout (creates both
+      // the Stripe customer and the DynamoDB billing account row)
+      const customerId = await ensureBillingCustomer(API_URL, getToken, clerkUserId);
+      console.log('[e2e] Stripe customer:', customerId);
       await createSubscription(customerId, DEV_STARTER_PRICE_ID);
     }, { timeout: 60_000 });
     await test.step('Wait for subscription to propagate to backend', async () => {

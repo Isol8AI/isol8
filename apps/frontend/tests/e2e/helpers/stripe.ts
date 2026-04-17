@@ -40,44 +40,52 @@ export async function cancelSubscriptionIfExists(email: string): Promise<void> {
 }
 
 /**
- * Retrieve the backend's Stripe customer ID.
+ * Ensure a billing account + Stripe customer exist for this user by calling
+ * POST /billing/checkout on the backend. This creates the DynamoDB billing
+ * account row AND Stripe customer (same as clicking "Subscribe" in the UI).
+ * We then look up the Stripe customer ID from the backend-created customer.
  *
- * The backend creates Stripe customers with metadata.owner_id but NO email,
- * so we can't find them via customers.list({ email }). Instead, we use
- * Stripe's Search API to find customers by owner_id metadata.
- *
- * Calls GET /billing/account first to ensure the billing account + Stripe
- * customer exist.
+ * Returns the Stripe customer ID.
  */
-export async function getBackendStripeCustomerId(
-  clerkUserId: string,
+export async function ensureBillingCustomer(
   apiUrl: string,
   getToken: () => Promise<string>,
+  clerkUserId: string,
 ): Promise<string> {
-  // Ensure the billing account exists (creates Stripe customer if needed)
+  // Call POST /billing/checkout to trigger customer creation on the backend.
+  // We don't need to follow the returned checkout_url — we just want the
+  // side effect of creating the Stripe customer + DynamoDB billing row.
   const token = await getToken();
-  const res = await fetch(`${apiUrl}/billing/account`, {
-    headers: { Authorization: `Bearer ${token}` },
+  const res = await fetch(`${apiUrl}/billing/checkout`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ tier: 'starter' }),
   });
-  if (!res.ok) throw new Error(`GET /billing/account failed: ${res.status}`);
-
-  // Search for the backend-created customer by owner_id metadata.
-  // Stripe Search has an indexing delay (up to ~60s for newly created objects),
-  // so retry a few times before giving up.
-  const maxAttempts = 8;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    const result = await stripe().customers.search({
-      query: `metadata["owner_id"]:"${clerkUserId}"`,
-    });
-    if (result.data.length > 0) {
-      return result.data[0].id;
-    }
-    if (attempt < maxAttempts) {
-      console.log(`[e2e] Stripe search: no customer yet (attempt ${attempt}/${maxAttempts}), retrying in 5s...`);
-      await new Promise((r) => setTimeout(r, 5_000));
-    }
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`POST /billing/checkout failed: ${res.status} — ${body}`);
   }
-  throw new Error(`No Stripe customer found with owner_id=${clerkUserId} after ${maxAttempts} attempts`);
+  console.log('[e2e] POST /billing/checkout succeeded (customer + billing row created)');
+
+  // The backend just created a Stripe customer with metadata.owner_id.
+  // Stripe List API (not Search) returns it immediately — no indexing delay.
+  const customers = await stripe().customers.list({ limit: 100 });
+  const match = customers.data.find((c) => c.metadata?.owner_id === clerkUserId);
+  if (match) {
+    console.log(`[e2e] Found Stripe customer via list: ${match.id}`);
+    return match.id;
+  }
+
+  // Fallback: search (may have indexing delay but customer was just created)
+  const result = await stripe().customers.search({
+    query: `metadata["owner_id"]:"${clerkUserId}"`,
+  });
+  if (result.data.length > 0) {
+    console.log(`[e2e] Found Stripe customer via search: ${result.data[0].id}`);
+    return result.data[0].id;
+  }
+
+  throw new Error(`No Stripe customer found for owner_id=${clerkUserId} after checkout`);
 }
 
 /**
