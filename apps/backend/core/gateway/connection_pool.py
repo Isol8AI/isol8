@@ -988,9 +988,7 @@ class GatewayConnectionPool:
         if conn:
             conn._forward_to_frontends(message)
 
-    async def broadcast_to_member(
-        self, owner_id: str, member_user_id: str, message: dict
-    ) -> None:
+    async def broadcast_to_member(self, owner_id: str, member_user_id: str, message: dict) -> None:
         """Send a message to frontend connections for a specific org member.
 
         For personal accounts (owner_id == member_user_id), this behaves

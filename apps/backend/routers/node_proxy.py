@@ -121,13 +121,17 @@ async def handle_node_connect(
     # Per-user broadcast
     pool = get_gateway_pool()
     await pool.broadcast_to_member(
-        owner_id, user_id,
+        owner_id,
+        user_id,
         {"type": "node_status", "status": "connected"},
     )
 
     logger.info(
         "Node proxy established: user=%s owner=%s conn=%s nodeId=%s",
-        user_id, owner_id, connection_id, node_id,
+        user_id,
+        owner_id,
+        connection_id,
+        node_id,
     )
     return hello
 
@@ -142,7 +146,9 @@ async def handle_node_message(connection_id: str, message: dict) -> None:
 
 
 async def handle_node_disconnect(
-    connection_id: str, owner_id: str, user_id: str,
+    connection_id: str,
+    owner_id: str,
+    user_id: str,
 ) -> None:
     """Close the upstream connection and update per-user tracking."""
     upstream = _node_upstreams.pop(connection_id, None)
@@ -185,7 +191,8 @@ async def handle_node_disconnect(
     # Per-user broadcast
     pool = get_gateway_pool()
     await pool.broadcast_to_member(
-        owner_id, user_id,
+        owner_id,
+        user_id,
         {"type": "node_status", "status": "disconnected"},
     )
 

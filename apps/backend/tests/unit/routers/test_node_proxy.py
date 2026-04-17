@@ -7,7 +7,6 @@ from routers.node_proxy import (
     handle_node_connect,
     handle_node_disconnect,
     get_user_node,
-    is_node_connection,
     _user_nodes,
     _node_count,
     _node_upstreams,
@@ -30,9 +29,7 @@ def clear_module_state():
 def mock_ecs():
     with patch("routers.node_proxy.get_ecs_manager") as m:
         ecs = AsyncMock()
-        ecs.resolve_running_container = AsyncMock(
-            return_value=({"gateway_token": "tok123"}, "10.0.1.1")
-        )
+        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok123"}, "10.0.1.1"))
         m.return_value = ecs
         yield ecs
 
@@ -87,16 +84,22 @@ async def test_connect_increments_node_count(mock_ecs, mock_pool, mock_upstream,
     mgmt = MagicMock()
 
     await handle_node_connect(
-        owner_id="org_123", user_id="user_alice",
-        connection_id="conn_1", connect_params={}, management_api=mgmt,
+        owner_id="org_123",
+        user_id="user_alice",
+        connection_id="conn_1",
+        connect_params={},
+        management_api=mgmt,
     )
     assert _node_count.get("org_123") == 1
     mock_config_patcher.assert_called_once()  # config patched on 0->1
 
     mock_config_patcher.reset_mock()
     await handle_node_connect(
-        owner_id="org_123", user_id="user_bob",
-        connection_id="conn_2", connect_params={}, management_api=mgmt,
+        owner_id="org_123",
+        user_id="user_bob",
+        connection_id="conn_2",
+        connect_params={},
+        management_api=mgmt,
     )
     assert _node_count.get("org_123") == 2
     mock_config_patcher.assert_not_called()  # no re-patch on 1->2
@@ -104,19 +107,28 @@ async def test_connect_increments_node_count(mock_ecs, mock_pool, mock_upstream,
 
 @pytest.mark.asyncio
 async def test_disconnect_decrements_and_patches_on_zero(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher,
+    mock_ecs,
+    mock_pool,
+    mock_upstream,
+    mock_config_patcher,
 ):
     """Config is re-disabled only when the last node disconnects."""
     mgmt = MagicMock()
 
     # Connect two users
     await handle_node_connect(
-        owner_id="org_123", user_id="user_alice",
-        connection_id="conn_1", connect_params={}, management_api=mgmt,
+        owner_id="org_123",
+        user_id="user_alice",
+        connection_id="conn_1",
+        connect_params={},
+        management_api=mgmt,
     )
     await handle_node_connect(
-        owner_id="org_123", user_id="user_bob",
-        connection_id="conn_2", connect_params={}, management_api=mgmt,
+        owner_id="org_123",
+        user_id="user_bob",
+        connection_id="conn_2",
+        connect_params={},
+        management_api=mgmt,
     )
     mock_config_patcher.reset_mock()
 
@@ -133,27 +145,37 @@ async def test_disconnect_decrements_and_patches_on_zero(
 
 @pytest.mark.asyncio
 async def test_disconnect_broadcasts_to_member(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher,
+    mock_ecs,
+    mock_pool,
+    mock_upstream,
+    mock_config_patcher,
 ):
     """Disconnect broadcasts node_status to the specific user, not the whole org."""
     mgmt = MagicMock()
     await handle_node_connect(
-        owner_id="org_123", user_id="user_alice",
-        connection_id="conn_1", connect_params={}, management_api=mgmt,
+        owner_id="org_123",
+        user_id="user_alice",
+        connection_id="conn_1",
+        connect_params={},
+        management_api=mgmt,
     )
     mock_pool.broadcast_to_member.reset_mock()
 
     await handle_node_disconnect("conn_1", "org_123", "user_alice")
 
     mock_pool.broadcast_to_member.assert_called_once_with(
-        "org_123", "user_alice",
+        "org_123",
+        "user_alice",
         {"type": "node_status", "status": "disconnected"},
     )
 
 
 @pytest.mark.asyncio
 async def test_get_user_node_returns_none_when_disconnected(
-    mock_ecs, mock_pool, mock_upstream, mock_config_patcher,
+    mock_ecs,
+    mock_pool,
+    mock_upstream,
+    mock_config_patcher,
 ):
     """get_user_node returns None for users without a connected node."""
     assert get_user_node("user_nobody") is None
