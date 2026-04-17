@@ -61,15 +61,23 @@ export async function getBackendStripeCustomerId(
   });
   if (!res.ok) throw new Error(`GET /billing/account failed: ${res.status}`);
 
-  // Search for the backend-created customer by owner_id metadata
-  const result = await stripe().customers.search({
-    query: `metadata["owner_id"]:"${clerkUserId}"`,
-  });
-  if (result.data.length === 0) {
-    throw new Error(`No Stripe customer found with owner_id=${clerkUserId}`);
+  // Search for the backend-created customer by owner_id metadata.
+  // Stripe Search has an indexing delay (up to ~60s for newly created objects),
+  // so retry a few times before giving up.
+  const maxAttempts = 8;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const result = await stripe().customers.search({
+      query: `metadata["owner_id"]:"${clerkUserId}"`,
+    });
+    if (result.data.length > 0) {
+      return result.data[0].id;
+    }
+    if (attempt < maxAttempts) {
+      console.log(`[e2e] Stripe search: no customer yet (attempt ${attempt}/${maxAttempts}), retrying in 5s...`);
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
   }
-  // Use the most recently created one
-  return result.data[0].id;
+  throw new Error(`No Stripe customer found with owner_id=${clerkUserId} after ${maxAttempts} attempts`);
 }
 
 /**

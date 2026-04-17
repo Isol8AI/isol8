@@ -171,16 +171,6 @@ test.describe('E2E Gate: Full User Journey', () => {
     test.setTimeout(4 * 60_000);
     await test.step('Sync user with backend', async () => {
       const token = await getToken();
-
-      // Diagnostic: decode JWT claims (no verification) to debug 401
-      try {
-        const [, payloadB64] = token.split('.');
-        const claims = JSON.parse(Buffer.from(payloadB64, 'base64url').toString());
-        console.log('[e2e] JWT claims: iss=%s sub=%s aud=%s azp=%s exp=%s nbf=%s',
-          claims.iss, claims.sub, claims.aud, claims.azp, claims.exp, claims.nbf);
-        console.log('[e2e] JWT full claims:', JSON.stringify(claims));
-      } catch (e) { console.log('[e2e] JWT decode error:', e); }
-
       const res = await fetch(`${API_URL}/users/sync`, {
         method: 'POST',
         headers: { Authorization: `Bearer ${token}` },
@@ -188,7 +178,7 @@ test.describe('E2E Gate: Full User Journey', () => {
       console.log('[e2e] User sync:', res.status);
       if (!res.ok) {
         const body = await res.text();
-        console.log('[e2e] User sync error body:', body);
+        throw new Error(`User sync failed: ${res.status} — ${body}`);
       }
     }, { timeout: 30_000 });
     await test.step('Create Stripe subscription via backend customer', async () => {
