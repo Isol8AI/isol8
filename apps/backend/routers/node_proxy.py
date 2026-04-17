@@ -78,9 +78,20 @@ async def handle_node_connect(
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
 
-    # Inject user display name into connect params for node.list identification
+    # Build a displayable name for node.list. Prefer the name the desktop
+    # client already sent in connect_params (set by the Tauri IPC from the
+    # user's Clerk profile) so each member's node is individually
+    # identifiable. Only fall back to `display_name` (or "Desktop") if the
+    # client sent nothing.
     client_params = connect_params.get("client", {})
-    client_params["displayName"] = f"{display_name} | Isol8 Desktop"
+    incoming = (client_params.get("displayName") or "").strip()
+    if not incoming:
+        incoming = display_name.strip() or "Desktop"
+    # Strip any pre-existing " | Isol8 Desktop" suffix so reconnects don't
+    # compound "Alice | Isol8 Desktop | Isol8 Desktop".
+    if incoming.endswith(" | Isol8 Desktop"):
+        incoming = incoming[: -len(" | Isol8 Desktop")]
+    client_params["displayName"] = f"{incoming} | Isol8 Desktop"
     connect_params["client"] = client_params
 
     # user_id (member) vs owner_id (org/container) — scope the device
