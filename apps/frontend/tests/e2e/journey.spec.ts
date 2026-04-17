@@ -211,9 +211,34 @@ test.describe('E2E Gate: Full User Journey', () => {
     }, { timeout: 12 * 60_000 });
   });
 
-  // Step 5 (Chat) is skipped for now — the WebSocket API Gateway returns 500
-  // during the handshake in CI (works locally). The Lambda authorizer or
-  // VPC Link path needs investigation via CloudWatch logs.
-  // TODO: Re-enable once WebSocket 500 is resolved.
-  // See: WebSocket error: "Unexpected response code: 500" from wss://ws-dev.isol8.co
+  test('Step 5: Chat', async () => {
+    test.setTimeout(3 * 60_000);
+
+    await test.step('Navigate to /chat and wait for WebSocket connection', async () => {
+      // Ensure we're on the chat page
+      if (!sharedPage.url().includes('/chat')) {
+        await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+      }
+
+      // Wait for "Connected" indicator — means the WebSocket handshake succeeded
+      // and the gateway pool is healthy.
+      await sharedPage.getByText('Connected').waitFor({ state: 'visible', timeout: 60_000 });
+    }, { timeout: 90_000 });
+
+    await test.step('Send a message and receive a response', async () => {
+      // Type a simple message into the chat input
+      const input = sharedPage.getByPlaceholder('Ask anything');
+      await input.waitFor({ state: 'visible', timeout: 10_000 });
+      await input.fill('Say "hello" and nothing else.');
+
+      // Click send
+      await sharedPage.getByTestId('send-button').click();
+
+      // Wait for an assistant response. Messages have data-role="assistant".
+      const assistantMsg = sharedPage.locator('[data-role="assistant"]').last();
+      await assistantMsg.waitFor({ state: 'visible', timeout: 90_000 });
+      // Verify it has some text content (not an empty/error state)
+      await expect(assistantMsg).not.toBeEmpty();
+    }, { timeout: 120_000 });
+  });
 });
