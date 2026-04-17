@@ -146,7 +146,16 @@ const OAUTH_DOMAINS: &[&str] = &["accounts.google.com", "appleid.apple.com"];
 
 /// Desktop callback URL — the page creates a sign-in token and deep links back.
 /// Not middleware-protected, so it works whether or not the user is signed in yet.
-const DESKTOP_CALLBACK_URL: &str = "https://dev.isol8.co/auth/desktop-callback?x-vercel-protection-bypass=BWitr6v05GtUmGWJsjlfkqrOGyb68tR8&x-vercel-set-bypass-cookie=samesitenone";
+///
+/// Previously this URL embedded a Vercel protection-bypass query param so the
+/// callback loaded on preview-protected dev.isol8.co. That secret shipped in
+/// the binary (and git history) and has been rotated out. If dev.isol8.co
+/// preview-protection is re-enabled, pass `ISOL8_CALLBACK_URL` at build time
+/// with the appropriate bypass param instead of hard-coding the secret.
+const DESKTOP_CALLBACK_URL: &str = match option_env!("ISOL8_CALLBACK_URL") {
+    Some(url) => url,
+    None => "https://dev.isol8.co/auth/desktop-callback",
+};
 
 fn is_oauth_url(url: &Url) -> bool {
     let host = url.host_str().unwrap_or("");

@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "",
     "beforeBuildCommand": "",
-    "devUrl": "https://dev.isol8.co/chat?x-vercel-protection-bypass=BWitr6v05GtUmGWJsjlfkqrOGyb68tR8&x-vercel-set-bypass-cookie=samesitenone",
+    "devUrl": "https://dev.isol8.co/chat",
     "frontendDist": "https://dev.isol8.co/chat"
   },
   "app": {
@@ -20,7 +20,7 @@
         "minWidth": 800,
         "minHeight": 600,
         "titleBarStyle": "Visible",
-        "url": "https://dev.isol8.co/chat?x-vercel-protection-bypass=BWitr6v05GtUmGWJsjlfkqrOGyb68tR8&x-vercel-set-bypass-cookie=samesitenone"
+        "url": "https://dev.isol8.co/chat"
       }
     ],
     "security": {

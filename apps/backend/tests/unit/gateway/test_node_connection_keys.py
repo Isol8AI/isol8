@@ -139,6 +139,59 @@ def test_key_file_has_tight_permissions(efs_root):
     assert mode & 0o077 == 0, f"key perms too loose: {oct(mode)}"
 
 
+def test_key_file_only_appears_when_fully_written(tmp_path, monkeypatch):
+    """Regression: the previous O_EXCL implementation created the key file
+    empty on open() then wrote content afterward, so a concurrent reader
+    hitting exists()==True could read zero bytes and fail PEM parse.
+    The fix uses tempfile+os.link, so the target path should only ever
+    appear on disk containing the complete key."""
+    import os as _os
+
+    from core.gateway import node_connection as nc
+
+    key_path = tmp_path / "efs" / "org" / "devices" / "user" / ".node-device-key.pem"
+
+    # Snoop on os.link: between tempfile creation and link, the target
+    # path must NOT exist. After link, it must exist and parse as PEM.
+    original_link = _os.link
+    observations = {"path_existed_before_link": None, "path_existed_after_link": None}
+
+    def spy_link(src, dst, *a, **kw):
+        observations["path_existed_before_link"] = _os.path.exists(dst)
+        result = original_link(src, dst, *a, **kw)
+        observations["path_existed_after_link"] = _os.path.exists(dst)
+        return result
+
+    monkeypatch.setattr(_os, "link", spy_link)
+
+    nc._generate_member_device_key(key_path, "user_test")
+
+    assert observations["path_existed_before_link"] is False, (
+        "target must not exist before the atomic link — readers could otherwise race and read a partial file"
+    )
+    assert observations["path_existed_after_link"] is True
+    # And the complete PEM parses correctly.
+    pem = key_path.read_text(encoding="ascii")
+    key = nc._load_private_key(pem)
+    assert key is not None
+
+
+def test_second_generator_for_same_path_is_noop(tmp_path):
+    """Two concurrent first-connects must not leave duplicate/corrupt keys."""
+    from core.gateway import node_connection as nc
+
+    key_path = tmp_path / "efs" / "org" / "devices" / "user" / ".node-device-key.pem"
+
+    nc._generate_member_device_key(key_path, "user_test")
+    first = key_path.read_bytes()
+
+    # Second call sees existing file and returns without touching it.
+    nc._generate_member_device_key(key_path, "user_test")
+    second = key_path.read_bytes()
+
+    assert first == second, "second generate must not overwrite"
+
+
 def test_device_id_in_paired_matches_handshake_id(efs_root):
     """The device_id we register in paired.json must equal what
     _build_device_identity will compute — the gateway compares these."""

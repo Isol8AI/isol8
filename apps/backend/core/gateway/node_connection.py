@@ -50,11 +50,20 @@ def _load_private_key(pem: str):
 def _generate_member_device_key(key_path, user_id: str) -> None:
     """Create a fresh Ed25519 key at ``key_path`` with 0600 perms.
 
-    Uses O_EXCL so two concurrent first-connects for the same member don't
-    both write a key (one wins; the loser re-reads the winner's file on
-    the next exists-check). Parent directories are created as needed.
+    Write-through-tempfile-then-os.link so the target path only appears
+    on disk when fully written. The previous O_EXCL approach created the
+    file empty (O_CREAT on first call), then wrote content afterward —
+    a concurrent ``_load_node_key`` on another asyncio task could see
+    ``exists()==True`` after O_CREAT but before the write completed, and
+    read a zero-byte file → PEM parse failure.
+
+    ``os.link`` gives atomic create-if-not-exists: the first writer's tmp
+    gets hard-linked into the target path fully-populated, later writers
+    get FileExistsError and silently discard their tmp. Readers never see
+    a partially-written file.
     """
     import pathlib
+    import tempfile
 
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
     from cryptography.hazmat.primitives.serialization import (
@@ -66,17 +75,37 @@ def _generate_member_device_key(key_path, user_id: str) -> None:
     key_path = pathlib.Path(key_path)
     key_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Fast path: if someone else already wrote it, we're done.
+    if key_path.exists():
+        return
+
     new_key = Ed25519PrivateKey.generate()
     pem_bytes = new_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
+
+    fd, tmp_path = tempfile.mkstemp(dir=str(key_path.parent), suffix=".keytmp", prefix=".node-key-")
     try:
-        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, "wb") as f:
+            f.write(pem_bytes)
+        os.chmod(tmp_path, 0o600)
         try:
-            os.write(fd, pem_bytes)
-        finally:
-            os.close(fd)
-        logger.info("Generated per-member node device key for user %s", user_id)
-    except FileExistsError:
-        logger.debug("Concurrent key generation for %s; using existing key", user_id)
+            # Atomic create-if-not-exists. Unlike os.rename, os.link fails
+            # if the destination exists, so two concurrent writers don't
+            # clobber each other — one wins, the other falls through.
+            os.link(tmp_path, str(key_path))
+            logger.info("Generated per-member node device key for user %s", user_id)
+        except FileExistsError:
+            logger.debug(
+                "Concurrent key generation for %s; another writer won",
+                user_id,
+            )
+    finally:
+        # tmp is a hard-linked inode after successful os.link; unlinking tmp
+        # removes only that name, leaving the target intact. If os.link
+        # failed (FileExistsError), this just cleans up our unused tmp.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _build_device_identity(private_key, nonce: str, connect_params: dict) -> dict:
