@@ -72,26 +72,40 @@ const SAFE_BINS: &[&str] = &[
     "sw_vers", "system_profiler",
 ];
 
-/// Binaries that can execute arbitrary inline code via a flag. When invoked
-/// this way, the PAYLOAD is the real instruction — approving `bash` once
-/// must NOT grant a blanket allow for every future `bash -c <anything>`.
+/// Binaries that can execute arbitrary inline code via a flag.
+///
+/// When invoked this way, the PAYLOAD is the real instruction — approving
+/// `bash` once must NOT grant a blanket allow for every future `bash -c <x>`.
 /// The approval key for these includes the inline payload (see
 /// `approval_key_for`), so each distinct inline command prompts separately.
 ///
-/// `(binary, flags_that_take_inline_code)`
-const INLINE_CODE_WRAPPERS: &[(&str, &[&str])] = &[
-    ("sh", &["-c"]),
-    ("bash", &["-c"]),
-    ("zsh", &["-c"]),
-    ("fish", &["-c"]),
-    ("dash", &["-c"]),
-    ("ksh", &["-c"]),
-    ("python", &["-c"]),
-    ("python3", &["-c"]),
-    ("python2", &["-c"]),
-    ("node", &["-e", "--eval", "-p", "--print"]),
-    ("ruby", &["-e"]),
-    ("perl", &["-e", "-E"]),
+/// Each entry lists:
+///   - `short_letters`: single-char flag letters (e.g. 'c' for `-c`,
+///     'e' for `-e`). These match both plain (`-c`) and CLUSTERED
+///     (`-lc`, `-Ec`) forms — POSIX shells / Python / Ruby / Perl all
+///     accept option clustering. When any listed letter appears in a
+///     short-form argv element, the NEXT argv element is the payload.
+///   - `long_flags`: long-form flag names without the leading `--`
+///     (e.g. "eval" matches `--eval CODE` and `--eval=CODE`). Needed
+///     for Node: `node --eval=...` used to slip past the check.
+struct InlineWrapper {
+    short_letters: &'static [char],
+    long_flags: &'static [&'static str],
+}
+
+const INLINE_CODE_WRAPPERS: &[(&str, InlineWrapper)] = &[
+    ("sh", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("bash", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("zsh", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("fish", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("dash", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("ksh", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("python", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("python3", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("python2", InlineWrapper { short_letters: &['c'], long_flags: &[] }),
+    ("node", InlineWrapper { short_letters: &['e', 'p'], long_flags: &["eval", "print"] }),
+    ("ruby", InlineWrapper { short_letters: &['e'], long_flags: &[] }),
+    ("perl", InlineWrapper { short_letters: &['e', 'E'], long_flags: &[] }),
 ];
 
 lazy_static::lazy_static! {
@@ -192,19 +206,55 @@ fn extract_binary_name(cmd: &str) -> String {
 }
 
 /// Return the inline-code payload if `argv` invokes a known wrapper in
-/// inline-eval mode, else None. Matches the first occurrence of any
-/// wrapper-specific flag; the payload is the immediately following arg.
+/// inline-eval mode, else None.
+///
+/// Handles the flag forms each wrapper actually accepts:
+///   - plain short:    `bash -c CODE`
+///   - clustered:      `bash -lc CODE`, `python -Bc CODE`, `perl -we CODE`
+///   - long:           `node --eval CODE`, `node --print CODE`
+///   - long with `=`:  `node --eval=CODE`
+///
+/// The previous implementation only did exact string equality on the flag
+/// (`argv[i] == "-c"`), so `-lc`, `-Ec`, `--eval=...` all slipped through
+/// the inline-detection path and approval fell back to the bare-binary
+/// key — defeating the per-payload approval boundary.
 fn extract_inline_code(binary: &str, argv: &[String]) -> Option<String> {
-    let flags = INLINE_CODE_WRAPPERS
+    let cfg = INLINE_CODE_WRAPPERS
         .iter()
         .find(|(b, _)| *b == binary)
-        .map(|(_, f)| *f)?;
-    let mut i = 1;
-    while i + 1 < argv.len() {
-        if flags.contains(&argv[i].as_str()) {
-            return Some(argv[i + 1].clone());
+        .map(|(_, c)| c)?;
+
+    for i in 1..argv.len() {
+        let arg = &argv[i];
+
+        // Long form: --eval, --print, --eval=CODE, --print=CODE
+        if let Some(rest) = arg.strip_prefix("--") {
+            for &lf in cfg.long_flags {
+                if rest == lf {
+                    return argv.get(i + 1).cloned();
+                }
+                // `--eval=CODE` → split on the FIRST `=`
+                if rest.len() > lf.len()
+                    && rest.starts_with(lf)
+                    && rest.as_bytes()[lf.len()] == b'='
+                {
+                    return Some(rest[lf.len() + 1..].to_string());
+                }
+            }
+            continue;
         }
-        i += 1;
+
+        // Short form: -c, -lc, -Ec, etc. Scan each letter after the dash;
+        // if ANY matches a short_letter, treat the next argv element as
+        // the inline payload (matches real shell/interpreter behavior
+        // under option clustering).
+        if let Some(letters) = arg.strip_prefix('-').filter(|s| !s.is_empty() && !s.starts_with('-')) {
+            for c in letters.chars() {
+                if cfg.short_letters.contains(&c) {
+                    return argv.get(i + 1).cloned();
+                }
+            }
+        }
     }
     None
 }
@@ -348,6 +398,51 @@ mod tests {
         );
         // Clean up.
         STORE.lock().unwrap().always_allowed.remove(&seeded_key);
+    }
+
+    #[test]
+    fn clustered_short_flag_still_detected_as_inline() {
+        // bash supports option clustering: `-lc` is `-l` + `-c`. Earlier we
+        // only matched exact "-c", so `bash -lc CODE` slipped past the inline
+        // gate and got the plain-bash approval key — a single "Allow Always
+        // bash" then auto-ran every future inline command.
+        let k1 = approval_key_for(&argv(&["/bin/bash", "-lc", "rm -rf /tmp/foo"]));
+        assert_eq!(k1, "/bin/bash:inline:rm -rf /tmp/foo");
+
+        let k2 = approval_key_for(&argv(&["/usr/bin/python3", "-Bc", "import os"]));
+        assert_eq!(k2, "/usr/bin/python3:inline:import os");
+
+        let k3 = approval_key_for(&argv(&["/usr/bin/perl", "-we", "print 1"]));
+        assert_eq!(k3, "/usr/bin/perl:inline:print 1");
+    }
+
+    #[test]
+    fn node_long_flags_with_and_without_equals_detected_as_inline() {
+        // node --eval CODE  and  node --eval=CODE  must both key as inline.
+        let k_spaced = approval_key_for(&argv(&["/usr/local/bin/node", "--eval", "console.log(1)"]));
+        assert_eq!(k_spaced, "/usr/local/bin/node:inline:console.log(1)");
+
+        let k_equals = approval_key_for(&argv(&["/usr/local/bin/node", "--eval=console.log(2)"]));
+        assert_eq!(k_equals, "/usr/local/bin/node:inline:console.log(2)");
+
+        let k_print = approval_key_for(&argv(&["/usr/local/bin/node", "--print=2+2"]));
+        assert_eq!(k_print, "/usr/local/bin/node:inline:2+2");
+    }
+
+    #[test]
+    fn clustered_inline_requires_approval_and_does_not_leak_across_payloads() {
+        // The end-to-end invariant: one Allow-Always on `bash -lc A` must
+        // NOT approve `bash -lc B`.
+        let seeded = "/bin/bash:inline:echo approved-bash-lc".to_string();
+        STORE.lock().unwrap().always_allowed.insert(seeded.clone());
+        assert!(check_allowlist(&argv(&["/bin/bash", "-lc", "echo approved-bash-lc"])).is_ok());
+        let other = check_allowlist(&argv(&["/bin/bash", "-lc", "echo different"]));
+        assert!(
+            matches!(other, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:/bin/bash:inline:")),
+            "-lc with different payload must re-prompt, got {:?}",
+            other
+        );
+        STORE.lock().unwrap().always_allowed.remove(&seeded);
     }
 
     #[test]
