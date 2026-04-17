@@ -204,84 +204,6 @@ export class ContainerStack extends cdk.Stack {
       }),
     );
 
-    // Base OpenClaw task definition — the backend clones this per user,
-    // replacing the EFS access point for data isolation.
-    const env = props.environment;
-    const openclawLogGroup = new cdk.aws_logs.LogGroup(this, "OpenClawLogGroup", {
-      logGroupName: `/isol8/${env}/openclaw`,
-      retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    const openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
-      family: `isol8-${env}-openclaw`,
-      cpu: 1024,
-      memoryLimitMiB: 2048,
-      taskRole: this.taskRole,
-      executionRole: this.taskExecutionRole,
-    });
-
-    // Startup command — almost everything (apt packages, pip, npm globals,
-    // gh, uv) is now baked into the extended OpenClaw image. We only:
-    //   1. Install markdown-converter via clawhub (lives at clawhub.com,
-    //      not bundled in the image — landing dir comes from
-    //      CLAWHUB_WORKDIR=/home/node/.openclaw, set as a container env var).
-    //   2. Launch the gateway.
-    // Cold-start drops from ~30s to ~5s.
-    const startupCommand = [
-      "clawhub install markdown-converter --no-input 2>/dev/null",
-      "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
-    ].join("; ");
-
-    // Image selection: use the extended ECR image once the per-env tag has been
-    // promoted past the "bootstrap" placeholder. Until then, fall back to the
-    // legacy upstream image so the env keeps deploying. This lets us flip dev
-    // and prod independently via openclaw-version.json bumps without coupling.
-    const envTag = OPENCLAW_VERSION[props.environment as "dev" | "prod"].tag;
-    const containerImage =
-      envTag === "bootstrap"
-        ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
-        : ecs.ContainerImage.fromEcrRepository(this.openclawExtendedRepo, envTag);
-
-    const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: containerImage,
-      essential: true,
-      command: ["sh", "-c", startupCommand],
-      user: "0:0",
-      workingDirectory: "/home/node",
-      environment: {
-        HOME: "/home/node",
-        CHOKIDAR_USEPOLLING: "true",
-        // Redirect clawhub installs to the OpenClaw managed-skills directory
-        // (~/.openclaw/skills) so they're scanned by every agent. Without
-        // this, clawhub falls through to agents.defaults.workspace and lands
-        // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
-        CLAWHUB_WORKDIR: "/home/node/.openclaw",
-      },
-      portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
-      logging: ecs.LogDrivers.awsLogs({
-        logGroup: openclawLogGroup,
-        streamPrefix: "openclaw",
-      }),
-    });
-
-    // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here
-    openclawContainer.addMountPoints({
-      containerPath: "/home/node/.openclaw",
-      sourceVolume: "openclaw-workspace",
-      readOnly: false,
-    });
-
-    // Add EFS volume — the backend replaces the access point per user
-    openclawTaskDef.addVolume({
-      name: "openclaw-workspace",
-      efsVolumeConfiguration: {
-        fileSystemId: this.efsFileSystem.fileSystemId,
-        transitEncryption: "ENABLED",
-        authorizationConfig: { iam: "ENABLED" },
-      },
-    });
-
     // Extended OpenClaw image — built and pushed by
     // .github/workflows/build-openclaw-image.yml. Per-env tags live in
     // openclaw-version.json (extendedImage + dev.tag/prod.tag). After the
@@ -291,6 +213,9 @@ export class ContainerStack extends cdk.Stack {
     // The repository is account-scoped, so we create it only in the dev stack
     // and reference it by name in prod. This keeps a single source of truth
     // for image tags (one ECR repo, two env-tagged image references).
+    //
+    // Initialized BEFORE the container task def so the image-selection
+    // expression below can dereference it.
     if (props.environment === "dev") {
       const repo = new ecr.Repository(this, "OpenclawExtendedRepo", {
         repositoryName: "isol8/openclaw-extended",
@@ -346,5 +271,89 @@ export class ContainerStack extends cdk.Stack {
         "isol8/openclaw-extended",
       );
     }
+
+    // Base OpenClaw task definition — the backend clones this per user,
+    // replacing the EFS access point for data isolation.
+    const env = props.environment;
+    const openclawLogGroup = new cdk.aws_logs.LogGroup(this, "OpenClawLogGroup", {
+      logGroupName: `/isol8/${env}/openclaw`,
+      retention: cdk.aws_logs.RetentionDays.TWO_WEEKS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
+      family: `isol8-${env}-openclaw`,
+      cpu: 1024,
+      memoryLimitMiB: 2048,
+      taskRole: this.taskRole,
+      executionRole: this.taskExecutionRole,
+    });
+
+    // Startup command — almost everything (apt packages, pip, npm globals,
+    // gh, uv) is now baked into the extended OpenClaw image. We only:
+    //   1. Install markdown-converter via clawhub (lives at clawhub.com,
+    //      not bundled in the image — landing dir comes from
+    //      CLAWHUB_WORKDIR=/home/node/.openclaw, set as a container env var).
+    //   2. Launch the gateway.
+    // Cold-start drops from ~30s to ~5s.
+    const startupCommand = [
+      "clawhub install markdown-converter --no-input 2>/dev/null",
+      "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
+    ].join("; ");
+
+    // Image selection: use the extended ECR image once the per-env tag has been
+    // promoted past the "bootstrap" placeholder. Until then, fall back to the
+    // legacy upstream image so the env keeps deploying. This lets us flip dev
+    // and prod independently via openclaw-version.json bumps without coupling.
+    // Unknown envs (e.g. "local") default to legacy via the optional chain.
+    const envCfg =
+      props.environment === "dev" || props.environment === "prod"
+        ? OPENCLAW_VERSION[props.environment]
+        : undefined;
+    const envTag = envCfg?.tag ?? "bootstrap";
+    const containerImage =
+      envTag === "bootstrap"
+        ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
+        : ecs.ContainerImage.fromEcrRepository(this.openclawExtendedRepo, envTag);
+
+    const openclawContainer = openclawTaskDef.addContainer("openclaw", {
+      image: containerImage,
+      essential: true,
+      command: ["sh", "-c", startupCommand],
+      user: "0:0",
+      workingDirectory: "/home/node",
+      environment: {
+        HOME: "/home/node",
+        CHOKIDAR_USEPOLLING: "true",
+        // Redirect clawhub installs to the OpenClaw managed-skills directory
+        // (~/.openclaw/skills) so they're scanned by every agent. Without
+        // this, clawhub falls through to agents.defaults.workspace and lands
+        // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
+        CLAWHUB_WORKDIR: "/home/node/.openclaw",
+      },
+      portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
+      logging: ecs.LogDrivers.awsLogs({
+        logGroup: openclawLogGroup,
+        streamPrefix: "openclaw",
+      }),
+    });
+
+    // Mount EFS workspace — OpenClaw reads openclaw.json and agent files from here
+    openclawContainer.addMountPoints({
+      containerPath: "/home/node/.openclaw",
+      sourceVolume: "openclaw-workspace",
+      readOnly: false,
+    });
+
+    // Add EFS volume — the backend replaces the access point per user
+    openclawTaskDef.addVolume({
+      name: "openclaw-workspace",
+      efsVolumeConfiguration: {
+        fileSystemId: this.efsFileSystem.fileSystemId,
+        transitEncryption: "ENABLED",
+        authorizationConfig: { iam: "ENABLED" },
+      },
+    });
+
   }
 }
