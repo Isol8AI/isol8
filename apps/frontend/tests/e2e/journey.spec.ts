@@ -2,6 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
+import { markUserOnboarded } from './helpers/clerk';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
 const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
@@ -87,6 +88,12 @@ test.describe('E2E Gate: Full User Journey', () => {
     // Create a backend-issued sign-in token — bypasses password + MFA entirely
     const { ticket, userId } = await createSignInToken();
     clerkUserId = userId;
+
+    // Force-set the onboarded flag on Clerk's unsafeMetadata. ChatLayout gates
+    // the chat UI on this flag; if it's false, ProvisioningStepper replaces the
+    // chat view and Step 5 can't find ChatInput. Must run before the browser
+    // activates the session so Clerk serves the fresh metadata on page load.
+    await markUserOnboarded(userId);
 
     // Use the ticket to create an authenticated session
     await sharedPage.evaluate(async (t: string) => {
