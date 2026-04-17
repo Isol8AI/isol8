@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "OpenClaw image version",
+  "description": "Per-environment image tags for the extended OpenClaw container image.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["upstream", "image", "dev", "prod"],
+  "properties": {
+    "$schema": { "type": "string" },
+    "upstream": {
+      "type": "string",
+      "description": "Pinned upstream alpine/openclaw image+tag the Dockerfile FROMs.",
+      "pattern": "^alpine/openclaw:[a-zA-Z0-9._-]+$"
+    },
+    "image": {
+      "type": "string",
+      "description": "ECR repository URI for the extended image (without tag).",
+      "pattern": "^[0-9]{12}\\.dkr\\.ecr\\.[a-z0-9-]+\\.amazonaws\\.com/[a-z0-9._/-]+$"
+    },
+    "dev": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag of the extended image deployed to dev.",
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        }
+      }
+    },
+    "prod": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tag"],
+      "properties": {
+        "tag": {
+          "type": "string",
+          "description": "Tag of the extended image deployed to prod.",
+          "pattern": "^[a-zA-Z0-9._-]+$"
+        }
+      }
+    },
+    "notes": { "type": "string" }
+  }
+}

@@ -1,7 +1,8 @@
 {
   "$schema": "./openclaw-version.schema.json",
-  "image": "alpine/openclaw",
-  "tag": "2026.4.5",
-  "full": "alpine/openclaw:2026.4.5",
-  "notes": "Single source of truth for the pinned OpenClaw container image. Bump this when you want to upgrade the image used by provisioning. CDK container stack imports this file directly; no env var override in production."
+  "upstream": "alpine/openclaw:2026.4.5",
+  "image": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
+  "dev":  { "tag": "bootstrap" },
+  "prod": { "tag": "bootstrap" },
+  "notes": "Per-env tags for the extended OpenClaw image. CI builds + pushes to ECR; promotion is a manual PR. The 'bootstrap' tag is a placeholder until the first CI build completes — CDK reads this file but the bootstrap tag intentionally won't resolve, so any deploy referencing this file before the first build will fail loudly."
 }
