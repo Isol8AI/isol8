@@ -22,12 +22,7 @@ logger = logging.getLogger(__name__)
 
 GATEWAY_PORT = 18789
 
-# Device key is stored per member under the owner's EFS tree:
-#   <efs>/<owner_id>/devices/<user_id>/.node-device-key.pem
-# Every member of an org gets a distinct Ed25519 key pair, so the NodeRegistry
-# can tell Alice's Mac from Bob's Mac even though they share one container.
-_DEVICE_KEY_FILENAME = ".node-device-key.pem"
-_DEVICE_KEY_SUBDIR = "devices"
+NODE_KEY_PATH = "devices/.node-device-key.pem"
 
 
 def _base64url_encode(data: bytes) -> str:
@@ -40,42 +35,6 @@ def _load_private_key(pem: str):
     from cryptography.hazmat.primitives.serialization import load_pem_private_key
 
     return load_pem_private_key(pem.encode("ascii"), password=None)
-
-
-def _generate_member_device_key(key_path, user_id: str) -> None:
-    """Create a fresh Ed25519 key at ``key_path`` with 0600 perms.
-
-    Uses O_EXCL so two concurrent connects for the same member don't both
-    write a key (one wins; the loser falls through to read the winner's key).
-    Parent directories are created as needed.
-    """
-    import os
-    import pathlib
-
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-    from cryptography.hazmat.primitives.serialization import (
-        Encoding,
-        NoEncryption,
-        PrivateFormat,
-    )
-
-    key_path = pathlib.Path(key_path)
-    key_path.parent.mkdir(parents=True, exist_ok=True)
-
-    new_key = Ed25519PrivateKey.generate()
-    pem_bytes = new_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption())
-    try:
-        # O_EXCL — atomic create-if-not-exists. If another process is racing
-        # us, they win and we re-read their key from disk.
-        fd = os.open(str(key_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            os.write(fd, pem_bytes)
-        finally:
-            os.close(fd)
-        logger.info("Generated per-member node device key for user %s", user_id)
-    except FileExistsError:
-        # Another worker created it first — that's fine; we'll use their key.
-        logger.debug("Concurrent key generation for %s; using existing key", user_id)
 
 
 def _build_device_identity(private_key, nonce: str, connect_params: dict) -> dict:
@@ -115,18 +74,12 @@ class NodeUpstreamConnection:
     def __init__(
         self,
         user_id: str,
-        owner_id: str,
         container_ip: str,
         node_connect_params: dict,
         efs_mount_path: str,
         gateway_token: str,
     ):
-        # user_id is the MEMBER (Alice, Bob...) whose Mac this is.
-        # owner_id is the org/container owner — who owns the EFS tree and
-        # the Fargate task. They're equal in solo mode, different in
-        # multi-member orgs.
         self.user_id = user_id
-        self.owner_id = owner_id
         self.container_ip = container_ip
         self.node_connect_params = node_connect_params
         self.efs_mount_path = efs_mount_path
@@ -137,38 +90,14 @@ class NodeUpstreamConnection:
         self._reader_task: asyncio.Task | None = None
         self._on_message = None
 
-    def _device_key_path(self):
-        import pathlib
-
-        return (
-            pathlib.Path(self.efs_mount_path) / self.owner_id / _DEVICE_KEY_SUBDIR / self.user_id / _DEVICE_KEY_FILENAME
-        )
-
     def _load_node_key(self):
-        """Read (or lazily generate) the per-member Ed25519 private key."""
-        import os
+        """Read the persistent Ed25519 private key from EFS."""
         import pathlib
 
-        key_path = self._device_key_path()
+        key_path = pathlib.Path(self.efs_mount_path) / self.user_id / NODE_KEY_PATH
         if not key_path.exists():
-            _generate_member_device_key(key_path, self.user_id)
-        try:
-            pem = pathlib.Path(key_path).read_text(encoding="ascii")
-        except FileNotFoundError as e:
-            # Rare race: directory existed, file vanished between check and
-            # read. Regenerate with O_EXCL handling and re-read.
-            _generate_member_device_key(key_path, self.user_id)
-            pem = pathlib.Path(key_path).read_text(encoding="ascii")
-            _ = e  # silence unused-var
-            return _load_private_key(pem)
-        # Safety check: file must be readable only by us. Fix perms if EFS
-        # somehow didn't honor the initial mode (some EFS mounts flatten modes).
-        try:
-            mode = os.stat(key_path).st_mode & 0o777
-            if mode & 0o077:
-                os.chmod(key_path, 0o600)
-        except OSError:
-            pass
+            raise RuntimeError(f"Node device key not found at {key_path}. Re-provision the container to generate it.")
+        pem = key_path.read_text(encoding="ascii")
         return _load_private_key(pem)
 
     async def connect(self) -> dict:

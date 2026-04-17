@@ -83,14 +83,8 @@ async def handle_node_connect(
     client_params["displayName"] = f"{display_name} | Isol8 Desktop"
     connect_params["client"] = client_params
 
-    # user_id (member) vs owner_id (org/container): different in multi-member
-    # orgs. If we keyed the device identity off owner_id, every member in an
-    # org would load the same EFS key → same nodeId → gateway NodeRegistry
-    # couldn't distinguish Alice's Mac from Bob's Mac. Scoping by user_id
-    # under the owner's tree gives each member a distinct Ed25519 identity.
     upstream = NodeUpstreamConnection(
-        user_id=user_id,
-        owner_id=owner_id,
+        user_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
         efs_mount_path=settings.EFS_MOUNT_PATH,
