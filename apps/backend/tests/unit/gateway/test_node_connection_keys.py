@@ -192,6 +192,46 @@ def test_second_generator_for_same_path_is_noop(tmp_path):
     assert first == second, "second generate must not overwrite"
 
 
+def test_concurrent_paired_json_writers_all_land(tmp_path):
+    """Regression: fcntl.lockf is process-scoped, not thread-scoped. Two
+    asyncio.to_thread workers in the same process could both pass the fcntl
+    lock simultaneously and race the RMW, with os.rename dropping the other
+    writer's entry. The fix adds a per-owner threading.Lock.
+
+    This test runs N threads concurrently against the same owner's
+    paired.json. Without the threading lock the number of entries landing
+    is typically < N (last-writer-wins on rename). With the lock, all N
+    entries land."""
+    import concurrent.futures
+
+    from core.containers.config import ensure_node_paired_entry
+
+    root = tmp_path / "efs"
+    root.mkdir()
+    owner = "org_concurrent"
+
+    N = 20
+
+    def register(i: int) -> bool:
+        return ensure_node_paired_entry(
+            efs_mount_path=str(root),
+            owner_id=owner,
+            device_id=f"dev-{i:04d}",
+            public_key_b64=f"pub-{i:04d}",
+        )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=N) as ex:
+        results = list(ex.map(register, range(N)))
+
+    assert all(results), "every registration should have added a new entry"
+
+    paired = json.loads((root / owner / "devices" / "paired.json").read_text())
+    registered_ids = set(paired.keys())
+    expected = {f"dev-{i:04d}" for i in range(N)}
+    missing = expected - registered_ids
+    assert not missing, f"{len(missing)} entries lost under concurrent RMW: {sorted(missing)[:5]}..."
+
+
 def test_device_id_in_paired_matches_handshake_id(efs_root):
     """The device_id we register in paired.json must equal what
     _build_device_identity will compute — the gateway compares these."""
