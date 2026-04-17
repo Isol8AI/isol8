@@ -506,7 +506,10 @@ class TestStartUserService:
     @pytest.mark.asyncio
     async def test_start_scales_to_one(self, manager, mock_ecs_client):
         """start_user_service calls update_service with desiredCount=1 and force."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
@@ -546,7 +549,10 @@ class TestStartUserService:
     @pytest.mark.asyncio
     async def test_start_no_db_record(self, manager, mock_ecs_client):
         """start_user_service with no repo record still calls ECS."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
             mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             await manager.start_user_service("user_test_123")
@@ -562,8 +568,9 @@ class TestStartUserService:
             "UpdateService",
         )
 
-        with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
-            await manager.start_user_service("user_test_123")
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
+                await manager.start_user_service("user_test_123")
 
 
 # ---------------------------------------------------------------------------
