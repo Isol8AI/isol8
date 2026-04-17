@@ -3,6 +3,7 @@ import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { deprovisionIfExists, waitForRunning } from './helpers/provision';
 import { markUserOnboarded } from './helpers/clerk';
+import { dismissChannelSetupIfPresent } from './helpers/onboarding';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
 const E2E_EMAIL = 'isol8-e2e-testing@mailsac.com';
@@ -243,6 +244,10 @@ test.describe('E2E Gate: Full User Journey', () => {
       // and the gateway pool is healthy.
       await sharedPage.getByText('Connected').waitFor({ state: 'visible', timeout: 60_000 });
     }, { timeout: 90_000 });
+
+    await test.step('Dismiss channel setup wizard if present', async () => {
+      await dismissChannelSetupIfPresent(sharedPage);
+    }, { timeout: 15_000 });
 
     await test.step('Send a message and receive a response', async () => {
       // Type a simple message into the chat input
