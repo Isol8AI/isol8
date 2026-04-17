@@ -72,9 +72,27 @@ const SAFE_BINS: &[&str] = &[
     "sw_vers", "system_profiler",
 ];
 
-/// Shell wrappers that need special handling — the inline command
-/// needs to be checked, not just the wrapper binary.
-const SHELL_WRAPPERS: &[&str] = &["sh", "bash", "zsh", "fish", "dash"];
+/// Binaries that can execute arbitrary inline code via a flag. When invoked
+/// this way, the PAYLOAD is the real instruction — approving `bash` once
+/// must NOT grant a blanket allow for every future `bash -c <anything>`.
+/// The approval key for these includes the inline payload (see
+/// `approval_key_for`), so each distinct inline command prompts separately.
+///
+/// `(binary, flags_that_take_inline_code)`
+const INLINE_CODE_WRAPPERS: &[(&str, &[&str])] = &[
+    ("sh", &["-c"]),
+    ("bash", &["-c"]),
+    ("zsh", &["-c"]),
+    ("fish", &["-c"]),
+    ("dash", &["-c"]),
+    ("ksh", &["-c"]),
+    ("python", &["-c"]),
+    ("python3", &["-c"]),
+    ("python2", &["-c"]),
+    ("node", &["-e", "--eval", "-p", "--print"]),
+    ("ruby", &["-e"]),
+    ("perl", &["-e", "-E"]),
+];
 
 lazy_static::lazy_static! {
     static ref STORE: Mutex<ApprovalStore> = Mutex::new(load_store());
@@ -100,34 +118,31 @@ fn check_allowlist(argv: &[String]) -> Result<(), String> {
 
     let binary = extract_binary_name(&argv[0]);
 
-    // Check if it's a safe binary
-    if SAFE_BIN_SET.contains(&binary) {
-        // Shell wrappers need special handling: check the inline command too
-        if SHELL_WRAPPERS.contains(&binary.as_str()) {
-            // sh -c "command" — check if the inline command is safe
-            if let Some(inline_cmd) = extract_shell_inline_command(argv) {
-                let inline_binary = extract_binary_name(&inline_cmd);
-                if SAFE_BIN_SET.contains(&inline_binary) {
-                    return Ok(());
-                }
-                // Inline command not in safe list — check always-allowed
-                let store = STORE.lock().unwrap();
-                let key = format_approval_key(argv);
-                if store.always_allowed.contains(&key) {
-                    return Ok(());
-                }
-                if store.denied.contains(&key) {
-                    return Err(format!("Command denied by user: {}", argv.join(" ")));
-                }
-                return Err(format!("APPROVAL_REQUIRED:{}", key));
-            }
+    // Inline-code invocations (e.g. `bash -c ...`, `python -c ...`, `node -e ...`)
+    // NEVER auto-approve by binary name. The payload is the real instruction,
+    // so the approval key includes it — each distinct inline command is a
+    // distinct approval. This blocks the "Allow Always for bash" loophole.
+    let inline_payload = extract_inline_code(&binary, argv);
+    if inline_payload.is_some() {
+        let key = approval_key_for(argv);
+        let store = STORE.lock().unwrap();
+        if store.always_allowed.contains(&key) {
+            return Ok(());
         }
+        if store.denied.contains(&key) {
+            return Err(format!("Command denied by user: {}", argv.join(" ")));
+        }
+        return Err(format!("APPROVAL_REQUIRED:{}", key));
+    }
+
+    // Non-inline invocation: safe binaries auto-approve.
+    if SAFE_BIN_SET.contains(&binary) {
         return Ok(());
     }
 
-    // Check always-allowed store
+    // Unknown binary: check user-recorded decisions.
     let store = STORE.lock().unwrap();
-    let key = format_approval_key(argv);
+    let key = approval_key_for(argv);
     if store.always_allowed.contains(&key) {
         return Ok(());
     }
@@ -141,7 +156,7 @@ fn check_allowlist(argv: &[String]) -> Result<(), String> {
 
 /// Record a user's approval decision.
 pub fn record_decision(argv: &[String], decision: ApprovalDecision) {
-    let key = format_approval_key(argv);
+    let key = approval_key_for(argv);
     let mut store = STORE.lock().unwrap();
     match decision {
         ApprovalDecision::AllowOnce => {
@@ -176,19 +191,36 @@ fn extract_binary_name(cmd: &str) -> String {
         .to_lowercase()
 }
 
-fn extract_shell_inline_command(argv: &[String]) -> Option<String> {
-    // Pattern: sh -c "command args..."
-    if argv.len() >= 3 && argv[1] == "-c" {
-        let cmd = argv[2..].join(" ");
-        // Extract the first word of the inline command
-        return cmd.split_whitespace().next().map(|s| s.to_string());
+/// Return the inline-code payload if `argv` invokes a known wrapper in
+/// inline-eval mode, else None. Matches the first occurrence of any
+/// wrapper-specific flag; the payload is the immediately following arg.
+fn extract_inline_code(binary: &str, argv: &[String]) -> Option<String> {
+    let flags = INLINE_CODE_WRAPPERS
+        .iter()
+        .find(|(b, _)| *b == binary)
+        .map(|(_, f)| *f)?;
+    let mut i = 1;
+    while i + 1 < argv.len() {
+        if flags.contains(&argv[i].as_str()) {
+            return Some(argv[i + 1].clone());
+        }
+        i += 1;
     }
     None
 }
 
-fn format_approval_key(argv: &[String]) -> String {
-    // Key is the binary name (not full path) for simpler matching
-    extract_binary_name(&argv[0])
+/// Build the approval-store key for `argv`. For inline-code invocations this
+/// includes the payload so each distinct command is its own approval; for
+/// everything else it's the binary name.
+fn approval_key_for(argv: &[String]) -> String {
+    if argv.is_empty() {
+        return String::new();
+    }
+    let binary = extract_binary_name(&argv[0]);
+    match extract_inline_code(&binary, argv) {
+        Some(inline) => format!("{}:inline:{}", binary, inline),
+        None => binary,
+    }
 }
 
 fn store_path() -> PathBuf {
@@ -214,5 +246,85 @@ fn save_store(store: &ApprovalStore) {
     }
     if let Ok(json) = serde_json::to_string_pretty(store) {
         let _ = std::fs::write(&path, json);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn key_for_plain_binary_is_just_the_name() {
+        assert_eq!(approval_key_for(&argv(&["git", "status"])), "git");
+        assert_eq!(approval_key_for(&argv(&["/usr/bin/git", "log"])), "git");
+    }
+
+    #[test]
+    fn key_for_inline_shell_includes_payload() {
+        let k1 = approval_key_for(&argv(&["bash", "-c", "rm -rf /tmp/foo"]));
+        let k2 = approval_key_for(&argv(&["bash", "-c", "echo hello"]));
+        assert_eq!(k1, "bash:inline:rm -rf /tmp/foo");
+        assert_eq!(k2, "bash:inline:echo hello");
+        assert_ne!(k1, k2, "different inline commands must produce different keys");
+    }
+
+    #[test]
+    fn key_for_node_eval_includes_payload() {
+        let k = approval_key_for(&argv(&["node", "-e", "require('fs').unlinkSync('x')"]));
+        assert_eq!(k, "node:inline:require('fs').unlinkSync('x')");
+    }
+
+    #[test]
+    fn key_for_python_dash_c_includes_payload() {
+        let k = approval_key_for(&argv(&["python3", "-c", "import os; os.system('ls')"]));
+        assert_eq!(k, "python3:inline:import os; os.system('ls')");
+    }
+
+    #[test]
+    fn inline_wrapper_never_auto_approved_by_binary_name() {
+        // Even though `node` is a SAFE_BIN, `node -e <code>` must require
+        // explicit approval — otherwise any inline code auto-runs.
+        let result = check_allowlist(&argv(&["node", "-e", "console.log(1)"]));
+        assert!(
+            matches!(result, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:node:inline:")),
+            "expected APPROVAL_REQUIRED for node -e, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn plain_safe_bin_still_auto_approved() {
+        assert!(check_allowlist(&argv(&["git", "status"])).is_ok());
+        assert!(check_allowlist(&argv(&["ls", "-la"])).is_ok());
+    }
+
+    #[test]
+    fn allow_always_on_one_inline_does_not_leak_to_another() {
+        // Manually seed the store to simulate "Allow Always" on one command.
+        {
+            let mut store = STORE.lock().unwrap();
+            store
+                .always_allowed
+                .insert("bash:inline:echo approved".to_string());
+        }
+        // The exact command is allowed...
+        assert!(check_allowlist(&argv(&["bash", "-c", "echo approved"])).is_ok());
+        // ...but a different inline payload is not.
+        let other = check_allowlist(&argv(&["bash", "-c", "echo different"]));
+        assert!(
+            matches!(other, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:")),
+            "different payload must re-prompt, got {:?}",
+            other
+        );
+        // Clean up so other tests don't see this entry.
+        STORE
+            .lock()
+            .unwrap()
+            .always_allowed
+            .remove("bash:inline:echo approved");
     }
 }

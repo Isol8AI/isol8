@@ -622,11 +622,14 @@ async def _process_agent_chat_background(
             node_id = node_info["nodeId"]
             cached = get_patched_session(session_key)
             if cached != node_id:
-                # Patch the session to bind exec to this user's node
+                # Patch the session to bind exec to this user's node.
+                # req_id MUST be unique per call — the connection pool keys
+                # pending-response futures by req_id and a duplicate ID
+                # orphans the earlier future, hanging one caller 30s.
                 try:
                     await pool.send_rpc(
                         user_id=owner_id,
-                        req_id=f"bind-node-{session_key[:40]}",
+                        req_id=f"bind-node-{uuid4()}",
                         method="sessions.patch",
                         params={
                             "sessionKey": session_key,
