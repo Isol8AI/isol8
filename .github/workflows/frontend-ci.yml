@@ -45,3 +45,50 @@ jobs:
           NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_API_URL: https://api-dev.isol8.co/api/v1
         run: pnpm --filter @isol8/frontend run build
+
+  chat-smoke:
+    name: Chat Smoke (dev)
+    runs-on: ubuntu-latest
+    # Serialize smoke runs across PRs so two concurrent runs don't both sign in
+    # as the E2E user and race on the shared container. cancel-in-progress:false
+    # queues rather than cancels, so no PR loses its smoke run.
+    concurrency:
+      group: chat-smoke-dev
+      cancel-in-progress: false
+    # Fork PRs don't get access to secrets; skip cleanly rather than fail.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright browsers
+        run: cd apps/frontend && npx playwright install chromium --with-deps
+
+      - name: Run chat smoke test
+        run: cd apps/frontend && npx playwright test --project=chromium --grep='Chat Smoke'
+        env:
+          BASE_URL: https://dev.isol8.co
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}
+          CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY_DEV }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+
+      - name: Upload Playwright report
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: chat-smoke-report
+          path: apps/frontend/playwright-report/
+          retention-days: 7
