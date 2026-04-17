@@ -74,9 +74,11 @@ RUN git clone --depth=1 https://github.com/Yakitrak/notesmd-cli.git /tmp/notesmd
     rm -rf /tmp/notesmd /root/.cache/go-build
 
 # ---- Layer 8b: openhue ----
+# `make build` requires GoReleaser, which is overkill (it builds release
+# artifacts for multiple platforms). For a single linux/amd64 binary,
+# `go build` from the repo root works directly.
 RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue && \
-    cd /tmp/openhue && make build && \
-    install -m 755 /tmp/openhue/openhue /usr/local/bin/openhue && \
+    cd /tmp/openhue && go build -o /usr/local/bin/openhue . && \
     rm -rf /tmp/openhue /root/.cache/go-build
 
 # ---- Layer 9: himalaya (pre-built binary via install.sh) ----
