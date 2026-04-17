@@ -12,7 +12,17 @@ import { Construct } from "constructs";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
-const OPENCLAW_VERSION: { full: string; image: string; tag: string } = JSON.parse(
+type OpenClawVersionConfig = {
+  upstream: string;
+  image: string;
+  tag: string;
+  full: string;
+  extendedImage: string;
+  dev: { tag: string };
+  prod: { tag: string };
+  notes?: string;
+};
+const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"), "utf8"),
 );
 
@@ -211,30 +221,30 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
-    // Startup command installs runtime dependencies before launching the
-    // OpenClaw gateway.  Mirrors the Terraform task definition in
-    // apps/terraform/modules/ecs/main.tf so both infra paths stay in sync.
+    // Startup command — almost everything (apt packages, pip, npm globals,
+    // gh, uv) is now baked into the extended OpenClaw image. We only:
+    //   1. Install markdown-converter via clawhub (lives at clawhub.com,
+    //      not bundled in the image — landing dir comes from
+    //      CLAWHUB_WORKDIR=/home/node/.openclaw, set as a container env var).
+    //   2. Launch the gateway.
+    // Cold-start drops from ~30s to ~5s.
     const startupCommand = [
-      // System packages
-      "apt-get update -qq && apt-get install -y -qq socat python3-pip sqlite3 build-essential python3 > /dev/null 2>&1",
-      "pip install --break-system-packages websockets > /dev/null 2>&1",
-      // npm global prefix + PATH for the node user
-      "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH",
-      // npm packages: MCP bridge, skill hub, OpenAI compat, QMD memory backend
-      "npm i -g --ignore-scripts mcporter clawhub openai 2>/dev/null",
-      "npm i -g @tobilu/qmd 2>/dev/null",
-      // GitHub CLI
-      'GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null',
-      // uv (Python package manager)
-      "wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH",
-      // Bundled skills
       "clawhub install markdown-converter --no-input 2>/dev/null",
-      // Launch gateway
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
 
+    // Image selection: use the extended ECR image once the per-env tag has been
+    // promoted past the "bootstrap" placeholder. Until then, fall back to the
+    // legacy upstream image so the env keeps deploying. This lets us flip dev
+    // and prod independently via openclaw-version.json bumps without coupling.
+    const envTag = OPENCLAW_VERSION[props.environment as "dev" | "prod"].tag;
+    const containerImage =
+      envTag === "bootstrap"
+        ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
+        : ecs.ContainerImage.fromEcrRepository(this.openclawExtendedRepo, envTag);
+
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full),
+      image: containerImage,
       essential: true,
       command: ["sh", "-c", startupCommand],
       user: "0:0",
