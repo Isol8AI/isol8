@@ -244,13 +244,30 @@ fn extract_inline_code(binary: &str, argv: &[String]) -> Option<String> {
             continue;
         }
 
-        // Short form: -c, -lc, -Ec, etc. Scan each letter after the dash;
-        // if ANY matches a short_letter, treat the next argv element as
-        // the inline payload (matches real shell/interpreter behavior
-        // under option clustering).
+        // Short form: -c, -lc, -Ec, -cPAYLOAD, -lcPAYLOAD, etc.
+        //
+        // Per POSIX/getopt, an arg-taking short option can have its value
+        // ATTACHED to the flag token. Both `python3 -c CODE` and
+        // `python3 -cCODE` are valid, same for `node -eCODE` and
+        // `ruby -eCODE`. Under clustering the value attaches to the last
+        // letter: `bash -lcCODE` = `-l -c CODE`. Only matching on the
+        // "next argv element" misses these attached forms and lets them
+        // slip past the inline-approval path — since python/node/ruby are
+        // in SAFE_BINS, they'd auto-run arbitrary code with no prompt.
+        //
+        // So: walk the letters. If we see a short_letter and there's more
+        // text after it in this token, that text IS the payload. Otherwise
+        // the payload is the next argv element.
         if let Some(letters) = arg.strip_prefix('-').filter(|s| !s.is_empty() && !s.starts_with('-')) {
-            for c in letters.chars() {
+            let bytes = letters.as_bytes();
+            for (idx, c) in letters.char_indices() {
                 if cfg.short_letters.contains(&c) {
+                    let after = idx + c.len_utf8();
+                    if after < bytes.len() {
+                        // Attached payload: -cCODE / -lcCODE
+                        return Some(letters[after..].to_string());
+                    }
+                    // Bare flag; payload is the next argv element.
                     return argv.get(i + 1).cloned();
                 }
             }
@@ -443,6 +460,48 @@ mod tests {
             other
         );
         STORE.lock().unwrap().always_allowed.remove(&seeded);
+    }
+
+    #[test]
+    fn attached_short_flag_payload_detected_as_inline() {
+        // getopt-style: short option with required argument can have the
+        // value attached to the flag token. `python3 -cCODE`, `node -eCODE`
+        // etc. are valid at runtime. If we don't recognize these as inline,
+        // SAFE_BIN auto-approval runs arbitrary code with no prompt.
+        let k_py = approval_key_for(&argv(&["/usr/bin/python3", "-cprint(1)"]));
+        assert_eq!(k_py, "/usr/bin/python3:inline:print(1)");
+
+        let k_node = approval_key_for(&argv(&["/usr/local/bin/node", "-econsole.log(2)"]));
+        assert_eq!(k_node, "/usr/local/bin/node:inline:console.log(2)");
+
+        let k_ruby = approval_key_for(&argv(&["/usr/bin/ruby", "-eputs(1)"]));
+        assert_eq!(k_ruby, "/usr/bin/ruby:inline:puts(1)");
+
+        let k_perl = approval_key_for(&argv(&["/usr/bin/perl", "-Eprint 1"]));
+        assert_eq!(k_perl, "/usr/bin/perl:inline:print 1");
+    }
+
+    #[test]
+    fn attached_payload_after_clustered_flags_detected() {
+        // Clustering + attached payload: `bash -lcCODE` = `-l -c CODE`.
+        let k = approval_key_for(&argv(&["/bin/bash", "-lcrm -rf /"]));
+        assert_eq!(k, "/bin/bash:inline:rm -rf /");
+
+        // python `-Bcimport os`: -B then -c with payload "import os"
+        let k2 = approval_key_for(&argv(&["/usr/bin/python3", "-Bcimport os"]));
+        assert_eq!(k2, "/usr/bin/python3:inline:import os");
+    }
+
+    #[test]
+    fn attached_payload_requires_approval() {
+        // End-to-end: the SAFE_BINS auto-approve path is NOT reached for
+        // attached inline invocations.
+        let result = check_allowlist(&argv(&["/usr/bin/python3", "-cos.system('x')"]));
+        assert!(
+            matches!(result, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:/usr/bin/python3:inline:")),
+            "attached python -c payload must require approval, got {:?}",
+            result
+        );
     }
 
     #[test]
