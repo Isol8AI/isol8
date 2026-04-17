@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 import { cancelSubscriptionIfExists, ensureBillingCustomer, createSubscription, waitForSubscriptionActive } from './helpers/stripe';
 import { waitForRunning } from './helpers/provision';
-import { markUserOnboarded } from './helpers/clerk';
+import { markUserNotOnboarded } from './helpers/clerk';
 import { dismissChannelSetupIfPresent } from './helpers/onboarding';
 
 const DEV_STARTER_PRICE_ID = 'price_1TF5MDI54BysGS3rlT80MMI8';
@@ -90,11 +90,13 @@ test.describe('E2E Gate: Full User Journey', () => {
     const { ticket, userId } = await createSignInToken();
     clerkUserId = userId;
 
-    // Force-set the onboarded flag on Clerk's unsafeMetadata. ChatLayout gates
-    // the chat UI on this flag; if it's false, ProvisioningStepper replaces the
-    // chat view and Step 5 can't find ChatInput. Must run before the browser
-    // activates the session so Clerk serves the fresh metadata on page load.
-    await markUserOnboarded(userId);
+    // Reset the onboarded flag on Clerk's unsafeMetadata so /chat redirects
+    // to /onboarding and the test exercises the real first-login flow. The
+    // flag is durable on the user, so without an explicit reset previous runs
+    // would leave it true and we'd skip onboarding. Must run before the
+    // browser activates the session so Clerk serves the fresh metadata on
+    // page load.
+    await markUserNotOnboarded(userId);
 
     // Use the ticket to create an authenticated session
     await sharedPage.evaluate(async (t: string) => {
@@ -146,13 +148,22 @@ test.describe('E2E Gate: Full User Journey', () => {
     // start a second drain cycle, causing long timeouts.
   });
 
-  test('Step 2: Auth', async () => {
-    test.setTimeout(60_000);
+  test('Step 2: Auth + Onboarding', async () => {
+    test.setTimeout(90_000);
     await test.step('Verify authenticated (not redirected to sign-in)', async () => {
-      // After cleanup, page may be on /chat or /onboarding — just confirm session is active
       const url = sharedPage.url();
       console.log('[e2e] Step 2 URL:', url);
       expect(url).not.toContain('/sign-in');
+    }, { timeout: 15_000 });
+
+    await test.step('Complete onboarding by clicking "Personal"', async () => {
+      // beforeAll reset unsafeMetadata.onboarded=false, so ChatLayout redirected
+      // us to /onboarding. Click "Personal" to exercise the real first-login
+      // flow: handlePersonal() flips onboarded=true, runs api.syncUser(), and
+      // redirects to /chat. This replaces the old markUserOnboarded shortcut.
+      await sharedPage.waitForURL(/\/onboarding/, { timeout: 30_000 });
+      await sharedPage.getByRole('button', { name: 'Personal' }).click();
+      await sharedPage.waitForURL(/\/chat/, { timeout: 30_000 });
     }, { timeout: 60_000 });
   });
 
@@ -185,13 +196,15 @@ test.describe('E2E Gate: Full User Journey', () => {
   test('Step 4: Provision container', async () => {
     test.setTimeout(14 * 60_000);
     await test.step('Ensure container exists', async () => {
-      // POST /debug/provision is idempotent — returns 200 if already provisioned.
-      // Retry on 503 (ECS service still rolling from CDK deploy).
+      // POST /container/provision is idempotent — returns 200 if already provisioned.
+      // Uses the real prod endpoint (ProvisioningStepper hits the same one) so
+      // this gate actually exercises the production provisioning path, not a
+      // dev-only shortcut. Retry on 503 (ECS service still rolling from CDK deploy).
       const deadline = Date.now() + 3 * 60_000;
       let lastStatus = 0;
       while (Date.now() < deadline) {
         const token = await getToken();
-        const res = await fetch(`${API_URL}/debug/provision`, {
+        const res = await fetch(`${API_URL}/container/provision`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token}` },
         });
