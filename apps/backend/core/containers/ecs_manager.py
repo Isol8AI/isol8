@@ -939,17 +939,22 @@ class EcsManager:
 
         Exits on one of four conditions:
 
-        1. Container is reachable (ECS task RUNNING + gateway port open):
-           write status=running, substatus=gateway_healthy, store task_arn,
-           return.
+        1. Container is reachable (ECS task from the PRIMARY deployment is
+           RUNNING + gateway port open): write status=running, substatus=
+           gateway_healthy, store task_arn, return.
         2. DDB status is no longer "provisioning" (external state change --
            admin stop, re-provision, reaper, etc.): return silently.
-        3. ECS deployment rolloutState=FAILED (circuit breaker tripped -- the
-           provision will never succeed): write status=error, return.
+        3. PRIMARY deployment rolloutState=FAILED (circuit breaker tripped --
+           the provision will never succeed): write status=error, return.
         4. asyncio.CancelledError (backend shutdown): propagate.
 
         No fixed timeout. The container can take 10s or 10 minutes to become
         healthy -- the poller keeps going until one of the above happens.
+
+        Forced-redeploy paths (resize, forceNewDeployment) have an OLD healthy
+        task while the NEW deployment rolls out. The poller filters tasks to
+        only those from the PRIMARY deployment so an old task can't cause a
+        premature status=running write that masks a failing new rollout.
         """
         while True:
             try:
@@ -960,8 +965,32 @@ class EcsManager:
 
                 service_name = container["service_name"]
 
-                # Try to find a healthy running task.
-                task_arn, ip = await self._poll_running_task(service_name)
+                # One describe_services per iteration covers both concerns:
+                # 1. primary deployment id -> startedBy filter for list_tasks
+                # 2. primary deployment rolloutState -> failure detection
+                primary = await self._get_primary_deployment(service_name)
+                if primary is None:
+                    # Transient state -- no PRIMARY deployment visible. Retry.
+                    await asyncio.sleep(interval_s)
+                    continue
+
+                if primary.get("rolloutState") == "FAILED":
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "error",
+                            "substatus": "deployment_failed",
+                        },
+                    )
+                    logger.error(
+                        "Deployment circuit breaker tripped for container %s (user=%s); marking error",
+                        service_name,
+                        user_id,
+                    )
+                    return
+
+                deployment_id = primary.get("id")
+                task_arn, ip = await self._poll_running_task(service_name, deployment_id)
                 if task_arn and ip and self.is_healthy(ip):
                     await container_repo.update_fields(
                         user_id,
@@ -979,24 +1008,6 @@ class EcsManager:
                     )
                     return
 
-                # No healthy task yet -- check whether the circuit breaker tripped.
-                # We only issue this describe_services call on the slow path so
-                # the happy path stays cheap (ECS DescribeServices is 20 req/s).
-                if await self._deployment_failed(service_name):
-                    await container_repo.update_fields(
-                        user_id,
-                        {
-                            "status": "error",
-                            "substatus": "deployment_failed",
-                        },
-                    )
-                    logger.error(
-                        "Deployment circuit breaker tripped for container %s (user=%s); marking error",
-                        service_name,
-                        user_id,
-                    )
-                    return
-
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -1007,16 +1018,50 @@ class EcsManager:
 
             await asyncio.sleep(interval_s)
 
-    async def _poll_running_task(self, service_name: str) -> tuple[str | None, str | None]:
-        """Find a RUNNING task for the service and return (task_arn, ip).
+    async def _get_primary_deployment(self, service_name: str) -> dict | None:
+        """Return the PRIMARY deployment dict for the service, or None if
+        unavailable. Primary is the deployment currently being rolled out or
+        most-recently-succeeded; there is at most one at any time.
 
-        Returns (None, None) when no RUNNING task has an IP yet. Caller uses
-        this to decide whether to check for circuit-breaker failure.
+        Returns None on transient ECS errors so the caller retries on the
+        next poll tick rather than flipping to error on a describe_services
+        hiccup.
         """
+        try:
+            resp = self._ecs.describe_services(
+                cluster=self._cluster,
+                services=[service_name],
+            )
+        except Exception:
+            logger.warning("describe_services failed for %s; will retry next tick", service_name)
+            return None
+
+        services = resp.get("services", [])
+        if not services:
+            return None
+        for deployment in services[0].get("deployments", []):
+            if deployment.get("status") == "PRIMARY":
+                return deployment
+        return None
+
+    async def _poll_running_task(self, service_name: str, deployment_id: str | None) -> tuple[str | None, str | None]:
+        """Find a RUNNING task from the given deployment and return (task_arn, ip).
+
+        Filters list_tasks by startedBy=<deployment-id> so old drain-phase
+        tasks from a previous deployment are excluded. If deployment_id is
+        None (defensive: no PRIMARY visible), returns (None, None).
+
+        Returns (None, None) when no RUNNING task has an IP yet. Caller
+        uses this as "not ready yet" and sleeps another tick.
+        """
+        if not deployment_id:
+            return None, None
+
         list_resp = self._ecs.list_tasks(
             cluster=self._cluster,
             serviceName=service_name,
             desiredStatus="RUNNING",
+            startedBy=deployment_id,
         )
         task_arns = list_resp.get("taskArns", [])
         if not task_arns:
@@ -1037,25 +1082,6 @@ class EcsManager:
                 if detail.get("name") == "privateIPv4Address":
                     return task_arns[0], detail.get("value")
         return None, None
-
-    async def _deployment_failed(self, service_name: str) -> bool:
-        """True when ECS has marked the service's latest deployment FAILED."""
-        try:
-            resp = self._ecs.describe_services(
-                cluster=self._cluster,
-                services=[service_name],
-            )
-            services = resp.get("services", [])
-            if not services:
-                return False
-            deployments = services[0].get("deployments", [])
-            if not deployments:
-                return False
-            return deployments[0].get("rolloutState") == "FAILED"
-        except Exception:
-            # If describe_services fails, don't flip to error -- retry next cycle.
-            logger.warning("describe_services failed for %s; assuming not-failed", service_name)
-            return False
 
     async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.

@@ -57,7 +57,7 @@ def mock_ecs_client():
         "services": [
             {
                 "serviceName": "openclaw-user_test_123-f4ae64abb2db",
-                "deployments": [{"rolloutState": "IN_PROGRESS"}],
+                "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
             }
         ]
     }
@@ -980,7 +980,9 @@ class TestAwaitRunningTransition:
         after N failed task placements, so we know the provision will never
         succeed on its own (bad image, crash loop, etc.)."""
         mock_ecs_client.list_tasks.return_value = {"taskArns": []}
-        mock_ecs_client.describe_services.return_value = {"services": [{"deployments": [{"rolloutState": "FAILED"}]}]}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "FAILED"}]}]
+        }
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
@@ -1064,11 +1066,10 @@ class TestAwaitRunningTransition:
             assert fields["status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_skips_describe_services_on_happy_path(self, manager, mock_ecs_client):
-        """When a healthy task is found immediately, we should NOT call
-        describe_services -- that call is only needed when we're waiting and
-        need to check for failure. Avoids hitting the 20 req/s limit on
-        describe_services when many containers are provisioning concurrently."""
+    async def test_one_describe_services_per_iteration_on_happy_path(self, manager, mock_ecs_client):
+        """describe_services consolidates two concerns (primary-deployment
+        filter + rolloutState failure detection) so a happy-path transition
+        costs one describe_services + one list_tasks + one describe_tasks."""
         mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
         mock_ecs_client.describe_tasks.return_value = {
             "tasks": [
@@ -1094,7 +1095,162 @@ class TestAwaitRunningTransition:
 
             await manager._await_running_transition("user_test_123")
 
-            mock_ecs_client.describe_services.assert_not_called()
+            assert mock_ecs_client.describe_services.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_filters_running_tasks_by_primary_deployment(self, manager, mock_ecs_client):
+        """During a forced redeploy, the OLD task is still RUNNING while the
+        NEW deployment rolls out. _poll_running_task MUST only consider tasks
+        from the current PRIMARY deployment -- picking the old task would
+        flip status=running using the pre-deploy task_arn and mask a failing
+        rollout.
+
+        Filter mechanism: pass startedBy=<primary-deployment-id> to list_tasks.
+        ECS tags service-launched tasks with startedBy=ecs-svc/<deployment-id>.
+        """
+        # describe_services returns one PRIMARY and one ACTIVE (draining) deployment.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                        {
+                            "id": "ecs-svc/old",
+                            "status": "ACTIVE",
+                            "rolloutState": "COMPLETED",
+                        },
+                    ]
+                }
+            ]
+        }
+
+        # list_tasks should be called with startedBy pointing at the PRIMARY.
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.99"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # list_tasks must have been called with startedBy=<primary-id>.
+            list_kwargs = mock_ecs_client.list_tasks.call_args.kwargs
+            assert list_kwargs.get("startedBy") == "ecs-svc/new", (
+                f"Expected startedBy='ecs-svc/new', got {list_kwargs.get('startedBy')!r}. "
+                "Must filter to the PRIMARY deployment's tasks so an old "
+                "drain-phase task doesn't trigger a premature status=running."
+            )
+
+            # With the filter correctly applied, the new task's ARN is recorded.
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/new-task"
+
+    @pytest.mark.asyncio
+    async def test_no_primary_deployment_keeps_polling(self, manager, mock_ecs_client):
+        """If describe_services returns no PRIMARY deployment (transient ECS
+        state during deployment churn), the poller should just sleep and
+        retry next iteration -- not write status=running or status=error."""
+        mock_ecs_client.describe_services.return_value = {"services": [{"deployments": []}]}
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        # Cancel after one sleep so the loop exits.
+        import asyncio as _asyncio
+
+        sleep_calls = [0]
+
+        async def count_and_cancel(*args, **kwargs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] >= 1:
+                raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=count_and_cancel),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            with pytest.raises(_asyncio.CancelledError):
+                await manager._await_running_transition("user_test_123")
+
+            # No status transition written either direction.
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detects_circuit_breaker_via_primary_deployment_rollout_state(self, manager, mock_ecs_client):
+        """rolloutState='FAILED' must be read from the PRIMARY deployment
+        specifically, not from deployments[0] blindly. During a rollout,
+        the ACTIVE (old) deployment can coexist with the new PRIMARY and
+        the list order is not guaranteed."""
+        import asyncio as _asyncio
+
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        # Draining old deployment listed first.
+                        {
+                            "id": "ecs-svc/old",
+                            "status": "ACTIVE",
+                            "rolloutState": "COMPLETED",
+                        },
+                        # New PRIMARY failed.
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "FAILED",
+                        },
+                    ]
+                }
+            ]
+        }
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        # If the implementation incorrectly reads deployments[0] and misses
+        # the FAILED PRIMARY, the loop would spin forever -- cancel after a
+        # few sleeps so the test fails loudly instead of hanging.
+        sleep_count = [0]
+
+        async def cancel_after_a_few(*args, **kwargs):
+            sleep_count[0] += 1
+            if sleep_count[0] > 3:
+                raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=cancel_after_a_few),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            # Expected: implementation finds FAILED PRIMARY -> writes error -> returns
+            # without ever reaching the cancellation guard.
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_respects_cancellation(self, manager, mock_ecs_client):
@@ -1105,7 +1261,9 @@ class TestAwaitRunningTransition:
 
         mock_ecs_client.list_tasks.return_value = {"taskArns": []}
         mock_ecs_client.describe_services.return_value = {
-            "services": [{"deployments": [{"rolloutState": "IN_PROGRESS"}]}]
+            "services": [
+                {"deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}]}
+            ]
         }
 
         # asyncio.sleep raises CancelledError inside the poller loop.
