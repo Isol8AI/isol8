@@ -493,6 +493,13 @@ class EcsManager:
                 new_memory,
                 new_image,
             )
+
+            # Fire the durable transition poller. resize sets status=provisioning
+            # via update_fields above and forces a new ECS deployment; without
+            # the poller, the row stays stuck at provisioning until the next
+            # backend restart's startup reconciler catches it.
+            asyncio.create_task(self._await_running_transition(user_id))
+
             return new_task_def_arn
 
         except EcsManagerError:
@@ -821,6 +828,10 @@ class EcsManager:
                     raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
 
                 put_metric("container.provision", dimensions={"status": "ok"})
+                # New deployment forces a fresh task; fire the poller so the
+                # row transitions back to status=running once the new task is
+                # healthy.
+                asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
             else:
@@ -839,6 +850,10 @@ class EcsManager:
                             "substatus": "starting",
                         },
                     )
+                # ECS is mid-launch for this service; fire the poller so the
+                # row transitions to status=running once the task becomes
+                # healthy.
+                asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
         # --- Scenario: No service exists -- full provisioning ---

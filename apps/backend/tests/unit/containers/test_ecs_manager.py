@@ -1097,3 +1097,115 @@ class TestAwaitRunningTransition:
                 await manager._await_running_transition("user_test_123")
 
             mock_repo.update_fields.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# resize_user_container (per-user CPU/memory/image update path)
+# ---------------------------------------------------------------------------
+
+
+class TestResizeUserContainer:
+    """Tests resize path fires the transition poller.
+
+    resize writes status=provisioning via update_fields + ECS forceNewDeployment.
+    Without firing the poller, the row stays stuck at provisioning until the
+    next backend restart catches it via the startup reconciler."""
+
+    @pytest.mark.asyncio
+    async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+
+# ---------------------------------------------------------------------------
+# provision_user_container (full provisioning flow + recovery branches)
+# ---------------------------------------------------------------------------
+
+
+class TestProvisionUserContainer:
+    """Tests for the recovery branches of provision_user_container that set
+    status=provisioning on an existing service row. Both branches must fire
+    the transition poller so the row drains back to status=running without
+    relying on the startup reconciler."""
+
+    @pytest.mark.asyncio
+    async def test_provision_redeploying_branch_fires_poller(self, manager, mock_ecs_client):
+        """When provision is called and the ECS service is already running,
+        the redeploying branch forces a new deployment and writes
+        status=provisioning. It MUST fire the poller so the row transitions
+        back to status=running once the new task is healthy."""
+        # Service exists with desired=1, running=1 -> redeploying branch.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_provision_ecs_starting_branch_fires_poller(self, manager, mock_ecs_client):
+        """When provision is called and ECS is mid-launch (desired=1, running=0),
+        the 'ECS is starting' branch writes status=provisioning and returns
+        without taking ECS action. It MUST fire the poller to drive the
+        transition once the task becomes healthy."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
