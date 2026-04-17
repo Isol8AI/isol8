@@ -35,10 +35,10 @@ RUN curl -sSL https://astral.sh/uv/install.sh | HOME=/tmp sh && \
     install -m 755 /tmp/.local/bin/uv /usr/local/bin/uv
 
 # ---- Layer 5: pip packages ----
-RUN pip install --break-system-packages openai-whisper websockets
-
-# ---- Layer 6: uv-installed skills ----
-RUN uv tool install --bin-dir /usr/local/bin nano-pdf
+# nano-pdf moved here from a uv-tool layer — uv tool install doesn't accept
+# --bin-dir, and pip puts entry points on PATH (/usr/local/bin via system
+# Python). One less flag, one less layer.
+RUN pip install --break-system-packages openai-whisper websockets nano-pdf
 
 # ---- Layer 7: Go-installed skills ----
 ENV GOPATH=/opt/go GOBIN=/usr/local/bin
