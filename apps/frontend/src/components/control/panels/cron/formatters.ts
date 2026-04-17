@@ -1,5 +1,6 @@
 // apps/frontend/src/components/control/panels/cron/formatters.ts
 import cronstrue from "cronstrue";
+import { parseDailyCronExpr, formatTime12h } from "./dailyPattern";
 import type { CronDelivery, CronSchedule, CronUsageSummary } from "./types";
 
 const CHANNEL_LABELS: Record<string, string> = {
@@ -9,6 +10,29 @@ const CHANNEL_LABELS: Record<string, string> = {
   whatsapp: "WhatsApp",
   signal: "Signal",
 };
+
+const DAY_SHORT_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/**
+ * Render a friendly summary for a "daily" cron pattern (matches
+ * `parseDailyCronExpr`). Returns null when the expression doesn't fit the
+ * Daily/Weekly preset; callers should fall back to the cronstrue path.
+ */
+function formatDailyCron(expr: string): string | null {
+  const parsed = parseDailyCronExpr(expr);
+  if (!parsed) return null;
+  const time = formatTime12h(parsed.hour, parsed.minute);
+  const days = parsed.daysOfWeek;
+  if (days.length === 7) return `Daily at ${time}`;
+  if (days.length === 5 && [1, 2, 3, 4, 5].every((d) => days.includes(d))) {
+    return `Weekdays at ${time}`;
+  }
+  if (days.length === 2 && days.includes(0) && days.includes(6)) {
+    return `Weekends at ${time}`;
+  }
+  const labels = days.map((d) => DAY_SHORT_NAMES[d]).join(", ");
+  return `${labels} at ${time}`;
+}
 
 export function formatSchedule(schedule: CronSchedule | undefined): string {
   if (!schedule) return "—";
@@ -32,6 +56,8 @@ export function formatSchedule(schedule: CronSchedule | undefined): string {
       return `every ${ms}ms`;
     }
     case "cron": {
+      const friendly = formatDailyCron(schedule.expr);
+      if (friendly) return schedule.tz ? `${friendly} (${schedule.tz})` : friendly;
       try {
         const text = cronstrue.toString(schedule.expr, {
           throwExceptionOnParseError: true,

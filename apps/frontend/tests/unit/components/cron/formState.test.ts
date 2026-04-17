@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   buildEditPayloadDiff,
+  buildSchedule,
   EMPTY_FORM,
   jobToForm,
   type FormState,
@@ -226,5 +227,115 @@ describe("jobToForm – local datetime (P1b)", () => {
     const pad = (n: number) => String(n).padStart(2, "0");
     const expected = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     expect(form.atDatetime).toBe(expected);
+  });
+});
+
+describe("buildSchedule – Daily/Weekly preset", () => {
+  it("default daily 9am every day → '0 9 * * *'", () => {
+    const schedule = buildSchedule({
+      ...EMPTY_FORM,
+      scheduleKind: "daily",
+      dailyTime: "09:00",
+      dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    });
+    expect(schedule).toEqual({ kind: "cron", expr: "0 9 * * *" });
+  });
+
+  it("daily weekdays 5pm → '0 17 * * 1,2,3,4,5'", () => {
+    const schedule = buildSchedule({
+      ...EMPTY_FORM,
+      scheduleKind: "daily",
+      dailyTime: "17:00",
+      dailyDaysOfWeek: [1, 2, 3, 4, 5],
+    });
+    expect(schedule).toEqual({ kind: "cron", expr: "0 17 * * 1,2,3,4,5" });
+  });
+
+  it("daily preserves cronTz when present (round-tripped from cron-with-tz)", () => {
+    const schedule = buildSchedule({
+      ...EMPTY_FORM,
+      scheduleKind: "daily",
+      dailyTime: "09:00",
+      dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+      cronTz: "America/New_York",
+    });
+    expect(schedule).toEqual({
+      kind: "cron",
+      expr: "0 9 * * *",
+      tz: "America/New_York",
+    });
+  });
+});
+
+describe("jobToForm – Daily/Weekly round-trip", () => {
+  it("loads '0 9 * * *' as daily, every day at 09:00", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "0 9 * * *" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("daily");
+    expect(form.dailyTime).toBe("09:00");
+    expect(form.dailyDaysOfWeek).toEqual([0, 1, 2, 3, 4, 5, 6]);
+  });
+
+  it("loads '30 17 * * 1-5' as daily weekdays at 17:30", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "30 17 * * 1-5" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("daily");
+    expect(form.dailyTime).toBe("17:30");
+    expect(form.dailyDaysOfWeek).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it("loads '0 9 * * 0,3,5' as daily on Sun/Wed/Fri", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "0 9 * * 0,3,5" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("daily");
+    expect(form.dailyDaysOfWeek).toEqual([0, 3, 5]);
+  });
+
+  it("falls through to 'cron' kind for non-matching expressions like '*/15 * * * *'", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "*/15 * * * *" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("cron");
+    expect(form.cronExpr).toBe("*/15 * * * *");
+  });
+
+  it("falls through to 'cron' kind for named days like '0 9 * * MON'", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "0 9 * * MON" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("cron");
+  });
+
+  it("falls through to 'cron' kind for stepped DOW like '0 9 * * */2'", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "0 9 * * */2" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("cron");
+  });
+
+  it("preserves the original expr+tz so flipping to Advanced reveals them", () => {
+    const job: CronJob = {
+      ...baseJob,
+      schedule: { kind: "cron", expr: "0 9 * * 1-5", tz: "America/New_York" },
+    };
+    const form = jobToForm(job);
+    expect(form.scheduleKind).toBe("daily");
+    expect(form.cronExpr).toBe("0 9 * * 1-5");
+    expect(form.cronTz).toBe("America/New_York");
   });
 });

@@ -13,6 +13,8 @@ const EMPTY: SchedulePickerFields = {
   everyValue: 30,
   everyUnit: "minutes",
   atDatetime: "",
+  dailyTime: "09:00",
+  dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
 };
 
 function renderPicker(overrides: Partial<SchedulePickerFields> = {}) {
@@ -122,5 +124,104 @@ describe("SchedulePicker", () => {
         cronExpr: "not-a-cron",
       }),
     ).toBe(false);
+  });
+
+  // --- Daily/Weekly preset ---
+
+  it("daily kind renders 7 day toggles and a time input with shared next-fires preview", () => {
+    renderPicker({
+      scheduleKind: "daily",
+      dailyTime: "09:00",
+      dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    });
+
+    const days = screen.getByTestId("schedule-picker-daily-days");
+    const buttons = within(days).getAllByRole("button");
+    expect(buttons).toHaveLength(7);
+
+    // All 7 days are pressed by default.
+    for (const b of buttons) {
+      expect(b.getAttribute("aria-pressed")).toBe("true");
+    }
+
+    const timeInput = screen.getByLabelText("Time of day") as HTMLInputElement;
+    expect(timeInput).toBeInTheDocument();
+    expect(timeInput.type).toBe("time");
+    expect(timeInput.value).toBe("09:00");
+
+    // Preview is shared with cron — daily synthesises an expression
+    // internally so the user sees the same live list of next fires.
+    const preview = screen.getByTestId("schedule-picker-next-fires");
+    expect(within(preview).getAllByRole("listitem")).toHaveLength(3);
+  });
+
+  it("daily quick-select chip 'Weekdays' replaces the day selection", () => {
+    const { onFieldChange } = renderPicker({
+      scheduleKind: "daily",
+      dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^Weekdays$/ }));
+    expect(onFieldChange).toHaveBeenCalledWith(
+      "dailyDaysOfWeek",
+      [1, 2, 3, 4, 5],
+    );
+  });
+
+  it("daily day-toggle button removes that day from the selection", () => {
+    const { onFieldChange } = renderPicker({
+      scheduleKind: "daily",
+      dailyDaysOfWeek: [0, 1, 2, 3, 4, 5, 6],
+    });
+
+    // Click Monday — should drop it.
+    fireEvent.click(screen.getByRole("button", { name: "Monday" }));
+    expect(onFieldChange).toHaveBeenCalledWith(
+      "dailyDaysOfWeek",
+      [0, 2, 3, 4, 5, 6],
+    );
+  });
+
+  it("scheduleIsValid: daily true with at least one day + valid time", () => {
+    expect(
+      scheduleIsValid({
+        ...EMPTY,
+        scheduleKind: "daily",
+        dailyTime: "09:00",
+        dailyDaysOfWeek: [1, 3, 5],
+      }),
+    ).toBe(true);
+  });
+
+  it("scheduleIsValid: daily false with empty days", () => {
+    expect(
+      scheduleIsValid({
+        ...EMPTY,
+        scheduleKind: "daily",
+        dailyTime: "09:00",
+        dailyDaysOfWeek: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("scheduleIsValid: daily false with malformed time", () => {
+    expect(
+      scheduleIsValid({
+        ...EMPTY,
+        scheduleKind: "daily",
+        dailyTime: "not-a-time",
+        dailyDaysOfWeek: [1],
+      }),
+    ).toBe(false);
+  });
+
+  // --- Tab order + labels ---
+
+  it("renders tabs in the order Daily/Weekly, Interval, One-time, Advanced", () => {
+    renderPicker();
+    const expected = ["Daily/Weekly", "Interval", "One-time", "Advanced"];
+    for (const label of expected) {
+      expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+    }
   });
 });

@@ -45,8 +45,16 @@ export function JobEditDialog({
 
   const deliveryValid =
     form.delivery?.mode !== "webhook" || isValidWebhookUrl(form.delivery?.to ?? "");
+  const failureAlertDeliveryValid =
+    !form.failureAlertEnabled ||
+    form.failureAlertDelivery?.mode !== "webhook" ||
+    isValidWebhookUrl(form.failureAlertDelivery?.to ?? "");
   const canSubmit =
-    !!form.name.trim() && !!form.message.trim() && scheduleIsValid(form) && deliveryValid;
+    !!form.name.trim() &&
+    !!form.message.trim() &&
+    scheduleIsValid(form) &&
+    deliveryValid &&
+    failureAlertDeliveryValid;
 
   const basicsBody = (
     <div className="space-y-4">
@@ -69,6 +77,8 @@ export function JobEditDialog({
         everyValue={form.everyValue}
         everyUnit={form.everyUnit}
         atDatetime={form.atDatetime}
+        dailyTime={form.dailyTime}
+        dailyDaysOfWeek={form.dailyDaysOfWeek}
         onFieldChange={(key, value) =>
           // SchedulePickerFields is a strict subset of FormState, so the
           // key/value pairing is always valid at runtime. TS can't prove the
