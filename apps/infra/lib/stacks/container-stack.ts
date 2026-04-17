@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -39,6 +40,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly taskExecutionRole: iam.Role;
   public readonly taskRole: iam.Role;
+  public readonly openclawExtendedRepo: ecr.Repository;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -268,6 +270,24 @@ export class ContainerStack extends cdk.Stack {
         transitEncryption: "ENABLED",
         authorizationConfig: { iam: "ENABLED" },
       },
+    });
+
+    // Extended OpenClaw image — built and pushed by
+    // .github/workflows/build-openclaw-image.yml. Per-env tags live in
+    // openclaw-version.json (extendedImage + dev.tag/prod.tag). After the
+    // extended-image migration completes, this stack reads the env-appropriate
+    // tag and uses it as the per-user container image.
+    this.openclawExtendedRepo = new ecr.Repository(this, "OpenclawExtendedRepo", {
+      repositoryName: "isol8/openclaw-extended",
+      imageScanOnPush: true,
+      imageTagMutability: ecr.TagMutability.IMMUTABLE,
+      lifecycleRules: [
+        {
+          description: "Keep the most recent 30 images",
+          maxImageCount: 30,
+        },
+      ],
+      removalPolicy: config.removalPolicy,
     });
   }
 }
