@@ -44,8 +44,15 @@ test.describe('E2E Gate: Full User Journey', () => {
   let sharedPage: Page;
   let clerkUserId: string;
 
-  /** Get a fresh Clerk JWT from the browser (tokens expire after 60s). */
+  /** Get a fresh Clerk JWT from the browser (tokens expire after 60s).
+   *  Waits for Clerk to be loaded and session to exist before requesting. */
   async function getToken(): Promise<string> {
+    // Ensure Clerk is loaded on the current page (may have navigated)
+    await sharedPage.waitForFunction(() => {
+      const w = window as Window & { Clerk?: { loaded?: boolean; session?: unknown } };
+      return w.Clerk?.loaded === true && w.Clerk?.session != null;
+    }, { timeout: 30_000 });
+
     return sharedPage.evaluate(async () => {
       const w = window as Window & { Clerk?: { session?: { getToken: () => Promise<string> } } };
       return (await w.Clerk?.session?.getToken()) ?? '';

@@ -7,7 +7,7 @@ test('landing page loads and redirects to chat', async ({ page }) => {
 
   // 2. Check for key landing page elements
   await expect(page).toHaveTitle(/isol8/); 
-  await expect(page.locator('h1')).toContainText('every part');
+  await expect(page.locator('h1')).toContainText('Deploy an agent');
 
   // Check for the "Start your pod" CTA
   const getStartedBtn = page.getByRole('link', { name: /Start your pod/i });
