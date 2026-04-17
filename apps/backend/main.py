@@ -19,8 +19,14 @@ from fastapi.responses import JSONResponse
 
 from core.auth import get_current_user
 from core.config import settings
-from core.containers import get_gateway_pool, startup_containers, shutdown_containers
+from core.containers import (
+    get_ecs_manager,
+    get_gateway_pool,
+    startup_containers,
+    shutdown_containers,
+)
 from core.observability.metrics import put_metric
+from core.repositories import container_repo
 from core.services.update_service import run_scheduled_worker
 from routers import (
     billing,
@@ -64,12 +70,37 @@ async def _safe_idle_checker():
         logger.warning("idle checker exited with exception", exc_info=True)
 
 
+async def _resume_provisioning_transitions() -> None:
+    """Resume the provisioning -> running poller for any containers that were
+    mid-transition when the backend last shut down.
+
+    ``_await_running_transition`` is an in-process asyncio task — a deploy or
+    crash kills it mid-poll. DDB ``status="provisioning"`` is the durable
+    marker that the transition hasn't completed; on startup we find those
+    rows and re-kick the poller. The poller itself is idempotent (if the
+    container is already healthy, the first iteration transitions it to
+    running and exits).
+    """
+    try:
+        rows = await container_repo.get_by_status("provisioning")
+    except Exception:
+        logger.warning("Could not resume provisioning transitions on startup", exc_info=True)
+        return
+
+    ecs = get_ecs_manager()
+    for row in rows:
+        owner_id = row["owner_id"]
+        asyncio.create_task(ecs._await_running_transition(owner_id))
+        logger.info("Resumed provisioning -> running poller for %s", owner_id)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
     # Startup
     logger.info("Starting application...")
     await startup_containers()
+    await _resume_provisioning_transitions()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
     idle_checker_task = asyncio.create_task(_safe_idle_checker())
