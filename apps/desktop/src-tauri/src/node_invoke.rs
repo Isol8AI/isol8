@@ -168,26 +168,18 @@ async fn handle_system_run(
         drop(child.stdin.take());
     }
 
-    // Take stdout/stderr handles so we can drain them concurrently with the wait,
-    // and still collect (partial) output if we have to kill the child on timeout.
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let stdout_task = tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        if let Some(pipe) = stdout_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-    let stderr_task = tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut buf = Vec::new();
-        if let Some(pipe) = stderr_pipe.as_mut() {
-            let _ = pipe.read_to_end(&mut buf).await;
-        }
-        buf
-    });
+    // Take stdout/stderr handles so we can drain them concurrently with the
+    // wait, and still collect (partial) output if we have to kill the child
+    // on timeout.
+    //
+    // Memory safety: we cap what we STORE at OUTPUT_CAP but keep reading past
+    // it so the child's pipe buffers don't fill and block it. A `yes` or
+    // `cat /dev/urandom` used to buffer gigabytes in the Vec before truncation
+    // and crash the desktop app (panic=abort in release).
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_task = tokio::spawn(async move { drain_with_cap(stdout_pipe).await });
+    let stderr_task = tokio::spawn(async move { drain_with_cap(stderr_pipe).await });
 
     // Wait for exit, with optional timeout. On timeout, kill the child so it
     // doesn't keep running on the user's Mac after the agent is told it timed out.
@@ -391,6 +383,37 @@ fn truncate_output(bytes: &[u8]) -> String {
         bytes
     };
     String::from_utf8_lossy(slice).into_owned()
+}
+
+/// Drain a child stdio pipe, keeping at most OUTPUT_CAP bytes in memory.
+/// Excess is read and discarded so the pipe doesn't back-pressure the child —
+/// otherwise a high-volume writer (yes, cat /dev/urandom) would either block
+/// forever or we'd have to kill the child to stop it. We also need the cap
+/// enforced *during* reads so we don't OOM before truncation.
+async fn drain_with_cap<R>(pipe: Option<R>) -> Vec<u8>
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::with_capacity(4096);
+    let Some(mut pipe) = pipe else { return buf };
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match pipe.read(&mut chunk).await {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                if buf.len() < OUTPUT_CAP {
+                    let remaining = OUTPUT_CAP - buf.len();
+                    let take = n.min(remaining);
+                    buf.extend_from_slice(&chunk[..take]);
+                }
+                // Past the cap: discard rest of this chunk (and future chunks),
+                // but keep draining so the child's pipe buffer doesn't fill.
+            }
+            Err(_) => break,
+        }
+    }
+    buf
 }
 
 fn sanitize_env() -> HashMap<String, String> {
