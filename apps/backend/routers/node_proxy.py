@@ -83,8 +83,13 @@ async def handle_node_connect(
     client_params["displayName"] = f"{display_name} | Isol8 Desktop"
     connect_params["client"] = client_params
 
+    # user_id (member) vs owner_id (org/container) — scope the device
+    # identity by user_id so org members each get a distinct nodeId. The
+    # upstream connect registers the per-member device in paired.json
+    # on first use so the gateway's pairing gate accepts it.
     upstream = NodeUpstreamConnection(
-        user_id=owner_id,
+        user_id=user_id,
+        owner_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
         efs_mount_path=settings.EFS_MOUNT_PATH,
