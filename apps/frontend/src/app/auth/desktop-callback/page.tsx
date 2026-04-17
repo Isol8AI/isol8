@@ -1,16 +1,16 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, SignIn } from "@clerk/nextjs";
 import { useEffect, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "https://api-dev.isol8.co/api/v1";
 
 export default function DesktopCallback() {
-  const { isSignedIn, getToken } = useAuth();
+  const { isLoaded, isSignedIn, getToken } = useAuth();
   const [status, setStatus] = useState("Signing in...");
 
   useEffect(() => {
-    if (!isSignedIn) return;
+    if (!isLoaded || !isSignedIn) return;
 
     async function getSignInToken() {
       try {
@@ -46,7 +46,18 @@ export default function DesktopCallback() {
     }
 
     getSignInToken();
-  }, [isSignedIn, getToken]);
+  }, [isLoaded, isSignedIn, getToken]);
+
+  if (isLoaded && !isSignedIn) {
+    return (
+      <div className="flex justify-center items-center h-screen">
+        <SignIn
+          forceRedirectUrl="/auth/desktop-callback"
+          appearance={{ elements: { rootBox: "mx-auto" } }}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="flex justify-center items-center h-screen">

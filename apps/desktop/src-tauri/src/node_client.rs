@@ -10,7 +10,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use tokio::sync::{mpsc, Mutex, oneshot};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use uuid::Uuid;
@@ -53,7 +53,9 @@ type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 type InvokeSender = mpsc::UnboundedSender<NodeInvokeRequest>;
 
 pub struct NodeClient {
-    url: String,
+    /// Shared so callers can update the URL (e.g. with a refreshed JWT) and
+    /// the next reconnect picks it up. Guard is never held across await.
+    url: Arc<RwLock<String>>,
     display_name: String,
     write_tx: Option<mpsc::UnboundedSender<Message>>,
     pending: PendingMap,
@@ -62,8 +64,18 @@ pub struct NodeClient {
 
 impl NodeClient {
     pub fn new(url: &str, display_name: &str) -> Self {
+        Self::with_shared_url(
+            Arc::new(RwLock::new(url.to_string())),
+            display_name,
+        )
+    }
+
+    /// Construct a client backed by a shared URL handle. Callers that need to
+    /// rotate the token can keep a clone of the Arc and write to it; the
+    /// connection loop re-reads before each reconnect.
+    pub fn with_shared_url(url: Arc<RwLock<String>>, display_name: &str) -> Self {
         Self {
-            url: url.to_string(),
+            url,
             display_name: display_name.to_string(),
             write_tx: None,
             pending: Arc::new(Mutex::new(HashMap::new())),
@@ -124,7 +136,7 @@ impl NodeClient {
 // --- Connection loop with reconnection ---
 
 async fn connection_loop(
-    url: String,
+    url: Arc<RwLock<String>>,
     display_name: String,
     write_tx: mpsc::UnboundedSender<Message>,
     mut write_rx: mpsc::UnboundedReceiver<Message>,
@@ -136,9 +148,12 @@ async fn connection_loop(
     let max_delay = std::time::Duration::from_secs(30);
 
     loop {
-        println!("[node-client] Connecting to {}...", url);
+        // Snapshot the current URL so a mid-connect token update is picked up
+        // on the very next reconnect attempt.
+        let current_url = url.read().unwrap().clone();
+        println!("[node-client] Connecting...");
 
-        match connect_async(&url).await {
+        match connect_async(&current_url).await {
             Ok((ws, _)) => {
                 println!("[node-client] WebSocket connected");
                 reconnect_delay = std::time::Duration::from_secs(1);

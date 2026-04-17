@@ -160,33 +160,57 @@ async fn handle_system_run(
         drop(child.stdin.take());
     }
 
-    // Wait with timeout
-    let timed_out;
-    let output = if let Some(timeout_ms) = params.timeout_ms {
+    // Take stdout/stderr handles so we can drain them concurrently with the wait,
+    // and still collect (partial) output if we have to kill the child on timeout.
+    let mut stdout_pipe = child.stdout.take();
+    let mut stderr_pipe = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(pipe) = stdout_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut buf = Vec::new();
+        if let Some(pipe) = stderr_pipe.as_mut() {
+            let _ = pipe.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+
+    // Wait for exit, with optional timeout. On timeout, kill the child so it
+    // doesn't keep running on the user's Mac after the agent is told it timed out.
+    let (exit_status, timed_out) = if let Some(timeout_ms) = params.timeout_ms {
         match tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
-            child.wait_with_output(),
+            child.wait(),
         )
         .await
         {
-            Ok(result) => {
-                timed_out = false;
-                result?
-            }
+            Ok(status) => (status?, false),
             Err(_) => {
-                // Timeout — we can't kill the child since wait_with_output consumed it.
-                // The future was dropped which should clean up the process.
-                timed_out = true;
-                std::process::Output {
-                    status: std::process::ExitStatus::default(),
-                    stdout: Vec::new(),
-                    stderr: b"Process timed out".to_vec(),
-                }
+                let _ = child.kill().await;
+                // wait() after kill reaps the zombie and gives us a real status.
+                let status = child.wait().await.unwrap_or_default();
+                (status, true)
             }
         }
     } else {
-        timed_out = false;
-        child.wait_with_output().await?
+        (child.wait().await?, false)
+    };
+
+    let stdout_bytes = stdout_task.await.unwrap_or_default();
+    let mut stderr_bytes = stderr_task.await.unwrap_or_default();
+    if timed_out && stderr_bytes.is_empty() {
+        stderr_bytes = b"Process timed out".to_vec();
+    }
+    let output = std::process::Output {
+        status: exit_status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
     };
 
     let stdout = truncate_output(&output.stdout);

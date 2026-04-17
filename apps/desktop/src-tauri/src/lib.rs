@@ -3,13 +3,16 @@ mod node_client;
 mod node_invoke;
 mod tray;
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, RwLock};
 use tauri::{Emitter, Manager, State, Url};
 use tauri_plugin_deep_link::DeepLinkExt;
 
 /// Shared auth token state
 pub struct AuthState {
     pub token: Mutex<Option<String>>,
+    /// Shared handle to the running node client's gateway URL. Updated whenever
+    /// a fresh JWT arrives so the next reconnect uses current auth.
+    pub gateway_url: Mutex<Option<Arc<RwLock<String>>>>,
 }
 
 /// Node connection status
@@ -41,17 +44,34 @@ fn send_auth_token(
     *t = Some(token.clone());
     log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
 
+    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
+    let new_gateway_url = format!("{}?token={}", ws_url, token);
+
+    // Rotate the running client's URL so the next reconnect uses the fresh
+    // token. Clerk refreshes JWTs well before expiry, so we want every update
+    // to propagate — not just the first one.
     if !is_first {
-        log("[auth] Token updated (node client already running)");
+        if let Ok(handle_guard) = state.gateway_url.lock() {
+            if let Some(handle) = handle_guard.as_ref() {
+                if let Ok(mut url) = handle.write() {
+                    *url = new_gateway_url;
+                    log("[auth] Rotated node client URL with fresh token");
+                }
+            }
+        }
         return Ok(());
     }
 
-    let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
+    // First token — create the shared URL handle, stash it in state, and spawn
+    // the node client.
+    let shared_url = Arc::new(RwLock::new(new_gateway_url));
+    if let Ok(mut handle_guard) = state.gateway_url.lock() {
+        *handle_guard = Some(shared_url.clone());
+    }
 
     let app_handle = app.clone();
-    let ws_url = ws_url.to_string();
     tauri::async_runtime::spawn(async move {
-        if let Err(e) = start_node_host(&app_handle, &ws_url, &token, &display_name).await {
+        if let Err(e) = start_node_host(&app_handle, shared_url, &display_name).await {
             log(&format!("[node] Failed to start: {}", e));
             update_node_status(&app_handle, "error");
         }
@@ -62,15 +82,13 @@ fn send_auth_token(
 
 async fn start_node_host(
     app: &tauri::AppHandle,
-    ws_url: &str,
-    clerk_jwt: &str,
+    gateway_url: Arc<RwLock<String>>,
     display_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     update_node_status(app, "connecting");
 
-    let gateway_url = format!("{}?token={}", ws_url, clerk_jwt);
-    log(&format!("[node] Connecting to {}", ws_url));
-    let mut client = node_client::NodeClient::new(&gateway_url, display_name);
+    log("[node] Starting node client");
+    let mut client = node_client::NodeClient::with_shared_url(gateway_url, display_name);
     let mut invoke_rx = client.start().await?;
 
     update_node_status(app, "connected");
@@ -146,6 +164,7 @@ pub fn run() {
         )
         .manage(AuthState {
             token: Mutex::new(None),
+            gateway_url: Mutex::new(None),
         })
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
