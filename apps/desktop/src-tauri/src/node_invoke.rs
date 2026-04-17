@@ -335,13 +335,16 @@ async fn handle_system_which(
 
     // Match OpenClaw's shape: { bins: { name: path } } containing ONLY the
     // names that resolved. See openclaw/src/node-host/invoke.ts:316-326.
+    // system.which has no caller-specified cwd; use HOME as the default
+    // target directory, same as handle_system_run's cwd fallback.
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
     let mut found: HashMap<String, String> = HashMap::new();
     for name in &params.names {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(path) = which(trimmed).await {
+        if let Some(path) = which(trimmed, &home).await {
             found.insert(trimmed.to_string(), path);
         }
     }
@@ -394,7 +397,7 @@ async fn prompt_exec_approval(command_preview: &str) -> ApprovalDecision {
 
 // --- Helpers ---
 
-async fn which(name: &str) -> Option<String> {
+async fn which(name: &str, cwd: &str) -> Option<String> {
     if Path::new(name).is_absolute() {
         if is_executable(name).await {
             return Some(name.into());
@@ -402,10 +405,28 @@ async fn which(name: &str) -> Option<String> {
         return None;
     }
 
+    // PATH entries may be relative (`.`, `bin`, `./scripts`). Historically
+    // we'd resolve these against the backend's process cwd, which is NOT
+    // the cwd the command will actually run in. That meant
+    // `which("tool")` could fail in the backend, leave argv[0] as the
+    // bare name, and the subsequent `Command::new("tool")
+    // .current_dir(cwd)` would find `cwd/./tool` at spawn time — bypassing
+    // the approval key that was computed against the bare name. Resolve
+    // relative PATH entries against the REQUESTED cwd so approval and
+    // execution see the same binary.
     let path_var = std::env::var("PATH").unwrap_or_default();
     for dir in path_var.split(':') {
-        let full_path = format!("{}/{}", dir, name);
+        let full_path = if Path::new(dir).is_absolute() {
+            format!("{}/{}", dir, name)
+        } else {
+            format!("{}/{}/{}", cwd, dir, name)
+        };
         if is_executable(&full_path).await {
+            // Canonicalize so `<cwd>/./tool` becomes `<cwd>/tool` — stable
+            // key across symlinks and redundant path components.
+            if let Ok(canon) = tokio::fs::canonicalize(&full_path).await {
+                return Some(canon.to_string_lossy().into_owned());
+            }
             return Some(full_path);
         }
     }
@@ -453,7 +474,7 @@ async fn resolve_argv0_absolute(argv: &[String], cwd: &str) -> Vec<String> {
             // will fail naturally.
             out[0] = combined.to_string_lossy().into_owned();
         }
-    } else if let Some(resolved) = which(argv0).await {
+    } else if let Some(resolved) = which(argv0, cwd).await {
         out[0] = resolved;
     }
 
@@ -596,6 +617,46 @@ mod resolve_tests {
             out[0]
         );
         assert_ne!(out[0], "./nonexistent", "must not leave bare relative");
+    }
+
+    #[tokio::test]
+    async fn bare_name_with_relative_path_entry_resolves_against_cwd() {
+        // If PATH contains a relative entry (say "."), `which("tool")` must
+        // resolve it relative to the REQUESTED cwd, not the backend's
+        // process cwd. Otherwise two different requested cwds with a
+        // "tool" binary in each would collapse to different resolutions
+        // at approval time vs exec time.
+        let tmp = tempfile::tempdir().unwrap();
+        let tool_path = tmp.path().join("widget");
+        tokio::fs::write(&tool_path, b"fake").await.unwrap();
+        // Mark executable.
+        let perms = std::os::unix::fs::PermissionsExt::from_mode(0o755);
+        tokio::fs::set_permissions(&tool_path, perms).await.unwrap();
+
+        // Force PATH to contain only "." so resolution has to use cwd.
+        // (Restore after the test — other tests may rely on real PATH.)
+        let original_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", ".");
+
+        let out = resolve_argv0_absolute(
+            &argv(&["widget", "run"]),
+            tmp.path().to_str().unwrap(),
+        )
+        .await;
+
+        // Restore PATH before any assertion that could panic.
+        if let Some(p) = original_path {
+            std::env::set_var("PATH", p);
+        } else {
+            std::env::remove_var("PATH");
+        }
+
+        let expected = tool_path.canonicalize().unwrap();
+        assert_eq!(
+            out[0],
+            expected.to_string_lossy(),
+            "relative PATH entry must resolve against cwd, not process cwd"
+        );
     }
 
     #[tokio::test]

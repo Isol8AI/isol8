@@ -244,31 +244,40 @@ fn extract_inline_code(binary: &str, argv: &[String]) -> Option<String> {
             continue;
         }
 
-        // Short form: -c, -lc, -Ec, -cPAYLOAD, -lcPAYLOAD, etc.
+        // Short form: -c, -lc, -Ec, -cPAYLOAD, -lcPAYLOAD, -pe CODE, etc.
         //
-        // Per POSIX/getopt, an arg-taking short option can have its value
-        // ATTACHED to the flag token. Both `python3 -c CODE` and
-        // `python3 -cCODE` are valid, same for `node -eCODE` and
-        // `ruby -eCODE`. Under clustering the value attaches to the last
-        // letter: `bash -lcCODE` = `-l -c CODE`. Only matching on the
-        // "next argv element" misses these attached forms and lets them
-        // slip past the inline-approval path — since python/node/ruby are
-        // in SAFE_BINS, they'd auto-run arbitrary code with no prompt.
+        // Walking letter-by-letter with "first match wins" and treating
+        // everything after as payload is wrong when multiple letters in
+        // the cluster are themselves inline-eval short flags. Node's
+        // -p and -e are both inline-eval; `node -pe "script"` parsed as
+        // "first match is p, payload = 'e'" gives a constant approval
+        // key (`:inline:e`) — every subsequent -pe invocation auto-runs
+        // after one Allow Always. The fix: distinguish flag-cluster
+        // letters from genuinely attached payload chars.
         //
-        // So: walk the letters. If we see a short_letter and there's more
-        // text after it in this token, that text IS the payload. Otherwise
-        // the payload is the next argv element.
+        // Rules:
+        //   - Find the first short_letter match.
+        //   - If the rest of the token is EMPTY or all-short-flag-letters
+        //     (i.e., a flag cluster like `-pe` or `-lc`), the payload is
+        //     the next argv element.
+        //   - Otherwise the remaining text is the attached payload
+        //     (e.g., `-cCODE`, `-peCODE`).
         if let Some(letters) = arg.strip_prefix('-').filter(|s| !s.is_empty() && !s.starts_with('-')) {
-            let bytes = letters.as_bytes();
             for (idx, c) in letters.char_indices() {
                 if cfg.short_letters.contains(&c) {
                     let after = idx + c.len_utf8();
-                    if after < bytes.len() {
-                        // Attached payload: -cCODE / -lcCODE
-                        return Some(letters[after..].to_string());
+                    let rest = &letters[after..];
+                    if rest.is_empty() {
+                        return argv.get(i + 1).cloned();
                     }
-                    // Bare flag; payload is the next argv element.
-                    return argv.get(i + 1).cloned();
+                    // If the rest is another flag cluster (all chars are
+                    // inline-eval short letters), the payload lives in
+                    // the next argv element.
+                    if rest.chars().all(|ch| cfg.short_letters.contains(&ch)) {
+                        return argv.get(i + 1).cloned();
+                    }
+                    // Otherwise it's a genuinely attached payload.
+                    return Some(rest.to_string());
                 }
             }
         }
@@ -524,6 +533,36 @@ mod tests {
             approval_key_for(&argv(&["/home/user/projA/tool", "x"])),
             approval_key_for(&argv(&["/tmp/evil/tool", "x"])),
         );
+    }
+
+    #[test]
+    fn clustered_inline_eval_flags_use_next_argv_for_payload() {
+        // node's -p and -e are BOTH inline-eval flags. `node -pe "script"`
+        // must not be parsed as "p matched, payload = 'e'" — the actual
+        // script is in the next argv element. The prior first-match-wins
+        // logic would make every -pe invocation share the approval key
+        // `...:inline:e`, letting one Allow-Always run arbitrary -pe
+        // payloads forever.
+        let k_pe = approval_key_for(&argv(&["/usr/local/bin/node", "-pe", "console.log(1)"]));
+        assert_eq!(k_pe, "/usr/local/bin/node:inline:console.log(1)");
+
+        let k_ep = approval_key_for(&argv(&["/usr/local/bin/node", "-ep", "console.log(2)"]));
+        assert_eq!(k_ep, "/usr/local/bin/node:inline:console.log(2)");
+
+        // Different scripts → different keys. The whole point.
+        assert_ne!(
+            approval_key_for(&argv(&["/usr/local/bin/node", "-pe", "A"])),
+            approval_key_for(&argv(&["/usr/local/bin/node", "-pe", "B"])),
+        );
+    }
+
+    #[test]
+    fn clustered_inline_flag_with_attached_payload_keyed_distinctly() {
+        // `-peCODE` (no space) still keys on the actual command text so
+        // different payloads prompt separately.
+        let a = approval_key_for(&argv(&["/usr/local/bin/node", "-peA"]));
+        let b = approval_key_for(&argv(&["/usr/local/bin/node", "-peB"]));
+        assert_ne!(a, b, "attached -pe payloads must produce distinct keys");
     }
 
     #[test]
