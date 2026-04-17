@@ -280,7 +280,14 @@ async def ws_message(
                         management_api=management_api,
                     )
                     if hello:
-                        management_api.send_message(x_connection_id, hello)
+                        # Rewrite the upstream's res.id to match the desktop's
+                        # req.id. handle_node_connect opens a SEPARATE upstream
+                        # WS to the container with its own uuid and gets back
+                        # a hello res keyed on that upstream id — forwarding
+                        # verbatim would break JSON-RPC correlation on the
+                        # desktop, which expects res.id == req.id for the
+                        # handshake.
+                        management_api.send_message(x_connection_id, {**hello, "id": req_id})
                 except Exception as e:
                     logger.error("Node connect failed: %s", e)
                     management_api.send_message(

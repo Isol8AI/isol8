@@ -349,17 +349,10 @@ where
         .await
         .map_err(|e| format!("write connect: {}", e))?;
 
-    // connect_id is not strictly compared on the response because Isol8's
-    // backend proxies the container-side handshake back to us: it opens a
-    // SEPARATE upstream WS to the container with a brand-new req_id, then
-    // forwards the container's `res` (carrying THAT id) to the desktop
-    // verbatim. The res we get back has the backend's upstream id, not ours.
-    // Since we only send one request here (the connect), any `res` we see
-    // must be the answer to it — keep connect_id for logs, but accept the
-    // first res that arrives.
-    let _ = connect_id;
-
-    // Step 3: wait for the res (any id — see above). Fail on ok:false so a
+    // Step 3: wait for the res with our connect_id, skipping unrelated
+    // frames. The backend (apps/backend/routers/websocket_chat.py) rewrites
+    // the forwarded hello's id to match our req_id before sending, so strict
+    // id-match is correct per JSON-RPC correlation. Fail on ok:false so a
     // rejected handshake forces a reconnect instead of leaving a zombie
     // open socket.
     loop {
@@ -371,6 +364,9 @@ where
         let Message::Text(text) = msg else { continue };
         let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
         if frame.get("type").and_then(|v| v.as_str()) != Some("res") {
+            continue;
+        }
+        if frame.get("id").and_then(|v| v.as_str()) != Some(connect_id.as_str()) {
             continue;
         }
         if frame.get("ok").and_then(|v| v.as_bool()) != Some(true) {
