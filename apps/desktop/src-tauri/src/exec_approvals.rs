@@ -505,6 +505,28 @@ mod tests {
     }
 
     #[test]
+    fn relative_paths_keyed_as_given() {
+        // approval_key_for keys on argv[0] as passed. Callers
+        // (resolve_argv0_absolute in node_invoke.rs) canonicalize relative
+        // paths against cwd BEFORE calling us, so by the time we see the
+        // argv[0] it's already absolute. This test pins the contract:
+        // different input strings must produce different keys — no
+        // basename collapse, no cwd-blind aliasing at this layer.
+        assert_eq!(
+            approval_key_for(&argv(&["/home/user/projA/tool", "x"])),
+            "/home/user/projA/tool"
+        );
+        assert_eq!(
+            approval_key_for(&argv(&["/tmp/evil/tool", "x"])),
+            "/tmp/evil/tool"
+        );
+        assert_ne!(
+            approval_key_for(&argv(&["/home/user/projA/tool", "x"])),
+            approval_key_for(&argv(&["/tmp/evil/tool", "x"])),
+        );
+    }
+
+    #[test]
     fn path_shadowing_does_not_inherit_approval() {
         // The defense: even if the user previously "Allow Always"ed a real
         // binary like /usr/bin/foo, an attacker dropping /tmp/evil/foo on

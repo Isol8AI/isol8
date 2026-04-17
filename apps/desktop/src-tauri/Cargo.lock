@@ -1897,6 +1897,7 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-notification",
  "tauri-plugin-shell",
+ "tempfile",
  "tokio",
  "tokio-tungstenite",
  "url",

@@ -105,13 +105,22 @@ async fn handle_system_run(
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
     }
 
+    // Effective cwd — must be computed before argv[0] resolution so the
+    // approval key for relative executables (`./tool`) binds to this
+    // specific directory. Without this, `./tool` in /home/user/projA and
+    // `./tool` in /tmp/evil would share one approval key.
+    let cwd = params
+        .cwd
+        .clone()
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+
     // Resolve argv[0] to an absolute path BEFORE approval checks. The
     // approval store keys on argv[0] — keying on a bare name like "git"
     // would let a binary placed earlier on PATH (e.g. /tmp/evil/git)
     // inherit a prior "Allow Always" approval for /usr/bin/git. Resolving
     // first binds approvals to the specific binary that will actually run,
     // and we spawn against the same resolved path (no re-resolution race).
-    let argv = resolve_argv0_absolute(&params.argv).await;
+    let argv = resolve_argv0_absolute(&params.argv, &cwd).await;
 
     // Check exec approval before running
     let security = ExecSecurity::Allowlist; // Default security level
@@ -144,9 +153,6 @@ async fn handle_system_run(
     }
 
     let (cmd, args) = argv.split_first().unwrap();
-    let cwd = params.cwd.unwrap_or_else(|| {
-        std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
-    });
 
     let mut command = Command::new(cmd);
     command.args(args).current_dir(&cwd);
@@ -287,8 +293,13 @@ async fn handle_system_run_prepare(
     // Resolve argv[0] so the approval check uses the same path-keyed lookup
     // system.run will use. If we checked with a bare name and system.run
     // later resolved to a different absolute path, approved=true here and
-    // EXEC_DENIED there would be inconsistent.
-    let argv = resolve_argv0_absolute(&params.argv).await;
+    // EXEC_DENIED there would be inconsistent. Use the SAME cwd fallback
+    // system.run uses so relative-path approval keys line up.
+    let cwd = params
+        .cwd
+        .clone()
+        .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+    let argv = resolve_argv0_absolute(&params.argv, &cwd).await;
 
     // Mirror the approval policy system.run will apply, WITHOUT prompting —
     // prepare must report truthful approval state so the agent doesn't call
@@ -401,21 +412,51 @@ async fn which(name: &str) -> Option<String> {
     None
 }
 
-/// Resolve argv[0] to an absolute path via PATH, returning a new argv where
-/// argv[0] is the resolved path if one was found. This is the pre-approval-
-/// check normalization that binds approvals to a specific binary rather than
-/// a basename that PATH lookup could alias onto a malicious file. If
-/// resolution fails (binary not on PATH) the original argv is returned
-/// unchanged — the approval check and subsequent spawn will both reject it
-/// on their own.
-async fn resolve_argv0_absolute(argv: &[String]) -> Vec<String> {
+/// Resolve argv[0] to an absolute path, returning a new argv. This is the
+/// pre-approval-check normalization that binds approvals to a specific
+/// binary on disk — not to a name/path that could alias onto a different
+/// binary under a different PATH or cwd.
+///
+/// Three cases:
+/// - **Absolute path** (`/usr/bin/git`): canonicalize (resolve symlinks,
+///   normalize `..`) and use that. Stable key across symlink changes.
+/// - **Relative path with `/`** (`./tool`, `../bin/x`, `subdir/tool`):
+///   resolve against `cwd`. Without this, `./tool` in `/home/user/projA`
+///   and `./tool` in `/tmp/evil` collapse to the same approval key —
+///   one "Allow Always" covers both directories.
+/// - **Bare name** (`git`, `python3`): PATH lookup via `which`.
+///
+/// If resolution fails in any case, we fall back to the joined path
+/// (for relative) or the original string (for bare name) so the
+/// approval key at least doesn't alias under cwd changes. The
+/// subsequent spawn will reject the non-existent file naturally.
+async fn resolve_argv0_absolute(argv: &[String], cwd: &str) -> Vec<String> {
     if argv.is_empty() {
         return argv.to_vec();
     }
     let mut out = argv.to_vec();
-    if let Some(resolved) = which(&argv[0]).await {
+    let argv0 = &argv[0];
+
+    if Path::new(argv0).is_absolute() {
+        if let Ok(canon) = tokio::fs::canonicalize(argv0).await {
+            out[0] = canon.to_string_lossy().into_owned();
+        }
+    } else if argv0.contains('/') {
+        // Relative path — must be bound to cwd, else `./tool` keys alias
+        // across different working directories.
+        let combined = Path::new(cwd).join(argv0);
+        if let Ok(canon) = tokio::fs::canonicalize(&combined).await {
+            out[0] = canon.to_string_lossy().into_owned();
+        } else {
+            // File doesn't exist yet or can't canonicalize — use the
+            // joined path as-is so the key at least reflects cwd. Spawn
+            // will fail naturally.
+            out[0] = combined.to_string_lossy().into_owned();
+        }
+    } else if let Some(resolved) = which(argv0).await {
         out[0] = resolved;
     }
+
     out
 }
 
@@ -498,5 +539,78 @@ fn error_result(request: &NodeInvokeRequest, code: &str, message: &str) -> NodeI
             code: code.into(),
             message: message.into(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod resolve_tests {
+    use super::*;
+
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[tokio::test]
+    async fn relative_path_resolved_against_cwd() {
+        // Two different cwds → two different resolved argv[0]s for the
+        // same `./tool` input. Without this, approval keys alias across
+        // directories.
+        let tmp1 = tempfile::tempdir().unwrap();
+        let tmp2 = tempfile::tempdir().unwrap();
+
+        // Create a real file in each so canonicalize() returns something
+        // (canonicalize requires existence).
+        tokio::fs::write(tmp1.path().join("tool"), b"fake").await.unwrap();
+        tokio::fs::write(tmp2.path().join("tool"), b"fake").await.unwrap();
+
+        let a = resolve_argv0_absolute(
+            &argv(&["./tool", "run"]),
+            tmp1.path().to_str().unwrap(),
+        )
+        .await;
+        let b = resolve_argv0_absolute(
+            &argv(&["./tool", "run"]),
+            tmp2.path().to_str().unwrap(),
+        )
+        .await;
+
+        assert_ne!(a[0], b[0], "different cwds must produce different argv[0]");
+        assert!(a[0].starts_with(&*tmp1.path().canonicalize().unwrap().to_string_lossy()));
+        assert!(b[0].starts_with(&*tmp2.path().canonicalize().unwrap().to_string_lossy()));
+    }
+
+    #[tokio::test]
+    async fn relative_path_falls_back_to_joined_when_missing() {
+        // Even if the file doesn't exist yet (so canonicalize fails), we
+        // must still produce a cwd-bound key — NOT leave the bare `./foo`
+        // that would alias across cwds.
+        let tmp = tempfile::tempdir().unwrap();
+        let out = resolve_argv0_absolute(
+            &argv(&["./nonexistent", "x"]),
+            tmp.path().to_str().unwrap(),
+        )
+        .await;
+        assert!(
+            out[0].contains("nonexistent"),
+            "expected combined path, got {:?}",
+            out[0]
+        );
+        assert_ne!(out[0], "./nonexistent", "must not leave bare relative");
+    }
+
+    #[tokio::test]
+    async fn absolute_path_canonicalized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("bin");
+        tokio::fs::write(&real, b"x").await.unwrap();
+        // tmp.path() on some systems is a symlinked path (macOS /var -> /private/var).
+        // canonicalize should resolve it.
+        let out = resolve_argv0_absolute(
+            &argv(&[real.to_str().unwrap()]),
+            "/",
+        )
+        .await;
+        let canon = real.canonicalize().unwrap();
+        assert_eq!(out[0], canon.to_string_lossy());
     }
 }
