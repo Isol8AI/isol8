@@ -112,6 +112,21 @@ async def handle_node_connect(
 
     upstream.set_message_callback(on_upstream_message)
 
+    # If the upstream WS dies while the desktop side is still connected
+    # (container restart, transient network drop, gateway close), tear
+    # down per-user state so agent_chat stops binding sessions to the
+    # now-dead nodeId. handle_node_disconnect is idempotent with the
+    # eventual desktop-disconnect path.
+    async def on_upstream_closed():
+        logger.info(
+            "Upstream closed for user=%s conn=%s; running cleanup",
+            user_id,
+            connection_id,
+        )
+        await handle_node_disconnect(connection_id, owner_id, user_id)
+
+    upstream.set_on_upstream_closed(on_upstream_closed)
+
     hello = await upstream.connect()
     await upstream.start_reader()
 
@@ -167,10 +182,21 @@ async def handle_node_disconnect(
     owner_id: str,
     user_id: str,
 ) -> None:
-    """Close the upstream connection and update per-user tracking."""
+    """Close the upstream connection and update per-user tracking.
+
+    Idempotent: calling twice for the same connection_id is a no-op on
+    the second call. This matters because there are now two paths that
+    trigger disconnect — the desktop WS dropping (via ws_disconnect) and
+    the upstream WS dropping (via NodeUpstreamConnection.on_upstream_closed
+    callback). Without idempotency we'd double-decrement _node_count and
+    the ref counter would go out of sync.
+    """
     upstream = _node_upstreams.pop(connection_id, None)
-    if upstream:
-        await upstream.close()
+    # Whoever popped first does the cleanup; everyone else returns here.
+    # Safe because _node_upstreams.pop is atomic.
+    if upstream is None:
+        return
+    await upstream.close()
 
     # Only clear per-user state when the stored mapping still points at THIS
     # connection. If the user reconnected first, _user_nodes[user_id] now holds

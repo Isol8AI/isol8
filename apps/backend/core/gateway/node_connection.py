@@ -166,6 +166,7 @@ class NodeUpstreamConnection:
         self._connected = False
         self._reader_task: asyncio.Task | None = None
         self._on_message = None
+        self._on_upstream_closed = None
 
     def _device_key_path(self):
         import pathlib
@@ -296,6 +297,16 @@ class NodeUpstreamConnection:
         """Set callback for messages from upstream (container -> node)."""
         self._on_message = callback
 
+    def set_on_upstream_closed(self, callback) -> None:
+        """Set a callback invoked when the upstream WS dies independently of
+        the desktop side (e.g. container restart, transient network drop).
+
+        Without this, node_proxy state (_user_nodes / _node_count / patched
+        sessions) remains populated as long as the desktop is still
+        connected, and the agent keeps binding sessions to a dead nodeId.
+        """
+        self._on_upstream_closed = callback
+
     async def start_reader(self) -> None:
         """Start reading from upstream and forwarding to callback."""
         self._reader_task = asyncio.create_task(self._reader_loop())
@@ -310,6 +321,20 @@ class NodeUpstreamConnection:
             logger.warning("Node upstream reader error for %s: %s", self.user_id, e)
         finally:
             self._connected = False
+            # Notify node_proxy that the upstream died so it can clear
+            # per-user routing state even if the desktop side is still
+            # connected. Swallow callback errors — we're already shutting
+            # down this reader, failing here would just hide the
+            # original disconnect cause from the log above.
+            if self._on_upstream_closed:
+                try:
+                    await self._on_upstream_closed()
+                except Exception as e:
+                    logger.warning(
+                        "on_upstream_closed callback raised for %s: %s",
+                        self.user_id,
+                        e,
+                    )
 
     async def relay_to_upstream(self, message: dict) -> None:
         """Forward a message from the node client to the container."""

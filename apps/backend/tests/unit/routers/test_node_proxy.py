@@ -219,3 +219,75 @@ async def test_stale_disconnect_does_not_clobber_fresh_reconnect(
 
     # And no phantom "disconnected" must have been emitted.
     mock_pool.broadcast_to_member.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """Both the upstream-died callback AND the desktop ws_disconnect path
+    can trigger handle_node_disconnect for the same connection. Calling
+    twice must not double-decrement _node_count (ref counter) — the
+    second call must be a no-op."""
+    from routers.node_proxy import _node_count
+
+    mgmt = MagicMock()
+    await handle_node_connect(
+        owner_id="org_dbl",
+        user_id="user_a",
+        connection_id="conn_x",
+        connect_params={},
+        management_api=mgmt,
+    )
+    assert _node_count.get("org_dbl") == 1
+
+    # First disconnect: real cleanup.
+    await handle_node_disconnect("conn_x", "org_dbl", "user_a")
+    # Ref count goes to 0, key popped per the existing cleanup path.
+    assert _node_count.get("org_dbl", 0) == 0
+
+    # Second disconnect (simulates the upstream-died callback racing the
+    # desktop ws_disconnect, or vice versa). MUST be a no-op.
+    mock_config_patcher.reset_mock()
+    mock_pool.broadcast_to_member.reset_mock()
+    await handle_node_disconnect("conn_x", "org_dbl", "user_a")
+
+    # Ref count unchanged (no double-decrement into negative territory).
+    assert _node_count.get("org_dbl", 0) == 0
+    # No extra config patch, no extra broadcast.
+    mock_config_patcher.assert_not_called()
+    mock_pool.broadcast_to_member.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool, mock_upstream, mock_config_patcher):
+    """When the upstream WS dies (container restart, net drop), the
+    callback installed in handle_node_connect must tear down _user_nodes
+    and emit node_status=disconnected — otherwise the agent keeps
+    binding sessions to a dead nodeId while the desktop is still alive."""
+    from routers.node_proxy import _user_nodes
+
+    mgmt = MagicMock()
+    await handle_node_connect(
+        owner_id="org_cb",
+        user_id="user_alice",
+        connection_id="conn_cb",
+        connect_params={},
+        management_api=mgmt,
+    )
+    assert "user_alice" in _user_nodes
+    # handle_node_connect should have called set_on_upstream_closed with
+    # a callable that, when invoked, runs handle_node_disconnect.
+    cb = mock_upstream.set_on_upstream_closed.call_args[0][0]
+    assert callable(cb)
+
+    mock_pool.broadcast_to_member.reset_mock()
+
+    # Simulate the upstream reader exiting.
+    await cb()
+
+    # Per-user state cleared, disconnected broadcast emitted.
+    assert "user_alice" not in _user_nodes
+    mock_pool.broadcast_to_member.assert_called_once_with(
+        "org_cb",
+        "user_alice",
+        {"type": "node_status", "status": "disconnected"},
+    )
