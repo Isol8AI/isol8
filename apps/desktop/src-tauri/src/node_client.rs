@@ -51,6 +51,7 @@ pub struct InvokeError {
 
 type PendingMap = Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>;
 type InvokeSender = mpsc::UnboundedSender<NodeInvokeRequest>;
+type StatusCallback = Arc<dyn Fn(&str) + Send + Sync>;
 
 pub struct NodeClient {
     /// Shared so callers can update the URL (e.g. with a refreshed JWT) and
@@ -60,6 +61,7 @@ pub struct NodeClient {
     write_tx: Option<mpsc::UnboundedSender<Message>>,
     pending: PendingMap,
     stop_tx: Option<oneshot::Sender<()>>,
+    status_cb: Option<StatusCallback>,
 }
 
 impl NodeClient {
@@ -80,7 +82,15 @@ impl NodeClient {
             write_tx: None,
             pending: Arc::new(Mutex::new(HashMap::new())),
             stop_tx: None,
+            status_cb: None,
         }
+    }
+
+    /// Install a callback the connection loop invokes on status transitions.
+    /// Possible status strings: "connecting", "connected", "error",
+    /// "reconnecting", "disconnected". Call BEFORE start().
+    pub fn on_status_change(&mut self, cb: impl Fn(&str) + Send + Sync + 'static) {
+        self.status_cb = Some(Arc::new(cb));
     }
 
     /// Start the client. Returns a receiver for invoke requests.
@@ -95,9 +105,10 @@ impl NodeClient {
         let url = self.url.clone();
         let display_name = self.display_name.clone();
         let pending = self.pending.clone();
+        let status_cb = self.status_cb.clone();
 
         tokio::spawn(async move {
-            connection_loop(url, display_name, write_tx, write_rx, invoke_tx, pending, stop_rx).await;
+            connection_loop(url, display_name, write_rx, invoke_tx, pending, stop_rx, status_cb).await;
         });
 
         Ok(invoke_rx)
@@ -138,14 +149,19 @@ impl NodeClient {
 async fn connection_loop(
     url: Arc<RwLock<String>>,
     display_name: String,
-    write_tx: mpsc::UnboundedSender<Message>,
     mut write_rx: mpsc::UnboundedReceiver<Message>,
     invoke_tx: InvokeSender,
     pending: PendingMap,
     mut stop_rx: oneshot::Receiver<()>,
+    status_cb: Option<StatusCallback>,
 ) {
     let mut reconnect_delay = std::time::Duration::from_secs(1);
     let max_delay = std::time::Duration::from_secs(30);
+    let emit_status = |s: &str| {
+        if let Some(cb) = &status_cb {
+            cb(s);
+        }
+    };
 
     // write_rx lives for the entire loop so that it stays paired with the
     // write_tx held by NodeClient. Prior design moved it into a per-connection
@@ -157,16 +173,19 @@ async fn connection_loop(
         // on the very next reconnect attempt.
         let current_url = url.read().unwrap().clone();
         println!("[node-client] Connecting...");
+        emit_status("connecting");
 
         let ws = tokio::select! {
             _ = &mut stop_rx => {
                 println!("[node-client] Stop signal received during connect");
+                emit_status("disconnected");
                 return;
             }
             res = connect_async(&current_url) => match res {
                 Ok((ws, _)) => ws,
                 Err(e) => {
                     eprintln!("[node-client] Connection failed: {}", e);
+                    emit_status("error");
                     // Backoff, respecting stop.
                     tokio::select! {
                         _ = &mut stop_rx => return,
@@ -178,10 +197,33 @@ async fn connection_loop(
             }
         };
 
-        println!("[node-client] WebSocket connected");
-        reconnect_delay = std::time::Duration::from_secs(1);
+        println!("[node-client] WebSocket open, starting handshake");
 
         let (mut ws_write, mut ws_read) = ws.split();
+
+        // Perform the connect handshake inline. If it fails — socket error OR
+        // a res with ok:false — close the socket and reconnect. Previously
+        // handshake lived in handle_message, which treated every res as a
+        // generic pending-response and left a rejected connect in a zombie
+        // state (socket open, no invokes will ever arrive).
+        match perform_handshake(&mut ws_read, &mut ws_write, &display_name).await {
+            Ok(()) => {
+                println!("[node-client] Handshake complete");
+                emit_status("connected");
+                reconnect_delay = std::time::Duration::from_secs(1);
+            }
+            Err(reason) => {
+                eprintln!("[node-client] Handshake failed: {}", reason);
+                emit_status("error");
+                let _ = ws_write.close().await;
+                tokio::select! {
+                    _ = &mut stop_rx => return,
+                    _ = tokio::time::sleep(reconnect_delay) => {}
+                }
+                reconnect_delay = std::cmp::min(reconnect_delay * 2, max_delay);
+                continue;
+            }
+        }
 
         // Process messages until either the socket dies or we get a stop.
         // write_rx stays borrowed from the outer scope — no ownership move, no
@@ -191,6 +233,7 @@ async fn connection_loop(
                 // Clean shutdown.
                 _ = &mut stop_rx => {
                     let _ = ws_write.close().await;
+                    emit_status("disconnected");
                     return;
                 }
 
@@ -207,10 +250,8 @@ async fn connection_loop(
                         Some(Ok(Message::Text(text))) => {
                             handle_message(
                                 &text,
-                                &display_name,
                                 &invoke_tx,
                                 &pending,
-                                &write_tx,
                             ).await;
                         }
                         Some(Ok(_)) => {
@@ -224,6 +265,7 @@ async fn connection_loop(
         };
 
         eprintln!("[node-client] Disconnected ({}); reconnecting", drop_reason);
+        emit_status("reconnecting");
 
         // Backoff before the next reconnect, respecting stop.
         tokio::select! {
@@ -234,13 +276,109 @@ async fn connection_loop(
     }
 }
 
-async fn handle_message(
-    text: &str,
+/// Run the OpenClaw role:"node" connect handshake. Fails fast on:
+/// - timeout (10s per step)
+/// - any I/O error reading the challenge or res
+/// - a `res` for our connect req with `ok: false`
+async fn perform_handshake<R, W>(
+    ws_read: &mut R,
+    ws_write: &mut W,
     display_name: &str,
-    invoke_tx: &InvokeSender,
-    pending: &PendingMap,
-    write_tx: &mpsc::UnboundedSender<Message>,
-) {
+) -> Result<(), String>
+where
+    R: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
+    W: SinkExt<Message> + Unpin,
+    <W as futures_util::Sink<Message>>::Error: std::fmt::Display,
+{
+    const STEP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    // Step 1: read a frame until we see connect.challenge (skipping any
+    // keepalive "tick" events the gateway may have sent first).
+    let challenge = loop {
+        let msg = tokio::time::timeout(STEP_TIMEOUT, ws_read.next())
+            .await
+            .map_err(|_| "timed out waiting for connect.challenge".to_string())?
+            .ok_or_else(|| "connection closed before connect.challenge".to_string())?
+            .map_err(|e| format!("read error: {}", e))?;
+        let Message::Text(text) = msg else { continue };
+        let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
+        if frame.get("type").and_then(|v| v.as_str()) == Some("event")
+            && frame.get("event").and_then(|v| v.as_str()) == Some("connect.challenge")
+        {
+            break frame;
+        }
+        // Ignore pre-handshake ticks/other events.
+    };
+    // Nonce is currently unused on this side (backend signs upstream) but
+    // present in the challenge payload; acknowledge it exists.
+    let _ = challenge;
+
+    // Step 2: send connect.
+    let connect_id = Uuid::new_v4().to_string();
+    let connect_msg = json!({
+        "type": "req",
+        "id": connect_id,
+        "method": "connect",
+        "params": {
+            "minProtocol": 3,
+            "maxProtocol": 3,
+            "client": {
+                "id": "node-host",
+                "displayName": display_name,
+                "version": "1.0.0",
+                "platform": std::env::consts::OS,
+                "mode": "node",
+                "instanceId": Uuid::new_v4().to_string(),
+            },
+            "role": "node",
+            "scopes": [],
+            "caps": ["system"],
+            "commands": [
+                "system.run.prepare",
+                "system.run",
+                "system.which",
+                "system.execApprovals.get",
+                "system.execApprovals.set",
+            ],
+            "pathEnv": std::env::var("PATH").unwrap_or_default(),
+            "auth": {},
+        },
+    });
+    ws_write
+        .send(Message::Text(connect_msg.to_string().into()))
+        .await
+        .map_err(|e| format!("write connect: {}", e))?;
+
+    // Step 3: wait for the res matching our connect_id, skipping unrelated
+    // frames. Fail on ok:false — a rejected handshake must force a reconnect,
+    // not leave a zombie open socket.
+    loop {
+        let msg = tokio::time::timeout(STEP_TIMEOUT, ws_read.next())
+            .await
+            .map_err(|_| "timed out waiting for connect res".to_string())?
+            .ok_or_else(|| "connection closed before connect res".to_string())?
+            .map_err(|e| format!("read error: {}", e))?;
+        let Message::Text(text) = msg else { continue };
+        let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
+        if frame.get("type").and_then(|v| v.as_str()) != Some("res") {
+            continue;
+        }
+        if frame.get("id").and_then(|v| v.as_str()) != Some(connect_id.as_str()) {
+            continue;
+        }
+        if frame.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+            let err = frame
+                .get("error")
+                .and_then(|v| v.get("message"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            return Err(format!("gateway rejected connect: {}", err));
+        }
+        return Ok(());
+    }
+}
+
+async fn handle_message(text: &str, invoke_tx: &InvokeSender, pending: &PendingMap) {
     let Ok(frame) = serde_json::from_str::<Value>(text) else {
         return;
     };
@@ -249,42 +387,11 @@ async fn handle_message(
 
     match msg_type {
         "event" => {
+            // The connect.challenge handshake runs inline in connection_loop
+            // (see perform_handshake). By the time we're dispatching events
+            // here, we're post-handshake and should only see runtime events.
             let event = frame.get("event").and_then(|v| v.as_str()).unwrap_or("");
-
-            if event == "connect.challenge" {
-                // Send connect request with role:"node"
-                let id = Uuid::new_v4().to_string();
-                let connect_msg = json!({
-                    "type": "req",
-                    "id": id,
-                    "method": "connect",
-                    "params": {
-                        "minProtocol": 3,
-                        "maxProtocol": 3,
-                        "client": {
-                            "id": "node-host",
-                            "displayName": display_name,
-                            "version": "1.0.0",
-                            "platform": std::env::consts::OS,
-                            "mode": "node",
-                            "instanceId": Uuid::new_v4().to_string(),
-                        },
-                        "role": "node",
-                        "scopes": [],
-                        "caps": ["system"],
-                        "commands": [
-                            "system.run.prepare",
-                            "system.run",
-                            "system.which",
-                            "system.execApprovals.get",
-                            "system.execApprovals.set",
-                        ],
-                        "pathEnv": std::env::var("PATH").unwrap_or_default(),
-                        "auth": {},
-                    },
-                });
-                let _ = write_tx.send(Message::Text(connect_msg.to_string().into()));
-            } else if event == "node.invoke.request" {
+            if event == "node.invoke.request" {
                 if let Some(payload) = frame.get("payload") {
                     if let Ok(req) = serde_json::from_value::<NodeInvokeRequest>(payload.clone()) {
                         let _ = invoke_tx.send(req);
@@ -294,19 +401,8 @@ async fn handle_message(
             // tick events — ignore (keepalive)
         }
         "res" => {
+            // Resolve any pending request waiting on this id.
             let id = frame.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let ok = frame.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
-
-            if ok {
-                // Check if it's a hello-ok (connect response)
-                if let Some(payload) = frame.get("payload") {
-                    if payload.get("protocol").is_some() {
-                        println!("[node-client] Connected to gateway (hello-ok)");
-                    }
-                }
-            }
-
-            // Resolve pending request
             let mut pending = pending.lock().await;
             if let Some(sender) = pending.remove(id) {
                 let _ = sender.send(frame);

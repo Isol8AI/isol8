@@ -86,12 +86,21 @@ async fn start_node_host(
     display_name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     update_node_status(app, "connecting");
-
     log("[node] Starting node client");
-    let mut client = node_client::NodeClient::with_shared_url(gateway_url, display_name);
-    let mut invoke_rx = client.start().await?;
 
-    update_node_status(app, "connected");
+    let mut client = node_client::NodeClient::with_shared_url(gateway_url, display_name);
+
+    // Flip the tray/renderer status ONLY when the node client emits a real
+    // transition. Previously we said "connected" right after start() returned,
+    // but start() just spawns the connection loop — the WS handshake hadn't
+    // happened yet. A bad token or network hiccup left the UI claiming
+    // connected while the node was actually still dialing.
+    let app_for_cb = app.clone();
+    client.on_status_change(move |status| {
+        update_node_status(&app_for_cb, status);
+    });
+
+    let mut invoke_rx = client.start().await?;
     log("[node] Node client started, listening for invoke requests");
 
     tokio::spawn(async move {

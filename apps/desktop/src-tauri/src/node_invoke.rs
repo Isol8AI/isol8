@@ -258,9 +258,16 @@ async fn handle_system_run_prepare(
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
     }
 
+    // Mirror the approval policy system.run will apply, WITHOUT prompting —
+    // prepare must report truthful approval state so the agent doesn't call
+    // system.run on something that will then be denied. Showing a dialog
+    // here would produce two prompts for one command.
+    let security = ExecSecurity::Allowlist;
+    let would_be_approved = exec_approvals::check_approval(&params.argv, &security).is_ok();
+
     let resolved = which(&params.argv[0]).await;
     let payload = serde_json::json!({
-        "approved": resolved.is_some(),
+        "approved": would_be_approved && resolved.is_some(),
         "resolvedPath": resolved,
     });
 
