@@ -49,13 +49,11 @@ jobs:
         run: |
           docker build \
             -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
-            -t "${{ steps.meta.outputs.image }}:latest-dev" \
             apps/infra/openclaw/
 
       - name: Push image
         run: |
           docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
-          docker push "${{ steps.meta.outputs.image }}:latest-dev"
 
       - name: Summary
         run: |
