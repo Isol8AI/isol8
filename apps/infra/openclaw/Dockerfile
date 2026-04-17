@@ -8,12 +8,22 @@ FROM alpine/openclaw:2026.4.5
 USER root
 
 # ---- Layer 1: apt packages (rarely change) ----
+# Note: Debian 12's golang-go is 1.19 but modern Steipete tools require
+# Go ≥1.24. Go is installed separately below from go.dev in Layer 1b.
 RUN apt-get update -qq && apt-get install -y -qq \
       ffmpeg jq ripgrep tmux poppler-utils \
-      golang-go \
       socat python3-pip sqlite3 build-essential python3 \
       curl wget ca-certificates gnupg make git \
     && rm -rf /var/lib/apt/lists/*
+
+# ---- Layer 1b: Go toolchain (from go.dev, not apt) ----
+# Some steipete/* tools have go.mod directives requiring Go ≥1.24, which
+# Debian's apt golang-go doesn't satisfy. Pin the latest stable tarball here.
+RUN GO_VER=1.24.2 && \
+    curl -sL https://go.dev/dl/go${GO_VER}.linux-amd64.tar.gz \
+      | tar -xz -C /usr/local && \
+    ln -s /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -s /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
 # ---- Layer 2: 1Password CLI (apt repo) ----
 RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \
