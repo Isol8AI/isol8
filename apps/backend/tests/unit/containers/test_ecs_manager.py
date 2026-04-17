@@ -520,6 +520,12 @@ class TestStartUserService:
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=1,
                 forceNewDeployment=True,
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
@@ -571,6 +577,28 @@ class TestStartUserService:
         with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
             with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
                 await manager.start_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_start_service_enables_circuit_breaker_on_existing_services(self, manager, mock_ecs_client):
+        """start_user_service's update_service call must include the circuit
+        breaker so pre-existing services (created before Task 1) get upgraded
+        the first time we touch them. Otherwise _await_running_transition
+        can never receive rolloutState=FAILED and polls forever on a broken
+        pre-existing service."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.start_user_service("user_test_123")
+
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
 
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1161,47 @@ class TestResizeUserContainer:
 
             mock_await.assert_called_once_with("user_test_123")
 
+    @pytest.mark.asyncio
+    async def test_resize_enables_circuit_breaker_on_update_service(self, manager, mock_ecs_client):
+        """resize path's update_service must also carry the circuit breaker
+        so pre-existing services get upgraded on resize."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+            # asyncio.to_thread runs the sync boto3 call in a thread;
+            # intercept it so we can inspect kwargs.
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            # resize issues two to_thread calls -- register_task_definition
+            # and update_service. Find the update_service call.
+            update_calls = [
+                call
+                for call in mock_to_thread.call_args_list
+                if getattr(call.args[0], "__name__", "") == "update_service"
+                or (call.args and call.args[0] == mock_ecs_client.update_service)
+            ]
+            assert update_calls, "Expected update_service to be called via asyncio.to_thread"
+            call_kwargs = update_calls[0].kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
+
 
 # ---------------------------------------------------------------------------
 # provision_user_container (full provisioning flow + recovery branches)
@@ -1248,3 +1317,74 @@ class TestProvisionUserContainer:
                 "at the end of provision_user_container is redundant."
             )
             mock_await.assert_called_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_redeploying_branch_enables_circuit_breaker(self, manager, mock_ecs_client):
+        """The redeploying branch (desired=1, running>0) issues an
+        update_service(forceNewDeployment=True). That call must carry the
+        circuit breaker so pre-existing services get upgraded mid-flight."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            # update_service is called directly (not via asyncio.to_thread)
+            # in the redeploying branch.
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_provision_ecs_starting_no_poller_when_status_already_provisioning(self, manager, mock_ecs_client):
+        """If the DDB status is already 'provisioning' when we hit the
+        ECS-is-starting branch, we should NOT spawn another poller. An
+        earlier one is already running (or the startup reconciler will
+        pick up the row on next deploy). Spawning multiple pollers per
+        owner wastes ECS API quota under a slow cold start with repeated
+        /container/provision calls."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            # Row already at status=provisioning.
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # No poller fired -- one's already running (or reconciler will catch it).
+            mock_await.assert_not_called()
+            # Also no DDB update (status already correct).
+            mock_repo.update_fields.assert_not_called()

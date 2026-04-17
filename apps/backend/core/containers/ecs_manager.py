@@ -392,6 +392,12 @@ class EcsManager:
                     service=service_name,
                     desiredCount=1,
                     forceNewDeployment=True,
+                    deploymentConfiguration={
+                        "deploymentCircuitBreaker": {
+                            "enable": True,
+                            "rollback": False,
+                        }
+                    },
                 )
         except Exception as e:
             logger.error(
@@ -481,6 +487,12 @@ class EcsManager:
                 service=service_name,
                 taskDefinition=new_task_def_arn,
                 forceNewDeployment=True,
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
             )
 
             # Update DB record
@@ -820,6 +832,12 @@ class EcsManager:
                         cluster=self._cluster,
                         service=service_name,
                         forceNewDeployment=True,
+                        deploymentConfiguration={
+                            "deploymentCircuitBreaker": {
+                                "enable": True,
+                                "rollback": False,
+                            }
+                        },
                     )
                 except Exception as e:
                     put_metric("container.provision", dimensions={"status": "error"})
@@ -850,10 +868,12 @@ class EcsManager:
                             "substatus": "starting",
                         },
                     )
-                # ECS is mid-launch for this service; fire the poller so the
-                # row transitions to status=running once the task becomes
-                # healthy.
-                asyncio.create_task(self._await_running_transition(user_id))
+                    # We just flipped status to provisioning -- fire the poller.
+                    # If status was already provisioning, an earlier poller is
+                    # already running (or the startup reconciler will pick it up
+                    # on next deploy), so firing another would just double the
+                    # ECS API traffic for no gain.
+                    asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
         # --- Scenario: No service exists -- full provisioning ---
