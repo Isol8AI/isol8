@@ -284,6 +284,12 @@ class EcsManager:
                     }
                 },
                 serviceRegistries=[{"registryArn": self._cloud_map_service_arn}],
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
             )
             # Enable ECS Exec for all environments so we can debug per-user
             # OpenClaw containers (skill installs, workspace state, gateway
@@ -365,6 +371,11 @@ class EcsManager:
     async def start_user_service(self, user_id: str) -> None:
         """Scale a user's ECS service to 1 (running) with forced new deployment.
 
+        Fires _await_running_transition afterwards so the provisioning -> running
+        transition happens eventually even if the user disconnects before the
+        ECS task finishes warming up. Without this, cold-start restart rows
+        get stuck at status=provisioning forever.
+
         Args:
             user_id: Clerk user ID.
 
@@ -381,6 +392,12 @@ class EcsManager:
                     service=service_name,
                     desiredCount=1,
                     forceNewDeployment=True,
+                    deploymentConfiguration={
+                        "deploymentCircuitBreaker": {
+                            "enable": True,
+                            "rollback": False,
+                        }
+                    },
                 )
         except Exception as e:
             logger.error(
@@ -396,6 +413,11 @@ class EcsManager:
             await container_repo.update_status(user_id, "provisioning")
 
         logger.info("Started ECS service %s for user %s", service_name, user_id)
+
+        # Fire the durable poller. Any code path that sets status=provisioning
+        # MUST ensure a transition poller is running, otherwise a slow ECS
+        # cold-start leaves the row stuck.
+        asyncio.create_task(self._await_running_transition(user_id))
 
     async def resize_user_container(
         self,
@@ -465,18 +487,67 @@ class EcsManager:
                 service=service_name,
                 taskDefinition=new_task_def_arn,
                 forceNewDeployment=True,
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
             )
 
-            # Update DB record
-            await self._update_container(user_id, task_definition_arn=new_task_def_arn, status="provisioning")
-
-            logger.info(
-                "Resized container for user %s: cpu=%s memory=%s image=%s",
-                user_id,
-                new_cpu,
-                new_memory,
-                new_image,
+            # Decide whether to flip status=provisioning + fire the poller.
+            # resize never touches desiredCount -- if the service is currently
+            # scaled to zero (e.g. a free-tier container stopped by the reaper),
+            # update_service just registers the new task definition for later
+            # use. No tasks will start as a result of resize alone, so flipping
+            # status=provisioning would leave an orphan poller spinning forever
+            # (rolloutState won't go to FAILED; the deployment "completes" with
+            # zero tasks). The new task def will take effect on the next
+            # start_user_service call, which has its own poller firing.
+            desc_resp = await asyncio.to_thread(
+                self._ecs.describe_services,
+                cluster=self._cluster,
+                services=[service_name],
             )
+            services = desc_resp.get("services", [])
+            current_desired = services[0].get("desiredCount", 0) if services else 0
+
+            if current_desired > 0:
+                # Update DB record
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                    status="provisioning",
+                )
+                logger.info(
+                    "Resized running container for user %s: cpu=%s memory=%s image=%s",
+                    user_id,
+                    new_cpu,
+                    new_memory,
+                    new_image,
+                )
+                # Fire the durable transition poller. resize sets
+                # status=provisioning via update_fields above and forces a new
+                # ECS deployment; without the poller, the row stays stuck at
+                # provisioning until the next backend restart's startup
+                # reconciler catches it.
+                asyncio.create_task(self._await_running_transition(user_id))
+            else:
+                # Scaled to zero: only update task_definition_arn so the new
+                # def takes effect on next start. Do NOT flip status or fire
+                # the poller -- there are no tasks to become healthy.
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                )
+                logger.info(
+                    "Resized stopped container for user %s: cpu=%s memory=%s image=%s (new task def applies on next start)",
+                    user_id,
+                    new_cpu,
+                    new_memory,
+                    new_image,
+                )
+
             return new_task_def_arn
 
         except EcsManagerError:
@@ -797,6 +868,12 @@ class EcsManager:
                         cluster=self._cluster,
                         service=service_name,
                         forceNewDeployment=True,
+                        deploymentConfiguration={
+                            "deploymentCircuitBreaker": {
+                                "enable": True,
+                                "rollback": False,
+                            }
+                        },
                     )
                 except Exception as e:
                     put_metric("container.provision", dimensions={"status": "error"})
@@ -805,6 +882,10 @@ class EcsManager:
                     raise EcsManagerError(f"Failed to force redeploy: {e}", user_id)
 
                 put_metric("container.provision", dimensions={"status": "ok"})
+                # New deployment forces a fresh task; fire the poller so the
+                # row transitions back to status=running once the new task is
+                # healthy.
+                asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
             else:
@@ -823,6 +904,12 @@ class EcsManager:
                             "substatus": "starting",
                         },
                     )
+                    # We just flipped status to provisioning -- fire the poller.
+                    # If status was already provisioning, an earlier poller is
+                    # already running (or the startup reconciler will pick it up
+                    # on next deploy), so firing another would just double the
+                    # ECS API traffic for no gain.
+                    asyncio.create_task(self._await_running_transition(user_id))
                 return service_name
 
         # --- Scenario: No service exists -- full provisioning ---
@@ -872,15 +959,9 @@ class EcsManager:
         put_metric("container.provision", dimensions={"status": "ok"})
         logger.info("Provisioned container %s for user %s", service_name, user_id)
 
-        # Step 5: Eagerly drive the provisioning → running transition. The
-        # previous design relied on the next call to `resolve_running_container`
-        # to flip the status when the task became reachable, which left rows
-        # stuck at `provisioning` forever if the user's first chat hit an
-        # upstream error (e.g. a bad model id) before the poll path fired.
-        # Now we fire-and-forget a background poller immediately so the row
-        # transitions as soon as the ECS task reports healthy, independent of
-        # user activity.
-        asyncio.create_task(self._await_running_transition(user_id))
+        # No poller fired here: start_user_service above already fired one.
+        # Firing again would double list_tasks/describe_services traffic and
+        # race two tasks to write the provisioning -> running transition.
 
         return service_name
 
@@ -888,87 +969,157 @@ class EcsManager:
         self,
         user_id: str,
         *,
-        max_attempts: int = 30,
-        interval_s: float = 4.0,
+        interval_s: float = 10.0,
     ) -> None:
-        """Background poller that drives provisioning → running eagerly.
+        """Durable background poller that drives provisioning -> running.
 
-        Polls ECS for the task's private IP, then TCP-connects to the gateway
-        port, then writes status=running once both succeed. Also stores the
-        task ARN on the row (previously never written because the old code
-        path only updated status, not task_arn).
+        Exits on one of four conditions:
 
-        Exits quietly on timeout — the next user request will still retry
-        via `resolve_running_container`, so this is strictly an optimization
-        for the happy path.
+        1. Container is reachable (ECS task from the PRIMARY deployment is
+           RUNNING + gateway port open): write status=running, substatus=
+           gateway_healthy, store task_arn, return.
+        2. DDB status is no longer "provisioning" (external state change --
+           admin stop, re-provision, reaper, etc.): return silently.
+        3. PRIMARY deployment rolloutState=FAILED (circuit breaker tripped --
+           the provision will never succeed): write status=error, return.
+        4. asyncio.CancelledError (backend shutdown): propagate.
+
+        No fixed timeout. The container can take 10s or 10 minutes to become
+        healthy -- the poller keeps going until one of the above happens.
+
+        Forced-redeploy paths (resize, forceNewDeployment) have an OLD healthy
+        task while the NEW deployment rolls out. The poller filters tasks to
+        only those from the PRIMARY deployment so an old task can't cause a
+        premature status=running write that masks a failing new rollout.
         """
-        for attempt in range(max_attempts):
+        while True:
             try:
                 container = await container_repo.get_by_owner_id(user_id)
                 if not container or container.get("status") != "provisioning":
-                    # Already transitioned (or the row is gone) — nothing to do.
+                    # External state change or row gone -- nothing to do.
                     return
 
                 service_name = container["service_name"]
-                list_resp = self._ecs.list_tasks(
-                    cluster=self._cluster,
-                    serviceName=service_name,
-                    desiredStatus="RUNNING",
-                )
-                task_arns = list_resp.get("taskArns", [])
-                if not task_arns:
+
+                # One describe_services per iteration covers both concerns:
+                # 1. primary deployment id -> startedBy filter for list_tasks
+                # 2. primary deployment rolloutState -> failure detection
+                primary = await self._get_primary_deployment(service_name)
+                if primary is None:
+                    # Transient state -- no PRIMARY deployment visible. Retry.
                     await asyncio.sleep(interval_s)
                     continue
 
-                task_arn = task_arns[0]
-                desc_resp = self._ecs.describe_tasks(
-                    cluster=self._cluster,
-                    tasks=[task_arn],
-                )
-                tasks = desc_resp.get("tasks", [])
-                if not tasks or tasks[0].get("lastStatus") != "RUNNING":
-                    await asyncio.sleep(interval_s)
-                    continue
+                if primary.get("rolloutState") == "FAILED":
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "error",
+                            "substatus": "deployment_failed",
+                        },
+                    )
+                    logger.error(
+                        "Deployment circuit breaker tripped for container %s (user=%s); marking error",
+                        service_name,
+                        user_id,
+                    )
+                    return
 
-                ip = None
-                for attachment in tasks[0].get("attachments", []):
-                    if attachment.get("type") == "ElasticNetworkInterface":
-                        for detail in attachment.get("details", []):
-                            if detail.get("name") == "privateIPv4Address":
-                                ip = detail.get("value")
-                                break
-                if not ip or not self.is_healthy(ip):
-                    await asyncio.sleep(interval_s)
-                    continue
+                deployment_id = primary.get("id")
+                task_arn, ip = await self._poll_running_task(service_name, deployment_id)
+                if task_arn and ip and self.is_healthy(ip):
+                    await container_repo.update_fields(
+                        user_id,
+                        {
+                            "status": "running",
+                            "substatus": "gateway_healthy",
+                            "task_arn": task_arn,
+                        },
+                    )
+                    logger.info(
+                        "Transitioned container %s to running (user=%s, task=%s)",
+                        service_name,
+                        user_id,
+                        task_arn.split("/")[-1],
+                    )
+                    return
 
-                await container_repo.update_fields(
-                    user_id,
-                    {
-                        "status": "running",
-                        "substatus": "gateway_healthy",
-                        "task_arn": task_arn,
-                    },
-                )
-                logger.info(
-                    "Eagerly transitioned container %s to running (user=%s, task=%s)",
-                    service_name,
-                    user_id,
-                    task_arn.split("/")[-1],
-                )
-                return
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 logger.exception(
-                    "Unexpected error in eager running transition for %s (attempt %d)",
+                    "Unexpected error in _await_running_transition for %s; will retry",
                     user_id,
-                    attempt,
                 )
-                await asyncio.sleep(interval_s)
 
-        logger.warning(
-            "Eager provisioning -> running transition timed out for user %s after %d attempts",
-            user_id,
-            max_attempts,
+            await asyncio.sleep(interval_s)
+
+    async def _get_primary_deployment(self, service_name: str) -> dict | None:
+        """Return the PRIMARY deployment dict for the service, or None if
+        unavailable. Primary is the deployment currently being rolled out or
+        most-recently-succeeded; there is at most one at any time.
+
+        Returns None on transient ECS errors so the caller retries on the
+        next poll tick rather than flipping to error on a describe_services
+        hiccup.
+        """
+        try:
+            resp = self._ecs.describe_services(
+                cluster=self._cluster,
+                services=[service_name],
+            )
+        except Exception:
+            logger.warning("describe_services failed for %s; will retry next tick", service_name)
+            return None
+
+        services = resp.get("services", [])
+        if not services:
+            return None
+        for deployment in services[0].get("deployments", []):
+            if deployment.get("status") == "PRIMARY":
+                return deployment
+        return None
+
+    async def _poll_running_task(self, service_name: str, deployment_id: str | None) -> tuple[str | None, str | None]:
+        """Find a RUNNING task from the given deployment and return (task_arn, ip).
+
+        Lists ALL running tasks for the service, then filters in-code to
+        tasks whose `startedBy` matches the primary deployment's id. ECS
+        tags service-launched tasks with startedBy=ecs-svc/<deployment-id>.
+        We can't filter via the ListTasks API because ECS rejects startedBy
+        combined with serviceName (InvalidParameterException).
+
+        Returns (None, None) when no qualifying task has an IP yet.
+        """
+        if not deployment_id:
+            return None, None
+
+        list_resp = self._ecs.list_tasks(
+            cluster=self._cluster,
+            serviceName=service_name,
+            desiredStatus="RUNNING",
         )
+        task_arns = list_resp.get("taskArns", [])
+        if not task_arns:
+            return None, None
+
+        desc_resp = self._ecs.describe_tasks(
+            cluster=self._cluster,
+            tasks=task_arns,
+        )
+        for task in desc_resp.get("tasks", []):
+            if task.get("startedBy") != deployment_id:
+                continue
+            if task.get("lastStatus") != "RUNNING":
+                continue
+            for attachment in task.get("attachments", []):
+                if attachment.get("type") != "ElasticNetworkInterface":
+                    continue
+                for detail in attachment.get("details", []):
+                    if detail.get("name") == "privateIPv4Address":
+                        task_arn = task.get("taskArn") or task_arns[0]
+                        return task_arn, detail.get("value")
+        return None, None
 
     async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
