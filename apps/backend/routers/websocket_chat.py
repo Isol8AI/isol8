@@ -139,6 +139,25 @@ async def ws_connect(
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 
+    # Record activity on connect so the scale-to-zero idle reaper sees a
+    # fresh `last_active_at` immediately after a user logs in. Without this,
+    # there is a 0-65 second window before the frontend's first user_active
+    # heartbeat arrives where the reaper can fire on a stale timestamp from
+    # a prior session and stop the user's container right after they
+    # connect (paired with the `start_user_service` change that no longer
+    # passes `forceNewDeployment=True`, this kills the cascade that caused
+    # the post-login outage in the post-incident review of the 47h-uptime
+    # container). `record_activity` itself is throttled to 1 DDB write per
+    # 30s per owner, so multiple WS connects in a short window don't hammer
+    # DDB.
+    try:
+        owner_id_for_activity = x_org_id or x_user_id
+        asyncio.create_task(get_gateway_pool().record_activity(owner_id_for_activity))
+    except Exception:
+        # Pool may not be initialized in tests / extreme edge cases. Don't
+        # fail connect for a best-effort activity ping.
+        pass
+
     # Send OpenClaw connect.challenge so the control UI SPA can complete
     # its handshake.  The chat frontend silently ignores this message.
     background_tasks.add_task(_send_connect_challenge, x_connection_id)

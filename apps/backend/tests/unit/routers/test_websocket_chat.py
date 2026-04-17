@@ -99,6 +99,55 @@ class TestConnectEndpoint:
         )
 
     @pytest.mark.asyncio
+    async def test_connect_records_activity_for_personal_owner(self, test_app, mock_connection_service, mock_gateway_pool):
+        """Connect must call record_activity(owner_id) so the scale-to-zero
+        idle reaper sees a fresh last_active_at immediately after login.
+
+        Without this, there is a 0-65 second window before the frontend's
+        first user_active heartbeat lands where the reaper can fire on a
+        stale timestamp from a prior session and stop the user's container
+        right after they connect.
+
+        For personal users, owner_id == user_id (no org).
+        """
+        mock_gateway_pool.record_activity = MagicMock(return_value=asyncio.sleep(0))
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-123",
+                    "x-user-id": "test-user-456",
+                },
+            )
+        # Yield once so the asyncio.create_task fires inside the event loop.
+        await asyncio.sleep(0)
+
+        assert response.status_code == 200
+        mock_gateway_pool.record_activity.assert_called_once_with("test-user-456")
+
+    @pytest.mark.asyncio
+    async def test_connect_records_activity_for_org_owner(self, test_app, mock_connection_service, mock_gateway_pool):
+        """Same activity recording for org-context connects, but routed by
+        org_id (which is the owner_id) rather than user_id.
+        """
+        mock_gateway_pool.record_activity = MagicMock(return_value=asyncio.sleep(0))
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/connect",
+                headers={
+                    "x-connection-id": "test-conn-123",
+                    "x-user-id": "test-user-456",
+                    "x-org-id": "test-org-789",
+                },
+            )
+        await asyncio.sleep(0)
+
+        assert response.status_code == 200
+        mock_gateway_pool.record_activity.assert_called_once_with("test-org-789")
+
+    @pytest.mark.asyncio
     async def test_connect_without_connection_id_fails(self, test_app, mock_connection_service):
         """Connect without x-connection-id header should return 400."""
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:

@@ -369,12 +369,22 @@ class EcsManager:
         logger.info("Stopped ECS service %s for user %s", service_name, user_id)
 
     async def start_user_service(self, user_id: str) -> None:
-        """Scale a user's ECS service to 1 (running) with forced new deployment.
+        """Scale a user's ECS service to 1 (running).
 
         Fires _await_running_transition afterwards so the provisioning -> running
         transition happens eventually even if the user disconnects before the
         ECS task finishes warming up. Without this, cold-start restart rows
         get stuck at status=provisioning forever.
+
+        Does NOT pass forceNewDeployment=True. The historical use case here was
+        a stopped service (desiredCount=0) — `desiredCount=1` alone is enough
+        to launch a new task. Forcing a new deployment was unintentionally
+        destructive when called in racy contexts: if `stop_user_service` had
+        just set `desiredCount=0` but ECS hadn't yet stopped the old task,
+        a follow-up `start_user_service` with forceNewDeployment would
+        terminate that still-running task and replace it with a fresh one,
+        producing a ~30s outage right after a user logged in (the cascade
+        traced in the post-incident review of the 47h-uptime container).
 
         Args:
             user_id: Clerk user ID.
@@ -391,7 +401,6 @@ class EcsManager:
                     cluster=self._cluster,
                     service=service_name,
                     desiredCount=1,
-                    forceNewDeployment=True,
                     deploymentConfiguration={
                         "deploymentCircuitBreaker": {
                             "enable": True,
