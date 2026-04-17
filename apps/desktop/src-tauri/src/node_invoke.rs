@@ -151,6 +151,16 @@ async fn handle_system_run(
     let mut command = Command::new(cmd);
     command.args(args).current_dir(&cwd);
 
+    // Put the child in its own process group so a timeout-kill can take down
+    // its entire subtree (e.g. `bash -c "sleep 999"` spawns `sleep` as a
+    // child of bash; killing bash alone leaves sleep running and still
+    // holding stdout/stderr open, which would make our drain tasks block
+    // on EOF and break timeoutMs). `.process_group(0)` sets pgid = pid.
+    // Note: tokio::process::Command exposes this directly under cfg(unix);
+    // no trait import needed.
+    #[cfg(unix)]
+    command.process_group(0);
+
     // Sanitize environment
     let mut env = sanitize_env();
     if let Some(extra) = params.env {
@@ -164,6 +174,8 @@ async fn handle_system_run(
     command.stderr(std::process::Stdio::piped());
 
     let mut child = command.spawn()?;
+    #[cfg(unix)]
+    let child_pid: Option<i32> = child.id().map(|p| p as i32);
 
     // Write stdin if provided
     if let Some(input) = &params.input {
@@ -189,8 +201,10 @@ async fn handle_system_run(
     let stdout_task = tokio::spawn(async move { drain_with_cap(stdout_pipe).await });
     let stderr_task = tokio::spawn(async move { drain_with_cap(stderr_pipe).await });
 
-    // Wait for exit, with optional timeout. On timeout, kill the child so it
-    // doesn't keep running on the user's Mac after the agent is told it timed out.
+    // Wait for exit, with optional timeout. On timeout, kill the whole
+    // process GROUP — child.kill() only signals the direct pid, which for
+    // wrapper commands like `bash -c "sleep 999"` leaves the grandchild
+    // alive (and holding stdout/stderr, blocking the drain tasks).
     let (exit_status, timed_out) = if let Some(timeout_ms) = params.timeout_ms {
         match tokio::time::timeout(
             std::time::Duration::from_millis(timeout_ms),
@@ -200,8 +214,20 @@ async fn handle_system_run(
         {
             Ok(status) => (status?, false),
             Err(_) => {
+                #[cfg(unix)]
+                {
+                    if let Some(pid) = child_pid {
+                        // killpg(pgid, SIGKILL). Safe because we set
+                        // process_group(0) at spawn time — pgid == pid.
+                        unsafe {
+                            libc::killpg(pid, libc::SIGKILL);
+                        }
+                    }
+                }
+                // Still call child.kill() for correctness on non-unix and
+                // to reap the direct child's zombie. On unix the pgroup
+                // signal already delivered SIGKILL to it.
                 let _ = child.kill().await;
-                // wait() after kill reaps the zombie and gives us a real status.
                 let status = child.wait().await.unwrap_or_default();
                 (status, true)
             }
