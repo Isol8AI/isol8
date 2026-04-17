@@ -209,17 +209,29 @@ fn extract_inline_code(binary: &str, argv: &[String]) -> Option<String> {
     None
 }
 
-/// Build the approval-store key for `argv`. For inline-code invocations this
-/// includes the payload so each distinct command is its own approval; for
-/// everything else it's the binary name.
+/// Build the approval-store key for `argv`.
+///
+/// For inline-code invocations the key includes the payload so each distinct
+/// inline command is its own approval (see `extract_inline_code`).
+///
+/// For regular invocations the key is the FULL argv[0], not just the
+/// basename. Keying on basename ("git") would let any binary called `git`
+/// on PATH inherit the approval — an attacker-controlled `/tmp/evil/git`
+/// placed earlier in PATH than `/usr/bin/git` would run with the user's
+/// prior "Allow Always git" approval. Callers are expected to resolve
+/// argv[0] to an absolute path via PATH before calling check_approval
+/// (see `resolve_argv0_absolute` in node_invoke.rs); we key on whatever
+/// they pass.
 fn approval_key_for(argv: &[String]) -> String {
     if argv.is_empty() {
         return String::new();
     }
-    let binary = extract_binary_name(&argv[0]);
-    match extract_inline_code(&binary, argv) {
-        Some(inline) => format!("{}:inline:{}", binary, inline),
-        None => binary,
+    // Basename is still used to MATCH the wrapper list (e.g. is argv[0]
+    // any known-path "bash"?), but the stored key prefix is the full path.
+    let binary_name = extract_binary_name(&argv[0]);
+    match extract_inline_code(&binary_name, argv) {
+        Some(inline) => format!("{}:inline:{}", argv[0], inline),
+        None => argv[0].clone(),
     }
 }
 
@@ -258,30 +270,45 @@ mod tests {
     }
 
     #[test]
-    fn key_for_plain_binary_is_just_the_name() {
+    fn key_is_full_argv0_not_basename() {
+        // Critical: /usr/bin/git and /tmp/evil/git must NOT share a key,
+        // otherwise a PATH-shadowing attacker inherits approvals.
+        assert_eq!(approval_key_for(&argv(&["/usr/bin/git", "status"])), "/usr/bin/git");
+        assert_eq!(approval_key_for(&argv(&["/tmp/evil/git", "log"])), "/tmp/evil/git");
+        assert_ne!(
+            approval_key_for(&argv(&["/usr/bin/git", "a"])),
+            approval_key_for(&argv(&["/tmp/evil/git", "a"])),
+            "different absolute paths to 'git' must produce different approval keys"
+        );
+    }
+
+    #[test]
+    fn key_for_bare_argv0_is_as_given() {
+        // When callers haven't resolved argv[0] yet (e.g. tests, preflight
+        // checks against the raw agent input), we key on whatever string
+        // they passed. Callers resolve via PATH before real approval checks.
         assert_eq!(approval_key_for(&argv(&["git", "status"])), "git");
-        assert_eq!(approval_key_for(&argv(&["/usr/bin/git", "log"])), "git");
     }
 
     #[test]
     fn key_for_inline_shell_includes_payload() {
-        let k1 = approval_key_for(&argv(&["bash", "-c", "rm -rf /tmp/foo"]));
-        let k2 = approval_key_for(&argv(&["bash", "-c", "echo hello"]));
-        assert_eq!(k1, "bash:inline:rm -rf /tmp/foo");
-        assert_eq!(k2, "bash:inline:echo hello");
+        let k1 = approval_key_for(&argv(&["/bin/bash", "-c", "rm -rf /tmp/foo"]));
+        let k2 = approval_key_for(&argv(&["/bin/bash", "-c", "echo hello"]));
+        assert_eq!(k1, "/bin/bash:inline:rm -rf /tmp/foo");
+        assert_eq!(k2, "/bin/bash:inline:echo hello");
         assert_ne!(k1, k2, "different inline commands must produce different keys");
     }
 
     #[test]
     fn key_for_node_eval_includes_payload() {
-        let k = approval_key_for(&argv(&["node", "-e", "require('fs').unlinkSync('x')"]));
-        assert_eq!(k, "node:inline:require('fs').unlinkSync('x')");
+        let k = approval_key_for(&argv(&["/usr/local/bin/node", "-e", "require('fs').unlinkSync('x')"]));
+        assert_eq!(k, "/usr/local/bin/node:inline:require('fs').unlinkSync('x')");
     }
 
     #[test]
     fn key_for_python_dash_c_includes_payload() {
-        let k = approval_key_for(&argv(&["python3", "-c", "import os; os.system('ls')"]));
-        assert_eq!(k, "python3:inline:import os; os.system('ls')");
+        let k = approval_key_for(&argv(&["/usr/bin/python3", "-c", "import os; os.system('ls')"]));
+        assert_eq!(k, "/usr/bin/python3:inline:import os; os.system('ls')");
     }
 
     #[test]
@@ -305,26 +332,45 @@ mod tests {
     #[test]
     fn allow_always_on_one_inline_does_not_leak_to_another() {
         // Manually seed the store to simulate "Allow Always" on one command.
+        let seeded_key = "/bin/bash:inline:echo approved".to_string();
         {
             let mut store = STORE.lock().unwrap();
-            store
-                .always_allowed
-                .insert("bash:inline:echo approved".to_string());
+            store.always_allowed.insert(seeded_key.clone());
         }
         // The exact command is allowed...
-        assert!(check_allowlist(&argv(&["bash", "-c", "echo approved"])).is_ok());
+        assert!(check_allowlist(&argv(&["/bin/bash", "-c", "echo approved"])).is_ok());
         // ...but a different inline payload is not.
-        let other = check_allowlist(&argv(&["bash", "-c", "echo different"]));
+        let other = check_allowlist(&argv(&["/bin/bash", "-c", "echo different"]));
         assert!(
             matches!(other, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:")),
             "different payload must re-prompt, got {:?}",
             other
         );
-        // Clean up so other tests don't see this entry.
-        STORE
-            .lock()
-            .unwrap()
-            .always_allowed
-            .remove("bash:inline:echo approved");
+        // Clean up.
+        STORE.lock().unwrap().always_allowed.remove(&seeded_key);
+    }
+
+    #[test]
+    fn path_shadowing_does_not_inherit_approval() {
+        // The defense: even if the user previously "Allow Always"ed a real
+        // binary like /usr/bin/foo, an attacker dropping /tmp/evil/foo on
+        // PATH does NOT get auto-approved — different absolute path,
+        // different key, still prompts.
+        let approved_path = "/usr/bin/some-uncommon-bin".to_string();
+        {
+            let mut store = STORE.lock().unwrap();
+            store.always_allowed.insert(approved_path.clone());
+        }
+        // Real binary path is approved.
+        assert!(check_allowlist(&argv(&[&approved_path, "--help"])).is_ok());
+        // Shadowing binary is NOT approved.
+        let shadow = check_allowlist(&argv(&["/tmp/evil/some-uncommon-bin", "--help"]));
+        assert!(
+            matches!(shadow, Err(ref msg) if msg.starts_with("APPROVAL_REQUIRED:")),
+            "shadow path must re-prompt, got {:?}",
+            shadow
+        );
+        // Clean up.
+        STORE.lock().unwrap().always_allowed.remove(&approved_path);
     }
 }

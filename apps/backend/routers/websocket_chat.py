@@ -169,12 +169,18 @@ async def ws_disconnect(
             owner_id = connection.get("org_id") or connection["user_id"]
             user_id = connection["user_id"]
 
-            # Clean up node upstream if this was a node connection
+            # Always unregister from the frontend fanout pool: every WS
+            # (node OR chat) gets added in ws_connect, so every close path
+            # must remove it. Previously the node branch skipped this call
+            # and dead sockets lingered in _frontend_connections, causing
+            # every subsequent broadcast to retry a doomed send.
+            pool = get_gateway_pool()
+            pool.remove_frontend_connection(owner_id, x_connection_id)
+
+            # Additionally tear down the node upstream + per-user state
+            # if this was a node connection.
             if is_node_connection(x_connection_id):
                 await handle_node_disconnect(x_connection_id, owner_id, user_id)
-            else:
-                pool = get_gateway_pool()
-                pool.remove_frontend_connection(owner_id, x_connection_id)
     except Exception as e:
         logger.warning("Failed to unregister frontend connection from pool: %s", e)
 

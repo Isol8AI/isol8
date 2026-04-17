@@ -109,52 +109,55 @@ def ensure_node_paired_entry(
 
     This function is safe to call on every ``_load_node_key`` — it's a no-op
     if the ``device_id`` is already present. It's also safe to run
-    concurrently for different members: an ``fcntl.lockf`` exclusive lock
-    serializes readers/writers against the same file (compatible with EFS
-    NFS, unlike flock).
+    concurrently for different members.
 
-    Atomicity: the rewrite uses temp-file + rename to avoid leaving the file
-    half-written if the process dies mid-write. The tempfile is chowned to
-    uid/gid 1000 when running as root so the in-container OpenClaw agent
-    (running as ``node``) can read it.
+    **Locking:** we take the exclusive ``fcntl.lockf`` on a SIBLING file
+    (``paired.json.lock``), NOT on ``paired.json`` itself. This matters
+    because we rewrite ``paired.json`` via tempfile + ``rename``. An fcntl
+    lock is bound to the inode, so a lock taken on the old inode is
+    orphaned the moment rename replaces it with a new inode — a concurrent
+    writer opening the *new* ``paired.json`` would acquire an independent
+    lock and race with us. The sibling lock file's inode never changes,
+    so the lock survives every rewrite.
+
+    Atomicity: the rewrite uses temp-file + rename to avoid leaving the
+    file half-written if the process dies mid-write. The tempfile is
+    chowned to uid/gid 1000 when running as root so the in-container
+    OpenClaw agent (running as ``node``) can read it.
 
     Returns True if a new entry was added, False if it was already present.
     """
     paired_path = os.path.join(efs_mount_path, owner_id, "devices", "paired.json")
     paired_dir = os.path.dirname(paired_path)
+    lock_path = paired_path + ".lock"
     os.makedirs(paired_dir, exist_ok=True)
 
-    # Create the file if it's missing (normally ensure_device_identities
-    # writes it at provision time with the operator entry, but in tests or
-    # recovery paths it may not exist yet). We don't lose existing entries —
-    # the subsequent read-under-lock will pick up anything another writer
-    # installed between this touch and the lock.
-    if not os.path.exists(paired_path):
+    # Ensure the lock file exists (atomic create-or-open; no truncation).
+    # This file is never written to — it's just an inode we can lock.
+    lock_create_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    if os.getuid() == 0:
         try:
-            fd = os.open(paired_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-            try:
-                os.write(fd, b"{}")
-            finally:
-                os.close(fd)
-            if os.getuid() == 0:
-                try:
-                    os.chown(paired_path, 1000, 1000)
-                except OSError:
-                    pass
-        except FileExistsError:
-            pass  # Another writer created it — fine.
+            os.chown(lock_path, 1000, 1000)
+        except OSError:
+            pass
+    os.close(lock_create_fd)
 
     lock_fd = None
     try:
-        lock_fd = open(paired_path, "r+", encoding="utf-8")
+        lock_fd = open(lock_path, "r+", encoding="utf-8")
         fcntl.lockf(lock_fd, fcntl.LOCK_EX)
 
-        lock_fd.seek(0)
-        content = lock_fd.read()
+        # Now that the lock is held, read the current paired.json (creating
+        # it with an empty object if missing — normally ensure_device_identities
+        # writes it at provision time with the operator entry, but recovery
+        # paths may not have it yet).
+        try:
+            with open(paired_path, "r", encoding="utf-8") as f:
+                content = f.read()
+        except FileNotFoundError:
+            content = ""
         entries = json.loads(content) if content.strip() else {}
         if not isinstance(entries, dict):
-            # Legacy/corrupt content — treat as empty rather than clobbering
-            # silently; log so we know.
             logger.warning(
                 "paired.json for owner %s was not a dict (got %s); resetting",
                 owner_id,

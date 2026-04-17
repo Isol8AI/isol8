@@ -105,23 +105,31 @@ async fn handle_system_run(
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
     }
 
+    // Resolve argv[0] to an absolute path BEFORE approval checks. The
+    // approval store keys on argv[0] — keying on a bare name like "git"
+    // would let a binary placed earlier on PATH (e.g. /tmp/evil/git)
+    // inherit a prior "Allow Always" approval for /usr/bin/git. Resolving
+    // first binds approvals to the specific binary that will actually run,
+    // and we spawn against the same resolved path (no re-resolution race).
+    let argv = resolve_argv0_absolute(&params.argv).await;
+
     // Check exec approval before running
     let security = ExecSecurity::Allowlist; // Default security level
-    match exec_approvals::check_approval(&params.argv, &security) {
+    match exec_approvals::check_approval(&argv, &security) {
         Ok(()) => {} // Approved — continue
         Err(reason) if reason.starts_with("APPROVAL_REQUIRED:") => {
             // Need user approval — show a native dialog
-            let cmd_preview = params.argv.join(" ");
+            let cmd_preview = argv.join(" ");
             let decision = prompt_exec_approval(&cmd_preview).await;
             match decision {
                 ApprovalDecision::AllowOnce => {
                     // Continue execution this time only
                 }
                 ApprovalDecision::AllowAlways => {
-                    exec_approvals::record_decision(&params.argv, ApprovalDecision::AllowAlways);
+                    exec_approvals::record_decision(&argv, ApprovalDecision::AllowAlways);
                 }
                 ApprovalDecision::Deny => {
-                    exec_approvals::record_decision(&params.argv, ApprovalDecision::Deny);
+                    exec_approvals::record_decision(&argv, ApprovalDecision::Deny);
                     return Ok(error_result(
                         request,
                         "EXEC_DENIED",
@@ -135,7 +143,7 @@ async fn handle_system_run(
         }
     }
 
-    let (cmd, args) = params.argv.split_first().unwrap();
+    let (cmd, args) = argv.split_first().unwrap();
     let cwd = params.cwd.unwrap_or_else(|| {
         std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())
     });
@@ -250,14 +258,25 @@ async fn handle_system_run_prepare(
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
     }
 
+    // Resolve argv[0] so the approval check uses the same path-keyed lookup
+    // system.run will use. If we checked with a bare name and system.run
+    // later resolved to a different absolute path, approved=true here and
+    // EXEC_DENIED there would be inconsistent.
+    let argv = resolve_argv0_absolute(&params.argv).await;
+
     // Mirror the approval policy system.run will apply, WITHOUT prompting —
     // prepare must report truthful approval state so the agent doesn't call
     // system.run on something that will then be denied. Showing a dialog
     // here would produce two prompts for one command.
     let security = ExecSecurity::Allowlist;
-    let would_be_approved = exec_approvals::check_approval(&params.argv, &security).is_ok();
+    let would_be_approved = exec_approvals::check_approval(&argv, &security).is_ok();
 
-    let resolved = which(&params.argv[0]).await;
+    // resolvedPath matches what system.run would actually execute.
+    let resolved: Option<String> = if std::path::Path::new(&argv[0]).is_absolute() {
+        Some(argv[0].clone())
+    } else {
+        None
+    };
     let payload = serde_json::json!({
         "approved": would_be_approved && resolved.is_some(),
         "resolvedPath": resolved,
@@ -354,6 +373,24 @@ async fn which(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve argv[0] to an absolute path via PATH, returning a new argv where
+/// argv[0] is the resolved path if one was found. This is the pre-approval-
+/// check normalization that binds approvals to a specific binary rather than
+/// a basename that PATH lookup could alias onto a malicious file. If
+/// resolution fails (binary not on PATH) the original argv is returned
+/// unchanged — the approval check and subsequent spawn will both reject it
+/// on their own.
+async fn resolve_argv0_absolute(argv: &[String]) -> Vec<String> {
+    if argv.is_empty() {
+        return argv.to_vec();
+    }
+    let mut out = argv.to_vec();
+    if let Some(resolved) = which(&argv[0]).await {
+        out[0] = resolved;
+    }
+    out
 }
 
 async fn is_executable(path: &str) -> bool {
