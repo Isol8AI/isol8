@@ -1,0 +1,234 @@
+"""Tier-aware policy for openclaw.json locked fields.
+
+Pure, side-effect-free. Takes a config dict and a tier name, returns a list
+of field-level violations. Apply reverts by computing the authoritative
+expected value from helpers in core/containers/config.py.
+"""
+
+import copy
+from typing import Any, Literal, TypedDict
+
+from core.config import TIER_CONFIG, settings
+from core.containers.config import (
+    _TIER_ALLOWED_MODEL_IDS,
+    _agent_models_for_tier,
+    _models_for_tier,
+)
+
+LockedField = Literal[
+    "models.providers",
+    "agents.defaults.models",
+    "agents.defaults.model.primary",
+    "channels.accounts",
+]
+
+
+class PolicyViolation(TypedDict):
+    field: LockedField
+    reason: str
+    expected: Any
+    actual: Any
+
+
+def _expected_providers(tier: str) -> dict:
+    """The one provider block this tier is allowed to run: amazon-bedrock
+    with exactly the tier's model list. No other providers permitted.
+
+    Region comes from ``settings.AWS_REGION`` so this matches what
+    ``write_openclaw_config`` writes at provisioning time — otherwise any
+    non-us-east-1 deploy would flip every clean config into drift.
+    """
+    return {
+        "amazon-bedrock": {
+            "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+            "api": "bedrock-converse-stream",
+            "auth": "aws-sdk",
+            "models": _models_for_tier(tier),
+        },
+    }
+
+
+def _providers_match(actual: Any, expected: dict) -> bool:
+    """Strict equality check against a canonical form. Providers block must
+    match exactly — any extra provider, any extra/missing model, any changed
+    field is a violation.
+
+    Canonicalizes before comparison so list ordering of ``models`` does not
+    matter: provider top-level keys compared as sets, per-provider non-``models``
+    fields compared as dicts, ``models`` compared as ``{id: model}`` maps.
+    Each model's full content is still strictly checked — only the list-order
+    invariant is loosened.
+    """
+    if not isinstance(actual, dict):
+        return False
+
+    if set(actual.keys()) != set(expected.keys()):
+        return False
+
+    for provider, expected_cfg in expected.items():
+        actual_cfg = actual.get(provider)
+        if not isinstance(actual_cfg, dict) or not isinstance(expected_cfg, dict):
+            return False
+
+        # Non-models keys must match exactly (baseUrl, api, auth, ...).
+        actual_non_models = {k: v for k, v in actual_cfg.items() if k != "models"}
+        expected_non_models = {k: v for k, v in expected_cfg.items() if k != "models"}
+        if actual_non_models != expected_non_models:
+            return False
+
+        # Models list: compare as {id: model} dict to ignore ordering but keep
+        # content-strict comparison on every model entry.
+        actual_models = actual_cfg.get("models", [])
+        expected_models = expected_cfg.get("models", [])
+        if not isinstance(actual_models, list) or not isinstance(expected_models, list):
+            return False
+        try:
+            actual_by_id = {m["id"]: m for m in actual_models}
+            expected_by_id = {m["id"]: m for m in expected_models}
+        except (TypeError, KeyError):
+            return False
+        if actual_by_id != expected_by_id:
+            return False
+
+    return True
+
+
+def _safe_dict(root: Any, *path: str) -> dict:
+    """Walk ``root[path[0]][path[1]]…`` and return the value at the end if it
+    is a dict, otherwise ``{}``. Any non-dict intermediate short-circuits to
+    ``{}``. Used so malformed configs (e.g. ``{"models": null}``) yield a
+    violation rather than an ``AttributeError`` deep in ``evaluate``.
+    """
+    cursor: Any = root
+    for segment in path:
+        if not isinstance(cursor, dict):
+            return {}
+        cursor = cursor.get(segment)
+    return cursor if isinstance(cursor, dict) else {}
+
+
+def evaluate(config: dict, tier: str) -> list[PolicyViolation]:
+    """Return a list of locked-field violations for this config at this tier.
+
+    Empty list means the config is legal. Each violation has enough info
+    to revert (field, expected value) and for audit (reason, actual value).
+
+    Malformed inputs (non-dict ``models``, non-dict ``agents.defaults``,
+    non-string ``primary``, etc.) are tolerated: each nested access is
+    guarded so the offending block is treated as missing/invalid and surfaces
+    as a normal violation (which ``apply_reverts`` then normalizes).
+    """
+    violations: list[PolicyViolation] = []
+
+    # Tier fallback: unknown tier → free-tier allowlist (default-deny).
+    effective_tier = tier if tier in _TIER_ALLOWED_MODEL_IDS else "free"
+
+    # 1. models.providers — strict match against tier's allowed block
+    actual_providers = _safe_dict(config, "models", "providers")
+    expected_providers = _expected_providers(effective_tier)
+    if not _providers_match(actual_providers, expected_providers):
+        violations.append(
+            {
+                "field": "models.providers",
+                "reason": f"providers block for tier={effective_tier} must match the tier's allowlist",
+                "expected": expected_providers,
+                "actual": actual_providers,
+            }
+        )
+
+    # 2. agents.defaults.model.primary — must be in tier allowlist
+    model_block = _safe_dict(config, "agents", "defaults", "model")
+    primary_raw = model_block.get("primary", "")
+    primary = primary_raw if isinstance(primary_raw, str) else ""
+    bare_primary = primary.removeprefix("amazon-bedrock/")
+    if bare_primary not in _TIER_ALLOWED_MODEL_IDS[effective_tier]:
+        expected_primary = (
+            f"amazon-bedrock/{TIER_CONFIG[effective_tier]['primary_model'].removeprefix('amazon-bedrock/')}"
+        )
+        violations.append(
+            {
+                "field": "agents.defaults.model.primary",
+                "reason": f"primary model {primary!r} is not allowed for tier={effective_tier}",
+                "expected": expected_primary,
+                "actual": primary_raw,
+            }
+        )
+
+    # 3. agents.defaults.models — keys must all be in tier allowlist
+    models_map = _safe_dict(config, "agents", "defaults", "models")
+    if isinstance(models_map, dict):
+        illegal_keys = [
+            k for k in models_map if k.removeprefix("amazon-bedrock/") not in _TIER_ALLOWED_MODEL_IDS[effective_tier]
+        ]
+        if illegal_keys:
+            # Build expected: filter out illegal entries, ensure primary is present.
+            expected_primary = (
+                f"amazon-bedrock/{TIER_CONFIG[effective_tier]['primary_model'].removeprefix('amazon-bedrock/')}"
+            )
+            expected_models = _agent_models_for_tier(effective_tier, expected_primary)
+            violations.append(
+                {
+                    "field": "agents.defaults.models",
+                    "reason": f"agents.defaults.models contains non-allowlisted keys for tier={effective_tier}: {illegal_keys}",
+                    "expected": expected_models,
+                    "actual": models_map,
+                }
+            )
+
+    # 4. channels.{provider}.accounts — free tier must have no accounts
+    if effective_tier == "free":
+        channels = _safe_dict(config, "channels")
+        if isinstance(channels, dict):
+            offending: dict[str, dict] = {}
+            for provider, provider_cfg in channels.items():
+                if not isinstance(provider_cfg, dict):
+                    continue
+                accounts = provider_cfg.get("accounts", {})
+                if isinstance(accounts, dict) and accounts:
+                    offending[provider] = accounts
+            if offending:
+                violations.append(
+                    {
+                        "field": "channels.accounts",
+                        "reason": f"free tier cannot have channel accounts; found: {sorted(offending.keys())}",
+                        "expected": {p: {} for p in offending},
+                        "actual": offending,
+                    }
+                )
+
+    return violations
+
+
+def _set_dotted(target: dict, dotted: str, value: Any) -> None:
+    """Set `target[a][b][c] = value` for dotted='a.b.c'. Creates intermediate
+    dicts as needed."""
+    parts = dotted.split(".")
+    cursor = target
+    for segment in parts[:-1]:
+        if segment not in cursor or not isinstance(cursor[segment], dict):
+            cursor[segment] = {}
+        cursor = cursor[segment]
+    cursor[parts[-1]] = value
+
+
+def apply_reverts(config: dict, violations: list[PolicyViolation]) -> dict:
+    """Return a deep copy of config with each violating field replaced by
+    its expected value. Non-violating fields are preserved untouched.
+
+    Special-cases `channels.accounts` since that's a collection of per-provider
+    sub-fields, not a single dotted path.
+    """
+    result = copy.deepcopy(config)
+    for v in violations:
+        field = v["field"]
+        expected = v["expected"]
+        if field == "channels.accounts":
+            # expected is {provider: {} ...}; write into channels.{provider}.accounts
+            channels = result.setdefault("channels", {})
+            for provider in expected:
+                provider_cfg = channels.setdefault(provider, {})
+                if isinstance(provider_cfg, dict):
+                    provider_cfg["accounts"] = {}
+        else:
+            _set_dotted(result, field, copy.deepcopy(expected))
+    return result

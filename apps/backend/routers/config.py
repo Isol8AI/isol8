@@ -18,8 +18,10 @@ from core.auth import (
 )
 from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo
+from core.services import config_policy
 from core.services.config_patcher import (
     ConfigPatchError,
+    deep_merge,
     patch_openclaw_config,
 )
 
@@ -105,29 +107,59 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
     description=(
         "Deep-merges the patch into the caller's owner_id openclaw.json on EFS. "
         "Derives owner_id from auth context (org_id if org, else user_id). "
-        "Requires org_admin for org callers. Tier-gates channel fields."
+        "Requires org_admin for org callers. Tier-gates locked fields via config_policy."
     ),
 )
 async def patch_config(
     body: ConfigPatchBody,
     auth: AuthContext = Depends(get_current_user),
 ):
-    # Org admin check (personal context passes through)
     require_org_admin(auth)
-
     owner_id = resolve_owner_id(auth)
 
-    # Tier gate on channel fields
-    if _patch_touches_channels(body.patch):
+    # Resolve tier and simulate the merged config to apply policy to the
+    # final state, not to the isolated patch (which might only toggle a
+    # scaffold flag while keeping the locked field legal).
+    # Fail-closed: if the billing lookup blows up (e.g. DDB unavailable in
+    # contract/test envs, transient AWS error), assume the most restrictive
+    # tier so we never accidentally loosen policy when infra is degraded.
+    try:
         account = await billing_repo.get_by_owner_id(owner_id)
         tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
-        if tier == "free":
+    except Exception:
+        logger.exception("billing lookup failed for owner_id=%s; defaulting to free tier", owner_id)
+        tier = "free"
+
+    # Fail-open on current-config read errors: if EFS is unreachable or read
+    # raises, proceed without policy evaluation so the downstream
+    # patch_openclaw_config call can surface the real error (ConfigPatchError
+    # -> 404 when the file truly doesn't exist).
+    try:
+        current = await read_openclaw_config_from_efs(owner_id)
+    except Exception:
+        logger.exception("EFS read failed for owner_id=%s; skipping policy check", owner_id)
+        current = None
+
+    # Only run policy when we have a real current config. If the file is
+    # missing/unreadable, skip the policy check and let patch_openclaw_config
+    # surface the real error (ConfigPatchError -> 404). This preserves
+    # distinct error semantics: "your patch violates policy" vs "your config
+    # doesn't exist yet".
+    if current is not None:
+        merged = deep_merge(current, body.patch)
+        violations = config_policy.evaluate(merged, tier)
+        if violations:
             raise HTTPException(
                 status_code=403,
-                detail="channels_require_paid_tier",
+                detail={
+                    "code": "policy_violation",
+                    "fields": [v["field"] for v in violations],
+                    "reason": violations[0]["reason"],
+                },
             )
 
-        # Bot token collision pre-check
+    # Bot-token collision pre-check (channels-specific; runs only if patch touches channels).
+    if _patch_touches_channels(body.patch):
         await _check_token_collision(owner_id, body.patch)
 
     try:

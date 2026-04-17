@@ -334,3 +334,37 @@ async def test_mark_stopped_if_running_noop_when_row_missing(dynamodb_table):
     flipped = await container_repo.mark_stopped_if_running("user_never_existed")
 
     assert flipped is False
+
+
+@pytest.mark.asyncio
+async def test_list_active_owners_paginates_query(monkeypatch):
+    """list_active_owners must follow LastEvaluatedKey so fleets whose
+    status-index page exceeds DynamoDB's 1MB response cap are fully
+    enumerated."""
+    from core.repositories import container_repo
+
+    class _FakeTable:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, **kwargs):
+            self.calls.append(kwargs)
+            # First call: page of 2 items + LastEvaluatedKey.
+            # Second call: final page of 1 item, no LastEvaluatedKey.
+            if "ExclusiveStartKey" not in kwargs:
+                return {
+                    "Items": [{"owner_id": "user_1"}, {"owner_id": "user_2"}],
+                    "LastEvaluatedKey": {"owner_id": "user_2"},
+                }
+            return {"Items": [{"owner_id": "user_3"}]}
+
+    fake = _FakeTable()
+    monkeypatch.setattr(container_repo, "_get_table", lambda: fake)
+
+    owners = await container_repo.list_active_owners()
+
+    assert owners == ["user_1", "user_2", "user_3"]
+    # Two calls: initial + one continuation.
+    assert len(fake.calls) == 2
+    assert "ExclusiveStartKey" not in fake.calls[0]
+    assert fake.calls[1]["ExclusiveStartKey"] == {"owner_id": "user_2"}

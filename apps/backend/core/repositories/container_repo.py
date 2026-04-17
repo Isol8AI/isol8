@@ -167,3 +167,59 @@ async def mark_stopped_if_running(owner_id: str) -> bool:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def set_reconciler_grace(owner_id: str, seconds: int = 5) -> dict | None:
+    """Write `reconciler_grace_until = now + seconds` to this owner's container
+    row. The reconciler checks this before reverting so admin / backend-initiated
+    writes aren't immediately undone by a concurrent reconciler tick.
+
+    No-op if the row doesn't exist (returns None).
+    """
+    import time
+
+    return await update_fields(owner_id, {"reconciler_grace_until": int(time.time()) + seconds})
+
+
+async def get_reconciler_grace(owner_id: str) -> int:
+    """Return the reconciler_grace_until timestamp (epoch seconds) for this
+    owner, or 0 if unset or the row doesn't exist."""
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return 0
+    value = existing.get("reconciler_grace_until")
+    if value is None:
+        return 0
+    # DDB returns numbers as Decimal -- coerce to int.
+    return int(value)
+
+
+async def list_active_owners() -> list[str]:
+    """Return owner_ids for containers with status='running'. Used by the
+    config reconciler to enumerate targets.
+
+    Deliberately excludes 'provisioning' — during that phase the backend
+    itself is writing openclaw.json, and the reconciler must not race with
+    it. The reconciler starts caring once the container is fully running.
+
+    Paginates via LastEvaluatedKey so fleets whose status-index page exceeds
+    DynamoDB's 1MB response cap are fully enumerated (otherwise later pages
+    would be silently dropped, leaving some users unreconciled).
+    """
+    table = _get_table()
+    owners: list[str] = []
+    last_key = None
+    while True:
+        query_kwargs: dict = {
+            "IndexName": "status-index",
+            "KeyConditionExpression": Key("status").eq("running"),
+            "ProjectionExpression": "owner_id",
+        }
+        if last_key:
+            query_kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **query_kwargs)
+        owners.extend(item["owner_id"] for item in response.get("Items", []) if "owner_id" in item)
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            break
+    return owners

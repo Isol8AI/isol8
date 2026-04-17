@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
 from typing import Any, Callable
 
 from core.config import settings
@@ -16,53 +17,113 @@ logger = logging.getLogger(__name__)
 
 _efs_mount_path = settings.EFS_MOUNT_PATH
 
+# POSIX fcntl/lockf locks are per-process: two threads in the same process
+# do NOT block each other via fcntl. Since the reconciler and the patch
+# endpoint both run in the backend process and dispatch to the default
+# thread-pool executor via ``asyncio.to_thread``, we need an in-process
+# lock to serialize them. The fcntl lock still matters for cross-process
+# serialization (e.g. a fleet cleanup script run alongside the backend).
+_owner_locks: dict[str, threading.Lock] = {}
+_owner_locks_guard = threading.Lock()
+
+
+def _get_owner_lock(owner_id: str) -> threading.Lock:
+    with _owner_locks_guard:
+        lock = _owner_locks.get(owner_id)
+        if lock is None:
+            lock = threading.Lock()
+            _owner_locks[owner_id] = lock
+        return lock
+
 
 class ConfigPatchError(Exception):
     pass
 
 
-def _deep_merge(base: dict, patch: dict) -> dict:
+def deep_merge(base: dict, patch: dict) -> dict:
     """Deep-merge patch into base. Dicts are merged recursively. Non-dict values are replaced."""
     result = copy.deepcopy(base)
     for key, value in patch.items():
         if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
+            result[key] = deep_merge(result[key], value)
         else:
             result[key] = copy.deepcopy(value)
     return result
 
 
-async def _locked_rmw(
+async def locked_rmw(
     owner_id: str,
     mutate_fn: Callable[[dict], bool],
     log_context: str,
 ) -> None:
     """Locked read-modify-write skeleton for openclaw.json on EFS.
 
-    Resolves the owner's config path, raises ConfigPatchError if missing,
-    acquires an exclusive fcntl.lockf on openclaw.json, reads + parses JSON,
-    invokes ``mutate_fn(current)`` to apply per-call mutation logic in place.
-
-    ``mutate_fn`` returns True if the config was modified and a write is
-    needed, or False to signal a no-op (skip backup + write entirely).
-
-    On a write, takes a .bak backup, validates serializability, atomically
-    renames a tempfile into place, and chowns to uid/gid 1000 if running
-    as root. Releases the lock in a finally block. Logs success with
-    ``log_context``.
+    Lock contract:
+      - Resolves the owner's config path; raises ConfigPatchError if the
+        file is missing (callers must pre-seed the config before patching).
+      - Acquires a per-owner ``threading.Lock`` first to serialize concurrent
+        callers within this process (POSIX fcntl locks are per-process and
+        do NOT block sibling threads), then an exclusive ``fcntl.lockf``
+        on the file descriptor for cross-process coordination.
+        ``fcntl.lockf`` (advisory, POSIX) is used instead of ``flock``
+        because ``flock`` is broken over NFS/EFS.
+      - Defends against the rename/orphan race: if another writer renamed
+        a new inode into place while we were acquiring the fcntl lock,
+        our fd's inode differs from ``config_path``'s inode — we drop the
+        lock, re-open, and re-acquire until the two match.
+      - Reads + parses JSON from the same fd to avoid TOCTOU / double-open.
+      - Invokes ``mutate_fn(current)`` to apply per-call mutation logic
+        in place. ``mutate_fn`` returns True if the config was modified
+        and a write is needed, or False to signal a no-op (skip backup +
+        write entirely).
+      - On a write: takes a .bak backup, validates serializability,
+        atomically writes a tempfile in the same directory and renames
+        it into place, and chowns to uid/gid 1000 if running as root
+        (matches the OpenClaw container's ``node`` user).
+      - Releases the fcntl lock in a ``finally`` block, closes the fd,
+        and releases the in-process owner lock. Logs success at INFO
+        with ``log_context``.
     """
     config_dir = os.path.join(_efs_mount_path, owner_id)
     config_path = os.path.join(config_dir, "openclaw.json")
     backup_path = os.path.join(config_dir, "openclaw.json.bak")
 
+    owner_lock = _get_owner_lock(owner_id)
+
     def _do_rmw():
+        # Serialize within this process first (fcntl is per-process only;
+        # two threads in the same process will not block each other on
+        # fcntl.lockf). The fcntl lock below still matters for cross-process
+        # coordination (e.g. the fleet cleanup script alongside the backend).
+        owner_lock.acquire()
         lock_fd = None
         try:
-            try:
-                lock_fd = open(config_path, "r+")
-            except FileNotFoundError:
-                raise ConfigPatchError(f"Config not found for owner {owner_id}")
-            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            # Re-open loop: every successful writer atomically renames a new
+            # inode into ``config_path``, which orphans any fd a concurrent
+            # cross-process waiter already opened. After acquiring the lock,
+            # compare our fd's inode to the one currently at ``config_path``
+            # — if they differ, a rename happened while we were waiting;
+            # drop the lock, reopen, and re-acquire. Loop until stable.
+            while True:
+                try:
+                    candidate = open(config_path, "r+")
+                except FileNotFoundError:
+                    raise ConfigPatchError(f"Config not found for owner {owner_id}")
+                fcntl.lockf(candidate, fcntl.LOCK_EX)
+                try:
+                    fd_ino = os.fstat(candidate.fileno()).st_ino
+                    path_ino = os.stat(config_path).st_ino
+                except FileNotFoundError:
+                    # Path vanished between lock + stat; retry.
+                    fcntl.lockf(candidate, fcntl.LOCK_UN)
+                    candidate.close()
+                    continue
+                if fd_ino == path_ino:
+                    lock_fd = candidate
+                    break
+                # Orphan fd — a writer replaced the inode while we waited.
+                fcntl.lockf(candidate, fcntl.LOCK_UN)
+                candidate.close()
 
             # Read from the same fd we hold the lock on (avoid TOCTOU + double-open).
             lock_fd.seek(0)
@@ -94,6 +155,7 @@ async def _locked_rmw(
             if lock_fd:
                 fcntl.lockf(lock_fd, fcntl.LOCK_UN)
                 lock_fd.close()
+            owner_lock.release()
 
     await asyncio.to_thread(_do_rmw)
 
@@ -107,12 +169,12 @@ async def patch_openclaw_config(owner_id: str, patch: dict) -> None:
     """
 
     def _mutate(current: dict) -> bool:
-        merged = _deep_merge(current, patch)
+        merged = deep_merge(current, patch)
         current.clear()
         current.update(merged)
         return True  # always write, even for empty patches
 
-    await _locked_rmw(owner_id, _mutate, f"patch keys={list(patch.keys())}")
+    await locked_rmw(owner_id, _mutate, f"patch keys={list(patch.keys())}")
 
 
 async def append_to_openclaw_config_list(
@@ -149,7 +211,7 @@ async def append_to_openclaw_config_list(
         existing.append(value)
         return True
 
-    await _locked_rmw(owner_id, _mutate, f"append path={path} value={value!r}")
+    await locked_rmw(owner_id, _mutate, f"append path={path} value={value!r}")
 
 
 async def remove_from_openclaw_config_list(
@@ -190,7 +252,7 @@ async def remove_from_openclaw_config_list(
         cursor[leaf_key] = filtered
         return True
 
-    await _locked_rmw(owner_id, _mutate, f"remove path={path}")
+    await locked_rmw(owner_id, _mutate, f"remove path={path}")
 
 
 async def delete_openclaw_config_path(
@@ -224,4 +286,4 @@ async def delete_openclaw_config_path(
         del cursor[leaf_key]
         return True
 
-    await _locked_rmw(owner_id, _mutate, f"delete path={path}")
+    await locked_rmw(owner_id, _mutate, f"delete path={path}")
