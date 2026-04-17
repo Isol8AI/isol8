@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -39,6 +40,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly taskExecutionRole: iam.Role;
   public readonly taskRole: iam.Role;
+  public readonly openclawExtendedRepo: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -269,5 +271,70 @@ export class ContainerStack extends cdk.Stack {
         authorizationConfig: { iam: "ENABLED" },
       },
     });
+
+    // Extended OpenClaw image — built and pushed by
+    // .github/workflows/build-openclaw-image.yml. Per-env tags live in
+    // openclaw-version.json (extendedImage + dev.tag/prod.tag). After the
+    // extended-image migration completes, this stack reads the env-appropriate
+    // tag and uses it as the per-user container image.
+    //
+    // The repository is account-scoped, so we create it only in the dev stack
+    // and reference it by name in prod. This keeps a single source of truth
+    // for image tags (one ECR repo, two env-tagged image references).
+    if (props.environment === "dev") {
+      const repo = new ecr.Repository(this, "OpenclawExtendedRepo", {
+        repositoryName: "isol8/openclaw-extended",
+        imageScanOnPush: true,
+        imageTagMutability: ecr.TagMutability.IMMUTABLE,
+        lifecycleRules: [
+          {
+            description: "Keep the most recent 30 images",
+            maxImageCount: 30,
+          },
+        ],
+        // The repo holds prod-deployed images even when the dev infra stack
+        // gets torn down for redeploy — RETAIN to avoid losing image history.
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+      this.openclawExtendedRepo = repo;
+
+      // OIDC role for the build-openclaw-image workflow. Scoped to this repo
+      // so the existing isol8-dev-github-actions role (which only has
+      // sts:AssumeRole on cdk-* roles) doesn't need broader ECR perms.
+      const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
+      const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+        this,
+        "GithubOidcProvider",
+        oidcProviderArn,
+      );
+      const builderRole = new iam.Role(this, "OpenclawImageBuilderRole", {
+        roleName: "isol8-openclaw-image-builder",
+        assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
+          StringLike: {
+            "token.actions.githubusercontent.com:sub": "repo:Isol8AI/isol8:*",
+          },
+          StringEquals: {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          },
+        }),
+        description: "Used by .github/workflows/build-openclaw-image.yml to push to ECR",
+        maxSessionDuration: cdk.Duration.minutes(60),
+      });
+      builderRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["ecr:GetAuthorizationToken"],
+          resources: ["*"],
+        }),
+      );
+      repo.grantPullPush(builderRole);
+    } else {
+      // Prod (and any non-dev env) references the same repo by name.
+      this.openclawExtendedRepo = ecr.Repository.fromRepositoryName(
+        this,
+        "OpenclawExtendedRepo",
+        "isol8/openclaw-extended",
+      );
+    }
   }
 }
