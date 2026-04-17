@@ -495,22 +495,58 @@ class EcsManager:
                 },
             )
 
-            # Update DB record
-            await self._update_container(user_id, task_definition_arn=new_task_def_arn, status="provisioning")
-
-            logger.info(
-                "Resized container for user %s: cpu=%s memory=%s image=%s",
-                user_id,
-                new_cpu,
-                new_memory,
-                new_image,
+            # Decide whether to flip status=provisioning + fire the poller.
+            # resize never touches desiredCount -- if the service is currently
+            # scaled to zero (e.g. a free-tier container stopped by the reaper),
+            # update_service just registers the new task definition for later
+            # use. No tasks will start as a result of resize alone, so flipping
+            # status=provisioning would leave an orphan poller spinning forever
+            # (rolloutState won't go to FAILED; the deployment "completes" with
+            # zero tasks). The new task def will take effect on the next
+            # start_user_service call, which has its own poller firing.
+            desc_resp = await asyncio.to_thread(
+                self._ecs.describe_services,
+                cluster=self._cluster,
+                services=[service_name],
             )
+            services = desc_resp.get("services", [])
+            current_desired = services[0].get("desiredCount", 0) if services else 0
 
-            # Fire the durable transition poller. resize sets status=provisioning
-            # via update_fields above and forces a new ECS deployment; without
-            # the poller, the row stays stuck at provisioning until the next
-            # backend restart's startup reconciler catches it.
-            asyncio.create_task(self._await_running_transition(user_id))
+            if current_desired > 0:
+                # Update DB record
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                    status="provisioning",
+                )
+                logger.info(
+                    "Resized running container for user %s: cpu=%s memory=%s image=%s",
+                    user_id,
+                    new_cpu,
+                    new_memory,
+                    new_image,
+                )
+                # Fire the durable transition poller. resize sets
+                # status=provisioning via update_fields above and forces a new
+                # ECS deployment; without the poller, the row stays stuck at
+                # provisioning until the next backend restart's startup
+                # reconciler catches it.
+                asyncio.create_task(self._await_running_transition(user_id))
+            else:
+                # Scaled to zero: only update task_definition_arn so the new
+                # def takes effect on next start. Do NOT flip status or fire
+                # the poller -- there are no tasks to become healthy.
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                )
+                logger.info(
+                    "Resized stopped container for user %s: cpu=%s memory=%s image=%s (new task def applies on next start)",
+                    user_id,
+                    new_cpu,
+                    new_memory,
+                    new_image,
+                )
 
             return new_task_def_arn
 

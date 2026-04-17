@@ -1299,6 +1299,20 @@ class TestResizeUserContainer:
 
     @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
+        # Service is currently running with tasks -- resize should fire the
+        # poller to drive tasks through the rolling replacement.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
@@ -1323,6 +1337,19 @@ class TestResizeUserContainer:
     async def test_resize_enables_circuit_breaker_on_update_service(self, manager, mock_ecs_client):
         """resize path's update_service must also carry the circuit breaker
         so pre-existing services get upgraded on resize."""
+        # Service running with tasks so we exercise the full flip+poller path.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
@@ -1359,6 +1386,109 @@ class TestResizeUserContainer:
             cb = dc.get("deploymentCircuitBreaker") or {}
             assert cb.get("enable") is True
             assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_resize_skips_status_flip_and_poller_when_service_stopped(self, manager, mock_ecs_client):
+        """If the service is at desiredCount=0 when resize runs, there are no
+        tasks to become healthy. Flipping status=provisioning and firing the
+        poller in that state leaves an orphan poller that polls forever.
+
+        Instead: record the new task_definition_arn but leave status alone;
+        the new task def takes effect on next start_user_service call."""
+        # Service currently stopped.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "COMPLETED"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="stopped"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # No poller should have been fired -- there would be nothing to poll.
+            mock_await.assert_not_called()
+
+            # task_definition_arn should be updated, but status must NOT flip
+            # to provisioning for a stopped service.
+            update_calls = mock_repo.update_fields.call_args_list
+            for call in update_calls:
+                fields = call.args[1] if len(call.args) > 1 else call.kwargs.get("fields", {})
+                assert fields.get("status") != "provisioning", (
+                    f"Must not flip status to provisioning on a stopped service; got fields={fields}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_resize_fires_poller_when_service_running(self, manager, mock_ecs_client):
+        """When the service has desiredCount>0, resize forces a new deployment
+        AND there are running tasks to be replaced, so we do need the poller
+        to drive the provisioning -> running transition. Confirm the old
+        behavior still holds for running services."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
 
 
 # ---------------------------------------------------------------------------
