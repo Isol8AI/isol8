@@ -1,0 +1,64 @@
+name: build-openclaw-image
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/infra/openclaw/Dockerfile"
+      - "openclaw-version.json"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-push:
+    name: Build and push extended OpenClaw image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Read version metadata
+        id: meta
+        run: |
+          UPSTREAM=$(node -p "require('./openclaw-version.json').upstream.split(':')[1]")
+          IMAGE=$(node -p "require('./openclaw-version.json').extendedImage")
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          TAG="${UPSTREAM}-${SHORT_SHA}"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${TAG}"
+
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-east-1
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-openclaw-image-builder
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build image
+        run: |
+          docker build \
+            -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
+            apps/infra/openclaw/
+
+      - name: Push image
+        run: |
+          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+
+      - name: Summary
+        run: |
+          echo "## Built image" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "\`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Bump \`openclaw-version.json#dev.tag\` to \`${{ steps.meta.outputs.tag }}\` in a PR to deploy to dev." >> "$GITHUB_STEP_SUMMARY"

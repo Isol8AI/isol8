@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as cdk from "aws-cdk-lib";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
+import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -11,7 +12,17 @@ import { Construct } from "constructs";
 
 // Single source of truth for the pinned OpenClaw container image.
 // Bump openclaw-version.json at the repo root to upgrade.
-const OPENCLAW_VERSION: { full: string; image: string; tag: string } = JSON.parse(
+type OpenClawVersionConfig = {
+  upstream: string;
+  image: string;
+  tag: string;
+  full: string;
+  extendedImage: string;
+  dev: { tag: string };
+  prod: { tag: string };
+  notes?: string;
+};
+const OPENCLAW_VERSION: OpenClawVersionConfig = JSON.parse(
   fs.readFileSync(path.join(__dirname, "..", "..", "..", "..", "openclaw-version.json"), "utf8"),
 );
 
@@ -39,6 +50,7 @@ export class ContainerStack extends cdk.Stack {
   public readonly containerSecurityGroup: ec2.SecurityGroup;
   public readonly taskExecutionRole: iam.Role;
   public readonly taskRole: iam.Role;
+  public readonly openclawExtendedRepo: ecr.IRepository;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -176,6 +188,90 @@ export class ContainerStack extends cdk.Stack {
       }),
     );
 
+    // ECS Exec — lets us aws ecs execute-command into per-user OpenClaw
+    // containers for live debugging (skill installs, workspace state, etc.).
+    // Paired with enableExecuteCommand=true on each per-user service in
+    // ecs_manager.py.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "ssmmessages:CreateControlChannel",
+          "ssmmessages:CreateDataChannel",
+          "ssmmessages:OpenControlChannel",
+          "ssmmessages:OpenDataChannel",
+        ],
+        resources: ["*"],
+      }),
+    );
+
+    // Extended OpenClaw image — built and pushed by
+    // .github/workflows/build-openclaw-image.yml. Per-env tags live in
+    // openclaw-version.json (extendedImage + dev.tag/prod.tag). After the
+    // extended-image migration completes, this stack reads the env-appropriate
+    // tag and uses it as the per-user container image.
+    //
+    // The repository is account-scoped, so we create it only in the dev stack
+    // and reference it by name in prod. This keeps a single source of truth
+    // for image tags (one ECR repo, two env-tagged image references).
+    //
+    // Initialized BEFORE the container task def so the image-selection
+    // expression below can dereference it.
+    if (props.environment === "dev") {
+      const repo = new ecr.Repository(this, "OpenclawExtendedRepo", {
+        repositoryName: "isol8/openclaw-extended",
+        imageScanOnPush: true,
+        imageTagMutability: ecr.TagMutability.IMMUTABLE,
+        lifecycleRules: [
+          {
+            description: "Keep the most recent 30 images",
+            maxImageCount: 30,
+          },
+        ],
+        // The repo holds prod-deployed images even when the dev infra stack
+        // gets torn down for redeploy — RETAIN to avoid losing image history.
+        removalPolicy: cdk.RemovalPolicy.RETAIN,
+      });
+      this.openclawExtendedRepo = repo;
+
+      // OIDC role for the build-openclaw-image workflow. Scoped to this repo
+      // so the existing isol8-dev-github-actions role (which only has
+      // sts:AssumeRole on cdk-* roles) doesn't need broader ECR perms.
+      const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
+      const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
+        this,
+        "GithubOidcProvider",
+        oidcProviderArn,
+      );
+      const builderRole = new iam.Role(this, "OpenclawImageBuilderRole", {
+        roleName: "isol8-openclaw-image-builder",
+        assumedBy: new iam.OpenIdConnectPrincipal(oidcProvider, {
+          StringLike: {
+            "token.actions.githubusercontent.com:sub": "repo:Isol8AI/isol8:*",
+          },
+          StringEquals: {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          },
+        }),
+        description: "Used by .github/workflows/build-openclaw-image.yml to push to ECR",
+        maxSessionDuration: cdk.Duration.minutes(60),
+      });
+      builderRole.addToPolicy(
+        new iam.PolicyStatement({
+          effect: iam.Effect.ALLOW,
+          actions: ["ecr:GetAuthorizationToken"],
+          resources: ["*"],
+        }),
+      );
+      repo.grantPullPush(builderRole);
+    } else {
+      // Prod (and any non-dev env) references the same repo by name.
+      this.openclawExtendedRepo = ecr.Repository.fromRepositoryName(
+        this,
+        "OpenclawExtendedRepo",
+        "isol8/openclaw-extended",
+      );
+    }
+
     // Base OpenClaw task definition — the backend clones this per user,
     // replacing the EFS access point for data isolation.
     const env = props.environment;
@@ -193,30 +289,35 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
-    // Startup command installs runtime dependencies before launching the
-    // OpenClaw gateway.  Mirrors the Terraform task definition in
-    // apps/terraform/modules/ecs/main.tf so both infra paths stay in sync.
+    // Startup command — almost everything (apt packages, pip, npm globals,
+    // gh, uv) is now baked into the extended OpenClaw image. We only:
+    //   1. Install markdown-converter via clawhub (lives at clawhub.com,
+    //      not bundled in the image — landing dir comes from
+    //      CLAWHUB_WORKDIR=/home/node/.openclaw, set as a container env var).
+    //   2. Launch the gateway.
+    // Cold-start drops from ~30s to ~5s.
     const startupCommand = [
-      // System packages
-      "apt-get update -qq && apt-get install -y -qq socat python3-pip sqlite3 build-essential python3 > /dev/null 2>&1",
-      "pip install --break-system-packages websockets > /dev/null 2>&1",
-      // npm global prefix + PATH for the node user
-      "export NPM_CONFIG_PREFIX=/home/node/.npm-global && export PATH=$NPM_CONFIG_PREFIX/bin:$PATH",
-      // npm packages: MCP bridge, skill hub, OpenAI compat, QMD memory backend
-      "npm i -g --ignore-scripts mcporter clawhub openai 2>/dev/null",
-      "npm i -g @tobilu/qmd 2>/dev/null",
-      // GitHub CLI
-      'GH_VER=2.65.0 && wget -qO- https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz | tar xz -C /tmp && cp /tmp/gh_${GH_VER}_linux_amd64/bin/gh $NPM_CONFIG_PREFIX/bin/gh 2>/dev/null',
-      // uv (Python package manager)
-      "wget -qO- https://astral.sh/uv/install.sh | HOME=/home/node sh 2>/dev/null && export PATH=/home/node/.local/bin:$PATH",
-      // Bundled skills
       "clawhub install markdown-converter --no-input 2>/dev/null",
-      // Launch gateway
       "exec node /app/openclaw.mjs gateway --port 18789 --bind lan",
     ].join("; ");
 
+    // Image selection: use the extended ECR image once the per-env tag has been
+    // promoted past the "bootstrap" placeholder. Until then, fall back to the
+    // legacy upstream image so the env keeps deploying. This lets us flip dev
+    // and prod independently via openclaw-version.json bumps without coupling.
+    // Unknown envs (e.g. "local") default to legacy via the optional chain.
+    const envCfg =
+      props.environment === "dev" || props.environment === "prod"
+        ? OPENCLAW_VERSION[props.environment]
+        : undefined;
+    const envTag = envCfg?.tag ?? "bootstrap";
+    const containerImage =
+      envTag === "bootstrap"
+        ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
+        : ecs.ContainerImage.fromEcrRepository(this.openclawExtendedRepo, envTag);
+
     const openclawContainer = openclawTaskDef.addContainer("openclaw", {
-      image: ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full),
+      image: containerImage,
       essential: true,
       command: ["sh", "-c", startupCommand],
       user: "0:0",
@@ -224,6 +325,11 @@ export class ContainerStack extends cdk.Stack {
       environment: {
         HOME: "/home/node",
         CHOKIDAR_USEPOLLING: "true",
+        // Redirect clawhub installs to the OpenClaw managed-skills directory
+        // (~/.openclaw/skills) so they're scanned by every agent. Without
+        // this, clawhub falls through to agents.defaults.workspace and lands
+        // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
+        CLAWHUB_WORKDIR: "/home/node/.openclaw",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
@@ -248,5 +354,6 @@ export class ContainerStack extends cdk.Stack {
         authorizationConfig: { iam: "ENABLED" },
       },
     });
+
   }
 }

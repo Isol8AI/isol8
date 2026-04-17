@@ -53,6 +53,16 @@ def mock_ecs_client():
     client.register_task_definition.return_value = {
         "taskDefinition": {"taskDefinitionArn": "arn:aws:ecs:us-east-1:123456789:task-definition/isol8-dev-openclaw:42"}
     }
+    client.describe_services.return_value = {
+        "services": [
+            {
+                "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+            }
+        ]
+    }
+    client.list_tasks.return_value = {"taskArns": []}
+    client.describe_tasks.return_value = {"tasks": []}
     client.deregister_task_definition.return_value = {}
     return client
 
@@ -323,6 +333,28 @@ class TestCreateUserService:
             assert mock_repo.update_fields.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_create_service_enables_deployment_circuit_breaker(self, manager, mock_ecs_client, mock_efs_client):
+        """create_service MUST pass deploymentCircuitBreaker so ECS surfaces a
+        rolloutState=FAILED signal when a per-user provision fails (bad image,
+        crash loop). Without this, _await_running_transition has no way to
+        distinguish a slow start from a permanent failure."""
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.create_user_service("user_test_123", "token-abc")
+
+            call_kwargs = mock_ecs_client.create_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True, (
+                "Deployment circuit breaker must be enabled so rolloutState=FAILED "
+                "can be used as the failure signal by _await_running_transition."
+            )
+            # rollback=False: no previous deployment to roll back to on first deploy.
+            assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
     async def test_ecs_failure_raises_and_rolls_back(self, manager, mock_ecs_client, mock_efs_client):
         """ECS API failure raises EcsManagerError, sets error status, and rolls back AWS resources."""
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
@@ -472,9 +504,19 @@ class TestStartUserService:
     """Test scaling service to 1."""
 
     @pytest.mark.asyncio
-    async def test_start_scales_to_one(self, manager, mock_ecs_client):
-        """start_user_service calls update_service with desiredCount=1 and force."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+    async def test_start_scales_to_one_without_force_new_deployment(self, manager, mock_ecs_client):
+        """start_user_service calls update_service with desiredCount=1 ONLY.
+
+        forceNewDeployment is NOT passed: when stop_user_service has just run
+        but ECS hasn't yet stopped the old task, a follow-up start_user_service
+        with forceNewDeployment=True would terminate the still-running task
+        and produce a ~30s post-login outage. Plain desiredCount=1 lets ECS
+        keep the existing healthy task if there is one.
+        """
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
@@ -484,14 +526,51 @@ class TestStartUserService:
                 cluster=manager._cluster,
                 service="openclaw-user_test_123-f4ae64abb2db",
                 desiredCount=1,
-                forceNewDeployment=True,
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
+            )
+            # Belt + suspenders: forceNewDeployment must NOT be in kwargs.
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            assert "forceNewDeployment" not in call_kwargs, (
+                "start_user_service must not force a new deployment — kills "
+                "still-running tasks during the stop -> start race"
             )
             mock_repo.update_status.assert_called_once_with("user_test_123", "provisioning")
 
     @pytest.mark.asyncio
+    async def test_start_fires_running_transition_poller(self, manager, mock_ecs_client):
+        """Cold-start restart MUST fire _await_running_transition, or the cold-
+        started container will get stuck at status=provisioning forever when
+        its ECS task takes >10s to become healthy and the user leaves before
+        making another request."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.start_user_service("user_test_123")
+
+            # Give the fire-and-forget task a chance to be scheduled.
+            # asyncio.create_task schedules it immediately; a yield is enough.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
     async def test_start_no_db_record(self, manager, mock_ecs_client):
         """start_user_service with no repo record still calls ECS."""
-        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
             mock_repo.get_by_owner_id = AsyncMock(return_value=None)
 
             await manager.start_user_service("user_test_123")
@@ -507,8 +586,31 @@ class TestStartUserService:
             "UpdateService",
         )
 
-        with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
+        with patch.object(manager, "_await_running_transition", new_callable=AsyncMock):
+            with pytest.raises(EcsManagerError, match="Failed to start ECS service"):
+                await manager.start_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_start_service_enables_circuit_breaker_on_existing_services(self, manager, mock_ecs_client):
+        """start_user_service's update_service call must include the circuit
+        breaker so pre-existing services (created before Task 1) get upgraded
+        the first time we touch them. Otherwise _await_running_transition
+        can never receive rolloutState=FAILED and polls forever on a broken
+        pre-existing service."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
             await manager.start_user_service("user_test_123")
+
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
 
 
 # ---------------------------------------------------------------------------
@@ -833,3 +935,877 @@ class TestEcsManagerError:
         """EcsManagerError defaults user_id to empty string."""
         err = EcsManagerError("generic failure")
         assert err.user_id == ""
+
+
+# ---------------------------------------------------------------------------
+# _await_running_transition (durable provisioning -> running poller)
+# ---------------------------------------------------------------------------
+
+
+class TestAwaitRunningTransition:
+    """The poller that drives provisioning -> running in the background.
+
+    Must be durable (no fixed timeout) and have proper exit conditions so a
+    container can never be left stuck at status=provisioning forever while
+    actually running in ECS.
+    """
+
+    @pytest.mark.asyncio
+    async def test_transitions_to_running_when_task_healthy(self, manager, mock_ecs_client):
+        """Container becomes reachable -> write status=running and exit."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "running"
+            assert fields["substatus"] == "gateway_healthy"
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/abc"
+
+    @pytest.mark.asyncio
+    async def test_transitions_to_error_when_circuit_breaker_trips(self, manager, mock_ecs_client):
+        """ECS deployment rolloutState=FAILED -> write status=error and exit.
+
+        This is the definitive failure signal: the circuit breaker only trips
+        after N failed task placements, so we know the provision will never
+        succeed on its own (bad image, crash loop, etc.)."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [{"deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "FAILED"}]}]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_exits_silently_when_ddb_status_changed_externally(self, manager, mock_ecs_client):
+        """If another actor (admin, reaper, re-provision) changed the DDB status
+        under us, exit without writing anything -- our job is done or obsolete."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_exits_silently_when_row_missing(self, manager, mock_ecs_client):
+        """Container row deleted -> exit. No row to transition."""
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_keeps_polling_when_task_not_yet_healthy(self, manager, mock_ecs_client):
+        """On iteration N no running task, on iteration N+1 it's healthy -> transition.
+
+        Regression for the 120s timeout bug: a container that takes >2 minutes
+        to become reachable MUST still get transitioned when it eventually is."""
+        # First poll: no tasks. Second poll: a healthy task.
+        mock_ecs_client.list_tasks.side_effect = [
+            {"taskArns": []},
+            {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]},
+        ]
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "running"
+
+    @pytest.mark.asyncio
+    async def test_one_describe_services_per_iteration_on_happy_path(self, manager, mock_ecs_client):
+        """describe_services consolidates two concerns (primary-deployment
+        filter + rolloutState failure detection) so a happy-path transition
+        costs one describe_services + one list_tasks + one describe_tasks."""
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/abc"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/primary",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.42"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            assert mock_ecs_client.describe_services.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_filters_running_tasks_by_primary_deployment(self, manager, mock_ecs_client):
+        """During a forced redeploy, the OLD task is still RUNNING while the
+        NEW deployment rolls out. _poll_running_task MUST only consider tasks
+        from the current PRIMARY deployment -- picking the old task would
+        flip status=running using the pre-deploy task_arn and mask a failing
+        rollout.
+
+        Filter mechanism: pass startedBy=<primary-deployment-id> to list_tasks.
+        ECS tags service-launched tasks with startedBy=ecs-svc/<deployment-id>.
+        """
+        # describe_services returns one PRIMARY and one ACTIVE (draining) deployment.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                        {
+                            "id": "ecs-svc/old",
+                            "status": "ACTIVE",
+                            "rolloutState": "COMPLETED",
+                        },
+                    ]
+                }
+            ]
+        }
+
+        # list_tasks should be called with startedBy pointing at the PRIMARY.
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.99"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # list_tasks must NOT pass startedBy; AWS rejects it combined with
+            # serviceName. Filtering is done in-code using describe_tasks.
+            list_kwargs = mock_ecs_client.list_tasks.call_args.kwargs
+            assert "startedBy" not in list_kwargs, (
+                "list_tasks must not pass startedBy; AWS rejects it combined with serviceName."
+            )
+
+            # With the in-code filter correctly applied, the new task's ARN is recorded.
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/new-task"
+
+    @pytest.mark.asyncio
+    async def test_list_tasks_does_not_pass_startedby(self, manager, mock_ecs_client):
+        """ECS ListTasks rejects startedBy combined with serviceName:
+        `InvalidParameterException: cannot specify startedBy with other
+        arguments`. We must filter by deployment-id in-code (from
+        describe_tasks' startedBy field), not via the API filter."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                    ]
+                }
+            ]
+        }
+        mock_ecs_client.list_tasks.return_value = {"taskArns": ["arn:aws:ecs:us-east-1:123:task/cluster/new-task"]}
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.99"}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # list_tasks must NOT pass startedBy (AWS rejects it).
+            list_kwargs = mock_ecs_client.list_tasks.call_args.kwargs
+            assert "startedBy" not in list_kwargs, (
+                f"list_tasks must not pass startedBy; AWS rejects it combined "
+                f"with serviceName. Got kwargs: {list_kwargs}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_ignores_old_deployment_tasks_via_in_code_filter(self, manager, mock_ecs_client):
+        """During a rollout overlap, list_tasks returns both the OLD
+        drain-phase task and the NEW task. Filter in-code using each task's
+        startedBy from describe_tasks so we ignore the old task."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "IN_PROGRESS",
+                        },
+                    ]
+                }
+            ]
+        }
+        # Two running tasks come back; old one listed first.
+        mock_ecs_client.list_tasks.return_value = {
+            "taskArns": [
+                "arn:aws:ecs:us-east-1:123:task/cluster/old-task",
+                "arn:aws:ecs:us-east-1:123:task/cluster/new-task",
+            ]
+        }
+        mock_ecs_client.describe_tasks.return_value = {
+            "tasks": [
+                {
+                    "taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/old-task",
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/old",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.1"}],
+                        }
+                    ],
+                },
+                {
+                    "taskArn": "arn:aws:ecs:us-east-1:123:task/cluster/new-task",
+                    "lastStatus": "RUNNING",
+                    "startedBy": "ecs-svc/new",
+                    "attachments": [
+                        {
+                            "type": "ElasticNetworkInterface",
+                            "details": [{"name": "privateIPv4Address", "value": "10.0.1.2"}],
+                        }
+                    ],
+                },
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "is_healthy", return_value=True),
+            patch("core.containers.ecs_manager.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager._await_running_transition("user_test_123")
+
+            # We must have transitioned using the NEW task, not the OLD one.
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["task_arn"] == "arn:aws:ecs:us-east-1:123:task/cluster/new-task"
+
+    @pytest.mark.asyncio
+    async def test_no_primary_deployment_keeps_polling(self, manager, mock_ecs_client):
+        """If describe_services returns no PRIMARY deployment (transient ECS
+        state during deployment churn), the poller should just sleep and
+        retry next iteration -- not write status=running or status=error."""
+        mock_ecs_client.describe_services.return_value = {"services": [{"deployments": []}]}
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        # Cancel after one sleep so the loop exits.
+        import asyncio as _asyncio
+
+        sleep_calls = [0]
+
+        async def count_and_cancel(*args, **kwargs):
+            sleep_calls[0] += 1
+            if sleep_calls[0] >= 1:
+                raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=count_and_cancel),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            with pytest.raises(_asyncio.CancelledError):
+                await manager._await_running_transition("user_test_123")
+
+            # No status transition written either direction.
+            mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_detects_circuit_breaker_via_primary_deployment_rollout_state(self, manager, mock_ecs_client):
+        """rolloutState='FAILED' must be read from the PRIMARY deployment
+        specifically, not from deployments[0] blindly. During a rollout,
+        the ACTIVE (old) deployment can coexist with the new PRIMARY and
+        the list order is not guaranteed."""
+        import asyncio as _asyncio
+
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "deployments": [
+                        # Draining old deployment listed first.
+                        {
+                            "id": "ecs-svc/old",
+                            "status": "ACTIVE",
+                            "rolloutState": "COMPLETED",
+                        },
+                        # New PRIMARY failed.
+                        {
+                            "id": "ecs-svc/new",
+                            "status": "PRIMARY",
+                            "rolloutState": "FAILED",
+                        },
+                    ]
+                }
+            ]
+        }
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+
+        # If the implementation incorrectly reads deployments[0] and misses
+        # the FAILED PRIMARY, the loop would spin forever -- cancel after a
+        # few sleeps so the test fails loudly instead of hanging.
+        sleep_count = [0]
+
+        async def cancel_after_a_few(*args, **kwargs):
+            sleep_count[0] += 1
+            if sleep_count[0] > 3:
+                raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=cancel_after_a_few),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            # Expected: implementation finds FAILED PRIMARY -> writes error -> returns
+            # without ever reaching the cancellation guard.
+            await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_called_once()
+            fields = mock_repo.update_fields.call_args.args[1]
+            assert fields["status"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_respects_cancellation(self, manager, mock_ecs_client):
+        """Clean shutdown: if the event loop cancels the task (backend restart),
+        the poller exits without raising into the caller and without writing
+        a status transition."""
+        import asyncio as _asyncio
+
+        mock_ecs_client.list_tasks.return_value = {"taskArns": []}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {"deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}]}
+            ]
+        }
+
+        # asyncio.sleep raises CancelledError inside the poller loop.
+        async def cancel_on_sleep(*args, **kwargs):
+            raise _asyncio.CancelledError()
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.asyncio.sleep", side_effect=cancel_on_sleep),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            # Must not swallow CancelledError -- asyncio task cancellation
+            # semantics require it to propagate out.
+            with pytest.raises(_asyncio.CancelledError):
+                await manager._await_running_transition("user_test_123")
+
+            mock_repo.update_fields.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# resize_user_container (per-user CPU/memory/image update path)
+# ---------------------------------------------------------------------------
+
+
+class TestResizeUserContainer:
+    """Tests resize path fires the transition poller.
+
+    resize writes status=provisioning via update_fields + ECS forceNewDeployment.
+    Without firing the poller, the row stays stuck at provisioning until the
+    next backend restart catches it via the startup reconciler."""
+
+    @pytest.mark.asyncio
+    async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):
+        # Service is currently running with tasks -- resize should fire the
+        # poller to drive tasks through the rolling replacement.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_resize_enables_circuit_breaker_on_update_service(self, manager, mock_ecs_client):
+        """resize path's update_service must also carry the circuit breaker
+        so pre-existing services get upgraded on resize."""
+        # Service running with tasks so we exercise the full flip+poller path.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+            # asyncio.to_thread runs the sync boto3 call in a thread;
+            # intercept it so we can inspect kwargs.
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            # resize issues two to_thread calls -- register_task_definition
+            # and update_service. Find the update_service call.
+            update_calls = [
+                call
+                for call in mock_to_thread.call_args_list
+                if getattr(call.args[0], "__name__", "") == "update_service"
+                or (call.args and call.args[0] == mock_ecs_client.update_service)
+            ]
+            assert update_calls, "Expected update_service to be called via asyncio.to_thread"
+            call_kwargs = update_calls[0].kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_resize_skips_status_flip_and_poller_when_service_stopped(self, manager, mock_ecs_client):
+        """If the service is at desiredCount=0 when resize runs, there are no
+        tasks to become healthy. Flipping status=provisioning and firing the
+        poller in that state leaves an orphan poller that polls forever.
+
+        Instead: record the new task_definition_arn but leave status alone;
+        the new task def takes effect on next start_user_service call."""
+        # Service currently stopped.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "COMPLETED"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="stopped"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # No poller should have been fired -- there would be nothing to poll.
+            mock_await.assert_not_called()
+
+            # task_definition_arn should be updated, but status must NOT flip
+            # to provisioning for a stopped service.
+            update_calls = mock_repo.update_fields.call_args_list
+            for call in update_calls:
+                fields = call.args[1] if len(call.args) > 1 else call.kwargs.get("fields", {})
+                assert fields.get("status") != "provisioning", (
+                    f"Must not flip status to provisioning on a stopped service; got fields={fields}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_resize_fires_poller_when_service_running(self, manager, mock_ecs_client):
+        """When the service has desiredCount>0, resize forces a new deployment
+        AND there are running tasks to be replaced, so we do need the poller
+        to drive the provisioning -> running transition. Confirm the old
+        behavior still holds for running services."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="running",
+                    task_definition_arn="arn:aws:ecs:us-east-1:123:task-definition/base:1",
+                )
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+
+# ---------------------------------------------------------------------------
+# provision_user_container (full provisioning flow + recovery branches)
+# ---------------------------------------------------------------------------
+
+
+class TestProvisionUserContainer:
+    """Tests for the recovery branches of provision_user_container that set
+    status=provisioning on an existing service row. Both branches must fire
+    the transition poller so the row drains back to status=running without
+    relying on the startup reconciler."""
+
+    @pytest.mark.asyncio
+    async def test_provision_redeploying_branch_fires_poller(self, manager, mock_ecs_client):
+        """When provision is called and the ECS service is already running,
+        the redeploying branch forces a new deployment and writes
+        status=provisioning. It MUST fire the poller so the row transitions
+        back to status=running once the new task is healthy."""
+        # Service exists with desired=1, running=1 -> redeploying branch.
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_provision_ecs_starting_branch_fires_poller(self, manager, mock_ecs_client):
+        """When provision is called and ECS is mid-launch (desired=1, running=0),
+        the 'ECS is starting' branch writes status=provisioning and returns
+        without taking ECS action. It MUST fire the poller to drive the
+        transition once the task becomes healthy."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_provision_full_flow_fires_poller_exactly_once(self, manager, mock_ecs_client, mock_efs_client):
+        """Full-provision path (no existing service) must fire
+        _await_running_transition EXACTLY ONCE, not twice.
+
+        start_user_service fires one poller (Task 3). Historically
+        provision_user_container fired another at the very end. That's
+        duplicate work -- two identical long-lived tasks doing the same
+        list_tasks/describe_services polling and racing to write the DDB
+        transition. Keep only one."""
+
+        # Make _service_exists return None so we go through the full-provisioning path.
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.provision_user_container("user_test_123")
+
+            # Let any fire-and-forget tasks be scheduled.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # Exactly one poller, not two.
+            assert mock_await.await_count == 1, (
+                f"Expected exactly 1 poller, got {mock_await.await_count}. "
+                "start_user_service fires the poller; the outer create_task "
+                "at the end of provision_user_container is redundant."
+            )
+            mock_await.assert_called_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_redeploying_branch_enables_circuit_breaker(self, manager, mock_ecs_client):
+        """The redeploying branch (desired=1, running>0) issues an
+        update_service(forceNewDeployment=True). That call must carry the
+        circuit breaker so pre-existing services get upgraded mid-flight."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            # update_service is called directly (not via asyncio.to_thread)
+            # in the redeploying branch.
+            call_kwargs = mock_ecs_client.update_service.call_args.kwargs
+            dc = call_kwargs.get("deploymentConfiguration") or {}
+            cb = dc.get("deploymentCircuitBreaker") or {}
+            assert cb.get("enable") is True
+            assert cb.get("rollback") is False
+
+    @pytest.mark.asyncio
+    async def test_provision_ecs_starting_no_poller_when_status_already_provisioning(self, manager, mock_ecs_client):
+        """If the DDB status is already 'provisioning' when we hit the
+        ECS-is-starting branch, we should NOT spawn another poller. An
+        earlier one is already running (or the startup reconciler will
+        pick up the row on next deploy). Spawning multiple pollers per
+        owner wastes ECS API quota under a slow cold start with repeated
+        /container/provision calls."""
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 0,
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            # Row already at status=provisioning.
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock()
+
+            await manager.provision_user_container("user_test_123")
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # No poller fired -- one's already running (or reconciler will catch it).
+            mock_await.assert_not_called()
+            # Also no DDB update (status already correct).
+            mock_repo.update_fields.assert_not_called()

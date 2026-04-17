@@ -1,7 +1,11 @@
 {
   "$schema": "./openclaw-version.schema.json",
+  "upstream": "alpine/openclaw:2026.4.5",
   "image": "alpine/openclaw",
   "tag": "2026.4.5",
   "full": "alpine/openclaw:2026.4.5",
-  "notes": "Single source of truth for the pinned OpenClaw container image. Bump this when you want to upgrade the image used by provisioning. CDK container stack imports this file directly; no env var override in production."
+  "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
+  "dev":  { "tag": "2026.4.5-5656b8a" },
+  "prod": { "tag": "bootstrap" },
+  "notes": "Two image references coexist during the migration to the extended image. The legacy `image`/`tag`/`full` fields point at the upstream alpine/openclaw image used by current container-stack.ts (Task 1-8 of the plan). The new `extendedImage` + per-env `dev.tag`/`prod.tag` fields point at our custom ECR image used after Task 9 lands. The 'bootstrap' tag is a placeholder until the first CI build completes — it intentionally won't resolve, so any deploy referencing it before the first build will fail loudly."
 }
