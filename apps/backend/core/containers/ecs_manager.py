@@ -903,15 +903,9 @@ class EcsManager:
         put_metric("container.provision", dimensions={"status": "ok"})
         logger.info("Provisioned container %s for user %s", service_name, user_id)
 
-        # Step 5: Eagerly drive the provisioning → running transition. The
-        # previous design relied on the next call to `resolve_running_container`
-        # to flip the status when the task became reachable, which left rows
-        # stuck at `provisioning` forever if the user's first chat hit an
-        # upstream error (e.g. a bad model id) before the poll path fired.
-        # Now we fire-and-forget a background poller immediately so the row
-        # transitions as soon as the ECS task reports healthy, independent of
-        # user activity.
-        asyncio.create_task(self._await_running_transition(user_id))
+        # No poller fired here: start_user_service above already fired one.
+        # Firing again would double list_tasks/describe_services traffic and
+        # race two tasks to write the provisioning -> running transition.
 
         return service_name
 

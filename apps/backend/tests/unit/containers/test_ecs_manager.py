@@ -1209,3 +1209,42 @@ class TestProvisionUserContainer:
             await _asyncio.sleep(0)
 
             mock_await.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_provision_full_flow_fires_poller_exactly_once(self, manager, mock_ecs_client, mock_efs_client):
+        """Full-provision path (no existing service) must fire
+        _await_running_transition EXACTLY ONCE, not twice.
+
+        start_user_service fires one poller (Task 3). Historically
+        provision_user_container fired another at the very end. That's
+        duplicate work -- two identical long-lived tasks doing the same
+        list_tasks/describe_services polling and racing to write the DDB
+        transition. Keep only one."""
+
+        # Make _service_exists return None so we go through the full-provisioning path.
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.provision_user_container("user_test_123")
+
+            # Let any fire-and-forget tasks be scheduled.
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+
+            # Exactly one poller, not two.
+            assert mock_await.await_count == 1, (
+                f"Expected exactly 1 poller, got {mock_await.await_count}. "
+                "start_user_service fires the poller; the outer create_task "
+                "at the end of provision_user_container is redundant."
+            )
+            mock_await.assert_called_with("user_test_123")
