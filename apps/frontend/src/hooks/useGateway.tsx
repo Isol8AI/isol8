@@ -347,19 +347,27 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     return () => { unlisten?.(); };
   }, []);
 
-  // ---- Tauri desktop: push auth identity when Clerk user changes ----
+  // ---- Tauri desktop: push auth identity when Clerk user changes or WS reconnects ----
   //
   // Fetches a fresh token alongside the current user so identity and token
   // always travel together (important if user A signs out and user B signs
   // in — we can't have stale ref-captured displayName paired with a fresh
-  // token). Decoupled from `connect` above so the WebSocket lifecycle isn't
-  // disturbed every time Clerk resolves.
+  // token).
+  //
+  // Also keyed on `isConnected` so every WebSocket open — initial OR
+  // reconnect — re-pushes a fresh JWT to the desktop. Clerk tokens expire
+  // on the order of a minute; without this, a dropped NodeClient in the
+  // desktop app retries with stale auth after any network blip or server
+  // restart that forces a reconnect. Decoupled from `connect` itself so
+  // the WS lifecycle isn't disturbed when Clerk resolves (the regression
+  // PR #302 fixed).
   useEffect(() => {
     if (typeof window === "undefined") return;
     const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
         (window as any).__TAURI__;
     if (!tauri?.core?.invoke) return;
     if (!user?.id) return;  // wait for Clerk to resolve before pushing
+    if (!isConnected) return;  // only push once WS is open (ensures token fresh)
 
     let cancelled = false;
     getToken().then((token) => {
@@ -371,7 +379,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       }).catch(() => {});
     });
     return () => { cancelled = true; };
-  }, [user?.id, user?.fullName, user?.firstName, getToken]);
+  }, [isConnected, user?.id, user?.fullName, user?.firstName, getToken]);
 
   // ---- sendReq ----
 
