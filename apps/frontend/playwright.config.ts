@@ -9,8 +9,8 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
   retries: 0, // journey tests have destructive side effects — no retries
-  workers: 1,
-  globalTimeout: 18 * 60 * 1000, // 18 minutes — Steps 1-4 (~10 min) + landing (~30s) + buffer
+  workers: 2,
+  globalTimeout: 20 * 60 * 1000, // 20 minutes — Steps 1-4 (~10 min) + landing (~30s) + buffer for parallel flows
   reporter: [
     ['html', { open: 'never' }],
     ['list'],
