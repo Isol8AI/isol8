@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalCard } from "@/components/chat/ApprovalCard";
 import type { ApprovalRequest } from "@/components/chat/MessageList";
 
@@ -55,5 +55,32 @@ describe("ApprovalCard layout", () => {
     expect(screen.queryByText("/usr/bin/whoami")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /details/i }));
     expect(screen.getByText("/usr/bin/whoami")).toBeInTheDocument();
+  });
+});
+
+describe("ApprovalCard RPC states", () => {
+  it("shows spinner on the clicked button while the RPC is pending", async () => {
+    let resolveRpc: () => void = () => {};
+    const onDecide = vi.fn().mockImplementation(() => new Promise<void>((r) => { resolveRpc = r; }));
+    render(<ApprovalCard pending={baseRequest} onDecide={onDecide} />);
+    fireEvent.click(screen.getByRole("button", { name: /allow once/i }));
+    expect(screen.getByRole("button", { name: /allow once/i })).toHaveAttribute("aria-busy", "true");
+    resolveRpc();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: /allow once/i })).not.toHaveAttribute("aria-busy", "true"),
+    );
+  });
+
+  it("shows inline error and retry when onDecide rejects", async () => {
+    const onDecide = vi.fn()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(undefined);
+    render(<ApprovalCard pending={baseRequest} onDecide={onDecide} />);
+    fireEvent.click(screen.getByRole("button", { name: /allow once/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't send decision/i)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+    await waitFor(() => expect(onDecide).toHaveBeenCalledTimes(2));
   });
 });

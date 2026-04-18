@@ -16,13 +16,34 @@ const HOST_LABEL: Record<ApprovalRequest["host"], string> = {
 
 export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
   const [detailsOpen, setDetailsOpen] = React.useState(false);
+  const [pendingDecision, setPendingDecision] = React.useState<ExecApprovalDecision | null>(null);
+  const [errorMsg, setErrorMsg] = React.useState<string | null>(null);
+  const [lastFailed, setLastFailed] = React.useState<ExecApprovalDecision | null>(null);
+
   const allowsOnce = pending.allowedDecisions.includes("allow-once");
   const allowsAlways = pending.allowedDecisions.includes("allow-always");
   const allowsDeny = pending.allowedDecisions.includes("deny");
-  const handle = (d: ExecApprovalDecision) => () => { void onDecide(d); };
+
   const trustScopeLine = pending.resolvedPath
     ? `Trust will always allow ${pending.resolvedPath} on this ${pending.host === "node" ? "Mac" : "agent"} (any arguments).`
     : "Trust will always allow this command (any arguments).";
+
+  const submit = React.useCallback(
+    async (decision: ExecApprovalDecision) => {
+      setPendingDecision(decision);
+      setErrorMsg(null);
+      try {
+        await onDecide(decision);
+        setLastFailed(null);
+      } catch (e) {
+        setErrorMsg(e instanceof Error ? e.message : "Couldn't send decision");
+        setLastFailed(decision);
+      } finally {
+        setPendingDecision(null);
+      }
+    },
+    [onDecide],
+  );
 
   return (
     <div className="my-2 max-w-xl rounded-md border border-[#e0dbd0] bg-[#faf7f2] p-3 text-sm">
@@ -36,16 +57,50 @@ export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
       {pending.agentId && <div className="text-xs text-[#8a8578]">{pending.agentId}</div>}
 
       <div className="mt-3 flex gap-2">
-        <Button size="sm" variant="default" disabled={!allowsOnce} onClick={handle("allow-once")}>
-          Allow once
+        <Button
+          size="sm"
+          variant="default"
+          disabled={!allowsOnce || pendingDecision !== null}
+          aria-busy={pendingDecision === "allow-once"}
+          onClick={() => submit("allow-once")}
+        >
+          {pendingDecision === "allow-once" ? "Sending…" : "Allow once"}
         </Button>
-        <Button size="sm" variant="secondary" disabled={!allowsAlways} onClick={handle("allow-always")}>
-          Trust
+        <Button
+          size="sm"
+          variant="secondary"
+          disabled={!allowsAlways || pendingDecision !== null}
+          aria-busy={pendingDecision === "allow-always"}
+          onClick={() => submit("allow-always")}
+        >
+          {pendingDecision === "allow-always" ? "Sending…" : "Trust"}
         </Button>
-        <Button size="sm" variant="ghost" disabled={!allowsDeny} onClick={handle("deny")}>
-          Deny
+        <Button
+          size="sm"
+          variant="ghost"
+          disabled={!allowsDeny || pendingDecision !== null}
+          aria-busy={pendingDecision === "deny"}
+          onClick={() => submit("deny")}
+        >
+          {pendingDecision === "deny" ? "Sending…" : "Deny"}
         </Button>
       </div>
+
+      {errorMsg && (
+        <div className="mt-2 text-xs text-[#b42318] flex items-center gap-2">
+          <span>Couldn't send decision: {errorMsg}.</span>
+          {lastFailed && (
+            <button
+              type="button"
+              className="underline"
+              onClick={() => submit(lastFailed)}
+              disabled={pendingDecision !== null}
+            >
+              Retry
+            </button>
+          )}
+        </div>
+      )}
 
       <button
         type="button"
