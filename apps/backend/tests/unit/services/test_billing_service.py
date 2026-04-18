@@ -188,6 +188,7 @@ class TestBillingServiceCheckout:
         """If DDB has a stale sub_id but the Stripe sub no longer exists,
         proceed with creating a new sub. Self-heals when our DDB drifts from
         Stripe's source-of-truth state (e.g. a cancellation webhook was lost).
+        Must specifically detect Stripe's resource_missing error code.
         """
         import stripe as stripe_module
 
@@ -198,8 +199,9 @@ class TestBillingServiceCheckout:
         }
         mock_stripe.error = stripe_module.error
         mock_stripe.Subscription.retrieve.side_effect = stripe_module.error.InvalidRequestError(
-            message="No such subscription",
+            message="No such subscription: sub_stale",
             param="id",
+            code="resource_missing",
         )
         mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
 
@@ -209,6 +211,69 @@ class TestBillingServiceCheckout:
         )
 
         assert url == "https://checkout.stripe.com/test"
+        mock_stripe.checkout.Session.create.assert_called_once()
+
+    @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.TIER_PRICES",
+        {"starter": "price_starter"},
+    )
+    @patch("core.services.billing_service.stripe")
+    async def test_checkout_does_not_self_heal_on_unrelated_invalid_request(self, mock_stripe, service):
+        """Self-heal must be narrow: only resource_missing is treated as a
+        missing sub. Other InvalidRequestErrors (malformed id, account
+        mismatch, etc.) must propagate, not bypass the duplicate-sub guard.
+        """
+        import stripe as stripe_module
+
+        account_with_sub = {
+            "owner_id": "user_checkout",
+            "stripe_customer_id": "cus_checkout",
+            "stripe_subscription_id": "sub_present",
+        }
+        mock_stripe.error = stripe_module.error
+        mock_stripe.Subscription.retrieve.side_effect = stripe_module.error.InvalidRequestError(
+            message="Malformed id",
+            param="id",
+            code="parameter_invalid_string_blank",
+        )
+
+        with pytest.raises(stripe_module.error.InvalidRequestError):
+            await service.create_checkout_session(
+                billing_account=account_with_sub,
+                tier="starter",
+            )
+
+        mock_stripe.checkout.Session.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.TIER_PRICES",
+        {"starter": "price_starter"},
+    )
+    @patch("core.services.billing_service.stripe")
+    async def test_checkout_allowed_when_stored_sub_is_incomplete(self, mock_stripe, service):
+        """`incomplete` means the customer's first payment never went through
+        (3DS failed, card declined, etc.). They must be able to retry — blocking
+        would strand conversion until Stripe times the sub out (~24h).
+        """
+        account_with_incomplete = {
+            "owner_id": "user_checkout",
+            "stripe_customer_id": "cus_checkout",
+            "stripe_subscription_id": "sub_incomplete",
+        }
+        mock_stripe.Subscription.retrieve.return_value = {
+            "status": "incomplete",
+            "cancel_at_period_end": False,
+        }
+        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/retry")
+
+        url = await service.create_checkout_session(
+            billing_account=account_with_incomplete,
+            tier="starter",
+        )
+
+        assert url == "https://checkout.stripe.com/retry"
         mock_stripe.checkout.Session.create.assert_called_once()
 
 

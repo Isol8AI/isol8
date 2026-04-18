@@ -39,10 +39,16 @@ class AlreadySubscribedError(BillingServiceError):
     """
 
 
-# Stripe sub statuses that should block a new checkout. `canceled` and
-# `incomplete_expired` are intentionally NOT in this set — for those we want
-# to allow the customer to start fresh.
-_BLOCKING_SUB_STATUSES = frozenset({"active", "trialing", "past_due", "unpaid", "incomplete"})
+# Stripe sub statuses that should block a new checkout — i.e. the customer
+# already has a sub that is currently being served or in active dunning.
+#
+# Intentionally NOT in this set:
+#   - `incomplete` / `incomplete_expired`: initial payment never completed,
+#      so user must be allowed to retry — blocking would strand conversion.
+#   - `unpaid`: terminal dunning, sub is suspended; user retry should be
+#      permitted so they can re-subscribe without first canceling the dead row.
+#   - `canceled`: explicit cancellation, retry is the intent.
+_BLOCKING_SUB_STATUSES = frozenset({"active", "trialing", "past_due"})
 
 
 class BillingService:
@@ -103,7 +109,12 @@ class BillingService:
             try:
                 with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
                     sub = stripe.Subscription.retrieve(sub_id)
-            except stripe.error.InvalidRequestError:
+            except stripe.error.InvalidRequestError as e:
+                # Only treat "resource missing" as self-heal — other invalid-request
+                # errors (malformed id, account mismatch, etc.) shouldn't bypass
+                # the duplicate-sub guard.
+                if getattr(e, "code", None) != "resource_missing":
+                    raise
                 logger.info(
                     "Stored sub %s not found in Stripe for owner %s — proceeding with new checkout",
                     sub_id,
