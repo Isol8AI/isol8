@@ -241,18 +241,13 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
       const token = await getToken();
       if (!token) throw new Error("Not authenticated");
 
-      // Post token to Tauri desktop app for node-host auth
-      if (typeof window !== "undefined" && token) {
-        const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        (window as any).__TAURI__;
-        if (tauri?.core?.invoke) {
-          tauri.core.invoke("send_auth_token", {
-            token,
-            displayName: user?.fullName || user?.firstName || "User",
-            userId: user?.id || "",
-          }).catch(() => {});
-        }
-      }
+      // NOTE: the Tauri `send_auth_token` IPC used to fire from here too,
+      // but that tied `connect` to `user.*` and tore the WebSocket down
+      // every time Clerk resolved the user on mount — which silently
+      // killed in-flight RPCs (notably agents.list on a returning user).
+      // The desktop-identity push now runs in its own effect below,
+      // keyed on user.id — so identity and token are always fetched
+      // together and the WS lifecycle is decoupled from user changes.
 
       const ws = new WebSocket(`${WS_URL}?token=${token}`);
 
@@ -306,7 +301,7 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to connect");
     }
-  }, [getToken, handleMessage, clearPingInterval, user?.firstName, user?.fullName, user?.id]);
+  }, [getToken, handleMessage, clearPingInterval]);
 
   // Keep ref in sync for stable reconnect closure
   connectRef.current = connect;
@@ -351,6 +346,32 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     }).then((fn: () => void) => { unlisten = fn; });
     return () => { unlisten?.(); };
   }, []);
+
+  // ---- Tauri desktop: push auth identity when Clerk user changes ----
+  //
+  // Fetches a fresh token alongside the current user so identity and token
+  // always travel together (important if user A signs out and user B signs
+  // in — we can't have stale ref-captured displayName paired with a fresh
+  // token). Decoupled from `connect` above so the WebSocket lifecycle isn't
+  // disturbed every time Clerk resolves.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const tauri = // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (window as any).__TAURI__;
+    if (!tauri?.core?.invoke) return;
+    if (!user?.id) return;  // wait for Clerk to resolve before pushing
+
+    let cancelled = false;
+    getToken().then((token) => {
+      if (cancelled || !token) return;
+      tauri.core.invoke("send_auth_token", {
+        token,
+        displayName: user.fullName || user.firstName || "User",
+        userId: user.id,
+      }).catch(() => {});
+    });
+    return () => { cancelled = true; };
+  }, [user?.id, user?.fullName, user?.firstName, getToken]);
 
   // ---- sendReq ----
 
