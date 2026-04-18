@@ -79,3 +79,17 @@ async def delete_all_for_owner(owner_id: str) -> int:
             Key={"user_id": item["user_id"], "tool_id": item["tool_id"]},
         )
     return len(items)
+
+
+async def count_for_owner(owner_id: str) -> int:
+    """Count API key rows for an owner. Used by /debug/ddb-rows.
+
+    PK is ``user_id`` on this table (legacy naming) — owner_id maps to it.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("user_id").eq(owner_id),
+        Select="COUNT",
+    )
+    return int(response.get("Count", 0))

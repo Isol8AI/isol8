@@ -152,6 +152,41 @@ class ConnectionService:
             "connection_type": item.get("connectionType", {}).get("S", "chat"),
         }
 
+    async def count_for_user(self, user_id: str) -> int:
+        """Count WS connection rows owned by ``user_id``.
+
+        Used by the e2e ``/debug/ddb-rows`` verification endpoint. Same
+        rationale as ``delete_all_for_user``: no GSI on ``userId``, so we
+        paginate-scan with a filter expression. Acceptable for a debug-only
+        read because the table is small (one row per live connection, TTL
+        purges stale rows) and any one user has at most a handful of rows.
+        """
+
+        def _scan_count() -> int:
+            paginator = self._client.get_paginator("scan")
+            pages = paginator.paginate(
+                TableName=self.table_name,
+                FilterExpression="userId = :u",
+                ExpressionAttributeValues={":u": {"S": user_id}},
+                Select="COUNT",
+            )
+            count = 0
+            for page in pages:
+                count += int(page.get("Count", 0))
+            return count
+
+        try:
+            return await asyncio.to_thread(_scan_count)
+        except ClientError as e:
+            logger.error(
+                "Failed to count connections for user %s: %s",
+                user_id,
+                e.response["Error"]["Message"],
+            )
+            raise ConnectionServiceError(
+                f"Failed to count connections for user {user_id}: {e.response['Error']['Message']}"
+            ) from e
+
     async def delete_all_for_user(self, user_id: str) -> int:
         """Delete every WS connection row owned by ``user_id``.
 
@@ -251,3 +286,8 @@ def _get_singleton() -> ConnectionService:
 async def delete_all_for_user(user_id: str) -> int:
     """Module-level helper: delete every WS connection row for ``user_id``."""
     return await _get_singleton().delete_all_for_user(user_id)
+
+
+async def count_for_user(user_id: str) -> int:
+    """Module-level helper: count every WS connection row for ``user_id``."""
+    return await _get_singleton().count_for_user(user_id)

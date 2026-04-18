@@ -6,6 +6,7 @@ Bypasses Stripe for local testing — disabled in production.
 
 import logging
 import secrets
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -294,3 +295,76 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     deleted["ddb"].append("users")
 
     return {"deleted": deleted}
+
+
+@router.get(
+    "/efs-exists",
+    summary="DEV/TEST ONLY: check whether an EFS path exists",
+    description=(
+        "Read-only existence probe used by the e2e teardown verification "
+        "pass. The path must live under the workspace mount root "
+        "(``settings.EFS_MOUNT_PATH``) — paths outside that prefix are "
+        "rejected with 400 to keep this from doubling as an arbitrary "
+        "filesystem reader."
+    ),
+    operation_id="debug_efs_exists",
+    responses={
+        400: {"description": "Path outside the workspace mount root"},
+        403: {"description": "Disabled in production"},
+    },
+)
+async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
+    if settings.ENVIRONMENT == "prod":
+        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "efs-exists"})
+        raise HTTPException(status_code=403, detail="Disabled in production")
+
+    workspace = get_workspace()
+    mount_root = str(workspace._mount).rstrip("/")
+    if path != mount_root and not path.startswith(mount_root + "/"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"path must be under {mount_root}/",
+        )
+    return {"exists": Path(path).exists()}
+
+
+@router.get(
+    "/ddb-rows",
+    summary="DEV/TEST ONLY: row counts per per-user DDB table for an owner",
+    description=(
+        "Returns a row count for each of the 8 per-user DynamoDB tables, "
+        "scoped to the given ``owner_id``. Used by the e2e teardown "
+        "verification pass to assert the DELETE ``/debug/user-data`` call "
+        "actually drained every table."
+    ),
+    operation_id="debug_ddb_rows",
+    responses={
+        403: {"description": "Disabled in production"},
+    },
+)
+async def ddb_rows(owner_id: str, auth: AuthContext = Depends(get_current_user)):
+    if settings.ENVIRONMENT == "prod":
+        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "ddb-rows"})
+        raise HTTPException(status_code=403, detail="Disabled in production")
+
+    user = await user_repo.get_by_user_id(owner_id)
+    container = await container_repo.get_by_owner_id(owner_id)
+    billing = await billing_repo.get_by_owner_id(owner_id)
+    api_keys = await api_key_repo.count_for_owner(owner_id)
+    usage = await usage_repo.count_for_owner(owner_id)
+    updates = await update_repo.count_for_owner(owner_id)
+    channels = await channel_link_repo.count_for_owner(owner_id)
+    ws_conns = await connection_service.count_for_user(owner_id)
+
+    return {
+        "tables": {
+            "users": 1 if user else 0,
+            "containers": 1 if container else 0,
+            "billing-accounts": 1 if billing else 0,
+            "api-keys": api_keys,
+            "usage-counters": usage,
+            "pending-updates": updates,
+            "channel-links": channels,
+            "ws-connections": ws_conns,
+        }
+    }

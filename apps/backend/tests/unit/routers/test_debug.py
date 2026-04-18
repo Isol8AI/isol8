@@ -85,3 +85,159 @@ class TestDeleteUserData:
         mock_settings.ENVIRONMENT = "prod"
         res = await async_client.delete("/api/v1/debug/user-data")
         assert res.status_code == 403
+
+
+class TestEfsExists:
+    """Test GET /api/v1/debug/efs-exists — read-only EFS path probe."""
+
+    @pytest.mark.asyncio
+    async def test_efs_exists_true_for_present_path(self, async_client, tmp_path, monkeypatch):
+        from core.containers import get_workspace
+
+        ws = get_workspace()
+        # Point the workspace mount at a temp dir we control. The real
+        # attribute on Workspace is ``_mount`` (a pathlib.Path), not
+        # ``_mount_path`` — diverged from plan to match the codebase.
+        monkeypatch.setattr(ws, "_mount", tmp_path)
+        (tmp_path / "user_present").mkdir()
+
+        res = await async_client.get(
+            "/api/v1/debug/efs-exists",
+            params={"path": str(tmp_path / "user_present")},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"exists": True}
+
+    @pytest.mark.asyncio
+    async def test_efs_exists_false_for_absent_path(self, async_client, tmp_path, monkeypatch):
+        from core.containers import get_workspace
+
+        ws = get_workspace()
+        monkeypatch.setattr(ws, "_mount", tmp_path)
+        res = await async_client.get(
+            "/api/v1/debug/efs-exists",
+            params={"path": str(tmp_path / "nope")},
+        )
+        assert res.status_code == 200
+        assert res.json() == {"exists": False}
+
+    @pytest.mark.asyncio
+    async def test_efs_exists_rejects_path_outside_users_dir(self, async_client):
+        """Server-side guard: path must start with the workspace mount root."""
+        res = await async_client.get(
+            "/api/v1/debug/efs-exists",
+            params={"path": "/etc/passwd"},
+        )
+        assert res.status_code == 400
+
+
+class TestDdbRows:
+    """Test GET /api/v1/debug/ddb-rows — per-owner row counts across all 8 tables."""
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.container_repo")
+    async def test_ddb_rows_returns_counts_per_table(
+        self,
+        mock_container,
+        mock_user,
+        mock_billing,
+        mock_apikey,
+        mock_usage,
+        mock_update,
+        mock_chan,
+        mock_conn,
+        async_client,
+    ):
+        """All 8 per-user tables are scanned; counts returned."""
+        mock_user.get_by_user_id = AsyncMock(return_value=None)
+        mock_container.get_by_owner_id = AsyncMock(return_value=None)
+        mock_billing.get_by_owner_id = AsyncMock(return_value=None)
+        mock_apikey.count_for_owner = AsyncMock(return_value=0)
+        mock_usage.count_for_owner = AsyncMock(return_value=0)
+        mock_update.count_for_owner = AsyncMock(return_value=0)
+        mock_chan.count_for_owner = AsyncMock(return_value=0)
+        mock_conn.count_for_user = AsyncMock(return_value=0)
+
+        res = await async_client.get(
+            "/api/v1/debug/ddb-rows",
+            params={"owner_id": "user_test_123"},
+        )
+        assert res.status_code == 200
+        body = res.json()
+        assert "tables" in body
+        for tbl in (
+            "users",
+            "containers",
+            "billing-accounts",
+            "api-keys",
+            "usage-counters",
+            "pending-updates",
+            "channel-links",
+            "ws-connections",
+        ):
+            assert tbl in body["tables"]
+            assert body["tables"][tbl] == 0
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.container_repo")
+    async def test_ddb_rows_returns_nonzero_counts(
+        self,
+        mock_container,
+        mock_user,
+        mock_billing,
+        mock_apikey,
+        mock_usage,
+        mock_update,
+        mock_chan,
+        mock_conn,
+        async_client,
+    ):
+        """Single-row repos return 1 when present; multi-row repos return their counts."""
+        mock_user.get_by_user_id = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_container.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
+        mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123"})
+        mock_apikey.count_for_owner = AsyncMock(return_value=2)
+        mock_usage.count_for_owner = AsyncMock(return_value=4)
+        mock_update.count_for_owner = AsyncMock(return_value=1)
+        mock_chan.count_for_owner = AsyncMock(return_value=3)
+        mock_conn.count_for_user = AsyncMock(return_value=5)
+
+        res = await async_client.get(
+            "/api/v1/debug/ddb-rows",
+            params={"owner_id": "user_test_123"},
+        )
+        assert res.status_code == 200
+        body = res.json()["tables"]
+        assert body["users"] == 1
+        assert body["containers"] == 1
+        assert body["billing-accounts"] == 1
+        assert body["api-keys"] == 2
+        assert body["usage-counters"] == 4
+        assert body["pending-updates"] == 1
+        assert body["channel-links"] == 3
+        assert body["ws-connections"] == 5
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.settings")
+    async def test_ddb_rows_disabled_in_prod(self, mock_settings, async_client):
+        """Endpoint returns 403 when ENVIRONMENT == 'prod'."""
+        mock_settings.ENVIRONMENT = "prod"
+        res = await async_client.get(
+            "/api/v1/debug/ddb-rows",
+            params={"owner_id": "user_test_123"},
+        )
+        assert res.status_code == 403

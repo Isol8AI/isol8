@@ -187,6 +187,23 @@ async def delete_all_for_owner(owner_id: str) -> int:
     return await sweep_by_owner(owner_id)
 
 
+async def count_for_owner(owner_id: str) -> int:
+    """Count channel-link rows for an owner. Used by /debug/ddb-rows.
+
+    Counts every link row (across all providers/agents/peers) for this
+    container owner. Does not paginate — same constraint as the existing
+    ``query_by_owner`` helper above (per-owner link counts fit in a single
+    1MB query page in practice).
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        Select="COUNT",
+    )
+    return int(response.get("Count", 0))
+
+
 async def sweep_by_member(member_id: str) -> int:
     """Delete all link rows for a Clerk member. Used by Clerk user.deleted webhook.
 

@@ -103,6 +103,20 @@ async def delete_all_for_owner(owner_id: str) -> int:
     return len(items)
 
 
+async def count_for_owner(owner_id: str) -> int:
+    """Count usage-counter rows for an owner. Used by /debug/ddb-rows.
+
+    PK=owner_id, SK=period — counts both rollup rows and per-member rows.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        Select="COUNT",
+    )
+    return int(response.get("Count", 0))
+
+
 async def get_member_usage(owner_id: str, period: str) -> list[dict]:
     """Get per-member usage within an org for a period.
 

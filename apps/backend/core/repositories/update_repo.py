@@ -171,6 +171,17 @@ async def delete_all_for_owner(owner_id: str) -> int:
     return len(items)
 
 
+async def count_for_owner(owner_id: str) -> int:
+    """Count pending-update rows for an owner. Used by /debug/ddb-rows."""
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        Select="COUNT",
+    )
+    return int(response.get("Count", 0))
+
+
 async def mark_applied(owner_id: str, update_id: str) -> bool:
     """Mark an update as applied and set TTL for 30-day expiry."""
     table = _get_table()
