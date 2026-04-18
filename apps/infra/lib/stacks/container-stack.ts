@@ -51,6 +51,11 @@ export class ContainerStack extends cdk.Stack {
   public readonly taskExecutionRole: iam.Role;
   public readonly taskRole: iam.Role;
   public readonly openclawExtendedRepo: ecr.IRepository;
+  // Exposed so service-stack can pin the backend's ECS_TASK_DEFINITION env to
+  // a specific revision ARN — never the family name. The backend cloner
+  // reads this ARN to build per-user task defs; pinning prevents per-user
+  // clones (which register into the same family) from poisoning family-latest.
+  public readonly openclawTaskDef: ecs.FargateTaskDefinition;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -281,7 +286,7 @@ export class ContainerStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    const openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
+    this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
       family: `isol8-${env}-openclaw`,
       cpu: 1024,
       memoryLimitMiB: 2048,
@@ -316,7 +321,7 @@ export class ContainerStack extends cdk.Stack {
         ? ecs.ContainerImage.fromRegistry(OPENCLAW_VERSION.full)
         : ecs.ContainerImage.fromEcrRepository(this.openclawExtendedRepo, envTag);
 
-    const openclawContainer = openclawTaskDef.addContainer("openclaw", {
+    const openclawContainer = this.openclawTaskDef.addContainer("openclaw", {
       image: containerImage,
       essential: true,
       command: ["sh", "-c", startupCommand],
@@ -346,7 +351,7 @@ export class ContainerStack extends cdk.Stack {
     });
 
     // Add EFS volume — the backend replaces the access point per user
-    openclawTaskDef.addVolume({
+    this.openclawTaskDef.addVolume({
       name: "openclaw-workspace",
       efsVolumeConfiguration: {
         fileSystemId: this.efsFileSystem.fileSystemId,

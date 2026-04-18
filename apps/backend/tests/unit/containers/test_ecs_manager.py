@@ -116,11 +116,16 @@ def _make_container_dict(
     service_name="openclaw-user_test_123-f4ae64abb2db",
     gateway_token="tok-abc",
     status="running",
-    access_point_id=None,
+    access_point_id="fsap-test-default",
     task_definition_arn=None,
     substatus=None,
 ):
-    """Helper to create a container dict for mocking DynamoDB repo responses."""
+    """Helper to create a container dict for mocking DynamoDB repo responses.
+
+    Default access_point_id is set so resize_user_container (which now reads
+    it from the row) works in tests that don't override it explicitly. Pass
+    access_point_id=None to omit it (e.g. to test the missing-field error).
+    """
     d = {
         "owner_id": user_id,
         "service_name": service_name,
@@ -280,6 +285,54 @@ class TestRegisterTaskDefinition:
 
         with pytest.raises(EcsManagerError, match="Failed to register per-user task definition"):
             manager._register_task_definition("fsap-user123")
+
+    def test_register_preserves_env_vars_from_base(self, manager, mock_ecs_client):
+        """Per-user registration must preserve env vars on the base container.
+
+        Regression: in incident 2026-04-17 the per-user cloner produced task
+        defs missing CLAWHUB_WORKDIR, even though the CDK base had it. This
+        sent every clawhub-installed skill to a path no agent scanner reads.
+        """
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "isol8-dev-openclaw",
+                "taskRoleArn": "arn:aws:iam::123456789:role/task-role",
+                "executionRoleArn": "arn:aws:iam::123456789:role/exec-role",
+                "networkMode": "awsvpc",
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "image": "alpine/openclaw:latest",
+                        "environment": [
+                            {"name": "HOME", "value": "/home/node"},
+                            {"name": "CHOKIDAR_USEPOLLING", "value": "true"},
+                            {"name": "CLAWHUB_WORKDIR", "value": "/home/node/.openclaw"},
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "openclaw-workspace",
+                        "efsVolumeConfiguration": {
+                            "fileSystemId": "fs-test123",
+                            "transitEncryption": "ENABLED",
+                            "authorizationConfig": {"accessPointId": "fsap-base", "iam": "ENABLED"},
+                        },
+                    }
+                ],
+                "requiresCompatibilities": ["FARGATE"],
+                "cpu": "256",
+                "memory": "512",
+            }
+        }
+
+        manager._register_task_definition("fsap-user123")
+
+        call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+        env = {e["name"]: e["value"] for e in call_kwargs["containerDefinitions"][0]["environment"]}
+        assert env["CLAWHUB_WORKDIR"] == "/home/node/.openclaw"
+        assert env["HOME"] == "/home/node"
+        assert env["CHOKIDAR_USEPOLLING"] == "true"
 
 
 # ---------------------------------------------------------------------------
@@ -675,7 +728,7 @@ class TestDeleteUserService:
     @pytest.mark.asyncio
     async def test_delete_without_per_user_resources(self, manager, mock_ecs_client, mock_efs_client):
         """delete_user_service skips cleanup when container has no per-user resources."""
-        container_dict = _make_container_dict(status="running")
+        container_dict = _make_container_dict(status="running", access_point_id=None)
         with patch("core.containers.ecs_manager.container_repo") as mock_repo:
             mock_repo.get_by_owner_id = AsyncMock(return_value=container_dict)
             mock_repo.delete = AsyncMock()
@@ -1429,6 +1482,89 @@ class TestResizeUserContainer:
     resize writes status=provisioning via update_fields + ECS forceNewDeployment.
     Without firing the poller, the row stays stuck at provisioning until the
     next backend restart catches it via the startup reconciler."""
+
+    @pytest.mark.asyncio
+    async def test_resize_reads_env_from_base_not_current(self, manager, mock_ecs_client):
+        """resize must read containerDefinitions from the CDK-managed base
+        (self._task_def), NOT from the user's prior per-user revision.
+
+        Regression: incident 2026-04-17 — the resize path read from the user's
+        own task def, propagating any env-var drift forever. After this fix,
+        the base ARN is always read, so a user with a stale per-user task def
+        still gets the current CDK env on the next resize.
+        """
+        # Base task def has CLAWHUB_WORKDIR. User's *prior* per-user task def
+        # does NOT (simulating tonight's incident). Resize must produce an env
+        # that mirrors the base, not the user's drifted prior state.
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "isol8-dev-openclaw",
+                "taskRoleArn": "",
+                "executionRoleArn": "",
+                "networkMode": "awsvpc",
+                "containerDefinitions": [
+                    {
+                        "name": "openclaw",
+                        "image": "alpine/openclaw:latest",
+                        "environment": [
+                            {"name": "HOME", "value": "/home/node"},
+                            {"name": "CLAWHUB_WORKDIR", "value": "/home/node/.openclaw"},
+                        ],
+                    }
+                ],
+                "volumes": [
+                    {
+                        "name": "openclaw-workspace",
+                        "efsVolumeConfiguration": {
+                            "fileSystemId": "fs-test123",
+                            "transitEncryption": "ENABLED",
+                            "authorizationConfig": {"accessPointId": "fsap-base", "iam": "ENABLED"},
+                        },
+                    }
+                ],
+                "requiresCompatibilities": ["FARGATE"],
+                "cpu": "256",
+                "memory": "512",
+            }
+        }
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "deployments": [{"id": "ecs-svc/primary", "status": "PRIMARY", "rolloutState": "IN_PROGRESS"}],
+                }
+            ]
+        }
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch("core.containers.ecs_manager.asyncio.to_thread") as mock_to_thread,
+        ):
+
+            async def passthrough(fn, *args, **kwargs):
+                return fn(*args, **kwargs)
+
+            mock_to_thread.side_effect = passthrough
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(status="running", access_point_id="fsap-user-789")
+            )
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.resize_user_container("user_test_123", new_cpu="1024", new_memory="2048")
+
+            call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            env = {e["name"]: e["value"] for e in call_kwargs["containerDefinitions"][0]["environment"]}
+            assert env["CLAWHUB_WORKDIR"] == "/home/node/.openclaw"
+
+            # Per-user state correctly layered on top of base
+            volumes = call_kwargs["volumes"]
+            assert volumes[0]["efsVolumeConfiguration"]["authorizationConfig"]["accessPointId"] == "fsap-user-789"
+            assert call_kwargs["cpu"] == "1024"
+            assert call_kwargs["memory"] == "2048"
 
     @pytest.mark.asyncio
     async def test_resize_fires_running_transition_poller(self, manager, mock_ecs_client):

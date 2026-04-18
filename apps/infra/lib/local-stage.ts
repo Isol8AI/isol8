@@ -98,6 +98,7 @@ export class LocalStage extends cdk.Stage {
         containerSecurityGroup: container.containerSecurityGroup,
         taskExecutionRole: container.taskExecutionRole,
         taskRole: container.taskRole,
+        openclawTaskDef: container.openclawTaskDef,
       },
       managementApiUrl: api.managementApiUrl,
       connectionsTableName: api.connectionsTableName,
