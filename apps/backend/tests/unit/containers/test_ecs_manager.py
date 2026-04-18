@@ -1925,3 +1925,65 @@ class TestProvisionUserContainer:
             assert kwargs.get("tier") == "pro"
             # Explicit tier should bypass the billing lookup entirely.
             mock_billing.get_by_owner_id.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provision_produces_paid_tier_openclaw_config_for_starter(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """End-to-end assertion: a router-style provision call (no tier arg)
+        for a starter-subscribed user must produce an openclaw.json on EFS
+        whose primary model is Qwen3 VL 235B, not the free-tier MiniMax.
+
+        This is the real chain #293 fixes:
+            router (no tier)
+              -> provision_user_container
+                -> _resolve_tier_for_owner (billing.plan_tier="starter")
+                  -> write_user_configs(tier="starter")
+                    -> write_openclaw_config(tier="starter")
+
+        Runs the real write_openclaw_config; only the EFS boundary and the
+        KMS-heavy device-identity step are stubbed.
+        """
+        import json as _json
+
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        captured_writes: dict[str, str] = {}
+
+        fake_workspace = MagicMock()
+        fake_workspace.write_file = MagicMock(
+            side_effect=lambda _uid, path, content: captured_writes.__setitem__(path, content)
+        )
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch("core.containers.ecs_manager.get_workspace", return_value=fake_workspace),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "ensure_device_identities", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "plan_tier": "starter"})
+
+            await manager.provision_user_container("user_test_123")
+
+            assert "openclaw.json" in captured_writes, (
+                f"openclaw.json was not written. Files seen: {list(captured_writes)}"
+            )
+            config = _json.loads(captured_writes["openclaw.json"])
+
+            # Primary model must be Qwen3 VL 235B for starter, not MiniMax.
+            # Before the fix, tier resolved to "free" so primary was MiniMax.
+            primary = config["agents"]["defaults"]["model"]["primary"]
+            assert "qwen.qwen3-vl-235b-a22b" in primary, (
+                f"Expected Qwen3 VL 235B primary for starter, got {primary!r}. "
+                "If this is MiniMax, provision_user_container fell back to free tier."
+            )
+
+            # Starter catalog exposes BOTH MiniMax and Qwen, not just MiniMax.
+            bedrock_models = config["models"]["providers"]["amazon-bedrock"]["models"]
+            model_ids = {m["id"] for m in bedrock_models}
+            assert "qwen.qwen3-vl-235b-a22b" in model_ids, f"Starter must expose Qwen3 VL 235B; got {model_ids}"
+            assert "minimax.minimax-m2.5" in model_ids, f"Starter must still expose MiniMax M2.5; got {model_ids}"
