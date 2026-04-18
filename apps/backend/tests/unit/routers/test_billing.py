@@ -292,6 +292,36 @@ class TestCheckout:
         finally:
             app.dependency_overrides.pop(get_current_user, None)
 
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("core.services.billing_service.TIER_PRICES", {"starter": "price_starter"})
+    @patch("core.services.billing_service.stripe")
+    async def test_create_checkout_returns_409_when_already_subscribed(self, mock_stripe, mock_repo, async_client):
+        """Re-clicking Subscribe with an active sub must return 409 — no new
+        Stripe sub gets created. Without this, every click adds another
+        billing line to the same Stripe customer (incident 2026-04-17).
+        """
+        mock_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "stripe_customer_id": "cus_active",
+                "stripe_subscription_id": "sub_already_active",
+                "plan_tier": "starter",
+            }
+        )
+        mock_stripe.Subscription.retrieve.return_value = {
+            "status": "active",
+            "cancel_at_period_end": False,
+        }
+
+        response = await async_client.post(
+            "/api/v1/billing/checkout",
+            json={"tier": "starter"},
+        )
+
+        assert response.status_code == 409
+        mock_stripe.checkout.Session.create.assert_not_called()
+
 
 class TestOverageToggle:
     """Test PUT /api/v1/billing/overage.

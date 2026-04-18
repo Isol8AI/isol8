@@ -30,6 +30,27 @@ class BillingServiceError(Exception):
     pass
 
 
+class AlreadySubscribedError(BillingServiceError):
+    """Raised when a checkout is attempted while an active Stripe sub exists.
+
+    Why: each successful Stripe Checkout in subscription mode creates a fresh
+    sub on the customer. Without this guard, repeated Subscribe clicks pile up
+    duplicate subs that all keep billing — incident 2026-04-17.
+    """
+
+
+# Stripe sub statuses that should block a new checkout — i.e. the customer
+# already has a sub that is currently being served or in active dunning.
+#
+# Intentionally NOT in this set:
+#   - `incomplete` / `incomplete_expired`: initial payment never completed,
+#      so user must be allowed to retry — blocking would strand conversion.
+#   - `unpaid`: terminal dunning, sub is suspended; user retry should be
+#      permitted so they can re-subscribe without first canceling the dead row.
+#   - `canceled`: explicit cancellation, retry is the intent.
+_BLOCKING_SUB_STATUSES = frozenset({"active", "trialing", "past_due"})
+
+
 class BillingService:
     async def create_customer_for_owner(
         self, owner_id: str, owner_type: str = "personal", email: str | None = None
@@ -79,6 +100,31 @@ class BillingService:
         fixed_price = TIER_PRICES.get(tier)
         if not fixed_price:
             raise BillingServiceError(f"Unknown tier: {tier}")
+
+        # Refuse to create a second sub when one is already active.
+        # Self-heal: if DDB's stored sub_id no longer exists in Stripe (lost
+        # cancellation webhook), proceed and let the new sub take over.
+        sub_id = billing_account.get("stripe_subscription_id")
+        if sub_id:
+            try:
+                with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+                    sub = stripe.Subscription.retrieve(sub_id)
+            except stripe.error.InvalidRequestError as e:
+                # Only treat "resource missing" as self-heal — other invalid-request
+                # errors (malformed id, account mismatch, etc.) shouldn't bypass
+                # the duplicate-sub guard.
+                if getattr(e, "code", None) != "resource_missing":
+                    raise
+                logger.info(
+                    "Stored sub %s not found in Stripe for owner %s — proceeding with new checkout",
+                    sub_id,
+                    billing_account.get("owner_id"),
+                )
+            else:
+                if sub.get("status") in _BLOCKING_SUB_STATUSES:
+                    raise AlreadySubscribedError(
+                        f"Customer already has subscription {sub_id} (status={sub.get('status')})"
+                    )
 
         # Initial subscription includes ONLY the fixed-price tier line item.
         # The metered overage line item (STRIPE_METERED_PRICE_ID) is attached

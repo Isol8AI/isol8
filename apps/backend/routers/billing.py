@@ -11,7 +11,11 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner
 from core.config import settings, TIER_CONFIG
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, usage_repo
-from core.services.billing_service import BillingService, BillingServiceError
+from core.services.billing_service import (
+    AlreadySubscribedError,
+    BillingService,
+    BillingServiceError,
+)
 from core.services.usage_service import check_budget, get_usage_summary
 from core.services.bedrock_pricing import get_all_prices
 from core.services.update_service import queue_tier_change
@@ -252,7 +256,10 @@ async def create_checkout(
             email=auth.email,
         )
 
-    url = await billing_service.create_checkout_session(account, request.tier.value)
+    try:
+        url = await billing_service.create_checkout_session(account, request.tier.value)
+    except AlreadySubscribedError as e:
+        raise HTTPException(status_code=409, detail=str(e))
     return CheckoutResponse(checkout_url=url)
 
 
