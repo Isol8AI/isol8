@@ -132,12 +132,69 @@ class EcsManager:
     # Per-user task definition revisions
     # ------------------------------------------------------------------
 
-    def _register_task_definition(self, access_point_id: str) -> str:
-        """Clone the base task definition with a per-user EFS access point.
+    def _build_register_kwargs_from_base(
+        self,
+        access_point_id: str,
+        new_image: str | None = None,
+        new_cpu: str | None = None,
+        new_memory: str | None = None,
+    ) -> dict:
+        """Build register_task_definition kwargs by cloning the CDK-managed base.
 
-        Reads the Terraform-managed base task definition, replaces the
-        EFS volume's access point ID with the per-user one, and registers
-        a new revision in the same family.
+        Always reads from ``self._task_def`` (the pinned ARN exported by
+        container-stack.ts). NEVER reads from a per-user revision — per-user
+        clones register into the same family, so the family name resolves
+        non-deterministically depending on provision order. Pinning to the
+        full ARN keeps env vars / command / mountPoints in sync with what CDK
+        deployed.
+
+        Per-user state layered on top:
+          - access_point_id  (per-user EFS access point, replaces the volume's)
+          - new_image        (image_update flow only — None preserves base image)
+          - new_cpu/memory   (tier-resize flow only — None preserves base values)
+        """
+        desc_resp = self._ecs.describe_task_definition(taskDefinition=self._task_def)
+        base = desc_resp["taskDefinition"]
+
+        volumes = []
+        for vol in base.get("volumes", []):
+            vol_copy = dict(vol)
+            efs_config = vol_copy.get("efsVolumeConfiguration")
+            if efs_config:
+                efs_copy = dict(efs_config)
+                auth_config = dict(efs_copy.get("authorizationConfig", {}))
+                auth_config["accessPointId"] = access_point_id
+                efs_copy["authorizationConfig"] = auth_config
+                vol_copy["efsVolumeConfiguration"] = efs_copy
+            volumes.append(vol_copy)
+
+        # Deep-copy containerDefinitions because we may mutate `image`. Each
+        # entry is itself a dict — we shallow-copy each before mutation.
+        container_defs = []
+        for cd in base["containerDefinitions"]:
+            cd_copy = dict(cd)
+            if new_image:
+                cd_copy["image"] = new_image
+            container_defs.append(cd_copy)
+
+        reg_kwargs = dict(
+            family=base["family"],
+            taskRoleArn=base.get("taskRoleArn", ""),
+            executionRoleArn=base.get("executionRoleArn", ""),
+            networkMode=base.get("networkMode", "awsvpc"),
+            containerDefinitions=container_defs,
+            volumes=volumes,
+            requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
+            cpu=new_cpu or base.get("cpu", "256"),
+            memory=new_memory or base.get("memory", "512"),
+        )
+        if base.get("runtimePlatform"):
+            reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
+
+        return reg_kwargs
+
+    def _register_task_definition(self, access_point_id: str) -> str:
+        """Clone the CDK base for a new per-user container.
 
         Args:
             access_point_id: The per-user EFS access point ID.
@@ -149,39 +206,7 @@ class EcsManager:
             EcsManagerError: If the ECS API calls fail.
         """
         try:
-            # Read the base task definition
-            desc_resp = self._ecs.describe_task_definition(taskDefinition=self._task_def)
-            base = desc_resp["taskDefinition"]
-
-            # Clone volumes with per-user access point
-            volumes = []
-            for vol in base.get("volumes", []):
-                vol_copy = dict(vol)
-                efs_config = vol_copy.get("efsVolumeConfiguration")
-                if efs_config:
-                    efs_copy = dict(efs_config)
-                    auth_config = dict(efs_copy.get("authorizationConfig", {}))
-                    auth_config["accessPointId"] = access_point_id
-                    efs_copy["authorizationConfig"] = auth_config
-                    vol_copy["efsVolumeConfiguration"] = efs_copy
-                volumes.append(vol_copy)
-
-            # Register new revision in the same family
-            reg_kwargs = dict(
-                family=base["family"],
-                taskRoleArn=base.get("taskRoleArn", ""),
-                executionRoleArn=base.get("executionRoleArn", ""),
-                networkMode=base.get("networkMode", "awsvpc"),
-                containerDefinitions=base["containerDefinitions"],
-                volumes=volumes,
-                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
-                cpu=base.get("cpu", "256"),
-                memory=base.get("memory", "512"),
-            )
-            # runtimePlatform is optional; passing None causes ParamValidationError
-            if base.get("runtimePlatform"):
-                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
-
+            reg_kwargs = self._build_register_kwargs_from_base(access_point_id)
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             put_metric("container.task_def.register", dimensions={"status": "ok"})
@@ -453,38 +478,26 @@ class EcsManager:
         if not container:
             raise EcsManagerError(f"No container found for user {user_id}", user_id)
 
-        current_task_def_arn = container.get("task_definition_arn")
-        if not current_task_def_arn:
-            raise EcsManagerError(f"No task definition ARN for user {user_id}", user_id)
+        access_point_id = container.get("access_point_id")
+        if not access_point_id:
+            raise EcsManagerError(f"No EFS access point for user {user_id}", user_id)
 
         service_name = self._service_name(user_id)
 
         try:
-            # Read the current per-user task definition
-            desc_resp = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=current_task_def_arn)
-            base = desc_resp["taskDefinition"]
-
-            # Build updated kwargs
-            reg_kwargs = dict(
-                family=base["family"],
-                taskRoleArn=base.get("taskRoleArn", ""),
-                executionRoleArn=base.get("executionRoleArn", ""),
-                networkMode=base.get("networkMode", "awsvpc"),
-                containerDefinitions=base["containerDefinitions"],
-                volumes=base.get("volumes", []),
-                requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
-                cpu=new_cpu or base.get("cpu", "256"),
-                memory=new_memory or base.get("memory", "512"),
+            # Always read containerDefinitions/env/command/mounts from the
+            # CDK-managed base, NEVER from the user's prior per-user revision.
+            # Reading from a prior per-user revision propagates any drift it
+            # had (e.g., missing CLAWHUB_WORKDIR — incident 2026-04-17). Per-
+            # user state (EFS access point, image, cpu/memory) is layered here.
+            reg_kwargs = await asyncio.to_thread(
+                self._build_register_kwargs_from_base,
+                access_point_id,
+                new_image=new_image,
+                new_cpu=new_cpu,
+                new_memory=new_memory,
             )
-            if base.get("runtimePlatform"):
-                reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
 
-            # Update image if specified
-            if new_image and reg_kwargs["containerDefinitions"]:
-                for container_def in reg_kwargs["containerDefinitions"]:
-                    container_def["image"] = new_image
-
-            # Register new revision
             reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
             new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             logger.info("Registered resized task definition %s for user %s", new_task_def_arn, user_id)

@@ -53,6 +53,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     containerSecurityGroup: ec2.ISecurityGroup;
     taskExecutionRole: iam.IRole;
     taskRole: iam.IRole;
+    openclawTaskDef: ecs.ITaskDefinition;
   };
   managementApiUrl: string;
   connectionsTableName: string;
@@ -559,7 +560,12 @@ export class ServiceStack extends cdk.Stack {
         CONTAINER_EXECUTION_ROLE_ARN:
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        ECS_TASK_DEFINITION: `isol8-${env}-openclaw`,
+        // Pin to the full ARN (with revision) so the backend cloner always
+        // reads the CDK-managed base, never a per-user clone. Per-user clones
+        // register into the same family, so the family name resolves to
+        // family-latest — which can be a poisoned per-user revision and was
+        // the root cause of the CLAWHUB_WORKDIR drift incident on 2026-04-17.
+        ECS_TASK_DEFINITION: props.container.openclawTaskDef.taskDefinitionArn,
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
