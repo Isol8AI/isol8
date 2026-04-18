@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePostHog } from "posthog-js/react";
 import { useAuth, useOrganization, useOrganizationList, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2 } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Loader2 } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -66,7 +66,7 @@ export function ChatLayout({
   });
   const router = useRouter();
   const api = useApi();
-  const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
+  const { agents, defaultId, isLoading: agentsLoading, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
   // Emit throttled user_active pings so the backend scale-to-zero reaper
@@ -274,6 +274,22 @@ export function ChatLayout({
 
               {/* Agent List */}
               <div className="agent-list">
+                {agentsLoading && !agents.length ? (
+                  <div
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: 8,
+                      padding: "12px 8px",
+                      color: "#8a8578",
+                      fontSize: 13,
+                    }}
+                  >
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                    <span>Loading agents…</span>
+                  </div>
+                ) : null}
                 {agents.map((agent) => {
                   const isDefault = agent.id === defaultId;
                   return (
