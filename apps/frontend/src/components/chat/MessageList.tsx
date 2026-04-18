@@ -8,6 +8,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { ApprovalCard } from "./ApprovalCard";
 
 export interface ToolResultBlock {
   type: string;
@@ -63,12 +64,14 @@ export interface Message {
   toolUses?: ToolUse[];
 }
 
-interface MessageListProps {
+export interface MessageListProps {
   messages: Message[];
   isTyping?: boolean;
   agentName?: string;
   onRetry?: (assistantMsgId: string) => void;
   onOpenFile?: (path: string) => void;
+  /** Called when the user clicks Allow once / Trust / Deny on a pending approval card. */
+  onDecide?: (approvalId: string, decision: ExecApprovalDecision) => Promise<void>;
 }
 
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
@@ -208,6 +211,14 @@ const TOOL_STYLES = {
     pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
     dot: "bg-[#c62828]",
   },
+  "pending-approval": {
+    pill: "bg-[#fff7ea] text-[#6b4a00] border-[#f0d7a0]",
+    dot: "bg-[#c38a00]",
+  },
+  denied: {
+    pill: "bg-[#fdecec] text-[#8a1f1f] border-[#f1c0c0]",
+    dot: "bg-[#b42318]",
+  },
 } as const;
 
 function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null {
@@ -220,14 +231,39 @@ function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null 
   return parts.join("\n\n") || null;
 }
 
-function ToolPill({ t }: { t: ToolUse }) {
+function ToolPill({
+  t,
+  onDecide,
+}: {
+  t: ToolUse;
+  onDecide?: MessageListProps["onDecide"];
+}) {
   const [open, setOpen] = React.useState(false);
-  // New statuses ("pending-approval", "denied") get their own styles in Task 5.
-  // For now, fall back to "done" styling so the pill still renders sensibly.
-  const styleKey: keyof typeof TOOL_STYLES =
-    t.status === "running" || t.status === "done" || t.status === "error" ? t.status : "done";
-  const s = TOOL_STYLES[styleKey];
+  const s = TOOL_STYLES[t.status];
   const hasDetails = !!(t.args || t.result || t.meta);
+
+  if (t.status === "pending-approval" && t.pendingApproval && onDecide) {
+    return (
+      <ApprovalCard
+        pending={t.pendingApproval}
+        onDecide={(decision) => onDecide(t.pendingApproval!.id, decision)}
+      />
+    );
+  }
+
+  if (t.status === "denied") {
+    return (
+      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border bg-[#fdecec] text-[#8a1f1f] border-[#f1c0c0]">
+        <span className="w-1.5 h-1.5 rounded-full bg-[#b42318]" />
+        <span>{t.tool}</span>
+        <span>· denied</span>
+      </div>
+    );
+  }
+
+  const decisionSuffix = t.resolvedDecision && t.status === "done"
+    ? ` · ${t.resolvedDecision}`
+    : "";
 
   return (
     <div className="inline-block">
@@ -245,6 +281,7 @@ function ToolPill({ t }: { t: ToolUse }) {
         <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
         <span>{t.tool}</span>
         {t.status === "error" && <span>failed</span>}
+        {decisionSuffix && <span>{decisionSuffix}</span>}
         {hasDetails &&
           (open ? (
             <ChevronDown className="h-3 w-3 opacity-70" />
@@ -283,12 +320,18 @@ function ToolPill({ t }: { t: ToolUse }) {
   );
 }
 
-function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
+function ToolUseIndicator({
+  toolUses,
+  onDecide,
+}: {
+  toolUses: ToolUse[];
+  onDecide?: MessageListProps["onDecide"];
+}) {
   if (toolUses.length === 0) return null;
   return (
     <div className="mb-3 flex flex-wrap gap-2 items-start">
       {toolUses.map((t, i) => (
-        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} />
+        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} onDecide={onDecide} />
       ))}
     </div>
   );
@@ -365,7 +408,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
+  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile, onDecide }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
@@ -416,7 +459,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 )}
 
                 {msg.role === "assistant" && msg.toolUses && msg.toolUses.length > 0 && (
-                  <ToolUseIndicator toolUses={msg.toolUses} />
+                  <ToolUseIndicator toolUses={msg.toolUses} onDecide={onDecide} />
                 )}
 
                 <div className={cn(
