@@ -11,6 +11,7 @@ import {
   CheckCircle,
   Circle,
   AlertTriangle,
+  Moon,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
@@ -155,6 +156,11 @@ export function ProvisioningStepper({
   // of truth for "is the channel onboarding step needed for this user". Cancel
   // hides the wizard for the current session; next mount re-checks the data.
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // Records the "stopped session" id (updated_at) the user explicitly waked,
+  // so we don't keep showing the wake card while status flips stopped →
+  // provisioning. A new stopped session (different updated_at) shows the
+  // card again, which is what we want for the second 5-min-idle cycle.
+  const [wakedSessionId, setWakedSessionId] = useState<string | null>(null);
 
   // Poll container status every 3s once subscribed or on free tier (auto-provisioned)
   const shouldPollContainer = isSubscribed || isFree;
@@ -163,9 +169,11 @@ export function ProvisioningStepper({
     enabled: shouldPollContainer,
   });
 
-  // When container status returns null (404), trigger provisioning once
-  // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
-  const needsProvision = container === null || container?.status === "stopped";
+  // Auto-provision only on first-time onboarding (container === null / 404).
+  // Containers that have scaled to zero require an explicit user click —
+  // see the wake card below — so we don't pay the ~3-min cold-start cost
+  // every time the user navigates back to /chat.
+  const isFirstTime = container === null;
   useEffect(() => {
     // Defensive: don't fire provision until Clerk's org state has fully
     // hydrated. ChatLayout already gates this component behind an onboarded
@@ -174,17 +182,25 @@ export function ProvisioningStepper({
     // can't accidentally fire /container/provision with a still-loading JWT
     // and get a personal container when an org was expected.
     if (!orgLoaded) return;
-    if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
+    if (isFirstTime && shouldPollContainer && !provisionRequestedRef.current) {
       provisionRequestedRef.current = true;
       api.post("/container/provision", {}).catch((err: unknown) => {
         console.error("Container provision failed:", err);
       });
     }
-    // Reset the ref when container comes back so it can re-provision on next stop
-    if (container && container.status !== "stopped") {
+    // Reset once a container exists so a future delete → re-provision works.
+    if (container) {
       provisionRequestedRef.current = false;
     }
-  }, [needsProvision, orgLoaded, container, shouldPollContainer, api]);
+  }, [isFirstTime, orgLoaded, container, shouldPollContainer, api]);
+
+  const handleWake = () => {
+    posthog?.capture("container_wake_clicked");
+    setWakedSessionId(container?.updated_at ?? "wake");
+    api.post("/container/provision", {}).catch((err: unknown) => {
+      console.error("Container wake failed:", err);
+    });
+  };
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
@@ -340,6 +356,34 @@ export function ProvisioningStepper({
               <a href="mailto:support@isol8.co">Contact Support</a>
             </Button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Sleeping (scale-to-zero) container — require explicit click to wake.
+  // Auto-firing here would cost the user a 3-min cold-start every time
+  // they navigate back to /chat, which is hostile UX for the free tier.
+  const stoppedSessionId = container?.status === "stopped" ? (container.updated_at ?? "stopped") : null;
+  const alreadyWaked = stoppedSessionId !== null && wakedSessionId === stoppedSessionId;
+  if (stoppedSessionId !== null && !alreadyWaked) {
+    return (
+      <div className="flex-1 flex items-center justify-center bg-[#faf7f2]">
+        <div className="text-center space-y-6 max-w-sm px-6">
+          <div className="space-y-2">
+            <Moon className="h-8 w-8 text-[#06402B] mx-auto" />
+            <h2 className="text-lg font-medium text-[#1a1a1a]">Your container is sleeping</h2>
+            <p className="text-sm text-[#8a8578]">
+              Free-tier agents scale to zero after 5 minutes of inactivity to save resources.
+              Waking takes about 3 minutes with the slim image.
+            </p>
+          </div>
+          <Button
+            className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white"
+            onClick={handleWake}
+          >
+            Wake container
+          </Button>
         </div>
       </div>
     );
