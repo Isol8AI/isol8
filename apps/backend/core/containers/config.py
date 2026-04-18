@@ -7,14 +7,41 @@ Each container gets a gateway auth token so it can bind to LAN
 """
 
 import base64
+import fcntl
 import hashlib
 import json
 import logging
+import os
+import tempfile
+import threading
 import time
 
 from core.config import TIER_CONFIG
 
 logger = logging.getLogger(__name__)
+
+
+# ``fcntl.lockf`` serializes ACROSS processes but not across threads within a
+# single Python process. ``ensure_node_paired_entry`` runs via
+# ``asyncio.to_thread``, so two concurrent first-connects for different
+# members of the same org land in different threads of the SAME process and
+# can each acquire the fcntl lock simultaneously — the RMW then races and
+# the last ``os.rename`` drops the other member's newly added device entry.
+#
+# Guard each owner's paired.json RMW with a dedicated ``threading.Lock``.
+# One lock per owner keeps concurrency across different orgs; the guard
+# dict itself is protected by a tiny master lock.
+_PAIRED_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_PAIRED_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _paired_thread_lock(owner_id: str) -> threading.Lock:
+    with _PAIRED_THREAD_LOCKS_GUARD:
+        lock = _PAIRED_THREAD_LOCKS.get(owner_id)
+        if lock is None:
+            lock = threading.Lock()
+            _PAIRED_THREAD_LOCKS[owner_id] = lock
+        return lock
 
 
 # =============================================================================
@@ -88,6 +115,125 @@ def _build_node_paired_entry(device_id: str, public_key_b64: str) -> dict:
         "createdAtMs": now_ms,
         "approvedAtMs": now_ms,
     }
+
+
+def ensure_node_paired_entry(
+    efs_mount_path: str,
+    owner_id: str,
+    device_id: str,
+    public_key_b64: str,
+) -> bool:
+    """Idempotently append a ``node`` entry to ``<owner>/devices/paired.json``.
+
+    OpenClaw's connect handler rejects role="node" handshakes whose
+    ``device.id`` isn't in the container's trust store (the paired.json file
+    under ``devices/``). Per-member desktop nodes each have a distinct
+    Ed25519 key, so each distinct member's ``device.id`` must be registered
+    here before its first handshake will succeed.
+
+    This function is safe to call on every ``_load_node_key`` — it's a no-op
+    if the ``device_id`` is already present. It's also safe to run
+    concurrently for different members.
+
+    **Locking (two layers):**
+
+    - ``fcntl.lockf`` on a SIBLING file (``paired.json.lock``) serializes
+      ACROSS processes. Not on ``paired.json`` itself because we rewrite
+      via tempfile + ``rename``: an fcntl lock is bound to the inode, and
+      rename replaces it — the lock on the old inode is orphaned while a
+      concurrent writer opens the new inode and acquires an independent
+      lock. The sibling lock file's inode never changes.
+
+    - A per-owner ``threading.Lock`` serializes WITHIN the process. fcntl
+      locks are process-scoped, not thread-scoped, so two asyncio-to-thread
+      workers for different members of the same org could both pass
+      ``fcntl.lockf`` simultaneously and race the RMW. Dropping this lock
+      caused intermittent lost entries under concurrent onboarding.
+
+    Both locks are acquired in the same order (thread → fcntl) so there's
+    no deadlock potential — the process-scope lock is always taken first.
+
+    Atomicity: the rewrite uses temp-file + rename to avoid leaving the
+    file half-written if the process dies mid-write. The tempfile is
+    chowned to uid/gid 1000 when running as root so the in-container
+    OpenClaw agent (running as ``node``) can read it.
+
+    Returns True if a new entry was added, False if it was already present.
+    """
+    paired_path = os.path.join(efs_mount_path, owner_id, "devices", "paired.json")
+    paired_dir = os.path.dirname(paired_path)
+    lock_path = paired_path + ".lock"
+    os.makedirs(paired_dir, exist_ok=True)
+
+    # Ensure the lock file exists (atomic create-or-open; no truncation).
+    # This file is never written to — it's just an inode we can lock.
+    lock_create_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    if os.getuid() == 0:
+        try:
+            os.chown(lock_path, 1000, 1000)
+        except OSError:
+            pass
+    os.close(lock_create_fd)
+
+    # Thread-local first (process-scoped fcntl can't see sibling threads),
+    # then fcntl on the sibling lock file (for cross-process).
+    with _paired_thread_lock(owner_id):
+        lock_fd = None
+        try:
+            lock_fd = open(lock_path, "r+", encoding="utf-8")
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+
+            # Read the current paired.json (creating an empty dict if missing —
+            # normally ensure_device_identities writes it at provision time
+            # with the operator entry, but recovery paths may not have it).
+            try:
+                with open(paired_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+            except FileNotFoundError:
+                content = ""
+            entries = json.loads(content) if content.strip() else {}
+            if not isinstance(entries, dict):
+                logger.warning(
+                    "paired.json for owner %s was not a dict (got %s); resetting",
+                    owner_id,
+                    type(entries).__name__,
+                )
+                entries = {}
+
+            if device_id in entries:
+                return False  # Already registered — no-op.
+
+            entries[device_id] = _build_node_paired_entry(device_id, public_key_b64)
+
+            fd, tmp_path = tempfile.mkstemp(dir=paired_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(entries, f, indent=2)
+                if os.getuid() == 0:
+                    try:
+                        os.chown(tmp_path, 1000, 1000)
+                    except OSError:
+                        pass
+                os.rename(tmp_path, paired_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+
+            logger.info(
+                "Registered node device_id %s in paired.json for owner %s",
+                device_id[:16],
+                owner_id,
+            )
+            return True
+        finally:
+            if lock_fd:
+                try:
+                    fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    lock_fd.close()
 
 
 def build_device_paired_json(

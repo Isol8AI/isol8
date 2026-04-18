@@ -1,14 +1,20 @@
 """
-Node connection proxy.
+Node connection proxy — per-user tracking for local tool execution.
 
 Manages dedicated upstream WebSocket connections for node clients.
-When a node connects (role:"node" in the connect handshake), a separate
-upstream WebSocket is opened to the user's container. All subsequent
-messages are relayed bidirectionally. The container config is patched
-to enable/disable node tools on connect/disconnect.
+Each connected desktop app gets its own NodeUpstreamConnection to the
+shared container. Tracking is per-user (not per-owner) so that in an
+org, Alice's Mac and Bob's Mac are independent.
+
+State:
+  _node_upstreams   connection_id -> NodeUpstreamConnection
+  _user_nodes       user_id -> {nodeId, connection_id, owner_id}
+  _node_count       owner_id -> int (active node connections)
+  _patched_sessions session_key -> nodeId (in-memory cache)
 """
 
 import logging
+from uuid import uuid4
 
 from core.gateway.node_connection import NodeUpstreamConnection
 from core.containers import get_ecs_manager, get_gateway_pool
@@ -17,15 +23,53 @@ from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
-# connectionId -> NodeUpstreamConnection
+# connection_id -> NodeUpstreamConnection
 _node_upstreams: dict[str, NodeUpstreamConnection] = {}
+
+# user_id -> {nodeId: str, connection_id: str, owner_id: str}
+_user_nodes: dict[str, dict] = {}
+
+# owner_id -> count of active node connections (for ref-counted config patching)
+_node_count: dict[str, int] = {}
+
+# session_key -> nodeId (tracks which sessions have been patched with execNode)
+_patched_sessions: dict[str, str] = {}
+
+
+def get_user_node(user_id: str) -> dict | None:
+    """Return the node info for a user, or None if not connected."""
+    return _user_nodes.get(user_id)
+
+
+def get_patched_session(session_key: str) -> str | None:
+    """Return the nodeId a session is patched with, or None."""
+    return _patched_sessions.get(session_key)
+
+
+def set_patched_session(session_key: str, node_id: str) -> None:
+    """Record that a session has been patched with execNode."""
+    _patched_sessions[session_key] = node_id
+
+
+def clear_patched_sessions_for_user(user_id: str) -> list[str]:
+    """Remove all patched-session entries for a user. Returns the cleared session keys."""
+    cleared = []
+    for sk, nid in list(_patched_sessions.items()):
+        # Session keys for org members: agent:<agentId>:<userId>
+        # We match on the userId segment
+        if sk.endswith(f":{user_id}"):
+            del _patched_sessions[sk]
+            cleared.append(sk)
+    return cleared
 
 
 async def handle_node_connect(
     owner_id: str,
+    user_id: str,
     connection_id: str,
     connect_params: dict,
     management_api,
+    display_name: str = "Desktop",
 ) -> dict | None:
     """
     Open a dedicated upstream to the container, complete the node handshake,
@@ -34,8 +78,29 @@ async def handle_node_connect(
     ecs = get_ecs_manager()
     container, ip = await ecs.resolve_running_container(owner_id)
 
+    # Build a displayable name for node.list. Prefer the name the desktop
+    # client already sent in connect_params (set by the Tauri IPC from the
+    # user's Clerk profile) so each member's node is individually
+    # identifiable. Only fall back to `display_name` (or "Desktop") if the
+    # client sent nothing.
+    client_params = connect_params.get("client", {})
+    incoming = (client_params.get("displayName") or "").strip()
+    if not incoming:
+        incoming = display_name.strip() or "Desktop"
+    # Strip any pre-existing " | Isol8 Desktop" suffix so reconnects don't
+    # compound "Alice | Isol8 Desktop | Isol8 Desktop".
+    if incoming.endswith(" | Isol8 Desktop"):
+        incoming = incoming[: -len(" | Isol8 Desktop")]
+    client_params["displayName"] = f"{incoming} | Isol8 Desktop"
+    connect_params["client"] = client_params
+
+    # user_id (member) vs owner_id (org/container) — scope the device
+    # identity by user_id so org members each get a distinct nodeId. The
+    # upstream connect registers the per-member device in paired.json
+    # on first use so the gateway's pairing gate accepts it.
     upstream = NodeUpstreamConnection(
-        user_id=owner_id,
+        user_id=user_id,
+        owner_id=owner_id,
         container_ip=ip,
         node_connect_params=connect_params,
         efs_mount_path=settings.EFS_MOUNT_PATH,
@@ -47,19 +112,59 @@ async def handle_node_connect(
 
     upstream.set_message_callback(on_upstream_message)
 
+    # If the upstream WS dies while the desktop side is still connected
+    # (container restart, transient network drop, gateway close), tear
+    # down per-user state so agent_chat stops binding sessions to the
+    # now-dead nodeId. handle_node_disconnect is idempotent with the
+    # eventual desktop-disconnect path.
+    async def on_upstream_closed():
+        logger.info(
+            "Upstream closed for user=%s conn=%s; running cleanup",
+            user_id,
+            connection_id,
+        )
+        await handle_node_disconnect(connection_id, owner_id, user_id)
+
+    upstream.set_on_upstream_closed(on_upstream_closed)
+
     hello = await upstream.connect()
     await upstream.start_reader()
 
     _node_upstreams[connection_id] = upstream
 
-    # Enable node tools in container config (remove "nodes" from deny list)
-    await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas"]}})
+    # The nodeId in OpenClaw's NodeRegistry is the device.id (SHA-256 hex of
+    # the Ed25519 public key), set during the connect handshake inside
+    # NodeUpstreamConnection.connect(). Read it back from the upstream.
+    node_id = upstream.device_id or connection_id
 
-    # Broadcast status to chat connections
+    # Store per-user mapping
+    _user_nodes[user_id] = {
+        "nodeId": node_id,
+        "connection_id": connection_id,
+        "owner_id": owner_id,
+    }
+
+    # Reference-counted config patching: enable node tools on first connect
+    prev_count = _node_count.get(owner_id, 0)
+    _node_count[owner_id] = prev_count + 1
+    if prev_count == 0:
+        await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas"]}})
+
+    # Per-user broadcast
     pool = get_gateway_pool()
-    await pool.broadcast_to_user(owner_id, {"type": "node_status", "status": "connected"})
+    await pool.broadcast_to_member(
+        owner_id,
+        user_id,
+        {"type": "node_status", "status": "connected"},
+    )
 
-    logger.info("Node proxy established: user=%s conn=%s", owner_id, connection_id)
+    logger.info(
+        "Node proxy established: user=%s owner=%s conn=%s nodeId=%s",
+        user_id,
+        owner_id,
+        connection_id,
+        node_id,
+    )
     return hello
 
 
@@ -72,20 +177,92 @@ async def handle_node_message(connection_id: str, message: dict) -> None:
         logger.warning("No node upstream for connection %s", connection_id)
 
 
-async def handle_node_disconnect(connection_id: str, owner_id: str) -> None:
-    """Close the upstream connection and re-disable node tools."""
+async def handle_node_disconnect(
+    connection_id: str,
+    owner_id: str,
+    user_id: str,
+) -> None:
+    """Close the upstream connection and update per-user tracking.
+
+    Idempotent: calling twice for the same connection_id is a no-op on
+    the second call. This matters because there are now two paths that
+    trigger disconnect — the desktop WS dropping (via ws_disconnect) and
+    the upstream WS dropping (via NodeUpstreamConnection.on_upstream_closed
+    callback). Without idempotency we'd double-decrement _node_count and
+    the ref counter would go out of sync.
+    """
     upstream = _node_upstreams.pop(connection_id, None)
-    if upstream:
-        await upstream.close()
+    # Whoever popped first does the cleanup; everyone else returns here.
+    # Safe because _node_upstreams.pop is atomic.
+    if upstream is None:
+        return
+    await upstream.close()
 
-    # Re-disable node tools
-    await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "nodes"]}})
+    # Only clear per-user state when the stored mapping still points at THIS
+    # connection. If the user reconnected first, _user_nodes[user_id] now holds
+    # the new connection_id — the old socket's close event must not clobber it,
+    # clear its patched sessions, or emit a false "disconnected" to the UI.
+    stored = _user_nodes.get(user_id)
+    is_owning_close = stored is not None and stored.get("connection_id") == connection_id
 
-    # Broadcast status
-    pool = get_gateway_pool()
-    await pool.broadcast_to_user(owner_id, {"type": "node_status", "status": "disconnected"})
+    if is_owning_close:
+        _user_nodes.pop(user_id, None)
 
-    logger.info("Node proxy closed: conn=%s", connection_id)
+        # Clear patched sessions for this user and tell the container to drop execNode.
+        cleared_sessions = clear_patched_sessions_for_user(user_id)
+        if cleared_sessions:
+            pool = get_gateway_pool()
+            # Best-effort: clear execNode on sessions. If container is down, skip.
+            for sk in cleared_sessions:
+                try:
+                    container, ip = await get_ecs_manager().resolve_running_container(owner_id)
+                    # req_id MUST be unique per call — the connection pool's
+                    # pending-response map is keyed on it and a duplicate ID
+                    # orphans the earlier future, hanging one caller 30s.
+                    await pool.send_rpc(
+                        user_id=owner_id,
+                        req_id=f"clear-exec-{uuid4()}",
+                        method="sessions.patch",
+                        params={"sessionKey": sk, "execNode": None, "execHost": None},
+                        ip=ip,
+                        token=container["gateway_token"],
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to clear execNode on session %s (container may be down)",
+                        sk,
+                    )
+
+    # Reference-counted config patching: each upstream socket contributes one,
+    # so we always decrement even if a newer connection has taken ownership of
+    # the user mapping (the newer one has its own +1 counted at connect time).
+    count = _node_count.get(owner_id, 1)
+    new_count = max(0, count - 1)
+    _node_count[owner_id] = new_count
+    if new_count == 0:
+        try:
+            await patch_openclaw_config(owner_id, {"tools": {"deny": ["canvas", "nodes"]}})
+        except Exception:
+            logger.debug("Failed to re-disable node tools for %s (container may be down)", owner_id)
+        _node_count.pop(owner_id, None)
+
+    # Only broadcast "disconnected" when this close actually ended the user's
+    # active node — otherwise the UI flickers to disconnected even though the
+    # new socket is live.
+    if is_owning_close:
+        pool = get_gateway_pool()
+        await pool.broadcast_to_member(
+            owner_id,
+            user_id,
+            {"type": "node_status", "status": "disconnected"},
+        )
+
+    logger.info(
+        "Node proxy closed: user=%s conn=%s owning=%s",
+        user_id,
+        connection_id,
+        is_owning_close,
+    )
 
 
 def is_node_connection(connection_id: str) -> bool:
