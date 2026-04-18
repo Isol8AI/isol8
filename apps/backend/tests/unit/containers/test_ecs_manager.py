@@ -1809,3 +1809,119 @@ class TestProvisionUserContainer:
             mock_await.assert_not_called()
             # Also no DDB update (status already correct).
             mock_repo.update_fields.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_provision_resolves_tier_from_billing_when_not_passed(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """When no tier argument is passed (the usual router call), the
+        billing record's plan_tier must be forwarded to write_user_configs.
+
+        Regression test for issue #293: the router called
+        provision_user_container without a tier arg, so the function-level
+        default ("free") was used regardless of the caller's actual plan.
+        A paying starter/pro/enterprise user ended up with free-tier
+        configs written to EFS on first provision.
+        """
+        # No service exists -> full-provisioning path (writes configs).
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "plan_tier": "starter"})
+
+            await manager.provision_user_container("user_test_123")
+
+            mock_billing.get_by_owner_id.assert_awaited_once_with("user_test_123")
+            # write_user_configs must be invoked with tier="starter", not "free".
+            assert mock_write_configs.await_count >= 1
+            kwargs = mock_write_configs.await_args_list[-1].kwargs
+            assert kwargs.get("tier") == "starter", (
+                f"Expected tier='starter' from billing record, got {kwargs.get('tier')!r}. "
+                "Router callers don't pass a tier, so provision_user_container must "
+                "resolve it from billing or paying users get free-tier configs."
+            )
+
+    @pytest.mark.asyncio
+    async def test_provision_defaults_to_free_when_no_billing_record(self, manager, mock_ecs_client, mock_efs_client):
+        """No billing row yet -> fall back to tier='free'. This is the path
+        a brand-new user hits before Stripe webhook creates the billing
+        account row."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_billing.get_by_owner_id = AsyncMock(return_value=None)
+
+            await manager.provision_user_container("user_test_123")
+
+            kwargs = mock_write_configs.await_args_list[-1].kwargs
+            assert kwargs.get("tier") == "free"
+
+    @pytest.mark.asyncio
+    async def test_provision_falls_back_to_free_on_billing_lookup_error(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """A billing_repo exception must not crash the provision path.
+        Worst case: user boots on free-tier configs and the next patch
+        (via queue_tier_change on the subscription webhook) corrects it."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_billing.get_by_owner_id = AsyncMock(side_effect=RuntimeError("dynamodb down"))
+
+            await manager.provision_user_container("user_test_123")
+
+            kwargs = mock_write_configs.await_args_list[-1].kwargs
+            assert kwargs.get("tier") == "free"
+
+    @pytest.mark.asyncio
+    async def test_provision_respects_explicit_tier_arg_over_billing(self, manager, mock_ecs_client, mock_efs_client):
+        """Explicit tier arg wins over the billing lookup. This keeps the
+        /debug/provision-style override possible and makes the function
+        composable for tests."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_billing.get_by_owner_id = AsyncMock(return_value={"plan_tier": "starter"})
+
+            await manager.provision_user_container("user_test_123", tier="pro")
+
+            kwargs = mock_write_configs.await_args_list[-1].kwargs
+            assert kwargs.get("tier") == "pro"
+            # Explicit tier should bypass the billing lookup entirely.
+            mock_billing.get_by_owner_id.assert_not_called()

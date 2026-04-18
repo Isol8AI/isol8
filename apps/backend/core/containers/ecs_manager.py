@@ -26,7 +26,7 @@ from core.containers.config import (
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
-from core.repositories import container_repo
+from core.repositories import billing_repo, container_repo
 
 logger = logging.getLogger(__name__)
 
@@ -794,7 +794,30 @@ class EcsManager:
             pass
         return None
 
-    async def provision_user_container(self, user_id: str, owner_type: str = "personal", tier: str = "free") -> str:
+    async def _resolve_tier_for_owner(self, owner_id: str) -> str:
+        """Resolve the plan tier for an owner from the billing record.
+
+        Returns "free" if the billing row is missing, has no plan_tier, or
+        the lookup itself raises. A failing tier lookup must not crash the
+        provision path -- the container can still boot on free-tier configs
+        and the next config patch (via queue_tier_change on the subscription
+        webhook) will correct anything that drifts.
+        """
+        try:
+            account = await billing_repo.get_by_owner_id(owner_id)
+        except Exception:
+            logger.warning("billing_repo lookup failed for %s; defaulting tier=free", owner_id, exc_info=True)
+            return "free"
+        if not account:
+            return "free"
+        return account.get("plan_tier") or "free"
+
+    async def provision_user_container(
+        self,
+        user_id: str,
+        owner_type: str = "personal",
+        tier: str | None = None,
+    ) -> str:
         """Provision or recover a user's container.
 
         Handles all scenarios:
@@ -807,6 +830,12 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
+            owner_type: "personal" or "org".
+            tier: Plan tier for config generation. When None (the usual
+                case -- every production router caller omits this arg), the
+                tier is resolved from the billing account; a missing or
+                unreadable account falls back to "free" so we never crash
+                the provision path on a billing lookup error.
 
         Returns:
             The ECS service name.
@@ -814,6 +843,8 @@ class EcsManager:
         Raises:
             EcsManagerError: If any provisioning step fails.
         """
+        if tier is None:
+            tier = await self._resolve_tier_for_owner(user_id)
         service_name = self._service_name(user_id)
 
         # Check current state
