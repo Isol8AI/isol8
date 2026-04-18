@@ -4,7 +4,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from core.services.billing_service import BillingService, BillingServiceError
+from core.services.billing_service import (
+    AlreadySubscribedError,
+    BillingService,
+    BillingServiceError,
+)
 
 
 class TestBillingServiceCreateCustomer:
@@ -141,6 +145,71 @@ class TestBillingServiceCheckout:
         """Should raise error for unknown tier."""
         with pytest.raises(BillingServiceError, match="Unknown tier"):
             await service.create_checkout_session(billing_account=billing_account, tier="diamond")
+
+    @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.TIER_PRICES",
+        {"starter": "price_starter"},
+    )
+    @patch("core.services.billing_service.stripe")
+    async def test_checkout_refuses_when_active_sub_exists(self, mock_stripe, service):
+        """Re-checkout while an active Stripe sub exists must NOT create a new sub.
+
+        Without this guard, every successful Stripe Checkout attaches a fresh
+        subscription to the same customer and silently overwrites the stored
+        sub_id in DDB. See incident 2026-04-17 where one user accumulated 5
+        starter subs from repeated Subscribe clicks.
+        """
+        account_with_sub = {
+            "owner_id": "user_checkout",
+            "stripe_customer_id": "cus_checkout",
+            "stripe_subscription_id": "sub_existing",
+        }
+        mock_stripe.Subscription.retrieve.return_value = {
+            "status": "active",
+            "cancel_at_period_end": False,
+        }
+
+        with pytest.raises(AlreadySubscribedError):
+            await service.create_checkout_session(
+                billing_account=account_with_sub,
+                tier="starter",
+            )
+
+        mock_stripe.checkout.Session.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch(
+        "core.services.billing_service.TIER_PRICES",
+        {"starter": "price_starter"},
+    )
+    @patch("core.services.billing_service.stripe")
+    async def test_checkout_proceeds_when_stored_sub_is_canceled_in_stripe(self, mock_stripe, service):
+        """If DDB has a stale sub_id but the Stripe sub no longer exists,
+        proceed with creating a new sub. Self-heals when our DDB drifts from
+        Stripe's source-of-truth state (e.g. a cancellation webhook was lost).
+        """
+        import stripe as stripe_module
+
+        account_with_stale_sub = {
+            "owner_id": "user_checkout",
+            "stripe_customer_id": "cus_checkout",
+            "stripe_subscription_id": "sub_stale",
+        }
+        mock_stripe.error = stripe_module.error
+        mock_stripe.Subscription.retrieve.side_effect = stripe_module.error.InvalidRequestError(
+            message="No such subscription",
+            param="id",
+        )
+        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
+
+        url = await service.create_checkout_session(
+            billing_account=account_with_stale_sub,
+            tier="starter",
+        )
+
+        assert url == "https://checkout.stripe.com/test"
+        mock_stripe.checkout.Session.create.assert_called_once()
 
 
 class TestBillingServicePortal:
