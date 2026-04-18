@@ -9,23 +9,52 @@ import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 
-interface ToolResultBlock {
+export interface ToolResultBlock {
   type: string;
   text?: string;
   bytes?: number;
   omitted?: boolean;
 }
 
-interface ToolUse {
+export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
+
+export interface ApprovalRequest {
+  /** Approval ID issued by OpenClaw. Used as the key when posting exec.approval.resolve. */
+  id: string;
+  /** Raw command line as the agent would execute it. */
+  command: string;
+  /** Parsed argv; absent when the request came through host=node with a wrapped form. */
+  commandArgv?: string[];
+  /** Where the command would run. */
+  host: "gateway" | "node" | "sandbox";
+  /** Working directory for the command. */
+  cwd?: string;
+  /** Resolved absolute path of the executable (post wrapper-unwrap) — what Trust persists. */
+  resolvedPath?: string;
+  /** OpenClaw agent ID that issued the exec. */
+  agentId?: string;
+  /** Session identifier: used for audit display only. */
+  sessionKey?: string;
+  /** Which decisions the server will accept — usually all three, but "allow-always" may be absent when policy is ask=always. */
+  allowedDecisions: ExecApprovalDecision[];
+  /** Server-side expiry timestamp in ms. Not rendered as a countdown per product decision. */
+  expiresAtMs?: number;
+}
+
+export interface ToolUse {
   tool: string;
   toolCallId?: string;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "pending-approval" | "denied";
   args?: Record<string, unknown>;
   result?: ToolResultBlock[];
   meta?: string;
+  /** Set when status === "pending-approval". Cleared once the user decides. */
+  pendingApproval?: ApprovalRequest;
+  /** Set when status !== "pending-approval" and the ToolUse was previously resolved. */
+  resolvedDecision?: ExecApprovalDecision;
 }
 
-interface Message {
+export interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -193,7 +222,11 @@ function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null 
 
 function ToolPill({ t }: { t: ToolUse }) {
   const [open, setOpen] = React.useState(false);
-  const s = TOOL_STYLES[t.status];
+  // New statuses ("pending-approval", "denied") get their own styles in Task 5.
+  // For now, fall back to "done" styling so the pill still renders sensibly.
+  const styleKey: keyof typeof TOOL_STYLES =
+    t.status === "running" || t.status === "done" || t.status === "error" ? t.status : "done";
+  const s = TOOL_STYLES[styleKey];
   const hasDetails = !!(t.args || t.result || t.meta);
 
   return (
