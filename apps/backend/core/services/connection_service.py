@@ -18,6 +18,7 @@ DynamoDB Table Schema:
 Note: Table creation is handled by Terraform, not this service.
 """
 
+import asyncio
 import logging
 import os
 from datetime import datetime, timezone
@@ -151,6 +152,50 @@ class ConnectionService:
             "connection_type": item.get("connectionType", {}).get("S", "chat"),
         }
 
+    async def delete_all_for_user(self, user_id: str) -> int:
+        """Delete every WS connection row owned by ``user_id``.
+
+        Used by the e2e teardown endpoint. The ws-connections table has no
+        GSI on ``userId`` (only ``connectionId`` PK), so we scan with a
+        filter expression. The table is small in practice (one row per live
+        WS connection, with TTL purging stale rows) — full-table scans here
+        are acceptable for a debug-only endpoint, and there is realistically
+        at most a handful of rows for any one user.
+
+        Returns:
+            The number of rows deleted.
+        """
+
+        def _scan_and_delete() -> int:
+            paginator = self._client.get_paginator("scan")
+            pages = paginator.paginate(
+                TableName=self.table_name,
+                FilterExpression="userId = :u",
+                ExpressionAttributeValues={":u": {"S": user_id}},
+                ProjectionExpression="connectionId",
+            )
+            count = 0
+            for page in pages:
+                for item in page.get("Items", []):
+                    self._client.delete_item(
+                        TableName=self.table_name,
+                        Key={"connectionId": {"S": item["connectionId"]["S"]}},
+                    )
+                    count += 1
+            return count
+
+        try:
+            return await asyncio.to_thread(_scan_and_delete)
+        except ClientError as e:
+            logger.error(
+                "Failed to delete connections for user %s: %s",
+                user_id,
+                e.response["Error"]["Message"],
+            )
+            raise ConnectionServiceError(
+                f"Failed to delete connections for user {user_id}: {e.response['Error']['Message']}"
+            ) from e
+
     def delete_connection(self, connection_id: str) -> None:
         """
         Delete a WebSocket connection mapping.
@@ -181,3 +226,28 @@ class ConnectionService:
             raise ConnectionServiceError(
                 f"Failed to delete connection {connection_id}: {e.response['Error']['Message']}"
             ) from e
+
+
+# ---------------------------------------------------------------------------
+# Module-level singleton + thin async wrappers
+#
+# The router half of the codebase already owns a singleton via
+# routers/websocket_chat.py::get_connection_service(). The debug teardown
+# endpoint imports the *module* (``from core.services import connection_service``)
+# and calls module-level helpers so it doesn't have to instantiate or share
+# the router-side singleton. The helpers below give us that surface.
+# ---------------------------------------------------------------------------
+
+_singleton: Optional[ConnectionService] = None
+
+
+def _get_singleton() -> ConnectionService:
+    global _singleton
+    if _singleton is None:
+        _singleton = ConnectionService()
+    return _singleton
+
+
+async def delete_all_for_user(user_id: str) -> int:
+    """Module-level helper: delete every WS connection row for ``user_id``."""
+    return await _get_singleton().delete_all_for_user(user_id)

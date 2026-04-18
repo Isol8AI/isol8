@@ -58,3 +58,24 @@ async def delete_key(user_id: str, tool_id: str) -> bool:
         Key={"user_id": user_id, "tool_id": tool_id},
     )
     return True
+
+
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all API key rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. The api-keys table uses user_id
+    as the partition key (legacy naming), so owner_id maps to user_id.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("user_id").eq(owner_id),
+        ProjectionExpression="user_id, tool_id",
+    )
+    items = response.get("Items", [])
+    for item in items:
+        await run_in_thread(
+            table.delete_item,
+            Key={"user_id": item["user_id"], "tool_id": item["tool_id"]},
+        )
+    return len(items)

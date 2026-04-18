@@ -151,6 +151,26 @@ async def get_due_scheduled() -> list[dict]:
     return response.get("Items", [])
 
 
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all pending-update rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. PK=owner_id, SK=update_id.
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        ProjectionExpression="owner_id, update_id",
+    )
+    items = response.get("Items", [])
+    for item in items:
+        await run_in_thread(
+            table.delete_item,
+            Key={"owner_id": item["owner_id"], "update_id": item["update_id"]},
+        )
+    return len(items)
+
+
 async def mark_applied(owner_id: str, update_id: str) -> bool:
     """Mark an update as applied and set TTL for 30-day expiry."""
     table = _get_table()

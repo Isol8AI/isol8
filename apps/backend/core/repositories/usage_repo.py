@@ -81,6 +81,28 @@ async def get_period_usage(owner_id: str, period: str) -> dict | None:
     }
 
 
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all usage-counter rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. PK=owner_id, SK=period (which
+    includes both period rollup rows and member:{user_id}:{period} rows).
+    """
+    table = _get_table()
+    response = await run_in_thread(
+        table.query,
+        KeyConditionExpression=Key("owner_id").eq(owner_id),
+        ProjectionExpression="owner_id, #p",
+        ExpressionAttributeNames={"#p": "period"},
+    )
+    items = response.get("Items", [])
+    for item in items:
+        await run_in_thread(
+            table.delete_item,
+            Key={"owner_id": item["owner_id"], "period": item["period"]},
+        )
+    return len(items)
+
+
 async def get_member_usage(owner_id: str, period: str) -> list[dict]:
     """Get per-member usage within an org for a period.
 

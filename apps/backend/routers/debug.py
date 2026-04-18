@@ -12,9 +12,18 @@ from fastapi import APIRouter, Depends, HTTPException
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
 from core.config import settings, TIER_CONFIG
 from core.observability.metrics import put_metric
-from core.containers import get_ecs_manager
+from core.containers import get_ecs_manager, get_workspace
 from core.containers.ecs_manager import EcsManagerError
-from core.repositories import container_repo
+from core.repositories import (
+    api_key_repo,
+    billing_repo,
+    channel_link_repo,
+    container_repo,
+    update_repo,
+    usage_repo,
+    user_repo,
+)
+from core.services import connection_service
 
 logger = logging.getLogger(__name__)
 
@@ -206,3 +215,82 @@ async def remove_container(
     except EcsManagerError as e:
         logger.error("Dev remove failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=503, detail=str(e))
+
+
+@router.delete(
+    "/user-data",
+    summary="DEV/TEST ONLY: atomically delete all per-user data",
+    description=(
+        "Tears down ECS service, EFS access point, EFS folder, all "
+        "per-user task-def revisions, and rows from all 8 per-user "
+        "DDB tables. Used by the e2e harness at the end of each run. "
+        "Caller can only delete their own data (owner_id derived from JWT)."
+    ),
+    operation_id="debug_delete_user_data",
+    responses={
+        403: {"description": "Disabled in production"},
+    },
+)
+async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
+    if settings.ENVIRONMENT == "prod":
+        put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "user-data"})
+        raise HTTPException(status_code=403, detail="Disabled in production")
+
+    owner_id = resolve_owner_id(auth)
+    deleted: dict = {"ecs": False, "efs": False, "ddb": []}
+
+    # ---- Container teardown -------------------------------------------------
+    # Read the row first so we have access_point_id + task_definition_arn
+    # available even if the service-delete path doesn't clean them up (it
+    # normally does, but we treat each step as independent + best-effort so
+    # a partial failure mid-teardown still drains the rest).
+    container = await container_repo.get_by_owner_id(owner_id)
+    ecs_mgr = get_ecs_manager()
+    if container:
+        try:
+            await ecs_mgr.delete_user_service(owner_id)
+            deleted["ecs"] = True
+        except Exception as e:
+            logger.warning("ECS teardown failed for %s: %s", owner_id, e)
+        # Belt-and-suspenders: ensure the per-user task-def revision is
+        # deregistered even if delete_user_service bailed out before reaching
+        # that step. Idempotent — deregistering a missing arn is a no-op.
+        if container.get("task_definition_arn"):
+            try:
+                ecs_mgr._deregister_task_definition(container["task_definition_arn"])
+            except Exception:
+                pass
+
+    # ---- EFS folder rm -rf (best-effort) ------------------------------------
+    try:
+        get_workspace().delete_user_dir(owner_id)
+        deleted["efs"] = True
+    except Exception as e:
+        logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
+
+    # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
+    await container_repo.delete(owner_id)
+    deleted["ddb"].append("containers")
+
+    await billing_repo.delete(owner_id)
+    deleted["ddb"].append("billing-accounts")
+
+    await api_key_repo.delete_all_for_owner(owner_id)
+    deleted["ddb"].append("api-keys")
+
+    await usage_repo.delete_all_for_owner(owner_id)
+    deleted["ddb"].append("usage-counters")
+
+    await update_repo.delete_all_for_owner(owner_id)
+    deleted["ddb"].append("pending-updates")
+
+    await channel_link_repo.delete_all_for_owner(owner_id)
+    deleted["ddb"].append("channel-links")
+
+    await connection_service.delete_all_for_user(owner_id)
+    deleted["ddb"].append("ws-connections")
+
+    await user_repo.delete(owner_id)
+    deleted["ddb"].append("users")
+
+    return {"deleted": deleted}

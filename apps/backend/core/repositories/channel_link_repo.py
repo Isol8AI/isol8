@@ -178,6 +178,15 @@ async def sweep_by_owner(owner_id: str) -> int:
     return len(items)
 
 
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all channel-link rows for an owner. Returns count deleted.
+
+    Thin alias over ``sweep_by_owner`` so the e2e teardown endpoint can
+    use a uniform ``delete_all_for_owner`` API across every per-user repo.
+    """
+    return await sweep_by_owner(owner_id)
+
+
 async def sweep_by_member(member_id: str) -> int:
     """Delete all link rows for a Clerk member. Used by Clerk user.deleted webhook.
 
