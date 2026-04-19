@@ -536,7 +536,22 @@ def write_openclaw_config(
         },
         "tools": {
             "profile": "full",
-            "deny": ["canvas", "nodes"],
+            # Keep `nodes` ENABLED — the agent needs it to list its paired
+            # desktop nodes before calling `exec host=node`. Only `canvas`
+            # is denied (unused drawing tool).
+            "deny": ["canvas"],
+            # Exec approval policy. With security=allowlist + ask=on-miss,
+            # commands not in the per-agent allowlist emit
+            # exec.approval.requested and wait for the user's Allow once /
+            # Trust / Deny decision (see
+            # docs/superpowers/specs/2026-04-18-exec-approval-card-design.md).
+            # Without this, OpenClaw's default security=deny blocks every
+            # exec call outright with no prompt
+            # (openclaw/src/agents/exec-defaults.ts:98).
+            "exec": {
+                "security": "allowlist",
+                "ask": "on-miss",
+            },
             "web": {
                 "fetch": {"enabled": True},
             },
