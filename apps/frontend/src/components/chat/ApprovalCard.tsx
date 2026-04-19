@@ -62,6 +62,7 @@ export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
           variant="default"
           disabled={!allowsOnce || pendingDecision !== null}
           aria-busy={pendingDecision === "allow-once"}
+          aria-label="Allow once"
           onClick={() => submit("allow-once")}
         >
           {pendingDecision === "allow-once" ? "Sending…" : "Allow once"}
@@ -71,6 +72,7 @@ export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
           variant="secondary"
           disabled={!allowsAlways || pendingDecision !== null}
           aria-busy={pendingDecision === "allow-always"}
+          aria-label="Trust"
           onClick={() => submit("allow-always")}
         >
           {pendingDecision === "allow-always" ? "Sending…" : "Trust"}
@@ -80,6 +82,7 @@ export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
           variant="ghost"
           disabled={!allowsDeny || pendingDecision !== null}
           aria-busy={pendingDecision === "deny"}
+          aria-label="Deny"
           onClick={() => submit("deny")}
         >
           {pendingDecision === "deny" ? "Sending…" : "Deny"}
