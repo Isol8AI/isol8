@@ -106,18 +106,15 @@ const e2eGate = new GitHubActionStep("E2EGate", {
       run: "cd apps/frontend && npx playwright install chromium --with-deps",
     },
     {
-      // Exclude the chat-smoke spec — it runs on frontend PRs pre-merge and is
-      // redundant with journey Step 5 post-deploy. Also, smoke's short
-      // waitForRunning timeout (2 min) is too tight to survive an ECS rolling
-      // update; the journey's 10 min timeout is required for the deploy path.
       name: "Run E2E gate tests",
-      run: "cd apps/frontend && npx playwright test --project=chromium --grep-invert='Chat Smoke'",
+      run: "cd apps/frontend && npx playwright test --workers=2",
       env: {
         BASE_URL: "https://dev.isol8.co",
         NEXT_PUBLIC_API_URL: "${{ secrets.NEXT_PUBLIC_API_URL_DEV }}",
         NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
         CLERK_SECRET_KEY: "${{ secrets.CLERK_SECRET_KEY_DEV }}",
         STRIPE_SECRET_KEY: "${{ secrets.STRIPE_SECRET_KEY }}",
+        STRIPE_STARTER_PRICE_ID: "${{ secrets.STRIPE_STARTER_PRICE_ID_DEV }}",
         VERCEL_AUTOMATION_BYPASS_SECRET: "${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}",
       },
     },
