@@ -350,6 +350,69 @@ def _models_for_tier(tier: str) -> list[dict]:
     return [m for m in ALL_BEDROCK_MODELS if m["id"] in allowed]
 
 
+def _build_exec_policy() -> dict:
+    """Backend-controlled exec approval policy.
+
+    Returns the fragment that lives under ``tools`` (so callers can
+    spread it into a ``tools`` dict). Kept as its own helper so the
+    initial ``write_openclaw_config`` write and the ``PATCH /debug/
+    provision`` deep-merge path produce identical policy — one source
+    of truth.
+
+    * security="allowlist": unknown commands are gated by an approval.
+    * ask="on-miss": emit exec.approval.requested on allowlist misses
+      so the in-chat approval card (#305) can decide.
+
+    Without this OpenClaw defaults to security="deny", which blocks
+    every exec call silently (openclaw/src/agents/exec-defaults.ts:98).
+    """
+    return {
+        "exec": {
+            "security": "allowlist",
+            "ask": "on-miss",
+        },
+    }
+
+
+def build_backend_policy_patch(tier: str, region: str = "us-east-1") -> dict:
+    """Build the backend-controlled slice of openclaw.json.
+
+    Used by:
+      * ``PATCH /api/v1/debug/provision`` to refresh existing
+        containers without rewriting user-owned fields.
+      * Any future admin "reconcile policy" path.
+
+    Scalar values only — deep-merge replaces arrays wholesale, so this
+    must NEVER include list-valued fields (e.g. ``tools.deny``) that
+    user or dynamic code (``node_proxy.py``) may own at runtime.
+
+    The initial full-file write in ``write_openclaw_config`` uses the
+    same ``_build_exec_policy`` helper so both paths produce the same
+    policy shape.
+    """
+    tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
+    return {
+        "models": {
+            "providers": {
+                "amazon-bedrock": {
+                    "baseUrl": f"https://bedrock-runtime.{region}.amazonaws.com",
+                    "api": "bedrock-converse-stream",
+                    "auth": "aws-sdk",
+                    "models": _models_for_tier(tier),
+                },
+            },
+        },
+        "agents": {
+            "defaults": {
+                "model": {"primary": tier_cfg["primary_model"]},
+                "models": tier_cfg.get("model_aliases", {}),
+                "verboseDefault": "full",
+            },
+        },
+        "tools": _build_exec_policy(),
+    }
+
+
 def _agent_models_for_tier(tier: str, primary_model: str) -> dict:
     """Build the ``agents.defaults.models`` mapping for a tier."""
     models = _models_for_tier(tier)
@@ -536,22 +599,13 @@ def write_openclaw_config(
         },
         "tools": {
             "profile": "full",
-            # Keep `nodes` ENABLED — the agent needs it to list its paired
-            # desktop nodes before calling `exec host=node`. Only `canvas`
-            # is denied (unused drawing tool).
-            "deny": ["canvas"],
-            # Exec approval policy. With security=allowlist + ask=on-miss,
-            # commands not in the per-agent allowlist emit
-            # exec.approval.requested and wait for the user's Allow once /
-            # Trust / Deny decision (see
-            # docs/superpowers/specs/2026-04-18-exec-approval-card-design.md).
-            # Without this, OpenClaw's default security=deny blocks every
-            # exec call outright with no prompt
-            # (openclaw/src/agents/exec-defaults.ts:98).
-            "exec": {
-                "security": "allowlist",
-                "ask": "on-miss",
-            },
+            # Default-deny both canvas and nodes. node_proxy.py toggles
+            # "nodes" back to enabled dynamically when a desktop node
+            # pairs, and back to denied when the last one disconnects.
+            # Leaving nodes always-allowed here would expose the tool
+            # even to users without the desktop app.
+            "deny": ["canvas", "nodes"],
+            **_build_exec_policy(),
             "web": {
                 "fetch": {"enabled": True},
             },
