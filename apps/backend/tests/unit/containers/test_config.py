@@ -32,12 +32,28 @@ class TestWriteOpenclawConfig:
         bedrock = config["models"]["providers"]["amazon-bedrock"]
         assert "eu-west-1" in bedrock["baseUrl"]
 
-    def test_config_full_profile_denies_canvas_nodes(self):
-        """Tools profile is full and canvas/nodes are denied."""
+    def test_config_full_profile_denies_canvas(self):
+        """Tools profile is full; canvas is denied but nodes stays enabled.
+
+        The agent needs the `nodes` tool to enumerate paired desktop nodes
+        before routing exec host=node (openclaw/src/agents/tools/nodes-tool.ts).
+        """
         config = json.loads(write_openclaw_config())
         assert config["tools"]["profile"] == "full"
         assert "canvas" in config["tools"]["deny"]
-        assert "nodes" in config["tools"]["deny"]
+        assert "nodes" not in config["tools"]["deny"]
+
+    def test_config_exec_approval_policy(self):
+        """Exec uses allowlist + on-miss so the approval card can fire.
+
+        Without this, OpenClaw's default security=deny blocks every exec
+        call silently (exec-defaults.ts:98). See
+        docs/superpowers/specs/2026-04-18-exec-approval-card-design.md.
+        """
+        config = json.loads(write_openclaw_config())
+        exec_cfg = config["tools"]["exec"]
+        assert exec_cfg["security"] == "allowlist"
+        assert exec_cfg["ask"] == "on-miss"
 
     def test_no_root_tts_key(self):
         """TTS config is not at root level (OpenClaw doesn't support it there)."""
