@@ -663,8 +663,12 @@ async def _process_agent_chat_background(
                         user_id=owner_id,
                         req_id=f"bind-node-{uuid4()}",
                         method="sessions.patch",
+                        # OpenClaw's sessions.patch takes `key` (see
+                        # openclaw/src/gateway/server-methods/sessions.ts:1262).
+                        # chat.send still uses `sessionKey` — that's a separate
+                        # schema that didn't change.
                         params={
-                            "sessionKey": session_key,
+                            "key": session_key,
                             "execNode": node_id,
                             "execHost": "node",
                         },
