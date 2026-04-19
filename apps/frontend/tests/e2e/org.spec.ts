@@ -38,7 +38,8 @@ test.describe('E2E: Org happy path', () => {
   });
 
   test('Step 1: sign in', async () => {
-    await signIn(user.page, user.email, user.password);
+    if (!process.env.BASE_URL) throw new Error('BASE_URL is required');
+    await signIn(user.page, process.env.BASE_URL, user.clerkUserId);
     expect(user.page.url()).not.toContain('/sign-in');
   });
 
@@ -55,8 +56,9 @@ test.describe('E2E: Org happy path', () => {
   });
 
   test('Step 4: upgrade to Starter via real Stripe Checkout', async () => {
-    await user.page.goto('/settings/billing');
-    await user.page.getByRole('button', { name: /upgrade|subscribe/i }).first().click();
+    await user.page.goto('/settings');
+    await user.page.getByRole('tab', { name: 'Billing' }).click();
+    await user.page.getByRole('button', { name: 'Subscribe to Starter' }).click();
     await completeStripeCheckout(user.page);
     await isSubscribed(user.api, true);
     await billingTier(user.api, 'starter');

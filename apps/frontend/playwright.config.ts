@@ -10,7 +10,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0, // journey tests have destructive side effects — no retries
   workers: 2,
-  globalTimeout: 20 * 60 * 1000, // 20 minutes — Steps 1-4 (~10 min) + landing (~30s) + buffer for parallel flows
+  globalTimeout: 30 * 60 * 1000, // 30 min — Step 3 alone can hit 10 min on cold-start, then Stripe Checkout + starter chat add another 5-7 min per flow
   reporter: [
     ['html', { open: 'never' }],
     ['list'],
