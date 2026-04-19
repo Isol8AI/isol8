@@ -461,27 +461,62 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         prev.map((m) => {
           if (m.id !== currentAssistantIdRef.current) return m;
           const existing = m.toolUses ?? [];
-          let matched = false;
-          const next: ToolUse[] = existing.map((t) => {
-            if (matched) return t;
-            const idMatch = correlation && t.toolCallId === correlation;
-            const fallbackMatch =
-              !correlation && t.tool === "exec" && t.status === "running";
-            if (idMatch || fallbackMatch) {
-              matched = true;
-              return { ...t, status: "pending-approval", pendingApproval: req };
-            }
-            return t;
-          });
-          if (!matched) {
-            next.push({
-              tool: "exec",
-              toolCallId: correlation,
+
+          // Idempotent: a retry/reconnect can redeliver the same approval.
+          // Overwrite the existing entry rather than creating a duplicate.
+          const idDupeIdx = existing.findIndex(
+            (t) => t.pendingApproval?.id === req.id,
+          );
+          if (idDupeIdx >= 0) {
+            const next = existing.slice();
+            next[idDupeIdx] = {
+              ...next[idDupeIdx],
               status: "pending-approval",
               pendingApproval: req,
-            });
+            };
+            return { ...m, toolUses: next };
           }
-          return { ...m, toolUses: next };
+
+          // Pick the target ToolUse to promote to pending-approval.
+          // Prefer exact toolCallId match. For correlationless events, bind
+          // to the NEWEST running exec so concurrent commands don't misroute
+          // the card to an older, unrelated call.
+          let targetIdx = -1;
+          if (correlation) {
+            targetIdx = existing.findIndex(
+              (t) => t.toolCallId === correlation,
+            );
+          } else {
+            for (let i = existing.length - 1; i >= 0; i--) {
+              if (existing[i].tool === "exec" && existing[i].status === "running") {
+                targetIdx = i;
+                break;
+              }
+            }
+          }
+
+          if (targetIdx >= 0) {
+            const next = existing.slice();
+            next[targetIdx] = {
+              ...next[targetIdx],
+              status: "pending-approval",
+              pendingApproval: req,
+            };
+            return { ...m, toolUses: next };
+          }
+
+          return {
+            ...m,
+            toolUses: [
+              ...existing,
+              {
+                tool: "exec",
+                toolCallId: correlation,
+                status: "pending-approval",
+                pendingApproval: req,
+              },
+            ],
+          };
         }),
       );
     });
