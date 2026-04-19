@@ -140,18 +140,71 @@ async def test_skips_not_yet_idle():
 
 
 @pytest.mark.asyncio
-async def test_reaps_row_with_null_last_active_at():
-    """Deploy-day path: rows from before this change have no last_active_at.
-    They must be treated as very old and reaped on first cycle."""
+async def test_does_not_reap_fresh_running_container_with_no_last_active_at():
+    """A container that just transitioned provisioning→running has no
+    last_active_at yet (no chat traffic has flowed). The reaper must fall
+    back to updated_at (or created_at) and grant the row its full 5-minute
+    grace window from the moment it became running. Otherwise free-tier
+    users get their containers killed seconds after they boot, before they
+    can ever send a message — see investigation 2026-04-19."""
     from core.gateway.connection_pool import GatewayConnectionPool
 
+    # Row entered running state 30 seconds ago — well inside the 5-min window.
+    fresh_ts = _iso(datetime.now(timezone.utc) - timedelta(seconds=30))
     pool = GatewayConnectionPool(management_api=None)
 
     with (
         patch(
             "core.repositories.container_repo.get_by_status",
             new_callable=AsyncMock,
-            return_value=[{"owner_id": "user_stale", "status": "running"}],
+            return_value=[
+                {
+                    "owner_id": "user_fresh",
+                    "status": "running",
+                    "updated_at": fresh_ts,
+                    "created_at": fresh_ts,
+                }
+            ],
+        ),
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "user_fresh", "plan_tier": "free"},
+        ),
+        patch("core.containers.get_ecs_manager") as mock_get_ecs,
+    ):
+        ecs = mock_get_ecs.return_value
+        ecs.stop_user_service = AsyncMock()
+
+        stopped = await pool._reap_once()
+
+        ecs.stop_user_service.assert_not_awaited()
+        assert stopped == []
+
+
+@pytest.mark.asyncio
+async def test_reaps_old_running_container_with_no_last_active_at():
+    """A row that's been running for hours with no recorded activity (e.g.
+    legacy row from before record_activity was implemented, or a container
+    whose record_activity writes have been failing) should still get reaped
+    once its updated_at falls outside the idle window."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    pool = GatewayConnectionPool(management_api=None)
+    old_ts = _iso(datetime.now(timezone.utc) - timedelta(hours=1))
+
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_status",
+            new_callable=AsyncMock,
+            return_value=[
+                {
+                    "owner_id": "user_stale",
+                    "status": "running",
+                    "updated_at": old_ts,
+                    "created_at": old_ts,
+                }
+            ],
         ),
         patch(
             "core.repositories.billing_repo.get_by_owner_id",
@@ -172,6 +225,43 @@ async def test_reaps_row_with_null_last_active_at():
 
         ecs.stop_user_service.assert_awaited_once_with("user_stale")
         assert stopped == ["user_stale"]
+
+
+@pytest.mark.asyncio
+async def test_reaps_row_with_no_timestamps_at_all():
+    """Defense in depth: a row with no last_active_at, no updated_at, and
+    no created_at falls all the way through the chain to epoch 0 and gets
+    reaped. Should never happen in practice (DynamoDB rows always have
+    created_at set by upsert) but the fallback chain shouldn't crash."""
+    from core.gateway.connection_pool import GatewayConnectionPool
+
+    pool = GatewayConnectionPool(management_api=None)
+
+    with (
+        patch(
+            "core.repositories.container_repo.get_by_status",
+            new_callable=AsyncMock,
+            return_value=[{"owner_id": "user_no_ts", "status": "running"}],
+        ),
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"owner_id": "user_no_ts", "plan_tier": "free"},
+        ),
+        patch("core.containers.get_ecs_manager") as mock_get_ecs,
+        patch(
+            "core.repositories.container_repo.mark_stopped_if_running",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        ecs = mock_get_ecs.return_value
+        ecs.stop_user_service = AsyncMock()
+
+        stopped = await pool._reap_once()
+
+        ecs.stop_user_service.assert_awaited_once_with("user_no_ts")
+        assert stopped == ["user_no_ts"]
 
 
 @pytest.mark.asyncio
