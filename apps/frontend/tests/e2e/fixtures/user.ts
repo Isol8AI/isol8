@@ -71,14 +71,20 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   //    missing customers (the helper just returns).
   await cancelSubsAndDeleteCustomer(stripeKey, user.email);
 
-  // 2. Backend — DELETE /debug/user-data wipes DDB rows + EFS workspace for
-  //    this clerk user. We swallow errors here because (a) the user may not
-  //    have synced yet (no rows to delete) and (b) the Stripe + Clerk leak
-  //    checks below are the load-bearing verification anyway.
+  // 2. Backend — DELETE /debug/user-data wipes DDB rows + EFS workspace +
+  //    ECS service for this clerk user. Only 404 is treated as success
+  //    (idempotent: the endpoint already ran for this user, or the dev
+  //    backend doesn't have it deployed yet on a brand-new branch). Every
+  //    other error MUST surface — silently swallowing teardown failures was
+  //    leaking ECS services on every failed run (Codex P1 on PR #309).
   try {
     await user.api.delete('/debug/user-data');
   } catch (err) {
-    console.error('[e2e] backend cleanup non-fatal err:', err);
+    if (err instanceof Error && err.message.includes('404')) {
+      console.warn('[e2e] /debug/user-data 404 — treating as idempotent success');
+    } else {
+      throw err;
+    }
   }
 
   // 3. Clerk — org first (if any), then the user. Both helpers treat 404 as

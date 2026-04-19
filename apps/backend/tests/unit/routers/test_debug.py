@@ -86,6 +86,71 @@ class TestDeleteUserData:
         res = await async_client.delete("/api/v1/debug/user-data")
         assert res.status_code == 403
 
+    @pytest.mark.asyncio
+    @patch("routers.debug.container_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.get_workspace")
+    async def test_org_context_uses_user_id_for_user_scoped_tables(
+        self,
+        mock_workspace,
+        mock_ecs_mgr,
+        mock_conn_svc,
+        mock_user_repo,
+        mock_chan_repo,
+        mock_usage_repo,
+        mock_update_repo,
+        mock_billing_repo,
+        mock_apikey_repo,
+        mock_container_repo,
+        app,
+        mock_org_admin_user,
+    ):
+        """In an org context, user_repo + connection_service must use the
+        Clerk user_id, while owner-scoped tables (container, billing, etc.)
+        use the org_id from resolve_owner_id (Codex P2 on PR #309)."""
+        from httpx import AsyncClient, ASGITransport
+        from core.auth import get_current_user
+
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_container_repo.delete = AsyncMock()
+        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_billing_repo.delete = AsyncMock()
+        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_user_repo.delete = AsyncMock()
+        mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+
+        ws = MagicMock()
+        ws.delete_user_dir = MagicMock()
+        mock_workspace.return_value = ws
+        ecs_mgr = MagicMock()
+        ecs_mgr.delete_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        app.dependency_overrides[get_current_user] = mock_org_admin_user
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                res = await client.delete("/api/v1/debug/user-data")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 200
+        # Owner-scoped: org_id (resolve_owner_id returns org when present)
+        mock_container_repo.delete.assert_called_once_with("org_test_456")
+        mock_billing_repo.delete.assert_called_once_with("org_test_456")
+        mock_apikey_repo.delete_all_for_owner.assert_called_once_with("org_test_456")
+        # User-scoped: Clerk user_id, NOT org_id
+        mock_user_repo.delete.assert_called_once_with("user_test_123")
+        mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
+
 
 class TestEfsExists:
     """Test GET /api/v1/debug/efs-exists — read-only EFS path probe."""

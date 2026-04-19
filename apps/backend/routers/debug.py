@@ -238,6 +238,12 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Disabled in production")
 
     owner_id = resolve_owner_id(auth)
+    # In an org context resolve_owner_id returns the org_id, but the `users`
+    # and `ws-connections` tables are keyed by the Clerk user_id directly.
+    # Without this split, org E2E teardown would target the org id for both,
+    # leaving the Clerk user row + WS connection rows behind on every run
+    # (Codex P2 on PR #309).
+    user_id = auth.user_id
     deleted: dict = {"ecs": False, "efs": False, "ddb": []}
 
     # ---- Container teardown -------------------------------------------------
@@ -288,10 +294,10 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     await channel_link_repo.delete_all_for_owner(owner_id)
     deleted["ddb"].append("channel-links")
 
-    await connection_service.delete_all_for_user(owner_id)
+    await connection_service.delete_all_for_user(user_id)
     deleted["ddb"].append("ws-connections")
 
-    await user_repo.delete(owner_id)
+    await user_repo.delete(user_id)
     deleted["ddb"].append("users")
 
     return {"deleted": deleted}
