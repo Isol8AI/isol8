@@ -91,7 +91,7 @@ export function ApprovalCard({ pending, onDecide }: ApprovalCardProps) {
 
       {errorMsg && (
         <div className="mt-2 text-xs text-[#b42318] flex items-center gap-2">
-          <span>Couldn't send decision: {errorMsg}.</span>
+          <span>Couldn&apos;t send decision: {errorMsg}.</span>
           {lastFailed && (
             <button
               type="button"
