@@ -10,7 +10,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, get_owner_type, require_org_admin, resolve_owner_id
-from core.config import settings, TIER_CONFIG
+from core.config import settings
 from core.observability.metrics import put_metric
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
@@ -120,37 +120,15 @@ async def redeploy_container(
 
         account = await billing_repo.get_by_owner_id(owner_id)
         tier = account.get("plan_tier", "free") if account else "free"
-        tier_cfg = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
 
-        # Deep-merge only the fields we control (preserves OpenClaw's runtime additions)
+        # Deep-merge only the backend-controlled slice (preserves OpenClaw's
+        # runtime additions AND user-owned fields like tools.deny, which
+        # node_proxy.py manipulates at runtime). The helper lives next to
+        # write_openclaw_config so both paths stay in lock-step.
         from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
-        from core.containers.config import _models_for_tier
+        from core.containers.config import build_backend_policy_patch
 
-        patch = {
-            "models": {
-                "providers": {
-                    "amazon-bedrock": {
-                        "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
-                        "api": "bedrock-converse-stream",
-                        "auth": "aws-sdk",
-                        "models": _models_for_tier(tier),
-                    },
-                },
-            },
-            "agents": {
-                "defaults": {
-                    "model": {"primary": tier_cfg["primary_model"]},
-                    "models": tier_cfg.get("model_aliases", {}),
-                    "verboseDefault": "full",
-                },
-                # Don't patch `agents.list` here — `_deep_merge` replaces
-                # arrays wholesale, which would clobber user-created agents
-                # persisted via OpenClaw's `agents.create` RPC. The initial
-                # write in `write_openclaw_config` sets up `main` on first
-                # provision; existing containers keep whatever list is
-                # already on EFS.
-            },
-        }
+        patch = build_backend_policy_patch(tier, region=settings.AWS_REGION)
 
         ecs_manager = get_ecs_manager()
         try:

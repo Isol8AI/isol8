@@ -33,11 +33,45 @@ class TestWriteOpenclawConfig:
         assert "eu-west-1" in bedrock["baseUrl"]
 
     def test_config_full_profile_denies_canvas_nodes(self):
-        """Tools profile is full and canvas/nodes are denied."""
+        """Tools profile is full; canvas and nodes denied by default.
+
+        The `nodes` tool is toggled to enabled at runtime by
+        routers/node_proxy.py when a desktop node pairs; leaving it
+        always-allowed here would expose it to users without the
+        desktop app.
+        """
         config = json.loads(write_openclaw_config())
         assert config["tools"]["profile"] == "full"
         assert "canvas" in config["tools"]["deny"]
         assert "nodes" in config["tools"]["deny"]
+
+    def test_config_exec_approval_policy(self):
+        """Exec uses allowlist + on-miss so the approval card can fire.
+
+        Without this, OpenClaw's default security=deny blocks every exec
+        call silently (exec-defaults.ts:98). See
+        docs/superpowers/specs/2026-04-18-exec-approval-card-design.md.
+        """
+        config = json.loads(write_openclaw_config())
+        exec_cfg = config["tools"]["exec"]
+        assert exec_cfg["security"] == "allowlist"
+        assert exec_cfg["ask"] == "on-miss"
+
+    def test_build_backend_policy_patch_includes_exec(self):
+        """The shared helper used by PATCH /debug/provision writes the
+        same exec policy as the initial write — one source of truth."""
+        from core.containers.config import build_backend_policy_patch
+
+        patch = build_backend_policy_patch("starter")
+        assert patch["tools"]["exec"]["security"] == "allowlist"
+        assert patch["tools"]["exec"]["ask"] == "on-miss"
+        # Must NOT include list-valued fields — deep-merge replaces
+        # arrays wholesale, which would clobber node_proxy's dynamic
+        # tools.deny toggling.
+        assert "deny" not in patch["tools"]
+        # Model + agent defaults are still carried.
+        assert "providers" in patch["models"]
+        assert "defaults" in patch["agents"]
 
     def test_no_root_tts_key(self):
         """TTS config is not at root level (OpenClaw doesn't support it there)."""
