@@ -12,13 +12,22 @@
 
 "use client";
 
+import * as React from "react";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   useGateway,
   type ChatIncomingMessage,
   type BudgetExceededPayload,
-  type ToolResultBlock,
 } from "@/hooks/useGateway";
+import type {
+  ApprovalRequest,
+  ExecApprovalDecision,
+  ToolUse,
+} from "@/components/chat/MessageList";
+
+// Re-export ToolUse so existing consumers (AgentChatWindow) keep working
+// after this hook switched to the canonical MessageList definition.
+export type { ToolUse } from "@/components/chat/MessageList";
 
 // =============================================================================
 // Friendly error messages
@@ -74,15 +83,6 @@ function extractThinkingContent(content: ContentBlock[]): string {
 // Types
 // =============================================================================
 
-export interface ToolUse {
-  tool: string;
-  toolCallId?: string;
-  status: "running" | "done" | "error";
-  args?: Record<string, unknown>;
-  result?: ToolResultBlock[];
-  meta?: string;
-}
-
 export interface AgentMessage {
   role: "user" | "assistant";
   content: string;
@@ -104,6 +104,7 @@ export interface UseAgentChatReturn {
   isConnected: boolean;
   isLoadingHistory: boolean;
   needsBootstrap: boolean;
+  resolveApproval: (id: string, decision: ExecApprovalDecision) => Promise<void>;
 }
 
 interface InternalMessage {
@@ -135,7 +136,7 @@ const _needsBootstrap = new Set<string>();
 // =============================================================================
 
 export function useAgentChat(agentId: string | null, sessionName: string): UseAgentChatReturn {
-  const { isConnected, sendChat, onChatMessage, sendReq } = useGateway();
+  const { isConnected, sendChat, onChatMessage, onEvent, sendReq } = useGateway();
 
   // Cache key includes session name so org members don't share history cache
   const cacheKey = agentId ? `${agentId}:${sessionName}` : null;
@@ -326,22 +327,42 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "tool_start") {
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? {
-                    ...m,
-                    toolUses: [
-                      ...(m.toolUses || []),
-                      {
-                        tool: msg.tool,
-                        toolCallId: msg.toolCallId,
-                        status: "running" as const,
-                        ...(msg.args ? { args: msg.args } : {}),
-                      },
-                    ],
-                  }
-                : m,
-            ),
+            prev.map((m) => {
+              if (m.id !== currentAssistantIdRef.current) return m;
+              const existing = m.toolUses ?? [];
+              // If an approval request already created a ToolUse for this call
+              // (race where exec.approval.requested lands before tool_start),
+              // merge into that entry rather than appending a duplicate.
+              const existingIdx =
+                msg.toolCallId !== undefined
+                  ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
+                  : -1;
+              if (existingIdx >= 0) {
+                const next = existing.slice();
+                const prior = next[existingIdx];
+                next[existingIdx] = {
+                  ...prior,
+                  tool: msg.tool,
+                  // Keep pending-approval/denied if approval already landed;
+                  // only default to "running" when we had no prior status.
+                  status: prior.status ?? ("running" as const),
+                  ...(msg.args ? { args: msg.args } : {}),
+                };
+                return { ...m, toolUses: next };
+              }
+              return {
+                ...m,
+                toolUses: [
+                  ...existing,
+                  {
+                    tool: msg.tool,
+                    toolCallId: msg.toolCallId,
+                    status: "running" as const,
+                    ...(msg.args ? { args: msg.args } : {}),
+                  },
+                ],
+              };
+            }),
           );
         }
         return;
@@ -390,6 +411,145 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
     });
   }, [onChatMessage]);
+
+  // ---- Approval event handler ----
+  useEffect(() => {
+    const unsubRequested = onEvent((eventName, data) => {
+      if (eventName !== "exec.approval.requested") return;
+      const payload = data as {
+        id?: string;
+        request?: {
+          command?: string;
+          commandArgv?: string[];
+          host?: ApprovalRequest["host"];
+          cwd?: string;
+          resolvedPath?: string;
+          agentId?: string;
+          sessionKey?: string;
+          allowedDecisions?: ExecApprovalDecision[];
+          toolCallId?: string;
+          approvalCorrelationId?: string;
+        };
+        createdAtMs?: number;
+        expiresAtMs?: number;
+      };
+      if (!payload?.id || !payload.request?.command) return;
+
+      // Scope to this chat's agent. The backend forwards non-agent/chat events
+      // as generic events (see connection_pool.py), so a parallel tab or
+      // another agent's session for the same user would otherwise inject a
+      // foreign approval card here and let the user resolve the wrong id.
+      const eventAgentId = payload.request.agentId;
+      if (eventAgentId && eventAgentId !== agentIdRef.current) return;
+
+      const req: ApprovalRequest = {
+        id: payload.id,
+        command: payload.request.command,
+        commandArgv: payload.request.commandArgv,
+        host: payload.request.host ?? "gateway",
+        cwd: payload.request.cwd,
+        resolvedPath: payload.request.resolvedPath,
+        agentId: payload.request.agentId,
+        sessionKey: payload.request.sessionKey,
+        allowedDecisions: payload.request.allowedDecisions ?? ["allow-once", "deny"],
+        expiresAtMs: payload.expiresAtMs,
+      };
+      const correlation = payload.request.toolCallId ?? payload.request.approvalCorrelationId;
+
+      if (!currentAssistantIdRef.current) return;
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (m.id !== currentAssistantIdRef.current) return m;
+          const existing = m.toolUses ?? [];
+
+          // Idempotent: a retry/reconnect can redeliver the same approval.
+          // Overwrite the existing entry rather than creating a duplicate.
+          const idDupeIdx = existing.findIndex(
+            (t) => t.pendingApproval?.id === req.id,
+          );
+          if (idDupeIdx >= 0) {
+            const next = existing.slice();
+            next[idDupeIdx] = {
+              ...next[idDupeIdx],
+              status: "pending-approval",
+              pendingApproval: req,
+            };
+            return { ...m, toolUses: next };
+          }
+
+          // Pick the target ToolUse to promote to pending-approval.
+          // Prefer exact toolCallId match. For correlationless events, bind
+          // to the NEWEST running exec so concurrent commands don't misroute
+          // the card to an older, unrelated call.
+          let targetIdx = -1;
+          if (correlation) {
+            targetIdx = existing.findIndex(
+              (t) => t.toolCallId === correlation,
+            );
+          } else {
+            for (let i = existing.length - 1; i >= 0; i--) {
+              if (existing[i].tool === "exec" && existing[i].status === "running") {
+                targetIdx = i;
+                break;
+              }
+            }
+          }
+
+          if (targetIdx >= 0) {
+            const next = existing.slice();
+            next[targetIdx] = {
+              ...next[targetIdx],
+              status: "pending-approval",
+              pendingApproval: req,
+            };
+            return { ...m, toolUses: next };
+          }
+
+          return {
+            ...m,
+            toolUses: [
+              ...existing,
+              {
+                tool: "exec",
+                toolCallId: correlation,
+                status: "pending-approval",
+                pendingApproval: req,
+              },
+            ],
+          };
+        }),
+      );
+    });
+
+    const unsubResolved = onEvent((eventName, data) => {
+      if (eventName !== "exec.approval.resolved") return;
+      const payload = data as { id?: string; decision?: ExecApprovalDecision };
+      if (!payload?.id) return;
+
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (!m.toolUses?.some((t) => t.pendingApproval?.id === payload.id)) return m;
+          const next = m.toolUses.map((t) => {
+            if (t.pendingApproval?.id !== payload.id) return t;
+            const nextStatus: ToolUse["status"] =
+              payload.decision === "deny" ? "denied" : "running";
+            return {
+              ...t,
+              status: nextStatus,
+              pendingApproval: undefined,
+              resolvedDecision: payload.decision,
+            };
+          });
+          return { ...m, toolUses: next };
+        }),
+      );
+    });
+
+    return () => {
+      unsubRequested();
+      unsubResolved();
+    };
+  }, [onEvent]);
 
   // ---- Send message ----
 
@@ -478,6 +638,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     streamContentRef.current = "";
   }, [sessionName]);
 
+  // ---- Resolve approval (allow-once / allow-always / deny) ----
+
+  const resolveApproval = React.useCallback(
+    async (id: string, decision: ExecApprovalDecision): Promise<void> => {
+      await sendReq("exec.approval.resolve", { id, decision });
+    },
+    [sendReq],
+  );
+
   // ---- External interface ----
 
   const externalMessages: AgentMessage[] = useMemo(
@@ -509,5 +678,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     isConnected,
     isLoadingHistory,
     needsBootstrap,
+    resolveApproval,
   };
 }
