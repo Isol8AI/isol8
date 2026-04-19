@@ -327,22 +327,42 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "tool_start") {
         if (currentAssistantIdRef.current) {
           setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? {
-                    ...m,
-                    toolUses: [
-                      ...(m.toolUses || []),
-                      {
-                        tool: msg.tool,
-                        toolCallId: msg.toolCallId,
-                        status: "running" as const,
-                        ...(msg.args ? { args: msg.args } : {}),
-                      },
-                    ],
-                  }
-                : m,
-            ),
+            prev.map((m) => {
+              if (m.id !== currentAssistantIdRef.current) return m;
+              const existing = m.toolUses ?? [];
+              // If an approval request already created a ToolUse for this call
+              // (race where exec.approval.requested lands before tool_start),
+              // merge into that entry rather than appending a duplicate.
+              const existingIdx =
+                msg.toolCallId !== undefined
+                  ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
+                  : -1;
+              if (existingIdx >= 0) {
+                const next = existing.slice();
+                const prior = next[existingIdx];
+                next[existingIdx] = {
+                  ...prior,
+                  tool: msg.tool,
+                  // Keep pending-approval/denied if approval already landed;
+                  // only default to "running" when we had no prior status.
+                  status: prior.status ?? ("running" as const),
+                  ...(msg.args ? { args: msg.args } : {}),
+                };
+                return { ...m, toolUses: next };
+              }
+              return {
+                ...m,
+                toolUses: [
+                  ...existing,
+                  {
+                    tool: msg.tool,
+                    toolCallId: msg.toolCallId,
+                    status: "running" as const,
+                    ...(msg.args ? { args: msg.args } : {}),
+                  },
+                ],
+              };
+            }),
           );
         }
         return;
@@ -414,6 +434,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         expiresAtMs?: number;
       };
       if (!payload?.id || !payload.request?.command) return;
+
+      // Scope to this chat's agent. The backend forwards non-agent/chat events
+      // as generic events (see connection_pool.py), so a parallel tab or
+      // another agent's session for the same user would otherwise inject a
+      // foreign approval card here and let the user resolve the wrong id.
+      const eventAgentId = payload.request.agentId;
+      if (eventAgentId && eventAgentId !== agentIdRef.current) return;
 
       const req: ApprovalRequest = {
         id: payload.id,
