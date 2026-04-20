@@ -16,7 +16,11 @@
 import { test as base, type Page } from '@playwright/test';
 import crypto from 'crypto';
 import { createUser, deleteUser, deleteOrg, findUserByEmail } from './clerk-admin';
-import { cancelSubsAndDeleteCustomer, findCustomerByEmail } from './stripe-admin';
+import {
+  cancelSubsAndDeleteCustomer,
+  findCustomerByEmail,
+  findCustomersByOwnerId,
+} from './stripe-admin';
 import { AuthedFetch, AuthedFetchError } from './api';
 import { DDBReader } from './ddb-reader';
 
@@ -76,8 +80,15 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   const failures: string[] = [];
 
   // 1. Stripe — cancels active subs then deletes the customer. Idempotent.
+  // Pass ownerId so we catch customers whose email field is null (the
+  // Clerk JWT template doesn't always include the email claim, so
+  // backend's create_customer_for_owner can produce email=null records
+  // that the email-based search would miss). The backend always tags the
+  // customer with metadata.owner_id, so that lookup is the canonical one.
+  // owner_id == clerkUserId in personal context, == orgId in org context.
+  const stripeOwnerId = user.orgId ?? user.clerkUserId;
   try {
-    await cancelSubsAndDeleteCustomer(stripeKey, user.email);
+    await cancelSubsAndDeleteCustomer(stripeKey, user.email, stripeOwnerId);
   } catch (err) {
     failures.push(`stripe: ${err}`);
   }
@@ -129,11 +140,16 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   //    side. 5s is enough in practice; a tighter poll would just add flakes.
   await new Promise((r) => setTimeout(r, 5000));
 
-  // 5. Hard-fail verification on external systems.
+  // 5. Hard-fail verification on external systems. Check by both email
+  // and owner_id — same defensive split as the cleanup call above.
   try {
     const stripeRemaining = await findCustomerByEmail(stripeKey, user.email);
     if (stripeRemaining) {
-      failures.push(`stripe leak: customer ${stripeRemaining.id} not deleted`);
+      failures.push(`stripe leak: customer ${stripeRemaining.id} (by-email) not deleted`);
+    }
+    const ownerRemaining = await findCustomersByOwnerId(stripeKey, stripeOwnerId);
+    for (const c of ownerRemaining) {
+      failures.push(`stripe leak: customer ${c.id} (by-owner_id) not deleted`);
     }
   } catch (err) {
     failures.push(`stripe verify: ${err}`);

@@ -34,6 +34,13 @@ export async function onboardOrganization(
   await page.getByRole('textbox', { name: /name/i }).fill(orgName);
   await page.getByRole('button', { name: /create|next/i }).first().click();
 
+  // Clerk's CreateOrganization shows an "Invite new members" screen after
+  // create — `skipInvitationScreen={false}` in onboarding/page.tsx. Click
+  // "Skip" so the flow can advance to /chat. Without this the page hangs
+  // on the invitation screen and the /chat URL wait below times out
+  // (verified from PR #309 deploy artifact, 2026-04-20).
+  await page.getByRole('button', { name: /^skip$/i }).click({ timeout: 30_000 });
+
   // Wait for Clerk to register the new org BEFORE waiting for any URL —
   // the org is the load-bearing teardown handle. Hand it to the caller
   // immediately so even a downstream throw still leaves cleanupUser able
