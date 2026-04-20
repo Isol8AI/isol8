@@ -203,7 +203,15 @@ fn is_oauth_url(url: &Url) -> bool {
 /// existing main window, and re-emits the `auth:sign-in-ticket` event
 /// so the frontend's useDesktopAuth hook can complete the sign-in.
 fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
-    log(&format!("[deep-link] received: {}", url_str));
+    // Log the scheme+path only — never the full URL. The isol8://auth
+    // redirect carries a Clerk one-time `ticket` query param that can
+    // create a signed-in session; writing it to /tmp/isol8-desktop.log
+    // (world-readable) would let any local process/user race to consume
+    // it and hijack the account.
+    let safe = url::Url::parse(url_str)
+        .map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), u.path()))
+        .unwrap_or_else(|_| "<unparseable>".to_string());
+    log(&format!("[deep-link] received: {}", safe));
     if url_str.starts_with("isol8://auth") {
         if let Ok(parsed) = url::Url::parse(url_str) {
             if let Some(ticket) = parsed

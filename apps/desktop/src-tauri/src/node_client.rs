@@ -448,7 +448,15 @@ fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}…(+{}b)", &s[..max], s.len() - max)
+        // `&s[..max]` panics when `max` lands mid-codepoint on a multibyte
+        // UTF-8 char. Walk back to the nearest char boundary so non-ASCII
+        // payloads near the 300/400-byte trim limits can't crash the node
+        // client mid-handshake.
+        let mut boundary = max;
+        while boundary > 0 && !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}…(+{}b)", &s[..boundary], s.len() - boundary)
     }
 }
 
