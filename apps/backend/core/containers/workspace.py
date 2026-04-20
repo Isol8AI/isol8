@@ -507,6 +507,20 @@ class Workspace:
                 user_id=user_id,
             ) from exc
 
+    def delete_user_dir(self, user_id: str) -> None:
+        """rm -rf the entire per-user EFS directory.
+
+        Used by the e2e teardown endpoint. Idempotent: silently succeeds
+        if the directory doesn't exist. Validates user_id via user_path()
+        to defend against path traversal.
+        """
+        import shutil
+
+        user_dir = self.user_path(user_id)
+        if user_dir.exists():
+            shutil.rmtree(user_dir)
+            logger.info("Deleted EFS user directory for %s", user_id)
+
     def cleanup_agent_dirs(self, user_id: str, agent_id: str) -> None:
         """Best-effort `rm -rf` for an agent's on-EFS directories after delete.
 

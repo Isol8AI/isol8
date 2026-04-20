@@ -172,19 +172,30 @@ async fn connection_loop(
         // Snapshot the current URL so a mid-connect token update is picked up
         // on the very next reconnect attempt.
         let current_url = url.read().unwrap().clone();
-        println!("[node-client] Connecting...");
+        crate::log(&format!("[node-client] Connecting to {}...", mask_token(&current_url)));
         emit_status("connecting");
 
         let ws = tokio::select! {
             _ = &mut stop_rx => {
-                println!("[node-client] Stop signal received during connect");
+                crate::log("[node-client] Stop signal received during connect");
                 emit_status("disconnected");
                 return;
             }
             res = connect_async(&current_url) => match res {
                 Ok((ws, _)) => ws,
                 Err(e) => {
-                    eprintln!("[node-client] Connection failed: {}", e);
+                    crate::log(&format!("[node-client] Connection failed: {}", e));
+                    if let tokio_tungstenite::tungstenite::Error::Http(resp) = &e {
+                        let status = resp.status();
+                        let body = resp.body().as_ref()
+                            .map(|b| String::from_utf8_lossy(b).to_string())
+                            .unwrap_or_else(|| "<no body>".to_string());
+                        let headers = resp.headers().iter()
+                            .map(|(k, v)| format!("{}={}", k, v.to_str().unwrap_or("?")))
+                            .collect::<Vec<_>>().join("; ");
+                        crate::log(&format!("[node-client] HTTP {} body={} headers={}",
+                            status, truncate(&body, 400), truncate(&headers, 400)));
+                    }
                     emit_status("error");
                     // Backoff, respecting stop.
                     tokio::select! {
@@ -197,7 +208,7 @@ async fn connection_loop(
             }
         };
 
-        println!("[node-client] WebSocket open, starting handshake");
+        crate::log("[node-client] WebSocket open, starting handshake");
 
         let (mut ws_write, mut ws_read) = ws.split();
 
@@ -208,12 +219,12 @@ async fn connection_loop(
         // state (socket open, no invokes will ever arrive).
         match perform_handshake(&mut ws_read, &mut ws_write, &display_name).await {
             Ok(()) => {
-                println!("[node-client] Handshake complete");
+                crate::log("[node-client] Handshake complete");
                 emit_status("connected");
                 reconnect_delay = std::time::Duration::from_secs(1);
             }
             Err(reason) => {
-                eprintln!("[node-client] Handshake failed: {}", reason);
+                crate::log(&format!("[node-client] Handshake failed: {}", reason));
                 emit_status("error");
                 let _ = ws_write.close().await;
                 tokio::select! {
@@ -264,7 +275,7 @@ async fn connection_loop(
             }
         };
 
-        eprintln!("[node-client] Disconnected ({}); reconnecting", drop_reason);
+        crate::log(&format!("[node-client] Disconnected ({}); reconnecting", drop_reason));
         emit_status("reconnecting");
 
         // Backoff before the next reconnect, respecting stop.
@@ -300,7 +311,11 @@ where
             .map_err(|_| "timed out waiting for connect.challenge".to_string())?
             .ok_or_else(|| "connection closed before connect.challenge".to_string())?
             .map_err(|e| format!("read error: {}", e))?;
-        let Message::Text(text) = msg else { continue };
+        let Message::Text(text) = msg else {
+            crate::log(&format!("[node-client] pre-handshake non-text frame: {:?}", msg));
+            continue;
+        };
+        crate::log(&format!("[node-client] pre-handshake frame: {}", truncate(&text, 300)));
         let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
         if frame.get("type").and_then(|v| v.as_str()) == Some("event")
             && frame.get("event").and_then(|v| v.as_str()) == Some("connect.challenge")
@@ -312,6 +327,8 @@ where
     // Nonce is currently unused on this side (backend signs upstream) but
     // present in the challenge payload; acknowledge it exists.
     let _ = challenge;
+
+    crate::log("[node-client] received connect.challenge, sending connect req");
 
     // Step 2: send connect.
     let connect_id = Uuid::new_v4().to_string();
@@ -333,12 +350,23 @@ where
             "role": "node",
             "scopes": [],
             "caps": ["system"],
+            // Commands we IMPLEMENT. Advertising only the ones we handle
+            // avoids surfacing false capabilities to OpenClaw's node catalog.
+            // Heavy capabilities (camera/photos/screen/location/notifications)
+            // are still in node_invoke's dispatch as NOT_IMPLEMENTED stubs
+            // so invokes surface a clean error instead of timing out, but
+            // we don't claim to support them here.
             "commands": [
                 "system.run.prepare",
                 "system.run",
                 "system.which",
                 "system.execApprovals.get",
                 "system.execApprovals.set",
+                "system.notify",
+                "device.info",
+                "device.status",
+                "device.health",
+                "device.permissions",
             ],
             "pathEnv": std::env::var("PATH").unwrap_or_default(),
             "auth": {},
@@ -362,6 +390,7 @@ where
             .ok_or_else(|| "connection closed before connect res".to_string())?
             .map_err(|e| format!("read error: {}", e))?;
         let Message::Text(text) = msg else { continue };
+        crate::log(&format!("[node-client] post-connect frame: {}", truncate(&text, 300)));
         let frame: Value = serde_json::from_str(&text).map_err(|e| format!("parse: {}", e))?;
         if frame.get("type").and_then(|v| v.as_str()) != Some("res") {
             continue;
@@ -412,5 +441,33 @@ async fn handle_message(text: &str, invoke_tx: &InvokeSender, pending: &PendingM
             }
         }
         _ => {}
+    }
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        // `&s[..max]` panics when `max` lands mid-codepoint on a multibyte
+        // UTF-8 char. Walk back to the nearest char boundary so non-ASCII
+        // payloads near the 300/400-byte trim limits can't crash the node
+        // client mid-handshake.
+        let mut boundary = max;
+        while boundary > 0 && !s.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        format!("{}…(+{}b)", &s[..boundary], s.len() - boundary)
+    }
+}
+
+fn mask_token(url: &str) -> String {
+    if let Some(i) = url.find("token=") {
+        let head = &url[..i + 6];
+        let tail_start = i + 6;
+        let tail = &url[tail_start..];
+        let shown = tail.chars().take(8).collect::<String>();
+        format!("{}{}…", head, shown)
+    } else {
+        url.to_string()
     }
 }

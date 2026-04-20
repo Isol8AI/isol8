@@ -1094,18 +1094,26 @@ class GatewayConnectionPool:
 
         for row in rows:
             owner_id = row["owner_id"]
-            last_active_str = row.get("last_active_at")
-            if last_active_str:
+            # last_active_at is bumped by record_activity() when traffic flows
+            # through the gateway. A freshly-provisioned container that just
+            # finished its provisioning→running transition has no last_active_at
+            # yet (no chat has happened), so we fall back to updated_at — that's
+            # the moment the row last changed state, including the transition
+            # to running. Final fallback is created_at, then epoch 0.
+            #
+            # Without this fallback chain, the reaper would kill every newly-
+            # provisioned free-tier container ~1 cycle after it became healthy
+            # (before the user ever sent a message), leaving the container
+            # bouncing between provisioning and stopped forever.
+            ts_str = row.get("last_active_at") or row.get("updated_at") or row.get("created_at")
+            last_active_epoch = 0.0
+            if ts_str:
                 try:
                     # Our writer emits `+00:00`, but replace a trailing `Z` so
                     # any external writer (or pre-3.11 Python) parses cleanly.
-                    last_active_epoch = datetime.fromisoformat(last_active_str.replace("Z", "+00:00")).timestamp()
+                    last_active_epoch = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
                 except Exception:
                     last_active_epoch = 0.0
-            else:
-                # Deploy-day path: pre-change rows have no last_active_at.
-                # Treat as epoch 0 so they're reaped on the first cycle.
-                last_active_epoch = 0.0
 
             if now_ts - last_active_epoch < _IDLE_TIMEOUT:
                 continue

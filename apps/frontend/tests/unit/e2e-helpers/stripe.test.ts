@@ -4,25 +4,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 vi.mock('stripe', () => {
   const mockSubscriptionsCancel = vi.fn();
   const mockSubscriptionsList = vi.fn();
-  const mockSubscriptionsCreate = vi.fn();
   const mockCustomersList = vi.fn();
-  const mockCustomersCreate = vi.fn();
-  const mockPaymentMethodsAttach = vi.fn();
-  const mockCustomersUpdate = vi.fn();
 
   const mockInstance = {
     customers: {
       list: mockCustomersList,
-      create: mockCustomersCreate,
-      update: mockCustomersUpdate,
     },
     subscriptions: {
       list: mockSubscriptionsList,
       cancel: mockSubscriptionsCancel,
-      create: mockSubscriptionsCreate,
-    },
-    paymentMethods: {
-      attach: mockPaymentMethodsAttach,
     },
   };
 
@@ -33,11 +23,7 @@ vi.mock('stripe', () => {
   (MockStripe as unknown as Record<string, unknown>)._mocks = {
     subscriptionsCancel: mockSubscriptionsCancel,
     subscriptionsList: mockSubscriptionsList,
-    subscriptionsCreate: mockSubscriptionsCreate,
     customersList: mockCustomersList,
-    customersCreate: mockCustomersCreate,
-    paymentMethodsAttach: mockPaymentMethodsAttach,
-    customersUpdate: mockCustomersUpdate,
   };
 
   return { default: MockStripe };
@@ -59,11 +45,7 @@ async function getMocks() {
     _mocks: {
       subscriptionsCancel: ReturnType<typeof vi.fn>;
       subscriptionsList: ReturnType<typeof vi.fn>;
-      subscriptionsCreate: ReturnType<typeof vi.fn>;
       customersList: ReturnType<typeof vi.fn>;
-      customersCreate: ReturnType<typeof vi.fn>;
-      paymentMethodsAttach: ReturnType<typeof vi.fn>;
-      customersUpdate: ReturnType<typeof vi.fn>;
     };
   };
   return Stripe._mocks;
@@ -140,39 +122,6 @@ describe('cancelSubscriptionIfExists', () => {
     await expect(cancelSubscriptionIfExists('test@example.com')).resolves.toBeUndefined();
 
     expect(mocks.subscriptionsCancel).toHaveBeenCalledTimes(2);
-  });
-});
-
-describe('createSubscription', () => {
-  it('creates subscription on the given customer ID', async () => {
-    const mocks = await getMocks();
-    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
-    mocks.customersUpdate.mockResolvedValue({});
-    const fakeSub = { id: 'sub_new', status: 'active' };
-    mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
-
-    const { createSubscription } = await import('../../e2e/helpers/stripe');
-    const result = await createSubscription('cus_existing', 'price_starter');
-
-    expect(mocks.customersCreate).not.toHaveBeenCalled();
-    expect(mocks.customersList).not.toHaveBeenCalled();
-    expect(mocks.subscriptionsCreate).toHaveBeenCalledWith(
-      expect.objectContaining({ customer: 'cus_existing' }),
-    );
-    expect(result).toEqual(fakeSub);
-  });
-
-  it('returns the created subscription', async () => {
-    const mocks = await getMocks();
-    mocks.paymentMethodsAttach.mockResolvedValue({ id: 'pm_test_123' });
-    mocks.customersUpdate.mockResolvedValue({});
-    const fakeSub = { id: 'sub_xyz', status: 'trialing' };
-    mocks.subscriptionsCreate.mockResolvedValue(fakeSub);
-
-    const { createSubscription } = await import('../../e2e/helpers/stripe');
-    const result = await createSubscription('cus_abc', 'price_pro');
-
-    expect(result).toEqual(fakeSub);
   });
 });
 

@@ -8,24 +8,54 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { ApprovalCard } from "./ApprovalCard";
 
-interface ToolResultBlock {
+export interface ToolResultBlock {
   type: string;
   text?: string;
   bytes?: number;
   omitted?: boolean;
 }
 
-interface ToolUse {
+export type ExecApprovalDecision = "allow-once" | "allow-always" | "deny";
+
+export interface ApprovalRequest {
+  /** Approval ID issued by OpenClaw. Used as the key when posting exec.approval.resolve. */
+  id: string;
+  /** Raw command line as the agent would execute it. */
+  command: string;
+  /** Parsed argv; absent when the request came through host=node with a wrapped form. */
+  commandArgv?: string[];
+  /** Where the command would run. */
+  host: "gateway" | "node" | "sandbox";
+  /** Working directory for the command. */
+  cwd?: string;
+  /** Resolved absolute path of the executable (post wrapper-unwrap) — what Trust persists. */
+  resolvedPath?: string;
+  /** OpenClaw agent ID that issued the exec. */
+  agentId?: string;
+  /** Session identifier: used for audit display only. */
+  sessionKey?: string;
+  /** Which decisions the server will accept — usually all three, but "allow-always" may be absent when policy is ask=always. */
+  allowedDecisions: ExecApprovalDecision[];
+  /** Server-side expiry timestamp in ms. Not rendered as a countdown per product decision. */
+  expiresAtMs?: number;
+}
+
+export interface ToolUse {
   tool: string;
   toolCallId?: string;
-  status: "running" | "done" | "error";
+  status: "running" | "done" | "error" | "pending-approval" | "denied";
   args?: Record<string, unknown>;
   result?: ToolResultBlock[];
   meta?: string;
+  /** Set when status === "pending-approval". Cleared once the user decides. */
+  pendingApproval?: ApprovalRequest;
+  /** Set when status !== "pending-approval" and the ToolUse was previously resolved. */
+  resolvedDecision?: ExecApprovalDecision;
 }
 
-interface Message {
+export interface Message {
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -34,12 +64,14 @@ interface Message {
   toolUses?: ToolUse[];
 }
 
-interface MessageListProps {
+export interface MessageListProps {
   messages: Message[];
   isTyping?: boolean;
   agentName?: string;
   onRetry?: (assistantMsgId: string) => void;
   onOpenFile?: (path: string) => void;
+  /** Called when the user clicks Allow once / Trust / Deny on a pending approval card. */
+  onDecide?: (approvalId: string, decision: ExecApprovalDecision) => Promise<void>;
 }
 
 function CodeBlock({ className, children, ...props }: React.HTMLAttributes<HTMLElement> & { children?: React.ReactNode }) {
@@ -179,6 +211,14 @@ const TOOL_STYLES = {
     pill: "bg-[#fce4ec] text-[#a5311f] border-[#f8bbd0]",
     dot: "bg-[#c62828]",
   },
+  "pending-approval": {
+    pill: "bg-[#fff7ea] text-[#6b4a00] border-[#f0d7a0]",
+    dot: "bg-[#c38a00]",
+  },
+  denied: {
+    pill: "bg-[#fdecec] text-[#8a1f1f] border-[#f1c0c0]",
+    dot: "bg-[#b42318]",
+  },
 } as const;
 
 function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null {
@@ -191,10 +231,39 @@ function renderToolResult(blocks: ToolResultBlock[] | undefined): string | null 
   return parts.join("\n\n") || null;
 }
 
-function ToolPill({ t }: { t: ToolUse }) {
+function ToolPill({
+  t,
+  onDecide,
+}: {
+  t: ToolUse;
+  onDecide?: MessageListProps["onDecide"];
+}) {
   const [open, setOpen] = React.useState(false);
   const s = TOOL_STYLES[t.status];
   const hasDetails = !!(t.args || t.result || t.meta);
+
+  if (t.status === "pending-approval" && t.pendingApproval && onDecide) {
+    return (
+      <ApprovalCard
+        pending={t.pendingApproval}
+        onDecide={(decision) => onDecide(t.pendingApproval!.id, decision)}
+      />
+    );
+  }
+
+  if (t.status === "denied") {
+    return (
+      <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border bg-[#fdecec] text-[#8a1f1f] border-[#f1c0c0]">
+        <span className="w-1.5 h-1.5 rounded-full bg-[#b42318]" />
+        <span>{t.tool}</span>
+        <span>· denied</span>
+      </div>
+    );
+  }
+
+  const decisionSuffix = t.resolvedDecision && t.status === "done"
+    ? ` · ${t.resolvedDecision}`
+    : "";
 
   return (
     <div className="inline-block">
@@ -212,6 +281,7 @@ function ToolPill({ t }: { t: ToolUse }) {
         <span className={cn("w-1.5 h-1.5 rounded-full", s.dot)} />
         <span>{t.tool}</span>
         {t.status === "error" && <span>failed</span>}
+        {decisionSuffix && <span>{decisionSuffix}</span>}
         {hasDetails &&
           (open ? (
             <ChevronDown className="h-3 w-3 opacity-70" />
@@ -250,12 +320,18 @@ function ToolPill({ t }: { t: ToolUse }) {
   );
 }
 
-function ToolUseIndicator({ toolUses }: { toolUses: ToolUse[] }) {
+function ToolUseIndicator({
+  toolUses,
+  onDecide,
+}: {
+  toolUses: ToolUse[];
+  onDecide?: MessageListProps["onDecide"];
+}) {
   if (toolUses.length === 0) return null;
   return (
     <div className="mb-3 flex flex-wrap gap-2 items-start">
       {toolUses.map((t, i) => (
-        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} />
+        <ToolPill key={t.toolCallId ?? `${t.tool}-${i}`} t={t} onDecide={onDecide} />
       ))}
     </div>
   );
@@ -332,7 +408,7 @@ export interface MessageListHandle {
 }
 
 export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(
-  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile }, ref) {
+  function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile, onDecide }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
     React.useImperativeHandle(ref, () => ({
@@ -383,7 +459,7 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
                 )}
 
                 {msg.role === "assistant" && msg.toolUses && msg.toolUses.length > 0 && (
-                  <ToolUseIndicator toolUses={msg.toolUses} />
+                  <ToolUseIndicator toolUses={msg.toolUses} onDecide={onDecide} />
                 )}
 
                 <div className={cn(

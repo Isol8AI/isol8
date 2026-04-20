@@ -25,6 +25,7 @@ from core.containers import (
     startup_containers,
     shutdown_containers,
 )
+from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.update_service import run_scheduled_worker
@@ -203,8 +204,13 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization", "X-Requested-With"],
+    allow_headers=["Content-Type", "Authorization", "X-Requested-With", "X-E2E-Run-Id"],
 )
+
+# E2E correlation middleware — binds X-E2E-Run-Id header to log context so
+# every log line emitted while handling an e2e harness request carries the
+# same e2e_run_id field. No-op for traffic that doesn't send the header.
+app.add_middleware(E2ECorrelationMiddleware)
 
 
 def custom_openapi():

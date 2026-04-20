@@ -13,6 +13,13 @@ async def get(user_id: str) -> dict | None:
     return response.get("Item")
 
 
+# Alias for naming uniformity with the other per-user repos (which all
+# expose ``get_by_owner_id`` / ``get_by_user_id`` accessors). Used by the
+# debug ``/ddb-rows`` teardown-verification endpoint so the call surface
+# is consistent across all 8 per-user tables.
+get_by_user_id = get
+
+
 async def put(user_id: str) -> dict:
     table = _get_table()
     item = {"user_id": user_id, "created_at": utc_now_iso()}
