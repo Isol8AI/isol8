@@ -78,7 +78,11 @@ const NOT_IMPLEMENTED_COMMANDS: &[&str] = &[
 ];
 
 /// Dispatch a node.invoke.request to the appropriate handler.
-pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
+pub async fn handle_invoke(
+    client: &NodeClient,
+    app: tauri::AppHandle,
+    request: NodeInvokeRequest,
+) {
     let id = request.id.clone();
     let node_id = request.node_id.clone();
     let command = request.command.clone();
@@ -106,6 +110,7 @@ pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
             payload_json: Some(r#"{"ok":true}"#.into()),
             error: None,
         }),
+        "browser.proxy" => handle_browser_proxy(&request, app.clone()).await,
         cmd if NOT_IMPLEMENTED_COMMANDS.contains(&cmd) => Ok(NodeInvokeResult {
             id,
             node_id,
@@ -778,6 +783,152 @@ fn ok_payload(request: &NodeInvokeRequest, payload: serde_json::Value) -> NodeIn
         payload_json: Some(payload.to_string()),
         error: None,
     }
+}
+
+// ---- browser.proxy ----
+
+#[derive(serde::Deserialize, Debug)]
+struct BrowserProxyParams {
+    // HTTP method (GET/POST/...) the agent's browser tool wants to
+    // invoke against the control service. See
+    // apps/macos/Sources/OpenClaw/NodeMode/MacNodeBrowserProxy.swift:81-86
+    // for the canonical shape.
+    method: Option<String>,
+    path: Option<String>,
+    #[serde(default)]
+    query: Option<serde_json::Value>,
+    #[serde(default)]
+    body: Option<serde_json::Value>,
+    #[serde(default)]
+    auth: Option<BrowserProxyAuth>,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct BrowserProxyAuth {
+    token: Option<String>,
+    password: Option<String>,
+}
+
+async fn handle_browser_proxy(
+    request: &NodeInvokeRequest,
+    app: tauri::AppHandle,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    use tauri::Manager;
+
+    let params: BrowserProxyParams = parse_params(&request.params_json)?;
+    let method = params.method.unwrap_or_else(|| "GET".into());
+    let path = params.path.unwrap_or_else(|| "/".into());
+
+    // Lazily start the sidecar on first call. Later calls reuse it.
+    let handle = app.state::<crate::browser_sidecar::BrowserSidecarHandle>();
+    {
+        let guard = handle.read().await;
+        if guard.is_none() {
+            drop(guard);
+            let mut w = handle.write().await;
+            if w.is_none() {
+                let sc = crate::browser_sidecar::BrowserSidecar::for_app(&app)
+                    .map_err(|e| format!("sidecar init: {}", e))?;
+                sc.start().await.map_err(|e| format!("sidecar start: {}", e))?;
+                *w = Some(sc);
+            }
+        }
+    }
+
+    // Poll briefly for the port to appear. The sidecar prints its
+    // listening line within ~1s of start; bail with a helpful error
+    // if it takes longer than 10s.
+    let port = {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let guard = handle.read().await;
+            if let Some(sc) = guard.as_ref() {
+                if let Some(p) = sc.port().await {
+                    break p;
+                }
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(error_result(
+                    request,
+                    "SIDECAR_STARTUP_TIMEOUT",
+                    "browser sidecar did not report a listening port within 10s",
+                ));
+            }
+            drop(guard);
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    };
+
+    // Build the outbound HTTP request. Query string is URL-encoded
+    // from the JSON map (flat string->string assumed, mirroring
+    // MacNodeBrowserProxy.swift's shape).
+    let url = build_proxy_url(port, &path, params.query.as_ref());
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("http client: {}", e))?;
+    let mut req = client.request(
+        method.parse().map_err(|e| format!("bad method {}: {}", method, e))?,
+        &url,
+    );
+    if let Some(auth) = params.auth {
+        if let Some(token) = auth.token {
+            req = req.bearer_auth(token);
+        } else if let Some(password) = auth.password {
+            req = req.basic_auth("", Some(password));
+        }
+    }
+    if let Some(body) = params.body {
+        req = req.json(&body);
+    }
+    let resp = req.send().await.map_err(|e| format!("http: {}", e))?;
+    let status = resp.status().as_u16();
+    let bytes = resp.bytes().await.map_err(|e| format!("body read: {}", e))?;
+
+    // Response is JSON most of the time; if it's not, wrap in a
+    // text envelope so the client can still read it.
+    let body: serde_json::Value = match serde_json::from_slice(&bytes) {
+        Ok(v) => v,
+        Err(_) => serde_json::Value::String(String::from_utf8_lossy(&bytes).into_owned()),
+    };
+    let payload = serde_json::json!({
+        "status": status,
+        "body": body,
+    });
+    Ok(NodeInvokeResult {
+        id: request.id.clone(),
+        node_id: request.node_id.clone(),
+        ok: true,
+        payload_json: Some(payload.to_string()),
+        error: None,
+    })
+}
+
+fn build_proxy_url(port: u16, path: &str, query: Option<&serde_json::Value>) -> String {
+    let mut url = format!("http://127.0.0.1:{}{}", port, path);
+    if let Some(serde_json::Value::Object(map)) = query {
+        let pairs: Vec<String> = map
+            .iter()
+            .filter_map(|(k, v)| match v {
+                serde_json::Value::String(s) => Some(format!(
+                    "{}={}",
+                    urlencoding::encode(k),
+                    urlencoding::encode(s)
+                )),
+                serde_json::Value::Number(n) => Some(format!(
+                    "{}={}",
+                    urlencoding::encode(k),
+                    n
+                )),
+                _ => None,
+            })
+            .collect();
+        if !pairs.is_empty() {
+            url.push('?');
+            url.push_str(&pairs.join("&"));
+        }
+    }
+    url
 }
 
 #[cfg(test)]

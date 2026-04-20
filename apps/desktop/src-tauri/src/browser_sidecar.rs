@@ -124,6 +124,34 @@ fn parse_listening_port(line: &str) -> Option<u16> {
     rest[..end].parse().ok()
 }
 
+impl BrowserSidecar {
+    /// Production constructor: resolves the bundled sidecar binary
+    /// path from Tauri's resource dir. Call from a Tauri context
+    /// where AppHandle is available.
+    pub fn for_app(app: &tauri::AppHandle) -> Result<Self, String> {
+        use tauri::Manager;
+        let sidecar = app
+            .path()
+            .resolve(
+                "isol8-browser-service",
+                tauri::path::BaseDirectory::Resource,
+            )
+            .map_err(|e| format!("resolve sidecar path: {}", e))?;
+        Ok(Self {
+            binary: sidecar,
+            args: vec![],
+            child: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
+            port: std::sync::Arc::new(tokio::sync::Mutex::new(0)),
+        })
+    }
+}
+
+/// Shared-state handle passed through Tauri's `.manage()`. The inner
+/// Option is None until the first browser.proxy invoke spawns the
+/// sidecar.
+pub type BrowserSidecarHandle =
+    std::sync::Arc<tokio::sync::RwLock<Option<BrowserSidecar>>>;
+
 #[cfg(test)]
 mod tests {
     use super::parse_listening_port;
