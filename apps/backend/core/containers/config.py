@@ -420,6 +420,10 @@ def build_backend_policy_patch(tier: str, region: str = "us-east-1") -> dict:
             "profiles": {
                 "user": {
                     "driver": "existing-session",
+                    # Required since OpenClaw bumped its config schema —
+                    # `browser.profiles.*.color` is now a required string.
+                    # Surfaces in the OpenClaw UI as the profile chip.
+                    "color": "#0066FF",
                 },
             },
         },
@@ -699,6 +703,10 @@ def write_openclaw_config(
             "profiles": {
                 "user": {
                     "driver": "existing-session",
+                    # Required since OpenClaw bumped its config schema —
+                    # `browser.profiles.*.color` is now a required string.
+                    # Surfaces in the OpenClaw UI as the profile chip.
+                    "color": "#0066FF",
                 },
             },
         },
