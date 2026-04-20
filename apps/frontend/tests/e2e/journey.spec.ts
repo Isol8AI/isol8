@@ -272,4 +272,44 @@ test.describe('E2E Gate: Full User Journey', () => {
       await expect(assistantMsg).not.toBeEmpty();
     }, { timeout: 120_000 });
   });
+
+  test('Step 6: Deploy an agent from the gallery', async () => {
+    test.setTimeout(2 * 60_000);
+
+    await test.step('deploy an agent from the gallery', async () => {
+      // Ensure we're on the chat page
+      if (!sharedPage.url().includes('/chat')) {
+        await sharedPage.goto(`${BASE_URL}/chat`, { waitUntil: 'domcontentloaded' });
+      }
+
+      // Check if the Gallery section renders. If not (no published agents in
+      // this env), skip gracefully. The catalog bucket must be seeded for this
+      // step to actually exercise the deploy flow — see scripts/seed-local-catalog.py.
+      const galleryHeader = sharedPage.getByText(/^gallery$/i);
+      const isVisible = await galleryHeader.isVisible().catch(() => false);
+      if (!isVisible) {
+        test.info().annotations.push({
+          type: 'skip',
+          description: 'Gallery is empty — no published catalog entries in this environment',
+        });
+        return;
+      }
+
+      // Locate the first deploy button.
+      const firstDeployBtn = sharedPage.locator('[aria-label^="Deploy "]').first();
+      const ariaLabel = await firstDeployBtn.getAttribute('aria-label');
+      const agentName = ariaLabel?.replace(/^Deploy\s+/i, '') ?? '';
+      await firstDeployBtn.click();
+
+      // After deploy, the row disappears from Gallery (filtered by deployed slug).
+      await expect(firstDeployBtn).toBeHidden({ timeout: 30_000 });
+
+      // The deployed agent should appear somewhere in the UI — either in the
+      // sidebar's "Your Agents" list or as the active agent in the chat view.
+      if (agentName) {
+        // Permissive match: new agent name should be on the page somewhere.
+        await expect(sharedPage.getByText(agentName).first()).toBeVisible({ timeout: 30_000 });
+      }
+    }, { timeout: 90_000 });
+  });
 });
