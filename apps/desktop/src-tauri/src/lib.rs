@@ -45,7 +45,13 @@ fn send_auth_token(
     log(&format!("[auth] Received JWT ({} chars) for user {} ({})", token.len(), display_name, user_id));
 
     let ws_url = option_env!("ISOL8_WS_URL").unwrap_or("wss://ws-dev.isol8.co");
-    let new_gateway_url = format!("{}?token={}", ws_url, token);
+    // Use an explicit "/" path before the query. tokio-tungstenite builds
+    // the HTTP upgrade request line from the URL's path+query; if the URL
+    // is `wss://host?token=…` (no slash), the resulting request line is
+    // malformed and AWS ELB rejects with HTTP 400 before API Gateway ever
+    // sees it. Browsers normalize this implicitly — native WS clients do
+    // not.
+    let new_gateway_url = format!("{}/?token={}", ws_url, token);
 
     // Rotate the running client's URL so the next reconnect uses the fresh
     // token. Clerk refreshes JWTs well before expiry, so we want every update
@@ -115,6 +121,7 @@ async fn start_node_host(
 }
 
 fn update_node_status(app: &tauri::AppHandle, status: &str) {
+    log(&format!("[node-status] transition -> {}", status));
     let label = match status {
         "connecting" => "Node: Connecting...",
         "connected" => "Node: Connected",
@@ -141,8 +148,18 @@ fn get_node_status(state: State<'_, NodeState>) -> String {
     state.status.lock().unwrap().clone()
 }
 
-/// OAuth domains that must open in the system browser.
-const OAUTH_DOMAINS: &[&str] = &["accounts.google.com", "appleid.apple.com"];
+/// OAuth domains that must open in the system browser. Clerk's OAuth flow
+/// redirects through Clerk's own frontend API first (e.g.
+/// `up-moth-55.clerk.accounts.dev/v1/oauth_callback/...`), THEN to the
+/// actual identity provider. We catch the Clerk hop too — otherwise
+/// WKWebView tries to navigate cross-origin and the click appears to
+/// silently do nothing.
+const OAUTH_DOMAINS: &[&str] = &[
+    "accounts.google.com",
+    "appleid.apple.com",
+    "clerk.accounts.dev",
+    "clerk.com",
+];
 
 /// Desktop callback URL — the page creates a sign-in token and deep links back.
 /// Not middleware-protected, so it works whether or not the user is signed in yet.
@@ -159,21 +176,105 @@ const DESKTOP_CALLBACK_URL: &str = match option_env!("ISOL8_CALLBACK_URL") {
 
 fn is_oauth_url(url: &Url) -> bool {
     let host = url.host_str().unwrap_or("");
-    OAUTH_DOMAINS
+    let path = url.path();
+    // Real identity providers: always intercept (Google/Apple OAuth).
+    let is_provider = ["accounts.google.com", "appleid.apple.com"]
         .iter()
-        .any(|d| host == *d || host.ends_with(&format!(".{}", d)))
+        .any(|d| host == *d || host.ends_with(&format!(".{}", d)));
+    if is_provider {
+        return true;
+    }
+    // Clerk: only intercept the actual OAuth callback path, NOT every hit
+    // to clerk.accounts.dev. Endpoints like `/v1/client/handshake` are the
+    // normal session-token refresh and MUST stay in the webview — bouncing
+    // them to Safari leaves the webview on a white screen because the
+    // refresh never completes.
+    let is_clerk = ["clerk.accounts.dev", "clerk.com"]
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{}", d)));
+    if is_clerk && path.starts_with("/v1/oauth_callback/") {
+        return true;
+    }
+    false
+}
+
+/// Handle a URL arriving via the second-instance argv (macOS protocol-
+/// handler launch). Extracts the sign-in ticket if present, focuses the
+/// existing main window, and re-emits the `auth:sign-in-ticket` event
+/// so the frontend's useDesktopAuth hook can complete the sign-in.
+fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
+    log(&format!("[deep-link] received: {}", url_str));
+    if url_str.starts_with("isol8://auth") {
+        if let Ok(parsed) = url::Url::parse(url_str) {
+            if let Some(ticket) = parsed
+                .query_pairs()
+                .find(|(k, _)| k == "ticket")
+                .map(|(_, v)| v.to_string())
+            {
+                if let Some(window) = app.get_webview_window("main") {
+                    let _ = window.emit("auth:sign-in-ticket", &ticket);
+                    log("[deep-link] emitted auth:sign-in-ticket");
+                }
+            }
+        }
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
 }
 
 pub fn run() {
     tauri::Builder::default()
+        // MUST be registered before any other plugin so it can hijack
+        // launches from a deep-link click: macOS spawns a new process for
+        // `isol8://...` URLs, and without single_instance the new process
+        // starts Tauri fresh — a second window, a fresh webview with no
+        // Clerk session, and the ticket never reaches the original app.
+        // With single_instance, the second launch's argv gets forwarded
+        // to this callback on the ORIGINAL process and we can wake it up.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            log(&format!("[single-instance] second launch argv={:?}", argv));
+            // The deep-link URL appears as one of the argv entries.
+            for arg in argv {
+                if arg.starts_with("isol8://") {
+                    handle_deep_link_url(app, &arg);
+                }
+            }
+        }))
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
+                    log(&format!("[oauth-intercept] navigating to: {}", url));
                     if is_oauth_url(url) {
-                        let _ = open::that(DESKTOP_CALLBACK_URL);
+                        log(&format!(
+                            "[oauth-intercept] matched OAuth domain; opening callback in system browser: {}",
+                            DESKTOP_CALLBACK_URL
+                        ));
+                        // Use AppleScript so Safari is force-activated to
+                        // the foreground. Plain `open -a Safari URL` from
+                        // a background app was opening Safari but not
+                        // bringing it to front; user would never see the
+                        // callback page. `tell application "Safari" ...
+                        // activate` explicitly raises Safari.
+                        let script = format!(
+                            r#"tell application "Safari"
+    activate
+    open location "{}"
+end tell"#,
+                            DESKTOP_CALLBACK_URL.replace('"', "\\\"")
+                        );
+                        let status = std::process::Command::new("osascript")
+                            .args(["-e", &script])
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => log("[oauth-intercept] activated Safari via osascript"),
+                            Ok(s) => log(&format!("[oauth-intercept] osascript returned {}", s)),
+                            Err(e) => log(&format!("[oauth-intercept] osascript failed: {}", e)),
+                        }
                         return false;
                     }
                     true
@@ -194,6 +295,22 @@ pub fn run() {
         ])
         .setup(|app| {
             log("[setup] Isol8 desktop app starting");
+
+            // Force-register isol8:// with this running binary's path so
+            // macOS LaunchServices dispatches deep links here. Without
+            // this, a stale bundle from an earlier build (or a prior
+            // worktree) can still be registered as the handler, and
+            // Safari clicks on isol8://auth?... will launch THAT ghost
+            // bundle instead of hitting our on_open_url handler.
+            #[cfg(debug_assertions)]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                match app.deep_link().register_all() {
+                    Ok(()) => log("[setup] registered isol8:// URL schemes"),
+                    Err(e) => log(&format!("[setup] register_all failed: {}", e)),
+                }
+            }
+
             tray::create_tray(app.handle())?;
 
             // Override window.open in the WebView so OAuth popups open
@@ -218,30 +335,14 @@ pub fn run() {
                 ));
             }
 
-            // Handle deep links (isol8:// protocol)
+            // Handle deep links (isol8:// protocol). This fires when the app
+            // is already running and a cross-process deep link is delivered
+            // by the OS directly (no second process spawn). The parallel
+            // single_instance callback above handles the cold-launch case.
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
-                let urls = event.urls();
-                for url_obj in urls {
-                    let url_str = url_obj.to_string();
-                    if url_str.starts_with("isol8://auth") {
-                        if let Ok(parsed) = url::Url::parse(&url_str) {
-                            if let Some(ticket) = parsed
-                                .query_pairs()
-                                .find(|(k, _)| k == "ticket")
-                                .map(|(_, v)| v.to_string())
-                            {
-                                if let Some(window) = app_handle.get_webview_window("main") {
-                                    let _ = window.emit("auth:sign-in-ticket", &ticket);
-                                }
-                            }
-                        }
-                    }
-
-                    if let Some(window) = app_handle.get_webview_window("main") {
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
+                for url_obj in event.urls() {
+                    handle_deep_link_url(&app_handle, &url_obj.to_string());
                 }
             });
 
