@@ -60,7 +60,7 @@ test.describe('E2E: Personal happy path', () => {
     // Billing tab to render the plan cards.
     await user.page.getByRole('tab', { name: 'Billing' }).click();
     await user.page.getByRole('button', { name: 'Subscribe to Starter' }).click();
-    await completeStripeCheckout(user.page);
+    await completeStripeCheckout(user.page, user.email);
     await isSubscribed(user.api, true);
     await billingTier(user.api, 'starter');
   });
