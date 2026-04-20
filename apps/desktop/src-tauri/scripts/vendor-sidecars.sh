@@ -14,7 +14,9 @@
 # spawns the CLI (`openclaw node run`) and hits it over loopback.
 set -euo pipefail
 
-NODE_VERSION="20.18.0"
+# openclaw@2026.4.x requires Node >=22.14 (see its package.json
+# engines). Node 22 is the current LTS line.
+NODE_VERSION="22.14.0"
 OPENCLAW_VERSION="2026.4.5"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

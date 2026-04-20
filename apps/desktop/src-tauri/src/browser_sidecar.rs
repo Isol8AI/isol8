@@ -95,22 +95,44 @@ impl BrowserSidecar {
 }
 
 impl BrowserSidecar {
-    /// Production constructor: resolves the bundled sidecar binary
-    /// path from Tauri's resource dir.
-    pub fn for_app(app: &tauri::AppHandle) -> Result<Self, String> {
-        use tauri::Manager;
-        let sidecar = app
-            .path()
-            .resolve(
-                "isol8-browser-service",
-                tauri::path::BaseDirectory::Resource,
-            )
-            .map_err(|e| format!("resolve sidecar path: {}", e))?;
+    /// Production constructor: resolves the externalBin sidecar path.
+    /// Tauri places externalBin binaries next to the main executable
+    /// (not in Resources/) with a `-<target-triple>` suffix — mirror
+    /// that resolution here. Works for both dev (`target/debug/`) and
+    /// packaged builds (`Isol8.app/Contents/MacOS/`).
+    pub fn for_app(_app: &tauri::AppHandle) -> Result<Self, String> {
+        let exe = std::env::current_exe()
+            .map_err(|e| format!("current_exe: {}", e))?;
+        let parent = exe
+            .parent()
+            .ok_or_else(|| "current_exe has no parent".to_string())?;
+        let triple = current_sidecar_triple()?;
+        let binary = parent.join(format!("isol8-browser-service-{}", triple));
+        if !binary.exists() {
+            return Err(format!(
+                "sidecar binary not found at {} (arch={})",
+                binary.display(),
+                std::env::consts::ARCH,
+            ));
+        }
         Ok(Self {
-            binary: sidecar,
+            binary,
             args: vec![],
             child: std::sync::Arc::new(tokio::sync::Mutex::new(None)),
         })
+    }
+}
+
+/// Pick the externalBin target-triple suffix matching the slice of
+/// the (potentially universal) binary we are executing under. On
+/// universal-apple-darwin, `std::env::consts::ARCH` reflects the
+/// slice selected by the loader at launch time, so Intel Macs pick
+/// the x86_64 sidecar and Apple Silicon picks the aarch64 one.
+fn current_sidecar_triple() -> Result<String, String> {
+    match std::env::consts::ARCH {
+        "aarch64" => Ok("aarch64-apple-darwin".into()),
+        "x86_64" => Ok("x86_64-apple-darwin".into()),
+        other => Err(format!("unsupported sidecar arch: {}", other)),
     }
 }
 
