@@ -12,6 +12,7 @@ def workspace(tmp_path: Path) -> Workspace:
     from core import config
 
     config.settings.EFS_MOUNT_PATH = str(tmp_path)
+    config.settings.ENVIRONMENT = "local"
     return Workspace(mount_path=str(tmp_path))
 
 
