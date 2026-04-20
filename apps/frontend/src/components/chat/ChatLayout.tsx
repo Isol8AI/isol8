@@ -9,6 +9,7 @@ import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Penc
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
+import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useGateway } from "@/hooks/useGateway";
 import { useActivityPing } from "@/hooks/useActivityPing";
@@ -325,6 +326,24 @@ export function ChatLayout({
                   );
                 })}
               </div>
+
+              {/* Agent catalog gallery — renders below the user's agents.
+                  useCatalog filters out already-deployed templates, so this
+                  section auto-hides once a user has deployed every template
+                  (and never renders while the catalog/deployed fetches are
+                  still in flight). On successful deploy we refresh the agent
+                  list and auto-select the newly deployed agent. */}
+              <GallerySection
+                onAgentDeployed={(result) => {
+                  // No toast library is wired up in the frontend yet, so we
+                  // just log + rely on the auto-select below to give the user
+                  // visible feedback that the deploy landed.
+                  console.log("[catalog deploy]", result);
+                  setUserSelectedId(result.agent_id);
+                  dispatchSelectAgentEvent(result.agent_id);
+                  setSidebarOpen(false);
+                }}
+              />
             </>
           ) : (
             <ControlSidebar activePanel={activePanel} onPanelChange={onPanelChange} />
