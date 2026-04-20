@@ -568,3 +568,25 @@ class Workspace:
             return json.loads(sidecar.read_text())
         except (json.JSONDecodeError, OSError):
             return None
+
+    def write_template_sidecar(
+        self,
+        user_id: str,
+        agent_id: str,
+        content: dict,
+    ) -> None:
+        """Write a `.template` sidecar JSON for an agent created from a catalog template."""
+        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(content))
+        self._chown_for_access_point(sidecar, user_id)
+
+    def read_openclaw_config(self, user_id: str) -> dict | None:
+        """Return parsed openclaw.json for a user, or None if missing/corrupt."""
+        path = self.user_path(user_id) / "openclaw.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
