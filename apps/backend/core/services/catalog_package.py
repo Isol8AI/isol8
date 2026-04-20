@@ -51,13 +51,18 @@ def tar_directory(src: Path) -> bytes:
 
 def untar_to_directory(tar_stream: BinaryIO, dst: Path) -> None:
     """Extract a tar.gz stream into dst, rejecting any member whose resolved
-    path escapes dst (absolute paths or `..` traversal). Raises ValueError on
-    a suspicious member.
+    path escapes dst (absolute paths, `..` traversal, or link members whose
+    linkname could point outside dst). Raises ValueError on a suspicious
+    member.
     """
     dst_resolved = dst.resolve()
     with tarfile.open(fileobj=tar_stream, mode="r:gz") as tf:
         members = tf.getmembers()
         for m in members:
+            # Link members (symlinks/hardlinks) have a `linkname` that bypasses
+            # the name-based traversal check — reject them outright.
+            if m.issym() or m.islnk():
+                raise ValueError(f"tar member is a symlink or hardlink: {m.name!r} -> {m.linkname!r}")
             if m.name.startswith("/"):
                 raise ValueError(f"tar member has absolute path: {m.name!r}")
             target = (dst / m.name).resolve()

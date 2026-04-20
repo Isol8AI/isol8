@@ -84,3 +84,37 @@ def test_untar_rejects_parent_traversal(tmp_path: Path):
     dst.mkdir()
     with pytest.raises(ValueError):
         untar_to_directory(buf, dst)
+
+
+def test_untar_rejects_symlink_members(tmp_path: Path):
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="pwn")
+        info.type = tarfile.SYMTYPE
+        info.linkname = "/etc/passwd"
+        tf.addfile(info)
+    buf.seek(0)
+
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    with pytest.raises(ValueError, match="symlink or hardlink"):
+        untar_to_directory(buf, dst)
+
+
+def test_untar_rejects_hardlink_members(tmp_path: Path):
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name="pwn")
+        info.type = tarfile.LNKTYPE
+        info.linkname = "../escape"
+        tf.addfile(info)
+    buf.seek(0)
+
+    dst = tmp_path / "dst"
+    dst.mkdir()
+    with pytest.raises(ValueError, match="symlink or hardlink"):
+        untar_to_directory(buf, dst)
