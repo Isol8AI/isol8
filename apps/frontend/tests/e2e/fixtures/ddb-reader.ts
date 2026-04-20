@@ -5,12 +5,24 @@ type DdbRowsResponse = {
 };
 
 export class DDBReader {
-  constructor(private api: AuthedFetch, private ownerId: string) {}
+  /**
+   * For personal flows pass `userId` undefined — backend will treat
+   * `owner_id` as both. For org flows pass `ownerId = orgId` AND
+   * `userId = clerkUserId` so user-scoped tables (users, ws-connections)
+   * are queried with the right key.
+   */
+  constructor(
+    private api: AuthedFetch,
+    private ownerId: string,
+    private userId?: string,
+  ) {}
 
   async rowCounts(): Promise<Record<string, number>> {
-    const r = await this.api.get<DdbRowsResponse>(
-      `/debug/ddb-rows?owner_id=${encodeURIComponent(this.ownerId)}`,
-    );
+    const params = new URLSearchParams({ owner_id: this.ownerId });
+    if (this.userId && this.userId !== this.ownerId) {
+      params.set('user_id', this.userId);
+    }
+    const r = await this.api.get<DdbRowsResponse>(`/debug/ddb-rows?${params}`);
     return r.tables;
   }
 

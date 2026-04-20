@@ -237,6 +237,13 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "user-data"})
         raise HTTPException(status_code=403, detail="Disabled in production")
 
+    # Mirror /debug/provision DELETE — non-admin org members must not be able
+    # to wipe shared org-scoped state (containers, billing, api-keys, etc.)
+    # via this endpoint just because dev/staging exposes it. Personal context
+    # passes through (require_org_admin no-ops when not in org).
+    if auth.is_org_context:
+        require_org_admin(auth)
+
     owner_id = resolve_owner_id(auth)
     # In an org context resolve_owner_id returns the org_id, but the `users`
     # and `ws-connections` tables are keyed by the Clerk user_id directly.
@@ -325,13 +332,18 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Disabled in production")
 
     workspace = get_workspace()
-    mount_root = str(workspace._mount).rstrip("/")
-    if path != mount_root and not path.startswith(mount_root + "/"):
+    # Resolve both sides before comparing — `startswith` on the raw input is
+    # bypassable with traversal segments like `<mount>/../other` (would render
+    # as `<mount>/../other` and pass the prefix check while resolving outside).
+    # Use Path.resolve() + is_relative_to to compare canonical absolute paths.
+    mount_root = Path(str(workspace._mount)).resolve()
+    requested = Path(path).resolve()
+    if requested != mount_root and not requested.is_relative_to(mount_root):
         raise HTTPException(
             status_code=400,
             detail=f"path must be under {mount_root}/",
         )
-    return {"exists": Path(path).exists()}
+    return {"exists": requested.exists()}
 
 
 @router.get(
@@ -348,19 +360,29 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
         403: {"description": "Disabled in production"},
     },
 )
-async def ddb_rows(owner_id: str, auth: AuthContext = Depends(get_current_user)):
+async def ddb_rows(
+    owner_id: str,
+    user_id: str | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
     if settings.ENVIRONMENT == "prod":
         put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "ddb-rows"})
         raise HTTPException(status_code=403, detail="Disabled in production")
 
-    user = await user_repo.get_by_user_id(owner_id)
+    # `users` and `ws-connections` are keyed by Clerk user_id even when other
+    # tables are scoped by org_id. Caller supplies user_id explicitly in org
+    # mode; defaults to owner_id for personal mode where they're the same
+    # value (Codex P2 on PR #309).
+    effective_user_id = user_id or owner_id
+
+    user = await user_repo.get_by_user_id(effective_user_id)
     container = await container_repo.get_by_owner_id(owner_id)
     billing = await billing_repo.get_by_owner_id(owner_id)
     api_keys = await api_key_repo.count_for_owner(owner_id)
     usage = await usage_repo.count_for_owner(owner_id)
     updates = await update_repo.count_for_owner(owner_id)
     channels = await channel_link_repo.count_for_owner(owner_id)
-    ws_conns = await connection_service.count_for_user(owner_id)
+    ws_conns = await connection_service.count_for_user(effective_user_id)
 
     return {
         "tables": {

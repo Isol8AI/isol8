@@ -151,6 +151,22 @@ class TestDeleteUserData:
         mock_user_repo.delete.assert_called_once_with("user_test_123")
         mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
 
+    @pytest.mark.asyncio
+    async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
+        """Non-admin org members cannot wipe shared org-scoped state via this
+        endpoint, even in dev/staging (Codex P1 on PR #309)."""
+        from httpx import AsyncClient, ASGITransport
+        from core.auth import get_current_user
+
+        app.dependency_overrides[get_current_user] = mock_org_member_user
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                res = await client.delete("/api/v1/debug/user-data")
+        finally:
+            app.dependency_overrides.clear()
+
+        assert res.status_code == 403
+
 
 class TestEfsExists:
     """Test GET /api/v1/debug/efs-exists — read-only EFS path probe."""
@@ -192,6 +208,29 @@ class TestEfsExists:
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
             params={"path": "/etc/passwd"},
+        )
+        assert res.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_efs_exists_rejects_traversal_under_mount_prefix(self, async_client, tmp_path, monkeypatch):
+        """Path traversal segments must be canonicalized BEFORE the prefix
+        check (Codex P2 on PR #309): a path like `<mount>/../<other>` would
+        pass `startswith(<mount>/)` but resolve outside the mount root."""
+        from core.containers import get_workspace
+
+        ws = get_workspace()
+        # Create a sibling dir outside the "mount" that the traversal targets,
+        # so we know it'd resolve to something real if the guard let it through.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        mount = tmp_path / "mount"
+        mount.mkdir()
+        monkeypatch.setattr(ws, "_mount", mount)
+
+        traversal = f"{mount}/../outside"
+        res = await async_client.get(
+            "/api/v1/debug/efs-exists",
+            params={"path": traversal},
         )
         assert res.status_code == 400
 
@@ -306,3 +345,50 @@ class TestDdbRows:
             params={"owner_id": "user_test_123"},
         )
         assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.container_repo")
+    async def test_ddb_rows_org_uses_user_id_for_user_scoped_lookups(
+        self,
+        mock_container,
+        mock_user,
+        mock_billing,
+        mock_apikey,
+        mock_usage,
+        mock_update,
+        mock_chan,
+        mock_conn,
+        async_client,
+    ):
+        """When caller passes both owner_id (org) and user_id (member),
+        user-scoped lookups (users, ws-connections) must use the user_id;
+        owner-scoped lookups must use the owner_id (Codex P2 on PR #309)."""
+        mock_user.get_by_user_id = AsyncMock(return_value=None)
+        mock_container.get_by_owner_id = AsyncMock(return_value=None)
+        mock_billing.get_by_owner_id = AsyncMock(return_value=None)
+        mock_apikey.count_for_owner = AsyncMock(return_value=0)
+        mock_usage.count_for_owner = AsyncMock(return_value=0)
+        mock_update.count_for_owner = AsyncMock(return_value=0)
+        mock_chan.count_for_owner = AsyncMock(return_value=0)
+        mock_conn.count_for_user = AsyncMock(return_value=0)
+
+        res = await async_client.get(
+            "/api/v1/debug/ddb-rows",
+            params={"owner_id": "org_test_456", "user_id": "user_test_123"},
+        )
+        assert res.status_code == 200
+
+        # Owner-scoped: org_id
+        mock_container.get_by_owner_id.assert_called_once_with("org_test_456")
+        mock_billing.get_by_owner_id.assert_called_once_with("org_test_456")
+        mock_apikey.count_for_owner.assert_called_once_with("org_test_456")
+        # User-scoped: explicit user_id, NOT owner_id
+        mock_user.get_by_user_id.assert_called_once_with("user_test_123")
+        mock_conn.count_for_user.assert_called_once_with("user_test_123")
