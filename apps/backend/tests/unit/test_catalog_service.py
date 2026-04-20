@@ -238,6 +238,49 @@ async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, moc
 
 
 @pytest.mark.asyncio
+async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tmp_path):
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "plugins": {},
+        "tools": {},
+    }
+    admin_workspace = tmp_path / "ws"
+    admin_workspace.mkdir()
+    (admin_workspace / "IDENTITY.md").write_text("x")
+    mock_workspace.agent_workspace_path.return_value = admin_workspace
+    mock_s3.list_versions.return_value = []
+    mock_s3.get_json.return_value = {"agents": []}
+
+    # Path-traversal attempt
+    with pytest.raises(ValueError, match="invalid slug"):
+        await service.publish(
+            admin_user_id="admin",
+            agent_id="a1",
+            slug_override="foo/bar",
+        )
+
+    # Whitespace-only override collapses to the empty string
+    with pytest.raises(ValueError, match="invalid slug"):
+        await service.publish(
+            admin_user_id="admin",
+            agent_id="a1",
+            slug_override="   ",
+        )
+
+    # Leading dash is also rejected (slug must start with [a-z0-9])
+    with pytest.raises(ValueError, match="invalid slug"):
+        await service.publish(
+            admin_user_id="admin",
+            agent_id="a1",
+            slug_override="-bad",
+        )
+
+    # Nothing was published for any of the rejected slugs.
+    mock_s3.put_json.assert_not_called()
+    mock_s3.put_bytes.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_publish_bumps_version_when_prior_exists(service, mock_s3, mock_workspace, tmp_path):
     mock_workspace.read_openclaw_config.return_value = {
         "agents": [{"id": "a1", "name": "Pitch", "skills": []}],

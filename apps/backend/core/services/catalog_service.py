@@ -9,12 +9,19 @@ Depends on injected collaborators so unit tests can mock them:
 from __future__ import annotations
 
 import copy
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.services.catalog_package import build_manifest, tar_directory
 from core.services.catalog_slice import extract_agent_slice
+
+# Catalog slugs become a single S3 key path segment (e.g. "pitch/v1/..."),
+# so reject anything that could inject additional segments, reserved
+# characters, or escape the prefix. Must start with [a-z0-9] to avoid
+# leading dashes.
+_VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 class CatalogService:
@@ -166,6 +173,11 @@ class CatalogService:
 
         name = agent_entry_raw.get("name") or agent_id
         slug = (slug_override or name).strip().lower().replace(" ", "-")
+        if not _VALID_SLUG_RE.fullmatch(slug):
+            raise ValueError(
+                f"invalid slug {slug!r}: must match [a-z0-9][a-z0-9-]* "
+                "(single path segment, no slashes or reserved chars)"
+            )
 
         prior_versions = self._s3.list_versions(slug)
         next_version = (max(prior_versions) + 1) if prior_versions else 1
