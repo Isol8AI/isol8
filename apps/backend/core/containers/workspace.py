@@ -11,6 +11,8 @@ No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
 import base64
+import io
+import json
 import logging
 import mimetypes
 import os
@@ -183,6 +185,21 @@ class Workspace:
         if not agents_dir.exists():
             return []
         return sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
+
+    def list_workspace_agent_dirs(self, user_id: str) -> list[str]:
+        """List agent_ids that have a workspace directory under workspaces/.
+
+        This reflects the set of agents with on-EFS workspace files (created
+        by agent CRUD or catalog deploy), independent of OpenClaw's runtime
+        ``agents/`` state. A just-deployed agent lands in ``workspaces/``
+        immediately, but only appears under ``agents/`` after OpenClaw
+        processes the new ``openclaw.json`` — so the deploy-provenance
+        lookup must scan this directory.
+        """
+        workspaces_dir = self.user_path(user_id) / "workspaces"
+        if not workspaces_dir.exists():
+            return []
+        return sorted(d.name for d in workspaces_dir.iterdir() if d.is_dir())
 
     def list_directory(self, user_id: str, path: str) -> list[dict]:
         """List the contents of a directory in a user's workspace.
@@ -544,3 +561,64 @@ class Workspace:
                     user_id,
                     exc,
                 )
+
+    # ------------------------------------------------------------------
+    # Agent catalog helpers
+    # ------------------------------------------------------------------
+
+    def extract_tarball_to_workspace(
+        self,
+        user_id: str,
+        agent_id: str,
+        tar_bytes: bytes,
+    ) -> None:
+        """Extract a workspace tarball into {mount}/{user_id}/workspaces/{agent_id}/.
+
+        Rejects path traversal via catalog_package.untar_to_directory.
+        """
+        # Deferred import avoids a circular import if catalog_package ever
+        # grows a workspace dependency.
+        from core.services.catalog_package import untar_to_directory
+
+        target = self.user_path(user_id) / "workspaces" / agent_id
+        target.mkdir(parents=True, exist_ok=True)
+        untar_to_directory(io.BytesIO(tar_bytes), target)
+
+        for path in target.rglob("*"):
+            self._chown_for_access_point(path, user_id)
+        self._chown_for_access_point(target, user_id)
+
+    def read_template_sidecar(self, user_id: str, agent_id: str) -> dict | None:
+        """Return parsed `.template` sidecar JSON for an agent, or None if missing/corrupt."""
+        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        if not sidecar.exists():
+            return None
+        try:
+            return json.loads(sidecar.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def write_template_sidecar(
+        self,
+        user_id: str,
+        agent_id: str,
+        content: dict,
+    ) -> None:
+        """Write a `.template` sidecar JSON for an agent created from a catalog template."""
+        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        sidecar.parent.mkdir(parents=True, exist_ok=True)
+        sidecar.write_text(json.dumps(content))
+        self._chown_for_access_point(sidecar, user_id)
+
+    def read_openclaw_config(self, user_id: str) -> dict | None:
+        """Return parsed openclaw.json for a user, or None if missing/corrupt."""
+        path = self.user_path(user_id) / "openclaw.json"
+        if not path.exists():
+            return None
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+
+    def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
+        return self.user_path(user_id) / "workspaces" / agent_id

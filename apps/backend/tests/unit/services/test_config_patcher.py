@@ -12,6 +12,7 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 from core.services.config_patcher import (  # noqa: E402
     ConfigPatchError,
     append_to_openclaw_config_list,
+    apply_deploy_mutation,
     delete_openclaw_config_path,
     patch_openclaw_config,
     remove_from_openclaw_config_list,
@@ -325,3 +326,96 @@ async def test_delete_path_missing_intermediate_is_noop(tmp_efs_with_multi_accou
     with open(config_path) as f:
         result = json.load(f)
     assert "main" in result["channels"]["telegram"]["accounts"]
+
+
+# ------------------------------------------------------------------
+# apply_deploy_mutation (catalog deploy path)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def catalog_efs_dir():
+    """EFS fixture where `agents` is a list (catalog publisher/deploy shape)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        user_dir = os.path.join(tmpdir, "user_1")
+        os.makedirs(user_dir)
+        config = {
+            "agents": [{"id": "existing_agent", "name": "Existing"}],
+            "plugins": {"memory": {"enabled": True}},
+            "tools": {"allowed": ["web-search"]},
+        }
+        with open(os.path.join(user_dir, "openclaw.json"), "w") as f:
+            json.dump(config, f)
+
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_appends_agent_and_unions_tools(catalog_efs_dir):
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "new_agent", "name": "New", "skills": ["browser"]},
+        {"browser": {"enabled": True}},
+        ["browser", "web-search"],  # includes existing entry — must dedupe
+    )
+    with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+
+    # Agent was appended, existing one preserved.
+    agent_ids = [a["id"] for a in result["agents"]]
+    assert agent_ids == ["existing_agent", "new_agent"]
+
+    # Plugins deep-merged.
+    assert result["plugins"]["memory"]["enabled"] is True
+    assert result["plugins"]["browser"]["enabled"] is True
+
+    # Tools union, deduped, sorted.
+    assert result["tools"]["allowed"] == ["browser", "web-search"]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir):
+    # Start with an empty-ish config to verify creation paths for
+    # missing agents / tools.allowed.
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path, "w") as f:
+        json.dump({}, f)
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "first", "name": "First"},
+        {},
+        ["skill-a"],
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    assert result["agents"] == [{"id": "first", "name": "First"}]
+    assert result["tools"]["allowed"] == ["skill-a"]
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog_efs_dir):
+    """Sequential deploys must both land without clobbering each other —
+    this is what the deploy path actually exercises now that the
+    read-modify-write of the agents list happens inside the lock."""
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "agent_a", "name": "A"},
+        {},
+        ["tool-a"],
+    )
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "agent_b", "name": "B"},
+        {},
+        ["tool-b"],
+    )
+    with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+
+    agent_ids = [a["id"] for a in result["agents"]]
+    assert agent_ids == ["existing_agent", "agent_a", "agent_b"]
+    # Both tools survive — union not replace.
+    assert set(result["tools"]["allowed"]) == {"tool-a", "tool-b", "web-search"}

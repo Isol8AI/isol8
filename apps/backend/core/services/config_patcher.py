@@ -193,6 +193,61 @@ async def remove_from_openclaw_config_list(
     await _locked_rmw(owner_id, _mutate, f"remove path={path}")
 
 
+async def apply_deploy_mutation(
+    owner_id: str,
+    agent_entry: dict,
+    plugins_patch: dict,
+    tools_allowed_merge: list[str],
+) -> None:
+    """Atomically apply a catalog-deploy mutation to openclaw.json.
+
+    Performed inside a single exclusive lock so concurrent deploys cannot
+    race on the read-modify-write of the agents list:
+      1. Append `agent_entry` to `config["agents"]`.
+      2. Deep-merge `plugins_patch` into `config["plugins"]`.
+      3. Union `tools_allowed_merge` into `config["tools"]["allowed"]`
+         (de-duplicated, sorted for determinism).
+
+    The tools allowlist is unioned — not replaced — so deploying a new
+    template does not revoke tools the user already allowed for other
+    agents.
+    """
+
+    def _mutate(current: dict) -> bool:
+        # 1. Append agent entry (always mutates — each deploy gets a fresh id).
+        agents = current.get("agents")
+        if not isinstance(agents, list):
+            agents = []
+        agents.append(copy.deepcopy(agent_entry))
+        current["agents"] = agents
+
+        # 2. Deep-merge plugins.
+        if plugins_patch:
+            existing_plugins = current.get("plugins")
+            if not isinstance(existing_plugins, dict):
+                existing_plugins = {}
+            current["plugins"] = _deep_merge(existing_plugins, plugins_patch)
+
+        # 3. Union tools.allowed.
+        tools = current.get("tools")
+        if not isinstance(tools, dict):
+            tools = {}
+        existing_allowed = tools.get("allowed")
+        if not isinstance(existing_allowed, list):
+            existing_allowed = []
+        merged_allowed = sorted(set(existing_allowed) | set(tools_allowed_merge or []))
+        tools["allowed"] = merged_allowed
+        current["tools"] = tools
+
+        return True
+
+    await _locked_rmw(
+        owner_id,
+        _mutate,
+        f"deploy agent_id={agent_entry.get('id')!r}",
+    )
+
+
 async def delete_openclaw_config_path(
     owner_id: str,
     path: list[str],

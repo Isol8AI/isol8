@@ -9,6 +9,7 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
@@ -434,6 +435,25 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
+    // Agent Catalog S3 Bucket
+    //
+    // Stores published agent bundles (agent.tar.gz + manifest.json) that users
+    // can one-click deploy into their own containers. Versioned so we can roll
+    // back a bad publish without losing history.
+    // -------------------------------------------------------------------------
+    const agentCatalogBucket = new s3.Bucket(this, "AgentCatalogBucket", {
+      bucketName: `isol8-${env}-agent-catalog`,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
+    });
+
+    agentCatalogBucket.grantReadWrite(this.taskRole);
+
+    // -------------------------------------------------------------------------
     // Task Execution Role
     // -------------------------------------------------------------------------
     const taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
@@ -574,6 +594,7 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
+        AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
