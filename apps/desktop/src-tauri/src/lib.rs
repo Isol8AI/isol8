@@ -1,3 +1,4 @@
+pub mod browser_sidecar;
 mod exec_approvals;
 mod node_client;
 mod node_invoke;
