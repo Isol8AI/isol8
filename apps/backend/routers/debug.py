@@ -292,29 +292,27 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
         failures.append(f"efs: {e}")
 
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
-    await container_repo.delete(owner_id)
-    deleted["ddb"].append("containers")
-
-    await billing_repo.delete(owner_id)
-    deleted["ddb"].append("billing-accounts")
-
-    await api_key_repo.delete_all_for_owner(owner_id)
-    deleted["ddb"].append("api-keys")
-
-    await usage_repo.delete_all_for_owner(owner_id)
-    deleted["ddb"].append("usage-counters")
-
-    await update_repo.delete_all_for_owner(owner_id)
-    deleted["ddb"].append("pending-updates")
-
-    await channel_link_repo.delete_all_for_owner(owner_id)
-    deleted["ddb"].append("channel-links")
-
-    await connection_service.delete_all_for_user(user_id)
-    deleted["ddb"].append("ws-connections")
-
-    await user_repo.delete(user_id)
-    deleted["ddb"].append("users")
+    # Per-step try/except so one transient throttle on (e.g.) container_repo
+    # doesn't abort the rest of the teardown — we want every table attempted,
+    # then surface a 500 with the failure list at the end if anything broke
+    # (Codex P1 on PR #309).
+    ddb_steps = [
+        ("containers", lambda: container_repo.delete(owner_id)),
+        ("billing-accounts", lambda: billing_repo.delete(owner_id)),
+        ("api-keys", lambda: api_key_repo.delete_all_for_owner(owner_id)),
+        ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
+        ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
+        ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
+        ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
+        ("users", lambda: user_repo.delete(user_id)),
+    ]
+    for table_name, action in ddb_steps:
+        try:
+            await action()
+            deleted["ddb"].append(table_name)
+        except Exception as e:
+            logger.warning("DDB teardown failed for %s on %s: %s", table_name, owner_id, e)
+            failures.append(f"ddb.{table_name}: {e}")
 
     if failures:
         # 500 with the failure list AND the partial deleted summary so the

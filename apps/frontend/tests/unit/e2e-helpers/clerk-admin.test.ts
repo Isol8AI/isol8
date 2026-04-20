@@ -91,6 +91,53 @@ describe('clerk-admin', () => {
       });
       expect(result).toBeNull();
     });
+
+    it('paginates and finds a match on a later page', async () => {
+      // Codex P2 on PR #309: previously fetched only the first page, so a
+      // leaked user beyond the first 10/500 would be missed. Simulate a full
+      // first page (limit=500) followed by a second page that contains the
+      // target.
+      const fullFirstPage = Array.from({ length: 500 }, (_, i) => ({
+        id: `user_other_${i}`,
+        email_addresses: [{ email_address: `noise${i}@example.com` }],
+      }));
+      fetchMock
+        .mockResolvedValueOnce({ ok: true, json: async () => fullFirstPage })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => [
+            {
+              id: 'user_target',
+              email_addresses: [{ email_address: 'isol8-e2e-target@mailsac.com' }],
+            },
+          ],
+        });
+
+      const result = await findUserByEmail({
+        secretKey: FAKE_KEY,
+        email: 'isol8-e2e-target@mailsac.com',
+      });
+      expect(result?.id).toBe('user_target');
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      // Page-2 request used offset=500
+      expect(fetchMock.mock.calls[1][0]).toContain('offset=500');
+    });
+
+    it('returns null after exhausting all pages with no match', async () => {
+      // Page returns < limit rows → last page → return null.
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => [
+          { id: 'user_a', email_addresses: [{ email_address: 'a@x.com' }] },
+        ],
+      });
+      const result = await findUserByEmail({
+        secretKey: FAKE_KEY,
+        email: 'missing@x.com',
+      });
+      expect(result).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('deleteUser', () => {

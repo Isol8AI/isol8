@@ -50,21 +50,32 @@ export async function findUserByEmail(opts: {
   secretKey: string;
   email: string;
 }): Promise<ClerkUser | null> {
-  const res = await fetch(
-    `${CLERK_API}/users?email_address[]=${encodeURIComponent(opts.email)}`,
-    { headers: { Authorization: `Bearer ${opts.secretKey}` } },
-  );
-  if (!res.ok) {
-    throw new Error(`Clerk findUserByEmail ${res.status}: ${await res.text()}`);
+  // The ?email_address[]= filter is unreliable (returns ALL users — see file
+  // header), so we paginate the full list and match in JS. Default page size
+  // is 10; without paginating, a leaked test user beyond page 1 would be
+  // missed and cleanup verification would falsely report "Clerk clean"
+  // (Codex P2 on PR #309). Use the max limit (500) and walk pages until
+  // we either find a match or exhaust the list.
+  const target = opts.email.toLowerCase();
+  const limit = 500;
+  let offset = 0;
+  while (true) {
+    const res = await fetch(
+      `${CLERK_API}/users?limit=${limit}&offset=${offset}`,
+      { headers: { Authorization: `Bearer ${opts.secretKey}` } },
+    );
+    if (!res.ok) {
+      throw new Error(`Clerk findUserByEmail ${res.status}: ${await res.text()}`);
+    }
+    const page = (await res.json()) as ClerkUser[];
+    if (page.length === 0) return null;
+    const match = page.find((u) =>
+      u.email_addresses?.some((e) => e.email_address?.toLowerCase() === target),
+    );
+    if (match) return match;
+    if (page.length < limit) return null; // last page, no match
+    offset += limit;
   }
-  const allUsers = (await res.json()) as ClerkUser[];
-  return (
-    allUsers.find((u) =>
-      u.email_addresses?.some(
-        (e) => e.email_address?.toLowerCase() === opts.email.toLowerCase(),
-      ),
-    ) ?? null
-  );
 }
 
 export async function deleteUser(opts: {
