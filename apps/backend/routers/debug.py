@@ -263,25 +263,31 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # ---- Container teardown -------------------------------------------------
     # Read the row first so we have access_point_id + task_definition_arn
     # available even if the service-delete path doesn't clean them up.
+    # NB: ECS teardown is NOT gated on the row's existence — if a previous
+    # partial run failed at ECS but successfully wiped the DDB row, every
+    # subsequent retry would skip ECS and orphan the service forever. The
+    # service name is derived from owner_id alone, so we can always look it
+    # up via Cloud Map / describe_services regardless of DDB state (Codex
+    # P1 on PR #309).
     container = await container_repo.get_by_owner_id(owner_id)
     ecs_mgr = get_ecs_manager()
-    if container:
+    service_name = ecs_mgr._service_name(owner_id)
+    if ecs_mgr._service_exists(service_name):
         try:
             await ecs_mgr.delete_user_service(owner_id)
             deleted["ecs"] = True
         except Exception as e:
             logger.warning("ECS teardown failed for %s: %s", owner_id, e)
             failures.append(f"ecs: {e}")
-        # Belt-and-suspenders: ensure the per-user task-def revision is
-        # deregistered even if delete_user_service bailed out before reaching
-        # that step. Idempotent — deregistering a missing arn is a no-op.
-        # Treated as best-effort (not failure-tracked) — the service-delete
-        # path normally handles it; this is just a backstop.
-        if container.get("task_definition_arn"):
-            try:
-                ecs_mgr._deregister_task_definition(container["task_definition_arn"])
-            except Exception:
-                pass
+    # Belt-and-suspenders: deregister the per-user task-def revision if we
+    # still have the arn from the DDB row. delete_user_service normally
+    # handles this; the explicit retry here covers the case where the row
+    # was wiped but the task def revision was orphaned. Best-effort.
+    if container and container.get("task_definition_arn"):
+        try:
+            ecs_mgr._deregister_task_definition(container["task_definition_arn"])
+        except Exception:
+            pass
 
     # ---- EFS folder rm -rf --------------------------------------------------
     try:

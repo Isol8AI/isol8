@@ -216,6 +216,65 @@ class TestDeleteUserData:
         assert body["deleted"]["ecs"] is False  # ECS step did NOT complete
 
     @pytest.mark.asyncio
+    @patch("routers.debug.container_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.get_workspace")
+    async def test_attempts_ecs_teardown_when_ddb_row_already_gone(
+        self,
+        mock_workspace,
+        mock_ecs_mgr,
+        mock_conn_svc,
+        mock_user_repo,
+        mock_chan_repo,
+        mock_usage_repo,
+        mock_update_repo,
+        mock_billing_repo,
+        mock_apikey_repo,
+        mock_container_repo,
+        async_client,
+    ):
+        """Regression for Codex P1 on PR #309: a previous partial run that
+        failed at ECS but succeeded at the DDB sweep would leave the row
+        gone but the ECS service orphaned. The next retry must still
+        attempt ECS teardown (service name is derived from owner_id alone)
+        instead of skipping it because `container is None`."""
+        # No container row — simulates the partial-cleanup state.
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_container_repo.delete = AsyncMock()
+        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_billing_repo.delete = AsyncMock()
+        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_user_repo.delete = AsyncMock()
+        mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+
+        # Service still exists in ECS even though DDB row is gone.
+        ecs_mgr = MagicMock()
+        ecs_mgr._service_name = MagicMock(return_value="openclaw-user_test_123-abc")
+        ecs_mgr._service_exists = MagicMock(return_value={"status": "ACTIVE"})
+        ecs_mgr.delete_user_service = AsyncMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        ws = MagicMock()
+        ws.delete_user_dir = MagicMock()
+        mock_workspace.return_value = ws
+
+        res = await async_client.delete("/api/v1/debug/user-data")
+
+        assert res.status_code == 200
+        # Critical: ECS teardown WAS attempted despite no container row.
+        ecs_mgr.delete_user_service.assert_called_once_with("user_test_123")
+        assert res.json()["deleted"]["ecs"] is True
+
+    @pytest.mark.asyncio
     async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
         """Non-admin org members cannot wipe shared org-scoped state via this
         endpoint, even in dev/staging (Codex P1 on PR #309)."""
