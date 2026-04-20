@@ -346,17 +346,19 @@ async def efs_exists(path: str, auth: AuthContext = Depends(get_current_user)):
         put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "efs-exists"})
         raise HTTPException(status_code=403, detail="Disabled in production")
 
+    # Scope the probe to the caller's own workspace dir. Without this, any
+    # authenticated dev/staging user could probe whether files exist in
+    # another owner's workspace by passing `<mount>/<other_owner>/...`
+    # (Codex P2 on PR #309). Resolve both sides first so traversal segments
+    # like `<mount>/<self>/../<other>` can't escape the owner_root either.
     workspace = get_workspace()
-    # Resolve both sides before comparing — `startswith` on the raw input is
-    # bypassable with traversal segments like `<mount>/../other` (would render
-    # as `<mount>/../other` and pass the prefix check while resolving outside).
-    # Use Path.resolve() + is_relative_to to compare canonical absolute paths.
-    mount_root = Path(str(workspace._mount)).resolve()
+    owner_id = resolve_owner_id(auth)
+    owner_root = workspace.user_path(owner_id).resolve()
     requested = Path(path).resolve()
-    if requested != mount_root and not requested.is_relative_to(mount_root):
+    if requested != owner_root and not requested.is_relative_to(owner_root):
         raise HTTPException(
             status_code=400,
-            detail=f"path must be under {mount_root}/",
+            detail=f"path must be under {owner_root}/",
         )
     return {"exists": requested.exists()}
 

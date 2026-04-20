@@ -1,6 +1,27 @@
 import type { Page } from '@playwright/test';
 
 /**
+ * Typed error thrown by AuthedFetch on non-2xx responses. Exposes the HTTP
+ * status as a structured field so callers can branch on the actual response
+ * code rather than scanning the message text (Codex P2 on PR #309 — a 500
+ * whose body happens to mention "404" must NOT be treated as idempotent).
+ */
+export class AuthedFetchError extends Error {
+  readonly status: number;
+  readonly path: string;
+  readonly method: string;
+  readonly body: string;
+  constructor(method: string, path: string, status: number, body: string) {
+    super(`${method} ${path} ${status}: ${body}`);
+    this.name = 'AuthedFetchError';
+    this.method = method;
+    this.path = path;
+    this.status = status;
+    this.body = body;
+  }
+}
+
+/**
  * Page-aware authenticated fetch. Reads a fresh Clerk JWT from the page on
  * every call (Clerk tokens expire after 60s). Adds X-E2E-Run-Id for backend
  * log correlation.
@@ -34,21 +55,22 @@ export class AuthedFetch {
     });
   }
 
-  async get<T = unknown>(path: string): Promise<T> {
-    const res = await this.send('GET', path);
-    if (!res.ok) throw new Error(`GET ${path} ${res.status}: ${await res.text()}`);
+  private async unwrap<T>(method: string, path: string, res: Response): Promise<T> {
+    if (!res.ok) {
+      throw new AuthedFetchError(method, path, res.status, await res.text());
+    }
     return res.json() as Promise<T>;
+  }
+
+  async get<T = unknown>(path: string): Promise<T> {
+    return this.unwrap<T>('GET', path, await this.send('GET', path));
   }
 
   async post<T = unknown>(path: string, body?: unknown): Promise<T> {
-    const res = await this.send('POST', path, body);
-    if (!res.ok) throw new Error(`POST ${path} ${res.status}: ${await res.text()}`);
-    return res.json() as Promise<T>;
+    return this.unwrap<T>('POST', path, await this.send('POST', path, body));
   }
 
   async delete<T = unknown>(path: string): Promise<T> {
-    const res = await this.send('DELETE', path);
-    if (!res.ok) throw new Error(`DELETE ${path} ${res.status}: ${await res.text()}`);
-    return res.json() as Promise<T>;
+    return this.unwrap<T>('DELETE', path, await this.send('DELETE', path));
   }
 }

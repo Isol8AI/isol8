@@ -28,10 +28,20 @@ export async function sendMessageAndWaitForResponse(
   message: string,
   opts: { timeoutMs?: number } = {},
 ): Promise<void> {
+  // Snapshot the existing assistant-message count BEFORE sending. Without
+  // this, a Step 5 call right after Step 3 would see Step 3's reply still
+  // visible and pass instantly, never verifying the new message arrived
+  // (Codex P1 on PR #309).
+  const assistants = page.locator('[data-role="assistant"]');
+  const before = await assistants.count();
+
   await fillChatInput(page, message);
   await page.getByTestId('send-button').click();
 
-  const assistantMsg = page.locator('[data-role="assistant"]').last();
-  await assistantMsg.waitFor({ state: 'visible', timeout: opts.timeoutMs ?? 90_000 });
-  await expect(assistantMsg).not.toBeEmpty();
+  // Wait for a strictly-newer assistant message to appear and contain text.
+  const timeout = opts.timeoutMs ?? 90_000;
+  await expect(assistants).toHaveCount(before + 1, { timeout });
+  const newest = assistants.nth(before);
+  await newest.waitFor({ state: 'visible', timeout });
+  await expect(newest).not.toBeEmpty();
 }

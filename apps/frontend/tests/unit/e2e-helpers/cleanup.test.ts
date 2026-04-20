@@ -13,6 +13,7 @@ vi.mock('../../e2e/fixtures/stripe-admin', () => ({
 }));
 
 import { cleanupUser, type E2EUser } from '../../e2e/fixtures/user';
+import { AuthedFetchError } from '../../e2e/fixtures/api';
 import {
   deleteUser,
   deleteOrg,
@@ -132,10 +133,10 @@ describe('cleanupUser', () => {
     expect((err as Error).message).toMatch(/Clerk leak.*user_leaked/);
   });
 
-  it('treats missing entities as success (idempotent re-run)', async () => {
+  it('treats 404 from /debug/user-data as success (idempotent re-run)', async () => {
     const user = makeUser();
     vi.mocked(user.api.delete).mockRejectedValue(
-      new Error('DELETE /debug/user-data 404: not found'),
+      new AuthedFetchError('DELETE', '/debug/user-data', 404, 'not found'),
     );
 
     const promise = cleanupUser(user);
@@ -146,6 +147,26 @@ describe('cleanupUser', () => {
     expect(deleteUser).toHaveBeenCalledOnce();
     expect(findCustomerByEmail).toHaveBeenCalledOnce();
     expect(findUserByEmail).toHaveBeenCalledOnce();
+  });
+
+  it('re-throws non-404 errors from /debug/user-data', async () => {
+    // Codex P2 on PR #309: a 500 whose body happens to include "404" must
+    // NOT be treated as idempotent. AuthedFetchError exposes status
+    // structurally so we can branch on the actual code, not the message.
+    const user = makeUser();
+    vi.mocked(user.api.delete).mockRejectedValue(
+      new AuthedFetchError('DELETE', '/debug/user-data', 500, 'server error: nested 404 message'),
+    );
+
+    const promise = cleanupUser(user);
+    const settled = promise.catch((err) => err);
+    await vi.runAllTimersAsync();
+    const err = await settled;
+
+    expect(err).toBeInstanceOf(AuthedFetchError);
+    expect((err as AuthedFetchError).status).toBe(500);
+    // Cleanup must NOT proceed past the throw — Clerk delete shouldn't fire.
+    expect(deleteUser).not.toHaveBeenCalled();
   });
 
   it('throws when STRIPE_SECRET_KEY is missing', async () => {

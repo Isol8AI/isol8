@@ -240,15 +240,16 @@ class TestEfsExists:
         from core.containers import get_workspace
 
         ws = get_workspace()
-        # Point the workspace mount at a temp dir we control. The real
-        # attribute on Workspace is ``_mount`` (a pathlib.Path), not
-        # ``_mount_path`` — diverged from plan to match the codebase.
+        # Point the workspace mount at a temp dir we control. Path layout:
+        # `<mount>/<owner_id>/...` (matches workspace.user_path in prod).
         monkeypatch.setattr(ws, "_mount", tmp_path)
-        (tmp_path / "user_present").mkdir()
+        owner_dir = tmp_path / "user_test_123"
+        owner_dir.mkdir()
+        (owner_dir / "agents").mkdir()
 
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
-            params={"path": str(tmp_path / "user_present")},
+            params={"path": str(owner_dir / "agents")},
         )
         assert res.status_code == 200
         assert res.json() == {"exists": True}
@@ -259,16 +260,18 @@ class TestEfsExists:
 
         ws = get_workspace()
         monkeypatch.setattr(ws, "_mount", tmp_path)
+        # owner_root must exist for path.resolve() to succeed.
+        (tmp_path / "user_test_123").mkdir()
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
-            params={"path": str(tmp_path / "nope")},
+            params={"path": str(tmp_path / "user_test_123" / "nope")},
         )
         assert res.status_code == 200
         assert res.json() == {"exists": False}
 
     @pytest.mark.asyncio
     async def test_efs_exists_rejects_path_outside_users_dir(self, async_client):
-        """Server-side guard: path must start with the workspace mount root."""
+        """Server-side guard: path must be inside the caller's owner_root."""
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
             params={"path": "/etc/passwd"},
@@ -276,22 +279,39 @@ class TestEfsExists:
         assert res.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_efs_exists_rejects_traversal_under_mount_prefix(self, async_client, tmp_path, monkeypatch):
-        """Path traversal segments must be canonicalized BEFORE the prefix
-        check (Codex P2 on PR #309): a path like `<mount>/../<other>` would
-        pass `startswith(<mount>/)` but resolve outside the mount root."""
+    async def test_efs_exists_rejects_other_owners_workspace(self, async_client, tmp_path, monkeypatch):
+        """Caller cannot probe another owner's workspace (Codex P2 on PR #309).
+        Even though the requested path is under the shared mount root, it
+        belongs to a different owner_id so the endpoint must 400."""
         from core.containers import get_workspace
 
         ws = get_workspace()
-        # Create a sibling dir outside the "mount" that the traversal targets,
-        # so we know it'd resolve to something real if the guard let it through.
-        outside = tmp_path / "outside"
-        outside.mkdir()
-        mount = tmp_path / "mount"
-        mount.mkdir()
-        monkeypatch.setattr(ws, "_mount", mount)
+        monkeypatch.setattr(ws, "_mount", tmp_path)
+        (tmp_path / "user_test_123").mkdir()  # caller's own dir
+        other_owner_dir = tmp_path / "user_someone_else"
+        other_owner_dir.mkdir()
+        (other_owner_dir / "secret").touch()
 
-        traversal = f"{mount}/../outside"
+        res = await async_client.get(
+            "/api/v1/debug/efs-exists",
+            params={"path": str(other_owner_dir / "secret")},
+        )
+        assert res.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_efs_exists_rejects_traversal_under_owner_prefix(self, async_client, tmp_path, monkeypatch):
+        """Path traversal must be canonicalized — `<owner_root>/../<other>` would
+        pass a string-prefix check but resolve outside the owner_root
+        (Codex P2 on PR #309)."""
+        from core.containers import get_workspace
+
+        ws = get_workspace()
+        monkeypatch.setattr(ws, "_mount", tmp_path)
+        owner_dir = tmp_path / "user_test_123"
+        owner_dir.mkdir()
+        (tmp_path / "user_someone_else").mkdir()  # traversal target
+
+        traversal = f"{owner_dir}/../user_someone_else"
         res = await async_client.get(
             "/api/v1/debug/efs-exists",
             params={"path": traversal},

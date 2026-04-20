@@ -17,7 +17,7 @@ import { test as base, type Page } from '@playwright/test';
 import crypto from 'crypto';
 import { createUser, deleteUser, deleteOrg, findUserByEmail } from './clerk-admin';
 import { cancelSubsAndDeleteCustomer, findCustomerByEmail } from './stripe-admin';
-import { AuthedFetch } from './api';
+import { AuthedFetch, AuthedFetchError } from './api';
 import { DDBReader } from './ddb-reader';
 
 export type E2EUserRole = 'personal' | 'org';
@@ -80,7 +80,10 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   try {
     await user.api.delete('/debug/user-data');
   } catch (err) {
-    if (err instanceof Error && err.message.includes('404')) {
+    // Match by structured status code, not message text — a 500 whose body
+    // happens to contain "404" must NOT be silently swallowed (Codex P2 on
+    // PR #309). AuthedFetchError exposes the actual response status.
+    if (err instanceof AuthedFetchError && err.status === 404) {
       console.warn('[e2e] /debug/user-data 404 — treating as idempotent success');
     } else {
       throw err;
