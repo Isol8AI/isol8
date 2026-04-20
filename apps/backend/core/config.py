@@ -55,6 +55,14 @@ class Settings(BaseSettings):
 
     # --- S3 Config ---
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
+    AGENT_CATALOG_BUCKET: str = os.getenv("AGENT_CATALOG_BUCKET", "")
+
+    # --- Platform admin ---
+    # Comma-separated Clerk user IDs allowed to call /admin/catalog/publish.
+    # v1 is env-driven rather than org-role-driven because "platform admin"
+    # (Isol8 team publishing curated agents) is distinct from "org admin"
+    # (customer admin of a customer org).
+    PLATFORM_ADMIN_USER_IDS: str = os.getenv("PLATFORM_ADMIN_USER_IDS", "")
 
     # --- IAM ---
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
