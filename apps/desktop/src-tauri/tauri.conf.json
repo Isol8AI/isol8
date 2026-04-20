@@ -40,7 +40,7 @@
     ],
     "resources": [
       "bin/node-aarch64-apple-darwin",
-      "bin/openclaw-browser/**/*"
+      "bin/openclaw-host/**/*"
     ],
     "macOS": {
       "entitlements": "entitlements.plist",

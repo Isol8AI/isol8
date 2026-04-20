@@ -835,34 +835,15 @@ async fn handle_browser_proxy(
         }
     }
 
-    // Poll briefly for the port to appear. The sidecar prints its
-    // listening line within ~1s of start; bail with a helpful error
-    // if it takes longer than 10s.
-    let port = {
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-        loop {
-            let guard = handle.read().await;
-            if let Some(sc) = guard.as_ref() {
-                if let Some(p) = sc.port().await {
-                    break p;
-                }
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Ok(error_result(
-                    request,
-                    "SIDECAR_STARTUP_TIMEOUT",
-                    "browser sidecar did not report a listening port within 10s",
-                ));
-            }
-            drop(guard);
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    };
-
-    // Build the outbound HTTP request. Query string is URL-encoded
-    // from the JSON map (flat string->string assumed, mirroring
-    // MacNodeBrowserProxy.swift's shape).
-    let url = build_proxy_url(port, &path, params.query.as_ref());
+    // Port is deterministic — OpenClaw binds browser control on
+    // gatewayPort+2, and the launcher pins gatewayPort to 18789.
+    // The reqwest client's connect timeout handles the case where
+    // the sidecar is still coming up on first invocation.
+    let url = build_proxy_url(
+        crate::browser_sidecar::BROWSER_CONTROL_PORT,
+        &path,
+        params.query.as_ref(),
+    );
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()

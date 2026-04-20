@@ -2,11 +2,17 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **2026-04-19 revision note (post-Task-10 verification):** Tasks 2, 5, 6, 7 were revised after discovering the original sparse-checkout + `dist/control-service.js` launcher was broken (that file doesn't exist; the vendored extensions/browser/ is TypeScript source with no build step, and even when built would require the `openclaw` npm package's plugin-sdk at runtime). The actual shape that works — confirmed against OpenClaw v2026.4.5 source:
+> - Vendor = `npm install openclaw@v2026.4.5` in a scratch project. Browser plugin is already bundled inside the tarball at `dist/extensions/browser/` and hydrated by `scripts/postinstall-bundled-plugins.mjs`. No separate sparse-checkout.
+> - Launcher = `node node_modules/openclaw/openclaw.mjs node run --port 18789`. This is what OpenClaw's own Mac Swift app points at (see `apps/macos/Sources/OpenClaw/NodeMode/MacNodeBrowserProxy.swift`).
+> - Port = deterministic: `gatewayPort + 2` per `src/config/port-defaults.ts:deriveDefaultBrowserControlPort`. Gateway port pinned by `--port` flag → browser control port is `18791`. `browser_sidecar.rs` no longer parses stdout; `handle_browser_proxy` no longer polls.
+> - `chrome-devtools-mcp` — not needed as a separate dep. OpenClaw's bundled browser plugin includes its own CDP attach + Playwright session management; we just speak to its HTTP API.
+
 **Goal:** Let the container's agent drive the user's real, signed-in Chrome via OpenClaw's `browser.proxy` RPC — no bundled Chromium, no custom extension.
 
-**Architecture:** Bundle Node.js + OpenClaw's `extensions/browser/` TS + `chrome-devtools-mcp` as sidecars inside our Tauri desktop app. Our Rust code supervises the subprocess and relays `browser.proxy` RPCs from the container's WebSocket to the local HTTP control service, which drives chrome-devtools-mcp via CDP to Chrome 144+.
+**Architecture:** Bundle Node.js + the `openclaw` npm package (which ships its browser plugin inside) as a sidecar in our Tauri desktop app. Our Rust code supervises the Node subprocess (running `openclaw node run`) and relays `browser.proxy` RPCs from the container's WebSocket to the OpenClaw-hosted HTTP control service on `127.0.0.1:18791`, which drives the user's Chrome via CDP.
 
-**Tech Stack:** Tauri 2 (Rust), Node.js 20 LTS (bundled), OpenClaw `extensions/browser/` (vendored), `chrome-devtools-mcp` npm package, `reqwest` for HTTP relay, `tokio::process` for subprocess, FastAPI (Python) for backend config.
+**Tech Stack:** Tauri 2 (Rust), Node.js 20 LTS (bundled), `openclaw@v2026.4.5` npm package (vendored), `reqwest` for HTTP relay, `tokio::process` for subprocess, FastAPI (Python) for backend config.
 
 **Spec:** [`docs/superpowers/specs/2026-04-19-desktop-browser-node-design.md`](../specs/2026-04-19-desktop-browser-node-design.md)
 
