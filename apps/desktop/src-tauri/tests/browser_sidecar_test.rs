@@ -25,3 +25,23 @@ async fn start_is_idempotent() {
     sidecar.start().await.expect("second call is a no-op");
     sidecar.stop().await;
 }
+
+#[tokio::test]
+async fn detects_listening_port_from_stdout() {
+    // Fake script that prints the expected line then sleeps.
+    let sidecar = BrowserSidecar::new_for_test(
+        PathBuf::from("/bin/sh"),
+        vec![
+            "-c".into(),
+            "echo 'listening on 127.0.0.1:54321'; sleep 3600".into(),
+        ],
+    );
+    sidecar.start().await.expect("spawn");
+    // Give the reader loop a moment to consume the line.
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    match sidecar.state() {
+        SidecarState::Running { port, .. } => assert_eq!(port, 54321),
+        other => panic!("expected Running, got {:?}", other),
+    }
+    sidecar.stop().await;
+}

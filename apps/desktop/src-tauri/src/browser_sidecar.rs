@@ -5,7 +5,9 @@
 //! browser.proxy call respawns it).
 
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::Arc;
+use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
@@ -23,8 +25,6 @@ pub struct BrowserSidecar {
 }
 
 impl BrowserSidecar {
-    /// Constructor for tests — lets us swap the binary path without
-    /// forcing the real sidecar to be built.
     pub fn new_for_test(binary: PathBuf, args: Vec<String>) -> Self {
         Self {
             binary,
@@ -37,16 +37,45 @@ impl BrowserSidecar {
     pub async fn start(&self) -> Result<(), String> {
         let mut guard = self.child.lock().await;
         if guard.is_some() {
-            return Ok(()); // already running
+            return Ok(());
         }
-        let child = Command::new(&self.binary)
+        let mut child = Command::new(&self.binary)
             .args(&self.args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
             .kill_on_drop(true)
             .spawn()
             .map_err(|e| format!("spawn failed: {}", e))?;
+
+        // Pipe stdout: parse for "listening on 127.0.0.1:<port>" and
+        // forward every line to the file logger.
+        if let Some(out) = child.stdout.take() {
+            let port_slot = self.port.clone();
+            tokio::spawn(async move {
+                let reader = BufReader::new(out);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    crate::log(&format!("[browser-sidecar] {}", line));
+                    if let Some(port) = parse_listening_port(&line) {
+                        if let Ok(mut slot) = port_slot.try_lock() {
+                            *slot = port;
+                        }
+                    }
+                }
+            });
+        }
+        // Pipe stderr: forward to log with a prefix.
+        if let Some(err) = child.stderr.take() {
+            tokio::spawn(async move {
+                let reader = BufReader::new(err);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    crate::log(&format!("[browser-sidecar err] {}", line));
+                }
+            });
+        }
+
         *guard = Some(child);
-        // Placeholder: real impl (Task 6) will parse stdout for "listening
-        // on port N" and populate self.port. Tests pass with 0 for now.
         Ok(())
     }
 
@@ -54,6 +83,9 @@ impl BrowserSidecar {
         let mut guard = self.child.lock().await;
         if let Some(mut c) = guard.take() {
             let _ = c.kill().await;
+        }
+        if let Ok(mut slot) = self.port.try_lock() {
+            *slot = 0;
         }
     }
 
@@ -69,5 +101,48 @@ impl BrowserSidecar {
         } else {
             SidecarState::Stopped
         }
+    }
+
+    pub async fn port(&self) -> Option<u16> {
+        let p = *self.port.lock().await;
+        if p == 0 {
+            None
+        } else {
+            Some(p)
+        }
+    }
+}
+
+/// Parse "listening on 127.0.0.1:PORT" style lines. Accepts both
+/// "listening on 127.0.0.1:54321" and "…http://127.0.0.1:54321/…"
+/// so minor log-format drift in the upstream service doesn't break us.
+fn parse_listening_port(line: &str) -> Option<u16> {
+    let needle = "127.0.0.1:";
+    let idx = line.find(needle)?;
+    let rest = &line[idx + needle.len()..];
+    let end = rest.find(|c: char| !c.is_ascii_digit()).unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_listening_port;
+
+    #[test]
+    fn parses_plain_form() {
+        assert_eq!(parse_listening_port("listening on 127.0.0.1:54321"), Some(54321));
+    }
+
+    #[test]
+    fn parses_url_form() {
+        assert_eq!(
+            parse_listening_port("[info] http://127.0.0.1:18791/ ready"),
+            Some(18791)
+        );
+    }
+
+    #[test]
+    fn ignores_unrelated_lines() {
+        assert_eq!(parse_listening_port("starting chrome-devtools-mcp"), None);
     }
 }
