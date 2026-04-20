@@ -38,8 +38,25 @@ impl BrowserSidecar {
 
     pub async fn start(&self) -> Result<(), String> {
         let mut guard = self.child.lock().await;
-        if guard.is_some() {
-            return Ok(());
+        // A stored Child is not proof of life — a crashed subprocess
+        // leaves the handle `Some` even though the process is gone.
+        // Probe try_wait() and clear the slot so the next block respawns.
+        if let Some(existing) = guard.as_mut() {
+            match existing.try_wait() {
+                Ok(None) => return Ok(()), // still running
+                Ok(Some(status)) => {
+                    crate::log(&format!(
+                        "[browser-sidecar] previous child exited ({status}); respawning"
+                    ));
+                    *guard = None;
+                }
+                Err(e) => {
+                    crate::log(&format!(
+                        "[browser-sidecar] try_wait failed ({e}); respawning"
+                    ));
+                    *guard = None;
+                }
+            }
         }
         let mut child = Command::new(&self.binary)
             .args(&self.args)
