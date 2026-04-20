@@ -1,3 +1,4 @@
+pub mod browser_sidecar;
 mod exec_approvals;
 mod node_client;
 mod node_invoke;
@@ -109,10 +110,11 @@ async fn start_node_host(
     let mut invoke_rx = client.start().await?;
     log("[node] Node client started, listening for invoke requests");
 
+    let app_for_invoke = app.clone();
     tokio::spawn(async move {
         while let Some(request) = invoke_rx.recv().await {
             log(&format!("[node] Invoke: {} ({})", request.command, request.id));
-            node_invoke::handle_invoke(&client, request).await;
+            node_invoke::handle_invoke(&client, app_for_invoke.clone(), request).await;
         }
         log("[node] Invoke receiver closed");
     });
@@ -312,6 +314,9 @@ end tell"#,
         .manage(NodeState {
             status: Mutex::new("disconnected".into()),
         })
+        .manage::<browser_sidecar::BrowserSidecarHandle>(
+            std::sync::Arc::new(tokio::sync::RwLock::new(None)),
+        )
         .invoke_handler(tauri::generate_handler![
             send_auth_token,
             is_desktop,

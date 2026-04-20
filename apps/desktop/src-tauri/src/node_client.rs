@@ -367,6 +367,7 @@ where
                 "device.status",
                 "device.health",
                 "device.permissions",
+                "browser.proxy",
             ],
             "pathEnv": std::env::var("PATH").unwrap_or_default(),
             "auth": {},

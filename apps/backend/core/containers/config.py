@@ -410,6 +410,24 @@ def build_backend_policy_patch(tier: str, region: str = "us-east-1") -> dict:
             },
         },
         "tools": _build_exec_policy(),
+        # Mirror write_openclaw_config's browser block in full — the
+        # upgrade path deep-merges this patch into an existing config,
+        # and omitting `profiles.user.driver` would leave defaultProfile
+        # pointing at an undefined profile.
+        "browser": {
+            "enabled": True,
+            "defaultProfile": "user",
+            "profiles": {
+                "user": {
+                    "driver": "existing-session",
+                },
+            },
+        },
+        "nodeHost": {
+            "browserProxy": {
+                "enabled": True,
+            },
+        },
     }
 
 
@@ -671,7 +689,28 @@ def write_openclaw_config(
         "web": {
             "enabled": True,
         },
-        "browser": {"enabled": False},
+        "browser": {
+            # Enables OpenClaw's browser tool. Default profile is `user`
+            # which attaches to the user's real signed-in Chrome 144+ via
+            # chrome-devtools-mcp + CDP. No Chromium bundled in the
+            # container image.
+            "enabled": True,
+            "defaultProfile": "user",
+            "profiles": {
+                "user": {
+                    "driver": "existing-session",
+                },
+            },
+        },
+        "nodeHost": {
+            "browserProxy": {
+                # Auto-route browser tool calls to the paired desktop
+                # node. The Isol8 Tauri app runs the sidecar
+                # (openclaw/extensions/browser + chrome-devtools-mcp)
+                # colocated with Chrome on the user's Mac.
+                "enabled": True,
+            },
+        },
         "update": {"checkOnStart": False},
     }
 

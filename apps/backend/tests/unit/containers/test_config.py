@@ -198,10 +198,33 @@ class TestWriteOpenclawConfig:
         main_entry = next(a for a in config["agents"]["list"] if a.get("id") == "main")
         assert main_entry.get("workspace") == "/home/node/.openclaw/workspaces/main"
 
-    def test_browser_disabled(self):
-        """Browser automation is disabled by default."""
+    def test_config_browser_enabled_with_user_profile(self):
+        """Browser tool uses the user profile (attach to real Chrome)."""
         config = json.loads(write_openclaw_config())
-        assert config["browser"]["enabled"] is False
+        browser = config["browser"]
+        assert browser["enabled"] is True
+        assert browser["defaultProfile"] == "user"
+        assert browser["profiles"]["user"]["driver"] == "existing-session"
+
+    def test_config_node_host_browser_proxy_enabled(self):
+        """Gateway auto-routes browser tool calls to the paired node."""
+        config = json.loads(write_openclaw_config())
+        assert config["nodeHost"]["browserProxy"]["enabled"] is True
+
+    def test_build_backend_policy_patch_includes_browser(self):
+        """Refresh path carries the full browser block, not just scalars.
+
+        Without `profiles.user.driver`, a deep-merge onto a pre-browser
+        container leaves `defaultProfile = "user"` pointing at an
+        undefined profile.
+        """
+        from core.containers.config import build_backend_policy_patch
+
+        patch = build_backend_policy_patch("starter")
+        assert patch["browser"]["enabled"] is True
+        assert patch["browser"]["defaultProfile"] == "user"
+        assert patch["browser"]["profiles"]["user"]["driver"] == "existing-session"
+        assert patch["nodeHost"]["browserProxy"]["enabled"] is True
 
     def test_update_check_disabled(self):
         """Auto-update check is disabled."""
