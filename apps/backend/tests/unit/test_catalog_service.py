@@ -156,6 +156,37 @@ async def test_deploy_writes_template_sidecar(service, mock_s3, mock_workspace, 
 
 
 @pytest.mark.asyncio
+async def test_deploy_rolls_back_workspace_on_patch_failure(service, mock_s3, mock_workspace, mock_apply_deploy):
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"}]}
+        if key == "pitch/v3/manifest.json":
+            return {"slug": "pitch", "version": 3, "name": "Pitch"}
+        if key == "pitch/v3/openclaw-slice.json":
+            return {"agent": {"name": "Pitch"}, "plugins": {}, "tools": {}}
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+    mock_apply_deploy.side_effect = RuntimeError("patch boom")
+
+    with pytest.raises(RuntimeError, match="patch boom"):
+        await service.deploy(user_id="user_u", slug="pitch")
+
+    # Tar was extracted, then the config patch failed — the extracted
+    # workspace must be cleaned up so we don't leak an orphan dir.
+    mock_workspace.extract_tarball_to_workspace.assert_called_once()
+    mock_workspace.cleanup_agent_dirs.assert_called_once()
+    cleanup_args, _ = mock_workspace.cleanup_agent_dirs.call_args
+    assert cleanup_args[0] == "user_u"
+    # The rolled-back agent_id matches the one we extracted.
+    _, extract_kwargs = mock_workspace.extract_tarball_to_workspace.call_args
+    assert cleanup_args[1] == extract_kwargs["agent_id"]
+    # Sidecar must not have been written (we failed before that step).
+    mock_workspace.write_template_sidecar.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, mock_workspace, tmp_path):
     mock_workspace.read_openclaw_config.return_value = {
         "agents": [

@@ -77,35 +77,44 @@ class CatalogService:
             tar_bytes=tar_bytes,
         )
 
-        # Build agent entry with new id + workspace path.
-        # Deep-copy the slice's agent dict so we don't mutate the caller's state
-        # (matters if s3 returns a cached/shared dict).
-        agent_entry = copy.deepcopy(slice_.get("agent") or {})
-        agent_entry["id"] = new_agent_id
-        agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+        try:
+            # Build agent entry with new id + workspace path.
+            # Deep-copy the slice's agent dict so we don't mutate the caller's state
+            # (matters if s3 returns a cached/shared dict).
+            agent_entry = copy.deepcopy(slice_.get("agent") or {})
+            agent_entry["id"] = new_agent_id
+            agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
 
-        # Apply the mutation atomically inside the config file lock so two
-        # concurrent deploys cannot drop each other's agent entries or wipe
-        # each other's tool allowlist.
-        plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
-        tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
+            # Apply the mutation atomically inside the config file lock so two
+            # concurrent deploys cannot drop each other's agent entries or wipe
+            # each other's tool allowlist.
+            plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+            tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
 
-        await self._apply_deploy(
-            user_id,
-            agent_entry,
-            plugins_patch,
-            tools_allowed,
-        )
+            await self._apply_deploy(
+                user_id,
+                agent_entry,
+                plugins_patch,
+                tools_allowed,
+            )
 
-        self._workspace.write_template_sidecar(
-            user_id=user_id,
-            agent_id=new_agent_id,
-            content={
-                "template_slug": slug,
-                "template_version": manifest["version"],
-                "deployed_at": datetime.now(timezone.utc).isoformat(),
-            },
-        )
+            self._workspace.write_template_sidecar(
+                user_id=user_id,
+                agent_id=new_agent_id,
+                content={
+                    "template_slug": slug,
+                    "template_version": manifest["version"],
+                    "deployed_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+        except Exception:
+            # Roll back the extracted workspace so a failed deploy doesn't
+            # leave orphan files on EFS. cleanup_agent_dirs removes both
+            # agents/{id}/ and workspaces/{id}/, and is best-effort +
+            # idempotent — safe to call even if the config patch never
+            # ran or already succeeded.
+            self._workspace.cleanup_agent_dirs(user_id, new_agent_id)
+            raise
 
         return {
             "slug": slug,
