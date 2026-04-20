@@ -152,6 +152,70 @@ class TestDeleteUserData:
         mock_conn_svc.delete_all_for_user.assert_called_once_with("user_test_123")
 
     @pytest.mark.asyncio
+    @patch("routers.debug.container_repo")
+    @patch("routers.debug.api_key_repo")
+    @patch("routers.debug.billing_repo")
+    @patch("routers.debug.update_repo")
+    @patch("routers.debug.usage_repo")
+    @patch("routers.debug.channel_link_repo")
+    @patch("routers.debug.user_repo")
+    @patch("routers.debug.connection_service")
+    @patch("routers.debug.get_ecs_manager")
+    @patch("routers.debug.get_workspace")
+    async def test_returns_500_when_destructive_step_fails(
+        self,
+        mock_workspace,
+        mock_ecs_mgr,
+        mock_conn_svc,
+        mock_user_repo,
+        mock_chan_repo,
+        mock_usage_repo,
+        mock_update_repo,
+        mock_billing_repo,
+        mock_apikey_repo,
+        mock_container_repo,
+        async_client,
+    ):
+        """If ECS or EFS teardown raises, every other step still runs but the
+        endpoint surfaces 500 with the failure list — silently 200-ing while
+        leaking ECS services was the bug Codex flagged (P1 on PR #309)."""
+        mock_container = {
+            "owner_id": "user_test_123",
+            "service_name": "openclaw-user_test_123-abc",
+            "task_definition_arn": "arn:aws:ecs:...:task-definition/foo:5",
+        }
+        mock_container_repo.get_by_owner_id = AsyncMock(return_value=mock_container)
+        mock_container_repo.delete = AsyncMock()
+        mock_apikey_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_billing_repo.delete = AsyncMock()
+        mock_update_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_usage_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_chan_repo.delete_all_for_owner = AsyncMock(return_value=0)
+        mock_user_repo.delete = AsyncMock()
+        mock_conn_svc.delete_all_for_user = AsyncMock(return_value=0)
+
+        # ECS teardown blows up — every other step should still run.
+        ecs_mgr = MagicMock()
+        ecs_mgr.delete_user_service = AsyncMock(side_effect=RuntimeError("ECS throttled"))
+        ecs_mgr._deregister_task_definition = MagicMock()
+        mock_ecs_mgr.return_value = ecs_mgr
+
+        ws = MagicMock()
+        ws.delete_user_dir = MagicMock()
+        mock_workspace.return_value = ws
+
+        res = await async_client.delete("/api/v1/debug/user-data")
+
+        assert res.status_code == 500
+        body = res.json()["detail"]
+        # All DDB steps still ran despite the ECS failure.
+        mock_user_repo.delete.assert_called_once_with("user_test_123")
+        mock_container_repo.delete.assert_called_once_with("user_test_123")
+        # The failure list surfaces the ECS error so the caller knows what leaked.
+        assert any("ecs" in f.lower() for f in body["failures"])
+        assert body["deleted"]["ecs"] is False  # ECS step did NOT complete
+
+    @pytest.mark.asyncio
     async def test_org_member_non_admin_is_rejected(self, app, mock_org_member_user):
         """Non-admin org members cannot wipe shared org-scoped state via this
         endpoint, even in dev/staging (Codex P1 on PR #309)."""
@@ -365,11 +429,15 @@ class TestDdbRows:
         mock_update,
         mock_chan,
         mock_conn,
-        async_client,
+        app,
+        mock_org_admin_user,
     ):
         """When caller passes both owner_id (org) and user_id (member),
         user-scoped lookups (users, ws-connections) must use the user_id;
         owner-scoped lookups must use the owner_id (Codex P2 on PR #309)."""
+        from httpx import AsyncClient, ASGITransport
+        from core.auth import get_current_user
+
         mock_user.get_by_user_id = AsyncMock(return_value=None)
         mock_container.get_by_owner_id = AsyncMock(return_value=None)
         mock_billing.get_by_owner_id = AsyncMock(return_value=None)
@@ -379,10 +447,16 @@ class TestDdbRows:
         mock_chan.count_for_owner = AsyncMock(return_value=0)
         mock_conn.count_for_user = AsyncMock(return_value=0)
 
-        res = await async_client.get(
-            "/api/v1/debug/ddb-rows",
-            params={"owner_id": "org_test_456", "user_id": "user_test_123"},
-        )
+        app.dependency_overrides[get_current_user] = mock_org_admin_user
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                res = await client.get(
+                    "/api/v1/debug/ddb-rows",
+                    params={"owner_id": "org_test_456", "user_id": "user_test_123"},
+                )
+        finally:
+            app.dependency_overrides.clear()
+
         assert res.status_code == 200
 
         # Owner-scoped: org_id
@@ -392,3 +466,32 @@ class TestDdbRows:
         # User-scoped: explicit user_id, NOT owner_id
         mock_user.get_by_user_id.assert_called_once_with("user_test_123")
         mock_conn.count_for_user.assert_called_once_with("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_ddb_rows_rejects_other_owner_id(self, async_client):
+        """Caller cannot probe another owner's row counts (Codex P2 on PR #309)."""
+        res = await async_client.get(
+            "/api/v1/debug/ddb-rows",
+            params={"owner_id": "user_someone_else"},
+        )
+        assert res.status_code == 403
+
+    @pytest.mark.asyncio
+    async def test_ddb_rows_rejects_other_user_id_in_org_context(self, app, mock_org_admin_user):
+        """Org admin cannot probe a different member's user-scoped rows."""
+        from httpx import AsyncClient, ASGITransport
+        from core.auth import get_current_user
+
+        app.dependency_overrides[get_current_user] = mock_org_admin_user
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                res = await client.get(
+                    "/api/v1/debug/ddb-rows",
+                    params={
+                        "owner_id": "org_test_456",
+                        "user_id": "user_someone_else",
+                    },
+                )
+        finally:
+            app.dependency_overrides.clear()
+        assert res.status_code == 403

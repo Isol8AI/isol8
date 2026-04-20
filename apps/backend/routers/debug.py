@@ -252,12 +252,17 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # (Codex P2 on PR #309).
     user_id = auth.user_id
     deleted: dict = {"ecs": False, "efs": False, "ddb": []}
+    # Track failures so we can return 500 at the end. Test cleanup needs to
+    # know if anything leaked — a green 200 with leaked ECS/EFS state was
+    # silently accumulating orphan services every run (Codex P1 on PR #309).
+    # Each step is still best-effort (we attempt every step regardless of
+    # earlier failures so the spec sees a complete summary), but we surface
+    # a non-success status at the end if any destructive step errored.
+    failures: list[str] = []
 
     # ---- Container teardown -------------------------------------------------
     # Read the row first so we have access_point_id + task_definition_arn
-    # available even if the service-delete path doesn't clean them up (it
-    # normally does, but we treat each step as independent + best-effort so
-    # a partial failure mid-teardown still drains the rest).
+    # available even if the service-delete path doesn't clean them up.
     container = await container_repo.get_by_owner_id(owner_id)
     ecs_mgr = get_ecs_manager()
     if container:
@@ -266,21 +271,25 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
             deleted["ecs"] = True
         except Exception as e:
             logger.warning("ECS teardown failed for %s: %s", owner_id, e)
+            failures.append(f"ecs: {e}")
         # Belt-and-suspenders: ensure the per-user task-def revision is
         # deregistered even if delete_user_service bailed out before reaching
         # that step. Idempotent — deregistering a missing arn is a no-op.
+        # Treated as best-effort (not failure-tracked) — the service-delete
+        # path normally handles it; this is just a backstop.
         if container.get("task_definition_arn"):
             try:
                 ecs_mgr._deregister_task_definition(container["task_definition_arn"])
             except Exception:
                 pass
 
-    # ---- EFS folder rm -rf (best-effort) ------------------------------------
+    # ---- EFS folder rm -rf --------------------------------------------------
     try:
         get_workspace().delete_user_dir(owner_id)
         deleted["efs"] = True
     except Exception as e:
         logger.warning("EFS rm -rf failed for %s: %s", owner_id, e)
+        failures.append(f"efs: {e}")
 
     # ---- DynamoDB cleanup, all 8 per-user tables ----------------------------
     await container_repo.delete(owner_id)
@@ -306,6 +315,14 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
 
     await user_repo.delete(user_id)
     deleted["ddb"].append("users")
+
+    if failures:
+        # 500 with the failure list AND the partial deleted summary so the
+        # caller can both fail loudly AND know what state was reached.
+        raise HTTPException(
+            status_code=500,
+            detail={"deleted": deleted, "failures": failures},
+        )
 
     return {"deleted": deleted}
 
@@ -368,6 +385,15 @@ async def ddb_rows(
     if settings.ENVIRONMENT == "prod":
         put_metric("debug.endpoint.prod_hit", dimensions={"endpoint": "ddb-rows"})
         raise HTTPException(status_code=403, detail="Disabled in production")
+
+    # Restrict to caller-owned data. The endpoint is meant for the test
+    # harness to verify ITS OWN teardown — anyone passing a different
+    # owner/user is fishing for cross-tenant info in dev/staging
+    # (Codex P2 on PR #309).
+    if owner_id != resolve_owner_id(auth):
+        raise HTTPException(status_code=403, detail="Cannot query another owner's row counts")
+    if user_id is not None and user_id != auth.user_id:
+        raise HTTPException(status_code=403, detail="Cannot query another user's row counts")
 
     # `users` and `ws-connections` are keyed by Clerk user_id even when other
     # tables are scoped by org_id. Caller supplies user_id explicitly in org
