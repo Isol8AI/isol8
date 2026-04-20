@@ -1,18 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { GallerySection } from "@/components/chat/GallerySection";
 
-const deployMock = vi.fn().mockResolvedValue({
-  agent_id: "agent_new",
-  name: "Pitch",
-  slug: "pitch",
-  version: 3,
-  skills_added: [],
-  plugins_enabled: [],
-});
-const refreshMock = vi.fn();
+const { deployMock, refreshMock } = vi.hoisted(() => ({
+  deployMock: vi.fn().mockResolvedValue({
+    agent_id: "agent_new",
+    name: "Pitch",
+    slug: "pitch",
+    version: 3,
+    skills_added: [],
+    plugins_enabled: [],
+  }),
+  refreshMock: vi.fn(),
+}));
 
 vi.mock("@/hooks/useCatalog", () => ({
   useCatalog: () => ({
@@ -31,6 +33,19 @@ vi.mock("@/hooks/useAgents", () => ({
 }));
 
 describe("GallerySection", () => {
+  // The global test setup calls vi.restoreAllMocks() in afterEach, which
+  // strips mockResolvedValue. Re-apply it before each test.
+  beforeEach(() => {
+    deployMock.mockResolvedValue({
+      agent_id: "agent_new",
+      name: "Pitch",
+      slug: "pitch",
+      version: 3,
+      skills_added: [],
+      plugins_enabled: [],
+    });
+  });
+
   it("renders the header and each agent row", () => {
     render(<GallerySection onAgentDeployed={vi.fn()} />);
     expect(screen.getByText(/gallery/i)).toBeInTheDocument();
