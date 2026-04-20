@@ -64,6 +64,12 @@ schema = (
     .exclude(
         path_regex="^/api/v1/users/",
     )
+    # Catalog endpoints require AGENT_CATALOG_BUCKET + a reachable S3 bucket.
+    # CI doesn't provision S3 for contract tests, so the service init raises
+    # RuntimeError — consistent with /billing/ and /container/ exclusions.
+    .exclude(
+        path_regex="^/api/v1/catalog",
+    )
     # Desktop auth requires CLERK_SECRET_KEY (real Clerk credential) to mint
     # sign-in tokens via the upstream Clerk API. CI doesn't set the secret, so
     # the endpoint returns 500 by design ("CLERK_SECRET_KEY not configured").

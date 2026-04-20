@@ -14,7 +14,10 @@ class PublishRequest(BaseModel):
     description: str | None = None
 
 
-@router.post("/publish")
+@router.post(
+    "/publish",
+    description="Package an agent from the admin's EFS workspace and upload it to the shared catalog bucket.",
+)
 async def publish(
     req: PublishRequest,
     auth: AuthContext = Depends(require_platform_admin),

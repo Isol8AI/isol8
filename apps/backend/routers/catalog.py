@@ -12,7 +12,7 @@ class DeployRequest(BaseModel):
     slug: str
 
 
-@router.get("")
+@router.get("", description="List catalog agents available for one-click deploy.")
 async def list_catalog(
     _: AuthContext = Depends(get_current_user),
     service: CatalogService = Depends(get_catalog_service),
@@ -20,7 +20,10 @@ async def list_catalog(
     return {"agents": service.list()}
 
 
-@router.post("/deploy")
+@router.post(
+    "/deploy",
+    description="Deploy a catalog agent into the current user's container.",
+)
 async def deploy(
     req: DeployRequest,
     auth: AuthContext = Depends(get_current_user),
@@ -29,7 +32,10 @@ async def deploy(
     return await service.deploy(user_id=auth.user_id, slug=req.slug)
 
 
-@router.get("/deployed")
+@router.get(
+    "/deployed",
+    description="List which catalog templates the current user has already deployed.",
+)
 async def list_deployed(
     auth: AuthContext = Depends(get_current_user),
     service: CatalogService = Depends(get_catalog_service),
