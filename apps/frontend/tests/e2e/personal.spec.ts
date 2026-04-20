@@ -14,7 +14,11 @@ import { modelUsed } from './assertions/chat';
 
 test.describe('E2E: Personal happy path', () => {
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(15 * 60_000);
+  // Per-test cap. Step 3 alone can hit 20 min on a free-tier cold start
+  // that scale-to-zeros mid-handshake (containerHealthy 10m + waitForChatReady
+  // 10m + chat round-trip 90s). 25 min gives headroom; the slow path
+  // dominates in practice.
+  test.setTimeout(25 * 60_000);
 
   let user: E2EUser;
 

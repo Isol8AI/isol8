@@ -1,19 +1,19 @@
 import { expect, type Page } from '@playwright/test';
 
 export async function waitForChatReady(page: Page): Promise<void> {
-  // Two readiness signals:
-  //   1. "Connected" — API WebSocket up (frontend ↔ backend)
-  //   2. "Ask anything" placeholder — per-agent gateway WS handshake done
-  // The agent gateway can take 1-3 min on a freshly-provisioned container
-  // because the OpenClaw process boots, opens its WS, the backend pool
-  // attaches, then the frontend reconnects through it.
-  await page.getByText('Connected').waitFor({ state: 'visible', timeout: 60_000 });
-  // The chat input's placeholder rotates ("Ask anything", suggested bootstrap
-  // text, etc.) so don't pin to placeholder text. Wait for the Send button to
-  // be present + the textbox to be enabled.
-  await page
-    .getByTestId('send-button')
-    .waitFor({ state: 'visible', timeout: 5 * 60_000 });
+  // The free-tier container can scale to zero in the gap between
+  // containerHealthy returning (status:running) and the frontend gateway-WS
+  // handshake completing (the user is "idle" from scale-to-zero's
+  // perspective during this window). When that happens the page rebounds
+  // to "Container provisioning — waiting for ECS task" and the send-button
+  // disappears. We wait for the long-budget ECS-cold-start path: as long
+  // as either provisioning or the gateway WS handshake is making progress
+  // within the 10-minute outer budget, we keep waiting (Codex re-flag from
+  // PR #314 deploy 2026-04-20).
+  await page.getByTestId('send-button').waitFor({
+    state: 'visible',
+    timeout: 10 * 60_000,
+  });
 }
 
 async function fillChatInput(page: Page, message: string): Promise<void> {
