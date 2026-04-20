@@ -35,6 +35,13 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "externalBin": [
+      "bin/isol8-browser-service"
+    ],
+    "resources": [
+      "bin/node-aarch64-apple-darwin",
+      "bin/openclaw-browser/**/*"
+    ],
     "macOS": {
       "entitlements": "entitlements.plist",
       "signingIdentity": "Developer ID Application: Prasiddha Parthsarthy (WZX4U3C22Y)",
