@@ -1,0 +1,53 @@
+"use client";
+
+import { useState } from "react";
+
+import { AgentDetailPanel } from "@/components/chat/AgentDetailPanel";
+import { GalleryItemRow } from "@/components/chat/GalleryItemRow";
+import { useAgents } from "@/hooks/useAgents";
+import { useCatalog, type CatalogAgent, type DeployResult } from "@/hooks/useCatalog";
+
+interface GallerySectionProps {
+  onAgentDeployed?: (result: DeployResult) => void;
+}
+
+export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
+  const { agents, isLoading, deploy } = useCatalog();
+  const { refresh: refreshAgents } = useAgents();
+  const [selected, setSelected] = useState<CatalogAgent | null>(null);
+
+  if (isLoading) return null;
+  if (agents.length === 0) return null;
+
+  const handleDeploy = async (slug: string) => {
+    const result = await deploy(slug);
+    await refreshAgents();
+    onAgentDeployed?.(result);
+    return result;
+  };
+
+  return (
+    <>
+      <div className="mt-4 border-t border-neutral-800 pt-3">
+        <h3 className="px-2 text-xs uppercase tracking-wide text-neutral-500 mb-1">
+          Gallery
+        </h3>
+        <div className="space-y-0.5">
+          {agents.map((a) => (
+            <GalleryItemRow
+              key={a.slug}
+              agent={a}
+              onDeploy={handleDeploy}
+              onOpenInfo={setSelected}
+            />
+          ))}
+        </div>
+      </div>
+      <AgentDetailPanel
+        agent={selected}
+        onClose={() => setSelected(null)}
+        onDeploy={handleDeploy}
+      />
+    </>
+  );
+}
