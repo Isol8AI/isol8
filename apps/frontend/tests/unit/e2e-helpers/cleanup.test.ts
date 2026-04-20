@@ -35,7 +35,10 @@ function makeUser(overrides: Partial<E2EUser> = {}): E2EUser {
     email: 'isol8-e2e-test@mailsac.com',
     password: 'pw',
     clerkUserId: 'user_abc',
-    page: {} as E2EUser['page'],
+    page: {
+      goto: vi.fn().mockResolvedValue(null),
+      url: vi.fn().mockReturnValue('http://localhost:3000/chat'),
+    } as unknown as E2EUser['page'],
     api: { delete: vi.fn().mockResolvedValue({ deleted: {} }) } as unknown as E2EUser['api'],
     ddb: {} as E2EUser['ddb'],
     ...overrides,
@@ -115,7 +118,7 @@ describe('cleanupUser', () => {
     const err = await settled;
 
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/Stripe leak.*cus_leaked/);
+    expect((err as Error).message).toMatch(/stripe leak.*cus_leaked/);
   });
 
   it('throws when Clerk user still exists after teardown', async () => {
@@ -130,7 +133,7 @@ describe('cleanupUser', () => {
     const err = await settled;
 
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(/Clerk leak.*user_leaked/);
+    expect((err as Error).message).toMatch(/clerk leak.*user_leaked/);
   });
 
   it('treats 404 from /debug/user-data as success (idempotent re-run)', async () => {
@@ -149,10 +152,11 @@ describe('cleanupUser', () => {
     expect(findUserByEmail).toHaveBeenCalledOnce();
   });
 
-  it('re-throws non-404 errors from /debug/user-data', async () => {
-    // Codex P2 on PR #309: a 500 whose body happens to include "404" must
-    // NOT be treated as idempotent. AuthedFetchError exposes status
-    // structurally so we can branch on the actual code, not the message.
+  it('records non-404 backend errors but still runs Clerk cleanup', async () => {
+    // Codex P1 on PR #309: a backend failure (5xx, 401 from Stripe-Checkout
+    // tab) must NOT abort cleanup before Clerk delete runs — the Clerk user
+    // would leak. cleanupUser collects per-step failures and only throws
+    // at the end, so each step still gets to run.
     const user = makeUser();
     vi.mocked(user.api.delete).mockRejectedValue(
       new AuthedFetchError('DELETE', '/debug/user-data', 500, 'server error: nested 404 message'),
@@ -163,10 +167,10 @@ describe('cleanupUser', () => {
     await vi.runAllTimersAsync();
     const err = await settled;
 
-    expect(err).toBeInstanceOf(AuthedFetchError);
-    expect((err as AuthedFetchError).status).toBe(500);
-    // Cleanup must NOT proceed past the throw — Clerk delete shouldn't fire.
-    expect(deleteUser).not.toHaveBeenCalled();
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/backend.*500/);
+    // Critical: Clerk delete still ran despite the backend failure.
+    expect(deleteUser).toHaveBeenCalledOnce();
   });
 
   it('throws when STRIPE_SECRET_KEY is missing', async () => {

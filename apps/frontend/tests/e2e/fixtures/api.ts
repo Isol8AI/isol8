@@ -34,12 +34,25 @@ export class AuthedFetch {
   ) {}
 
   private async token(): Promise<string> {
-    return this.page.evaluate(async () => {
+    // Throw eagerly if Clerk isn't loaded on the current page. Falling back
+    // to '' would send `Authorization: Bearer ` and the backend would 401 —
+    // catastrophic during cleanup if a spec failed while the tab was on
+    // Stripe Checkout (or any non-app page) because the 401 would abort
+    // teardown before Clerk org/user delete ran (Codex P1 on PR #309).
+    // Callers that hit this should navigate the page back to BASE_URL first.
+    const token = await this.page.evaluate(async () => {
       const w = window as Window & {
         Clerk?: { session?: { getToken: () => Promise<string> } };
       };
-      return (await w.Clerk?.session?.getToken()) ?? '';
+      return (await w.Clerk?.session?.getToken()) ?? null;
     });
+    if (!token) {
+      throw new Error(
+        `AuthedFetch.token: no Clerk session on current page (url=${this.page.url()}). ` +
+          `Navigate back to a Clerk-enabled URL before issuing authenticated requests.`,
+      );
+    }
+    return token;
   }
 
   private async send(method: string, path: string, body?: unknown): Promise<Response> {

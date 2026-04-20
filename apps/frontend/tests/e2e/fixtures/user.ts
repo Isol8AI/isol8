@@ -67,54 +67,79 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   if (!stripeKey) throw new Error('STRIPE_SECRET_KEY required for cleanupUser');
   if (!clerkKey) throw new Error('CLERK_SECRET_KEY required for cleanupUser');
 
-  // 1. Stripe — cancels active subs then deletes the customer. Idempotent on
-  //    missing customers (the helper just returns).
-  await cancelSubsAndDeleteCustomer(stripeKey, user.email);
+  // Each step is run independently and its failure is collected; we only
+  // throw at the end. Without this, a backend 5xx (or a 401 because the tab
+  // was on Stripe Checkout — see api.ts token() guard) used to abort
+  // cleanupUser before the Clerk delete ran, leaking the Clerk user
+  // (Codex P1 on PR #309). External-system leak verification still happens
+  // last and contributes to the failure list.
+  const failures: string[] = [];
+
+  // 1. Stripe — cancels active subs then deletes the customer. Idempotent.
+  try {
+    await cancelSubsAndDeleteCustomer(stripeKey, user.email);
+  } catch (err) {
+    failures.push(`stripe: ${err}`);
+  }
 
   // 2. Backend — DELETE /debug/user-data wipes DDB rows + EFS workspace +
   //    ECS service for this clerk user. Only 404 is treated as success
-  //    (idempotent: the endpoint already ran for this user, or the dev
-  //    backend doesn't have it deployed yet on a brand-new branch). Every
-  //    other error MUST surface — silently swallowing teardown failures was
-  //    leaking ECS services on every failed run (Codex P1 on PR #309).
+  //    (idempotent). Every other error is recorded but does NOT abort
+  //    Clerk cleanup below.
+  //
+  //    Navigate the page back to the app first so Clerk is loaded and
+  //    AuthedFetch.token() can mint a JWT — without this, a spec that
+  //    failed on Stripe Checkout would 401 here.
   try {
+    const baseUrl = process.env.BASE_URL ?? user.page.url();
+    await user.page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
     await user.api.delete('/debug/user-data');
   } catch (err) {
-    // Match by structured status code, not message text — a 500 whose body
-    // happens to contain "404" must NOT be silently swallowed (Codex P2 on
-    // PR #309). AuthedFetchError exposes the actual response status.
     if (err instanceof AuthedFetchError && err.status === 404) {
       console.warn('[e2e] /debug/user-data 404 — treating as idempotent success');
     } else {
-      throw err;
+      failures.push(`backend: ${err}`);
     }
   }
 
-  // 3. Clerk — org first (if any), then the user. Both helpers treat 404 as
-  //    success so re-running cleanup on a partially-torn-down user is safe.
-  if (user.orgId) {
-    await deleteOrg({ secretKey: clerkKey, orgId: user.orgId });
+  // 3. Clerk — runs even if backend cleanup failed. Org first (if any),
+  //    then the user. Both helpers treat 404 as success.
+  try {
+    if (user.orgId) {
+      await deleteOrg({ secretKey: clerkKey, orgId: user.orgId });
+    }
+    await deleteUser({ secretKey: clerkKey, userId: user.clerkUserId });
+  } catch (err) {
+    failures.push(`clerk: ${err}`);
   }
-  await deleteUser({ secretKey: clerkKey, userId: user.clerkUserId });
 
   // 4. Settle window — Stripe + Clerk are eventually consistent on the read
   //    side. 5s is enough in practice; a tighter poll would just add flakes.
   await new Promise((r) => setTimeout(r, 5000));
 
-  // 5. Hard-fail verification. DDB / EFS are checked by the backend's
-  //    DELETE response (it 200s only if it actually deleted everything), so
-  //    we only re-query the external systems here.
-  const stripeRemaining = await findCustomerByEmail(stripeKey, user.email);
-  if (stripeRemaining) {
-    throw new Error(`Stripe leak: customer ${stripeRemaining.id} not deleted`);
+  // 5. Hard-fail verification on external systems.
+  try {
+    const stripeRemaining = await findCustomerByEmail(stripeKey, user.email);
+    if (stripeRemaining) {
+      failures.push(`stripe leak: customer ${stripeRemaining.id} not deleted`);
+    }
+  } catch (err) {
+    failures.push(`stripe verify: ${err}`);
+  }
+  try {
+    const clerkRemaining = await findUserByEmail({
+      secretKey: clerkKey,
+      email: user.email,
+    });
+    if (clerkRemaining) {
+      failures.push(`clerk leak: user ${clerkRemaining.id} not deleted`);
+    }
+  } catch (err) {
+    failures.push(`clerk verify: ${err}`);
   }
 
-  const clerkRemaining = await findUserByEmail({
-    secretKey: clerkKey,
-    email: user.email,
-  });
-  if (clerkRemaining) {
-    throw new Error(`Clerk leak: user ${clerkRemaining.id} not deleted`);
+  if (failures.length > 0) {
+    throw new Error(`cleanupUser: ${failures.length} step(s) failed:\n  - ${failures.join('\n  - ')}`);
   }
 }
 
