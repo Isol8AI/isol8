@@ -237,3 +237,19 @@ async def get_optional_user(
         )
     except Exception:
         return None
+
+
+def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
+    """
+    Allow only platform admins (Isol8 team) — distinct from customer org admins.
+
+    Allowlist is driven by the PLATFORM_ADMIN_USER_IDS env var (comma-separated
+    Clerk user IDs). Returns 403 if the current user is not in the list.
+    """
+    from core.config import settings
+
+    raw = settings.PLATFORM_ADMIN_USER_IDS or ""
+    allowed = {u.strip() for u in raw.split(",") if u.strip()}
+    if auth.user_id not in allowed:
+        raise HTTPException(status_code=403, detail="Platform admin access required")
+    return auth
