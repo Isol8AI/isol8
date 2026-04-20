@@ -1,25 +1,30 @@
-import type { Page } from '@playwright/test';
+import type { Page, Frame } from '@playwright/test';
 
 const TEST_CARD = {
   number: '4242424242424242',
   expiry: '1234',
   cvc: '123',
   name: 'E2E Test',
+  zip: '94103',
 };
 
 /**
  * Drive the Stripe-hosted Checkout page (`checkout.stripe.com/c/...`).
  *
- * Layout (verified against the PR #309 deploy artifact, 2026-04-20):
+ * Layout (verified against the PR #320 deploy artifact, 2026-04-20):
  *   - Top: Express Checkout iframes (Pay with Link, Amazon Pay) — ignore.
- *   - Email field is required and NOT pre-filled — backend creates the
- *     Stripe customer without email (separate bug). Fill it with the test
- *     user's address.
+ *   - Email field is required and NOT pre-filled (backend creates the
+ *     Stripe customer with email=null when the Clerk JWT template doesn't
+ *     include the `email` claim — separate bug). Fill it.
  *   - Payment method appears as a list of radios (Card / Cash App / Klarna
- *     / Bank). The card NUMBER/EXPIRY/CVC iframes are NOT rendered until
- *     the "Pay with card" button under the Card listitem is clicked.
- *   - After expansion, fields live in iframes identified by stable `title`
- *     attributes ("Secure card number input frame", etc).
+ *     / Bank). The card form only renders once Card is selected.
+ *   - Stripe's card form layout VARIES between accounts/versions:
+ *       - Sometimes 3 separate iframes (number/expiry/CVC) titled
+ *         "Secure card number input frame", etc.
+ *       - Sometimes 1 combined iframe with all three inputs visible.
+ *     Driver enumerates frames to find the one hosting `cardnumber` and
+ *     fills inside that frame — works for both layouts.
+ *   - Cardholder name + ZIP + Country are on the page (not in iframe).
  *   - Submit button: stable `data-testid="hosted-payment-submit-button"`.
  */
 export async function completeStripeCheckout(
@@ -29,39 +34,57 @@ export async function completeStripeCheckout(
   await page.waitForURL(/checkout\.stripe\.com/, { timeout: 30_000 });
   await page.waitForLoadState('domcontentloaded');
 
-  // Email — required for new customers. Backend doesn't pre-fill (bug to
-  // fix separately). Fill it so Stripe can move on.
   await page.getByRole('textbox', { name: /email/i }).fill(email);
 
-  // Select the Card payment method. The card iframes only render once
-  // Card is selected (verified from PR #314 deploy artifact 2026-04-20).
-  //
-  // Stripe styles the radios as visually-hidden inputs with a custom
-  // div wrapper that handles the click — playwright's .check() rejects
-  // because the underlying <input type="radio"> isn't visible/actionable
-  // and the call hangs to per-test timeout. Click the listitem (the
-  // wrapper Stripe wires the click handler onto) instead.
-  // Verified from PR #318 deploy artifact (2026-04-20).
+  // Click the Card listitem — Stripe wraps the radio with a custom div
+  // that handles the click; the underlying <input> is visually hidden.
   await page
     .getByRole('listitem')
     .filter({ has: page.getByRole('radio', { name: 'Card' }) })
     .click();
 
-  const numberFrame = page.frameLocator('iframe[title="Secure card number input frame"]');
-  const expiryFrame = page.frameLocator('iframe[title="Secure expiration date input frame"]');
-  const cvcFrame = page.frameLocator('iframe[title="Secure CVC input frame"]');
+  // Find the iframe that hosts the card form by polling all frames for
+  // the one that contains the cardnumber input. This handles both the
+  // 3-iframe layout and the single combined-card-iframe layout.
+  const cardFrame = await findFrameWith(page, '[name="cardnumber"]', 30_000);
+  await cardFrame.locator('[name="cardnumber"]').fill(TEST_CARD.number);
+  await cardFrame.locator('[name="exp-date"]').fill(TEST_CARD.expiry);
+  await cardFrame.locator('[name="cvc"]').fill(TEST_CARD.cvc);
+  // Combined-iframe layout puts ZIP inside the card iframe too. Try
+  // there first, fall back to the page-level input.
+  const zipInFrame = cardFrame.locator('[name="postalCode"]');
+  if (await zipInFrame.count().then((n) => n > 0).catch(() => false)) {
+    await zipInFrame.fill(TEST_CARD.zip);
+  }
 
-  // Wait for the card number iframe to actually exist before filling.
-  await numberFrame.locator('[name="cardnumber"]').waitFor({ state: 'visible', timeout: 30_000 });
-  await numberFrame.locator('[name="cardnumber"]').fill(TEST_CARD.number);
-  await expiryFrame.locator('[name="exp-date"]').fill(TEST_CARD.expiry);
-  await cvcFrame.locator('[name="cvc"]').fill(TEST_CARD.cvc);
-
+  // Cardholder name (page-level on both layouts; sometimes absent).
   const nameInput = page.locator('input[name="billingName"]');
   if (await nameInput.isVisible({ timeout: 1_000 }).catch(() => false)) {
     await nameInput.fill(TEST_CARD.name);
   }
 
+  // ZIP at page level (split-iframe layout has it outside the card iframe).
+  const zipPage = page.getByLabel(/zip|postal/i);
+  if (await zipPage.isVisible({ timeout: 1_000 }).catch(() => false)) {
+    await zipPage.fill(TEST_CARD.zip).catch(() => {});
+  }
+
   await page.getByTestId('hosted-payment-submit-button').click();
   await page.waitForURL(/\/chat\?subscription=success/, { timeout: 60_000 });
+}
+
+async function findFrameWith(page: Page, selector: string, timeoutMs: number): Promise<Frame> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    for (const frame of page.frames()) {
+      try {
+        const count = await frame.locator(selector).count();
+        if (count > 0) return frame;
+      } catch {
+        // Frame may have detached mid-iteration; ignore and continue.
+      }
+    }
+    await page.waitForTimeout(500);
+  }
+  throw new Error(`findFrameWith: no frame contains "${selector}" after ${timeoutMs}ms`);
 }
