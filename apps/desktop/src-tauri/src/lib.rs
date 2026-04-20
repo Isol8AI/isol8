@@ -192,7 +192,7 @@ fn is_oauth_url(url: &Url) -> bool {
     let is_clerk = ["clerk.accounts.dev", "clerk.com"]
         .iter()
         .any(|d| host == *d || host.ends_with(&format!(".{}", d)));
-    if is_clerk && path.starts_with("/v1/oauth_callback/") {
+    if is_clerk && (path == "/v1/oauth_callback" || path.starts_with("/v1/oauth_callback/")) {
         return true;
     }
     false
