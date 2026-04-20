@@ -186,6 +186,21 @@ class Workspace:
             return []
         return sorted(d.name for d in agents_dir.iterdir() if d.is_dir())
 
+    def list_workspace_agent_dirs(self, user_id: str) -> list[str]:
+        """List agent_ids that have a workspace directory under workspaces/.
+
+        This reflects the set of agents with on-EFS workspace files (created
+        by agent CRUD or catalog deploy), independent of OpenClaw's runtime
+        ``agents/`` state. A just-deployed agent lands in ``workspaces/``
+        immediately, but only appears under ``agents/`` after OpenClaw
+        processes the new ``openclaw.json`` — so the deploy-provenance
+        lookup must scan this directory.
+        """
+        workspaces_dir = self.user_path(user_id) / "workspaces"
+        if not workspaces_dir.exists():
+            return []
+        return sorted(d.name for d in workspaces_dir.iterdir() if d.is_dir())
+
     def list_directory(self, user_id: str, path: str) -> list[dict]:
         """List the contents of a directory in a user's workspace.
 

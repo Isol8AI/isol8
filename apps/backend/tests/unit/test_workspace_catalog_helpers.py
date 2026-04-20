@@ -63,3 +63,15 @@ def test_read_template_sidecar_returns_none_on_corrupt_json(workspace: Workspace
     base.mkdir(parents=True)
     (base / ".template").write_text("{not-json")
     assert workspace.read_template_sidecar("user_abc", "agent_new") is None
+
+
+def test_list_workspace_agent_dirs_empty_when_missing(workspace: Workspace, tmp_path: Path):
+    assert workspace.list_workspace_agent_dirs("user_abc") == []
+
+
+def test_list_workspace_agent_dirs_returns_sorted_subdirs(workspace: Workspace, tmp_path: Path):
+    base = tmp_path / "user_abc" / "workspaces"
+    (base / "zeta").mkdir(parents=True)
+    (base / "alpha").mkdir(parents=True)
+    (base / "README.md").write_text("not a dir")
+    assert workspace.list_workspace_agent_dirs("user_abc") == ["alpha", "zeta"]

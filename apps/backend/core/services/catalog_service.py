@@ -119,9 +119,14 @@ class CatalogService:
     # ---- deployed ----
 
     def list_deployed_for_user(self, user_id: str) -> list[dict[str, Any]]:
-        """Scan the user's workspaces for .template sidecars; return provenance."""
+        """Scan the user's workspaces for .template sidecars; return provenance.
+
+        Scans ``workspaces/`` (where sidecars live and where deploy writes
+        immediately) rather than ``agents/`` (OpenClaw runtime state that
+        lags behind openclaw.json updates).
+        """
         deployed = []
-        for agent_id in self._workspace.list_agents(user_id):
+        for agent_id in self._workspace.list_workspace_agent_dirs(user_id):
             sidecar = self._workspace.read_template_sidecar(user_id, agent_id)
             if sidecar:
                 deployed.append(
