@@ -10,7 +10,7 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: 0, // journey tests have destructive side effects — no retries
   workers: 2,
-  globalTimeout: 30 * 60 * 1000, // 30 min — Step 3 alone can hit 10 min on cold-start, then Stripe Checkout + starter chat add another 5-7 min per flow
+  globalTimeout: 45 * 60 * 1000, // 45 min — Step 3 alone can hit 20 min when scale-to-zero races the gateway WS handshake on a cold start; Stripe Checkout + starter chat add another 5-7 min per flow. Both flows run in parallel (workers=2) so the gate clock is dominated by the slower flow.
   reporter: [
     ['html', { open: 'never' }],
     ['list'],

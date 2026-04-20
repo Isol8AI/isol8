@@ -33,8 +33,11 @@ export async function completeStripeCheckout(
   // fix separately). Fill it so Stripe can move on.
   await page.getByRole('textbox', { name: /email/i }).fill(email);
 
-  // Expand the card form. The iframes don't render until this click.
-  await page.getByRole('button', { name: /pay with card/i }).click();
+  // Select the Card payment method. Stripe Checkout in this account config
+  // shows Card / Cash App / Klarna / Bank as a radio list with NO default
+  // selection — the card iframes only render once Card is selected.
+  // Verified from PR #314 deploy artifact (2026-04-20).
+  await page.getByRole('radio', { name: 'Card' }).check();
 
   const numberFrame = page.frameLocator('iframe[title="Secure card number input frame"]');
   const expiryFrame = page.frameLocator('iframe[title="Secure expiration date input frame"]');
