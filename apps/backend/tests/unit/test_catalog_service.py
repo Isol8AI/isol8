@@ -35,16 +35,16 @@ def mock_workspace():
 
 
 @pytest.fixture
-def mock_patch_config():
+def mock_apply_deploy():
     return AsyncMock()
 
 
 @pytest.fixture
-def service(mock_s3, mock_workspace, mock_patch_config):
+def service(mock_s3, mock_workspace, mock_apply_deploy):
     return CatalogService(
         s3=mock_s3,
         workspace=mock_workspace,
-        patch_openclaw_config=mock_patch_config,
+        apply_deploy_mutation=mock_apply_deploy,
     )
 
 
@@ -80,7 +80,7 @@ def test_list_returns_entries_with_manifest_preview(service, mock_s3):
 
 
 @pytest.mark.asyncio
-async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3, mock_workspace, mock_patch_config):
+async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3, mock_workspace, mock_apply_deploy):
     def _get_json(key, default=None):
         if key == "catalog.json":
             return {"agents": [{"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"}]}
@@ -107,14 +107,15 @@ async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3
     _, kwargs = mock_workspace.extract_tarball_to_workspace.call_args
     assert kwargs["user_id"] == "user_u"
 
-    mock_patch_config.assert_awaited_once()
-    args, _ = mock_patch_config.call_args
-    owner_id, patch = args
+    mock_apply_deploy.assert_awaited_once()
+    args, _ = mock_apply_deploy.call_args
+    owner_id, agent_entry, plugins_patch, tools_allowed = args
     assert owner_id == "user_u"
-    assert patch["agents"][0]["name"] == "Pitch"
-    assert patch["agents"][0]["id"] == result["agent_id"]
-    assert patch["agents"][0]["workspace"] == f".openclaw/workspaces/{result['agent_id']}"
-    assert patch["plugins"] == {"memory": {"enabled": True}}
+    assert agent_entry["name"] == "Pitch"
+    assert agent_entry["id"] == result["agent_id"]
+    assert agent_entry["workspace"] == f".openclaw/workspaces/{result['agent_id']}"
+    assert plugins_patch == {"memory": {"enabled": True}}
+    assert tools_allowed == ["web-search"]
 
 
 @pytest.mark.asyncio
@@ -125,7 +126,7 @@ async def test_deploy_unknown_slug_raises(service, mock_s3):
 
 
 @pytest.mark.asyncio
-async def test_deploy_writes_template_sidecar(service, mock_s3, mock_workspace, mock_patch_config, tmp_path):
+async def test_deploy_writes_template_sidecar(service, mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
     def _get_json(key, default=None):
         if key == "catalog.json":
             return {"agents": [{"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"}]}

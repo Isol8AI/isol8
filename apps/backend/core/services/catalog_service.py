@@ -3,7 +3,7 @@
 Depends on injected collaborators so unit tests can mock them:
   - s3: CatalogS3Client
   - workspace: Workspace (from core.containers.workspace)
-  - patch_openclaw_config: async callable (from core.services.config_patcher)
+  - apply_deploy_mutation: async callable (from core.services.config_patcher)
 """
 
 from __future__ import annotations
@@ -23,11 +23,11 @@ class CatalogService:
         *,
         s3,
         workspace,
-        patch_openclaw_config: Callable[[str, dict], Awaitable[None]],
+        apply_deploy_mutation: Callable[[str, dict, dict, list[str]], Awaitable[None]],
     ):
         self._s3 = s3
         self._workspace = workspace
-        self._patch = patch_openclaw_config
+        self._apply_deploy = apply_deploy_mutation
 
     # ---- list ----
 
@@ -84,17 +84,18 @@ class CatalogService:
         agent_entry["id"] = new_agent_id
         agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
 
-        # Compute merged agents list ourselves because _deep_merge replaces lists.
-        current = self._workspace.read_openclaw_config(user_id) or {}
-        existing_agents = list(current.get("agents") or [])
+        # Apply the mutation atomically inside the config file lock so two
+        # concurrent deploys cannot drop each other's agent entries or wipe
+        # each other's tool allowlist.
+        plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+        tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
 
-        patch: dict[str, Any] = {
-            "agents": existing_agents + [agent_entry],
-            "plugins": copy.deepcopy(slice_.get("plugins") or {}),
-            "tools": copy.deepcopy(slice_.get("tools") or {}),
-        }
-
-        await self._patch(user_id, patch)
+        await self._apply_deploy(
+            user_id,
+            agent_entry,
+            plugins_patch,
+            tools_allowed,
+        )
 
         self._workspace.write_template_sidecar(
             user_id=user_id,
@@ -209,7 +210,7 @@ def get_catalog_service() -> CatalogService:
     from core.config import settings
     from core.containers import get_workspace
     from core.services.catalog_s3_client import CatalogS3Client
-    from core.services.config_patcher import patch_openclaw_config
+    from core.services.config_patcher import apply_deploy_mutation
 
     if not settings.AGENT_CATALOG_BUCKET:
         raise RuntimeError("AGENT_CATALOG_BUCKET is not configured")
@@ -217,6 +218,6 @@ def get_catalog_service() -> CatalogService:
     _catalog_service = CatalogService(
         s3=CatalogS3Client(bucket_name=settings.AGENT_CATALOG_BUCKET),
         workspace=get_workspace(),
-        patch_openclaw_config=patch_openclaw_config,
+        apply_deploy_mutation=apply_deploy_mutation,
     )
     return _catalog_service
