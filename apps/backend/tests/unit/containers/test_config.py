@@ -212,12 +212,18 @@ class TestWriteOpenclawConfig:
         assert config["nodeHost"]["browserProxy"]["enabled"] is True
 
     def test_build_backend_policy_patch_includes_browser(self):
-        """Refresh path carries the same browser + nodeHost scalars."""
+        """Refresh path carries the full browser block, not just scalars.
+
+        Without `profiles.user.driver`, a deep-merge onto a pre-browser
+        container leaves `defaultProfile = "user"` pointing at an
+        undefined profile.
+        """
         from core.containers.config import build_backend_policy_patch
 
         patch = build_backend_policy_patch("starter")
         assert patch["browser"]["enabled"] is True
         assert patch["browser"]["defaultProfile"] == "user"
+        assert patch["browser"]["profiles"]["user"]["driver"] == "existing-session"
         assert patch["nodeHost"]["browserProxy"]["enabled"] is True
 
     def test_update_check_disabled(self):

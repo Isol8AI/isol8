@@ -410,9 +410,18 @@ def build_backend_policy_patch(tier: str, region: str = "us-east-1") -> dict:
             },
         },
         "tools": _build_exec_policy(),
+        # Mirror write_openclaw_config's browser block in full — the
+        # upgrade path deep-merges this patch into an existing config,
+        # and omitting `profiles.user.driver` would leave defaultProfile
+        # pointing at an undefined profile.
         "browser": {
             "enabled": True,
             "defaultProfile": "user",
+            "profiles": {
+                "user": {
+                    "driver": "existing-session",
+                },
+            },
         },
         "nodeHost": {
             "browserProxy": {

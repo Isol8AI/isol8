@@ -73,12 +73,24 @@ EOF
     )
 
     # Tauri externalBin expects a concrete file per target triple.
+    # The shim must locate node + openclaw-host at runtime in two
+    # different layouts:
+    #   dev:   target/debug/<shim> + sibling node-<triple> and openclaw-host-<triple>
+    #   prod:  Isol8.app/Contents/MacOS/<shim>; node-<triple> and
+    #          openclaw-host-<triple> live in ../Resources/ (they're
+    #          declared in tauri.conf.json's `resources`, which macOS
+    #          places under Contents/Resources).
     cat > "$BIN_DIR/isol8-browser-service-${TRIPLE}" <<LAUNCHER
 #!/usr/bin/env bash
 set -euo pipefail
 HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-exec "\$HERE/node-${TRIPLE}" \\
-    "\$HERE/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
+if [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
+    ASSETS="\$HERE/../Resources"
+else
+    ASSETS="\$HERE"
+fi
+exec "\$ASSETS/node-${TRIPLE}" \\
+    "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
     node run --host 127.0.0.1 --port 18789 "\$@"
 LAUNCHER
     chmod +x "$BIN_DIR/isol8-browser-service-${TRIPLE}"
