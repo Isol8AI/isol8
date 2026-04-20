@@ -10,6 +10,7 @@ vi.mock('../../e2e/fixtures/clerk-admin', () => ({
 vi.mock('../../e2e/fixtures/stripe-admin', () => ({
   cancelSubsAndDeleteCustomer: vi.fn(),
   findCustomerByEmail: vi.fn(),
+  findCustomersByOwnerId: vi.fn(),
 }));
 
 import { cleanupUser, type E2EUser } from '../../e2e/fixtures/user';
@@ -22,6 +23,7 @@ import {
 import {
   cancelSubsAndDeleteCustomer,
   findCustomerByEmail,
+  findCustomersByOwnerId,
 } from '../../e2e/fixtures/stripe-admin';
 
 const ENV_KEYS = {
@@ -55,6 +57,7 @@ describe('cleanupUser', () => {
     vi.mocked(deleteUser).mockReset().mockResolvedValue();
     vi.mocked(deleteOrg).mockReset().mockResolvedValue();
     vi.mocked(findCustomerByEmail).mockReset().mockResolvedValue(null);
+    vi.mocked(findCustomersByOwnerId).mockReset().mockResolvedValue([]);
     vi.mocked(findUserByEmail).mockReset().mockResolvedValue(null);
   });
 
@@ -83,6 +86,7 @@ describe('cleanupUser', () => {
     expect(cancelSubsAndDeleteCustomer).toHaveBeenCalledWith(
       ENV_KEYS.STRIPE_SECRET_KEY,
       user.email,
+      user.clerkUserId, // owner_id == clerkUserId in personal context
     );
     expect(user.api.delete).toHaveBeenCalledWith('/debug/user-data');
     expect(deleteUser).toHaveBeenCalledWith({
