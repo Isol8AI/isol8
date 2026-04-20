@@ -745,14 +745,28 @@ class TestDeleteUserService:
 
     @pytest.mark.asyncio
     async def test_delete_ecs_failure_raises(self, manager, mock_ecs_client):
-        """ECS API failure raises EcsManagerError."""
+        """A non-idempotent ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
-            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "no cluster"}},
             "UpdateService",
         )
 
         with pytest.raises(EcsManagerError, match="Failed to delete ECS service"):
             await manager.delete_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_delete_service_not_found_is_idempotent(self, manager, mock_ecs_client):
+        """ServiceNotFoundException is treated as idempotent success — the
+        e2e teardown can legitimately retry against a state where the
+        service was already deleted (Codex P1 on PR #309)."""
+        mock_ecs_client.update_service.side_effect = ClientError(
+            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            "UpdateService",
+        )
+
+        # Must NOT raise — and must skip the rest of the teardown.
+        await manager.delete_user_service("user_test_123")
+        mock_ecs_client.delete_service.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
