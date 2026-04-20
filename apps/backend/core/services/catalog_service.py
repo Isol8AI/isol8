@@ -13,6 +13,9 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.services.catalog_package import build_manifest, tar_directory
+from core.services.catalog_slice import extract_agent_slice
+
 
 class CatalogService:
     def __init__(
@@ -111,3 +114,68 @@ class CatalogService:
             "skills_added": list(agent_entry.get("skills") or []),
             "plugins_enabled": list((slice_.get("plugins") or {}).keys()),
         }
+
+    # ---- publish ----
+
+    async def publish(
+        self,
+        *,
+        admin_user_id: str,
+        agent_id: str,
+        slug_override: str | None = None,
+        description_override: str | None = None,
+    ) -> dict[str, Any]:
+        config = self._workspace.read_openclaw_config(admin_user_id)
+        if not config:
+            raise FileNotFoundError(f"admin {admin_user_id} has no openclaw.json")
+
+        slice_ = extract_agent_slice(config, agent_id)
+        agent_entry_raw = next(a for a in config["agents"] if a.get("id") == agent_id)
+
+        name = agent_entry_raw.get("name") or agent_id
+        slug = (slug_override or name).strip().lower().replace(" ", "-")
+
+        prior_versions = self._s3.list_versions(slug)
+        next_version = (max(prior_versions) + 1) if prior_versions else 1
+
+        manifest = build_manifest(
+            slug=slug,
+            version=next_version,
+            name=name,
+            emoji=agent_entry_raw.get("emoji", ""),
+            vibe=agent_entry_raw.get("vibe", ""),
+            description=description_override or agent_entry_raw.get("description", ""),
+            suggested_model=agent_entry_raw.get("model", ""),
+            suggested_channels=list((agent_entry_raw.get("channels") or {}).keys()),
+            required_skills=list(agent_entry_raw.get("skills") or []),
+            required_plugins=list((slice_.get("plugins") or {}).keys()),
+            required_tools=list((slice_.get("tools") or {}).get("allowed") or []),
+            published_by=admin_user_id,
+        )
+
+        workspace_dir = self._workspace.agent_workspace_path(admin_user_id, agent_id)
+        tar_bytes = tar_directory(workspace_dir)
+
+        prefix = f"{slug}/v{next_version}"
+        self._s3.put_bytes(f"{prefix}/workspace.tar.gz", tar_bytes, content_type="application/gzip")
+        self._s3.put_json(f"{prefix}/manifest.json", manifest)
+        self._s3.put_json(f"{prefix}/openclaw-slice.json", slice_)
+
+        catalog = self._s3.get_json("catalog.json", default={"agents": []})
+        entries = [e for e in (catalog.get("agents") or []) if e.get("slug") != slug]
+        entries.append(
+            {
+                "slug": slug,
+                "current_version": next_version,
+                "manifest_url": f"{prefix}/manifest.json",
+            }
+        )
+        self._s3.put_json(
+            "catalog.json",
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "agents": entries,
+            },
+        )
+
+        return {"slug": slug, "version": next_version, "s3_prefix": prefix}

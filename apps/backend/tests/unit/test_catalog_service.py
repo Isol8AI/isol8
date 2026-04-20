@@ -152,3 +152,72 @@ async def test_deploy_writes_template_sidecar(service, mock_s3, mock_workspace, 
     assert sidecar_written["agent_id"] == result["agent_id"]
     assert sidecar_written["content"]["template_slug"] == "pitch"
     assert sidecar_written["content"]["template_version"] == 3
+
+
+@pytest.mark.asyncio
+async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, mock_workspace, tmp_path):
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [
+            {
+                "id": "agent_admin_pitch",
+                "workspace": ".openclaw/workspaces/agent_admin_pitch",
+                "name": "Pitch",
+                "emoji": "🎯",
+                "vibe": "Direct",
+                "model": "qwen/qwen3-vl-235b",
+                "skills": ["web-search"],
+                "channels": {"telegram": {"bot_token": "SECRET"}},
+            }
+        ],
+        "plugins": {"memory": {"enabled": True}},
+        "tools": {"allowed": ["web-search"]},
+    }
+    admin_workspace = tmp_path / "admin_ws"
+    admin_workspace.mkdir()
+    (admin_workspace / "IDENTITY.md").write_text("name: Pitch\nemoji: 🎯\nvibe: Direct\n")
+    mock_workspace.agent_workspace_path.return_value = admin_workspace
+
+    mock_s3.list_versions.return_value = []
+    mock_s3.get_json.return_value = {"agents": []}
+
+    result = await service.publish(
+        admin_user_id="user_admin",
+        agent_id="agent_admin_pitch",
+        description_override=None,
+    )
+
+    assert result["slug"] == "pitch"
+    assert result["version"] == 1
+
+    put_json_keys = [c.args[0] for c in mock_s3.put_json.call_args_list]
+    assert "pitch/v1/manifest.json" in put_json_keys
+    assert "pitch/v1/openclaw-slice.json" in put_json_keys
+    assert "catalog.json" in put_json_keys
+
+    put_bytes_keys = [c.args[0] for c in mock_s3.put_bytes.call_args_list]
+    assert "pitch/v1/workspace.tar.gz" in put_bytes_keys
+
+    slice_call = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "pitch/v1/openclaw-slice.json")
+    slice_json = slice_call.args[1]
+    assert "model" not in slice_json["agent"]
+    assert "channels" not in slice_json["agent"]
+    assert "workspace" not in slice_json["agent"]
+    assert "id" not in slice_json["agent"]
+
+
+@pytest.mark.asyncio
+async def test_publish_bumps_version_when_prior_exists(service, mock_s3, mock_workspace, tmp_path):
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "plugins": {},
+        "tools": {},
+    }
+    admin_workspace = tmp_path / "admin_ws"
+    admin_workspace.mkdir()
+    (admin_workspace / "IDENTITY.md").write_text("name: Pitch\n")
+    mock_workspace.agent_workspace_path.return_value = admin_workspace
+    mock_s3.list_versions.return_value = [1, 2, 5]
+    mock_s3.get_json.return_value = {"agents": []}
+
+    result = await service.publish(admin_user_id="admin", agent_id="a1")
+    assert result["version"] == 6

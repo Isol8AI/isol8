@@ -590,3 +590,6 @@ class Workspace:
             return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             return None
+
+    def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
+        return self.user_path(user_id) / "workspaces" / agent_id
