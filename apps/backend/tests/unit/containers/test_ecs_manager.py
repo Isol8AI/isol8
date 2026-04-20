@@ -745,14 +745,46 @@ class TestDeleteUserService:
 
     @pytest.mark.asyncio
     async def test_delete_ecs_failure_raises(self, manager, mock_ecs_client):
-        """ECS API failure raises EcsManagerError."""
+        """A non-idempotent ECS API failure raises EcsManagerError."""
         mock_ecs_client.update_service.side_effect = ClientError(
-            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            {"Error": {"Code": "ClusterNotFoundException", "Message": "no cluster"}},
             "UpdateService",
         )
 
         with pytest.raises(EcsManagerError, match="Failed to delete ECS service"):
             await manager.delete_user_service("user_test_123")
+
+    @pytest.mark.asyncio
+    async def test_delete_service_not_found_is_idempotent(self, manager, mock_ecs_client):
+        """ServiceNotFoundException is treated as idempotent success but the
+        function continues into per-user resource cleanup (task-def, EFS
+        access point, container row). Service-gone but resources orphaned
+        is a real partial-failure state we need to recover from
+        (Codex P1 on PR #309)."""
+        mock_ecs_client.update_service.side_effect = ClientError(
+            {"Error": {"Code": "ServiceNotFoundException", "Message": "not found"}},
+            "UpdateService",
+        )
+
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            # Container row still exists with an orphaned access point —
+            # mirrors the partial-cleanup state the early-return bug created.
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={
+                    "owner_id": "user_test_123",
+                    "access_point_id": "fsap-orphaned",
+                    "task_definition_arn": "arn:aws:ecs:...:task-definition/foo:5",
+                }
+            )
+            mock_repo.delete = AsyncMock()
+
+            # Must NOT raise even though the service is gone.
+            await manager.delete_user_service("user_test_123")
+
+            # Service delete itself isn't called (already gone).
+            mock_ecs_client.delete_service.assert_not_called()
+            # But the per-user cleanup STILL runs — this is the load-bearing fix.
+            mock_repo.delete.assert_called_once_with("user_test_123")
 
 
 # ---------------------------------------------------------------------------

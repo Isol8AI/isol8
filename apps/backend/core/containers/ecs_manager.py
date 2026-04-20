@@ -15,6 +15,7 @@ import secrets
 import socket
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.observability.metrics import put_metric, timing
@@ -605,6 +606,33 @@ class EcsManager:
                 service=service_name,
                 force=True,
             )
+        except ClientError as e:
+            # Service-not-found is idempotent success — the e2e teardown can
+            # legitimately retry against a state where the service was already
+            # deleted (e.g. previous partial run). Treating "doesn't exist" as
+            # an error breaks retry semantics. All other ClientErrors propagate.
+            #
+            # NB: we do NOT early-return here — the per-user resources below
+            # (task-def revision, EFS access point, DDB container row) may
+            # still exist even after the service is gone, and a partial
+            # cleanup that left the access point orphaned can only be
+            # recovered if subsequent retries fall through to this block
+            # (Codex P1 on PR #309).
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("ServiceNotFoundException", "ServiceNotActiveException"):
+                logger.info(
+                    "delete_user_service: service %s for user %s already gone — continuing per-user cleanup",
+                    service_name,
+                    user_id,
+                )
+            else:
+                logger.error(
+                    "Failed to delete ECS service %s for user %s: %s",
+                    service_name,
+                    user_id,
+                    e,
+                )
+                raise EcsManagerError(f"Failed to delete ECS service: {e}", user_id)
         except Exception as e:
             logger.error(
                 "Failed to delete ECS service %s for user %s: %s",

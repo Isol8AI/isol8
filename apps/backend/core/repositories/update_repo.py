@@ -151,6 +151,56 @@ async def get_due_scheduled() -> list[dict]:
     return response.get("Items", [])
 
 
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all pending-update rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. PK=owner_id, SK=update_id.
+    Paginates the DDB query so multi-page results don't leak (Codex P2 #309).
+    """
+    table = _get_table()
+    deleted = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "ProjectionExpression": "owner_id, update_id",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        for item in response.get("Items", []):
+            await run_in_thread(
+                table.delete_item,
+                Key={"owner_id": item["owner_id"], "update_id": item["update_id"]},
+            )
+            deleted += 1
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return deleted
+
+
+async def count_for_owner(owner_id: str) -> int:
+    """Count pending-update rows for an owner. Used by /debug/ddb-rows.
+
+    Paginates so the count matches reality past the 1MB query boundary.
+    """
+    table = _get_table()
+    total = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "Select": "COUNT",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        total += int(response.get("Count", 0))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return total
+
+
 async def mark_applied(owner_id: str, update_id: str) -> bool:
     """Mark an update as applied and set TTL for 30-day expiry."""
     table = _get_table()

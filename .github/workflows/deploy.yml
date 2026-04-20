@@ -1082,8 +1082,7 @@ jobs:
       - name: Install Playwright browsers
         run: cd apps/frontend && npx playwright install chromium --with-deps
       - name: Run E2E gate tests
-        run: cd apps/frontend && npx playwright test --project=chromium
-          --grep-invert='Chat Smoke'
+        run: cd apps/frontend && npx playwright test --workers=2
         env:
           BASE_URL: https://dev.isol8.co
           NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL_DEV }}

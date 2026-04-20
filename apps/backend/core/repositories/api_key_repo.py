@@ -58,3 +58,55 @@ async def delete_key(user_id: str, tool_id: str) -> bool:
         Key={"user_id": user_id, "tool_id": tool_id},
     )
     return True
+
+
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all API key rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. The api-keys table uses user_id
+    as the partition key (legacy naming), so owner_id maps to user_id.
+    Paginates the DDB query so multi-page results don't leak (Codex P2 #309).
+    """
+    table = _get_table()
+    deleted = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("user_id").eq(owner_id),
+            "ProjectionExpression": "user_id, tool_id",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        for item in response.get("Items", []):
+            await run_in_thread(
+                table.delete_item,
+                Key={"user_id": item["user_id"], "tool_id": item["tool_id"]},
+            )
+            deleted += 1
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return deleted
+
+
+async def count_for_owner(owner_id: str) -> int:
+    """Count API key rows for an owner. Used by /debug/ddb-rows.
+
+    PK is ``user_id`` on this table (legacy naming) — owner_id maps to it.
+    Paginates so the count matches reality past the 1MB query boundary.
+    """
+    table = _get_table()
+    total = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("user_id").eq(owner_id),
+            "Select": "COUNT",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        total += int(response.get("Count", 0))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return total

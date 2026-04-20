@@ -81,6 +81,61 @@ async def get_period_usage(owner_id: str, period: str) -> dict | None:
     }
 
 
+async def delete_all_for_owner(owner_id: str) -> int:
+    """Delete all usage-counter rows for an owner. Returns count deleted.
+
+    Used by the e2e teardown endpoint. PK=owner_id, SK=period (which
+    includes both period rollup rows and member:{user_id}:{period} rows).
+    Paginates the DDB query so org members with many member:* rows beyond
+    the 1MB query page boundary still get fully cleared (Codex P2 #309).
+    """
+    table = _get_table()
+    deleted = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "ProjectionExpression": "owner_id, #p",
+            "ExpressionAttributeNames": {"#p": "period"},
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        for item in response.get("Items", []):
+            await run_in_thread(
+                table.delete_item,
+                Key={"owner_id": item["owner_id"], "period": item["period"]},
+            )
+            deleted += 1
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return deleted
+
+
+async def count_for_owner(owner_id: str) -> int:
+    """Count usage-counter rows for an owner. Used by /debug/ddb-rows.
+
+    PK=owner_id, SK=period — counts both rollup rows and per-member rows.
+    Paginates so the count matches the actual row total even past the
+    1MB query page boundary.
+    """
+    table = _get_table()
+    total = 0
+    last_key: dict | None = None
+    while True:
+        kwargs = {
+            "KeyConditionExpression": Key("owner_id").eq(owner_id),
+            "Select": "COUNT",
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.query, **kwargs)
+        total += int(response.get("Count", 0))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return total
+
+
 async def get_member_usage(owner_id: str, period: str) -> list[dict]:
     """Get per-member usage within an org for a period.
 
