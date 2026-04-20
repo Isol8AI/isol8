@@ -14,7 +14,9 @@ import { modelUsed } from './assertions/chat';
 
 test.describe('E2E: Org happy path', () => {
   test.describe.configure({ mode: 'serial' });
-  test.setTimeout(15 * 60_000);
+  // Same as personal.spec — Step 3 cold-start can hit 20 min when scale-to-zero
+  // races the gateway WS handshake.
+  test.setTimeout(25 * 60_000);
 
   let user: E2EUser;
 
