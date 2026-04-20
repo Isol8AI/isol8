@@ -115,6 +115,23 @@ class CatalogService:
             "plugins_enabled": list((slice_.get("plugins") or {}).keys()),
         }
 
+    # ---- deployed ----
+
+    def list_deployed_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        """Scan the user's workspaces for .template sidecars; return provenance."""
+        deployed = []
+        for agent_id in self._workspace.list_agents(user_id):
+            sidecar = self._workspace.read_template_sidecar(user_id, agent_id)
+            if sidecar:
+                deployed.append(
+                    {
+                        "agent_id": agent_id,
+                        "template_slug": sidecar.get("template_slug"),
+                        "template_version": sidecar.get("template_version"),
+                    }
+                )
+        return deployed
+
     # ---- publish ----
 
     async def publish(
