@@ -18,15 +18,26 @@ const OUTPUT_CAP: usize = 200 * 1024;
 struct SystemRunParams {
     // OpenClaw's agent passes argv as `command: string[]`; see
     // openclaw/src/node-host/invoke-types.ts:3-17 and the caller at
-    // openclaw/src/agents/bash-tools.exec-host-node.ts:107. Keep the Rust
-    // field name short but alias on the wire.
+    // openclaw/src/agents/bash-tools.exec-host-node.ts:106-112.
     #[serde(rename = "command")]
     argv: Vec<String>,
+    // Original command as a string — OpenClaw sends this alongside argv
+    // so the prepare response can round-trip an authoritative commandText
+    // that the approval card displays to the user.
+    #[serde(rename = "rawCommand")]
+    raw_command: Option<String>,
     cwd: Option<String>,
     env: Option<HashMap<String, String>>,
     #[serde(rename = "timeoutMs")]
     timeout_ms: Option<u64>,
     input: Option<String>,
+    // Plan binding fields. The prepare response echoes these back so
+    // OpenClaw can tie the subsequent system.run invocation to the
+    // originating agent/session for approval bookkeeping.
+    #[serde(rename = "agentId")]
+    agent_id: Option<String>,
+    #[serde(rename = "sessionKey")]
+    session_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -36,6 +47,35 @@ struct WhichParams {
     #[serde(rename = "bins")]
     names: Vec<String>,
 }
+
+#[derive(Deserialize)]
+struct NotifyParams {
+    title: Option<String>,
+    body: Option<String>,
+    sound: Option<String>,
+    // priority and delivery are accepted but mapped best-effort only — macOS
+    // display notification doesn't expose priority/delivery controls.
+    #[serde(default, rename = "priority")]
+    _priority: Option<String>,
+    #[serde(default, rename = "delivery")]
+    _delivery: Option<String>,
+}
+
+/// Commands OpenClaw currently tries to invoke on a mac node. Every command
+/// that reaches our invoke_rx for dispatch must be advertised in
+/// node_client.rs so the gateway routes it here (otherwise OpenClaw refuses
+/// to dial the node for that command). NOT_IMPLEMENTED returns are
+/// preferable to silent timeouts.
+const NOT_IMPLEMENTED_COMMANDS: &[&str] = &[
+    "camera.list",
+    "camera.snap",
+    "camera.clip",
+    "photos.latest",
+    "screen.record",
+    "location.get",
+    "notifications.list",
+    "notifications.actions",
+];
 
 /// Dispatch a node.invoke.request to the appropriate handler.
 pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
@@ -47,6 +87,11 @@ pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
         "system.run" => handle_system_run(&request).await,
         "system.run.prepare" => handle_system_run_prepare(&request).await,
         "system.which" => handle_system_which(&request).await,
+        "system.notify" => handle_system_notify(&request).await,
+        "device.info" => handle_device_info(&request).await,
+        "device.status" => handle_device_status(&request).await,
+        "device.health" => handle_device_health(&request).await,
+        "device.permissions" => handle_device_permissions(&request).await,
         "system.execApprovals.get" => Ok(NodeInvokeResult {
             id,
             node_id,
@@ -60,6 +105,19 @@ pub async fn handle_invoke(client: &NodeClient, request: NodeInvokeRequest) {
             ok: true,
             payload_json: Some(r#"{"ok":true}"#.into()),
             error: None,
+        }),
+        cmd if NOT_IMPLEMENTED_COMMANDS.contains(&cmd) => Ok(NodeInvokeResult {
+            id,
+            node_id,
+            ok: false,
+            payload_json: None,
+            error: Some(InvokeError {
+                code: "NOT_IMPLEMENTED".into(),
+                message: format!(
+                    "{} is not yet supported on the Isol8 desktop node. See docs for node capabilities.",
+                    cmd,
+                ),
+            }),
         }),
         _ => Ok(NodeInvokeResult {
             id,
@@ -122,35 +180,16 @@ async fn handle_system_run(
     // and we spawn against the same resolved path (no re-resolution race).
     let argv = resolve_argv0_absolute(&params.argv, &cwd).await;
 
-    // Check exec approval before running
-    let security = ExecSecurity::Allowlist; // Default security level
-    match exec_approvals::check_approval(&argv, &security) {
-        Ok(()) => {} // Approved — continue
-        Err(reason) if reason.starts_with("APPROVAL_REQUIRED:") => {
-            // Need user approval — show a native dialog
-            let cmd_preview = argv.join(" ");
-            let decision = prompt_exec_approval(&cmd_preview).await;
-            match decision {
-                ApprovalDecision::AllowOnce => {
-                    // Continue execution this time only
-                }
-                ApprovalDecision::AllowAlways => {
-                    exec_approvals::record_decision(&argv, ApprovalDecision::AllowAlways);
-                }
-                ApprovalDecision::Deny => {
-                    exec_approvals::record_decision(&argv, ApprovalDecision::Deny);
-                    return Ok(error_result(
-                        request,
-                        "EXEC_DENIED",
-                        &format!("User denied execution of: {}", cmd_preview),
-                    ));
-                }
-            }
-        }
-        Err(reason) => {
-            return Ok(error_result(request, "EXEC_DENIED", &reason));
-        }
-    }
+    // No node-side approval gate. OpenClaw runs the approval flow on the
+    // container (emits exec.approval.requested, waits for the user's
+    // decision via the in-chat card, persists allow-always to
+    // ~/.openclaw/exec-approvals.json, and only calls system.run on the
+    // node AFTER approval). Re-checking here produced a second native
+    // macOS dialog on top of the in-chat card — duplicate UX for the
+    // same decision. See openclaw/src/agents/bash-tools.exec-host-node.ts
+    // for the container-side gate and
+    // docs/superpowers/specs/2026-04-18-exec-approval-card-design.md for
+    // the in-chat flow.
 
     let (cmd, args) = argv.split_first().unwrap();
 
@@ -290,33 +329,34 @@ async fn handle_system_run_prepare(
         return Ok(error_result(request, "INVALID_PARAMS", "argv is required"));
     }
 
-    // Resolve argv[0] so the approval check uses the same path-keyed lookup
-    // system.run will use. If we checked with a bare name and system.run
-    // later resolved to a different absolute path, approved=true here and
-    // EXEC_DENIED there would be inconsistent. Use the SAME cwd fallback
-    // system.run uses so relative-path approval keys line up.
+    // Resolve argv[0] to an absolute path so system.run and prepare use the
+    // SAME path-keyed view when the user later approves / allow-always's
+    // the command. Mismatches here would make approval keys unstable.
     let cwd = params
         .cwd
         .clone()
         .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
     let argv = resolve_argv0_absolute(&params.argv, &cwd).await;
 
-    // Mirror the approval policy system.run will apply, WITHOUT prompting —
-    // prepare must report truthful approval state so the agent doesn't call
-    // system.run on something that will then be denied. Showing a dialog
-    // here would produce two prompts for one command.
-    let security = ExecSecurity::Allowlist;
-    let would_be_approved = exec_approvals::check_approval(&argv, &security).is_ok();
-
-    // resolvedPath matches what system.run would actually execute.
-    let resolved: Option<String> = if std::path::Path::new(&argv[0]).is_absolute() {
-        Some(argv[0].clone())
-    } else {
-        None
-    };
+    // OpenClaw expects { plan: { argv, commandText, cwd, agentId, sessionKey } }
+    // — see openclaw/src/infra/system-run-approval-binding.ts:40-67 for the
+    // required shape. Returning anything else fails the parse at
+    // bash-tools.exec-host-node.ts:117 with "invalid system.run.prepare
+    // response". Required fields: non-empty `argv` AND non-empty
+    // `commandText`.
+    let command_text = params
+        .raw_command
+        .clone()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| argv.join(" "));
     let payload = serde_json::json!({
-        "approved": would_be_approved && resolved.is_some(),
-        "resolvedPath": resolved,
+        "plan": {
+            "argv": argv,
+            "cwd": params.cwd,
+            "commandText": command_text,
+            "agentId": params.agent_id,
+            "sessionKey": params.session_key,
+        }
     });
 
     Ok(NodeInvokeResult {
@@ -560,6 +600,183 @@ fn error_result(request: &NodeInvokeRequest, code: &str, message: &str) -> NodeI
             code: code.into(),
             message: message.into(),
         }),
+    }
+}
+
+// ---- system.notify ----
+
+/// Escape a string for safe embedding inside an AppleScript double-quoted
+/// literal. AppleScript treats `\` and `"` as special; everything else
+/// (including newlines) is taken literally. Mirrors what OpenClaw's Mac app
+/// does in Objective-C — we use osascript instead of UserNotifications
+/// because the UN framework requires bundle entitlements we'd rather not
+/// ship a first release with.
+fn escape_applescript_string(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+async fn handle_system_notify(
+    request: &NodeInvokeRequest,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    let params: NotifyParams = parse_params(&request.params_json)?;
+    let title = params.title.unwrap_or_default();
+    let body = params.body.unwrap_or_default();
+    if title.trim().is_empty() && body.trim().is_empty() {
+        return Ok(error_result(
+            request,
+            "INVALID_PARAMS",
+            "title or body is required",
+        ));
+    }
+
+    let mut script = format!(
+        r#"display notification "{}" with title "{}""#,
+        escape_applescript_string(&body),
+        escape_applescript_string(&title),
+    );
+    if let Some(sound) = params.sound.as_deref().filter(|s| !s.is_empty()) {
+        script.push_str(&format!(
+            r#" sound name "{}""#,
+            escape_applescript_string(sound),
+        ));
+    }
+
+    let output = Command::new("osascript")
+        .args(["-e", &script])
+        .output()
+        .await?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        return Ok(error_result(request, "NOTIFY_FAILED", stderr.trim()));
+    }
+
+    Ok(NodeInvokeResult {
+        id: request.id.clone(),
+        node_id: request.node_id.clone(),
+        ok: true,
+        payload_json: Some(r#"{"ok":true}"#.into()),
+        error: None,
+    })
+}
+
+// ---- device.* ----
+
+/// Run a read-only command with a 3s cap and return trimmed stdout, or
+/// empty string on any error. Used for `sw_vers`, `uname`, `hostname`, etc.
+/// Never fails — these are informational-only fields on device.info.
+async fn quick_output(cmd: &str, args: &[&str]) -> String {
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(3),
+        Command::new(cmd).args(args).output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        _ => String::new(),
+    }
+}
+
+async fn handle_device_info(
+    request: &NodeInvokeRequest,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    let product_name = quick_output("sw_vers", &["-productName"]).await;
+    let product_version = quick_output("sw_vers", &["-productVersion"]).await;
+    let build_version = quick_output("sw_vers", &["-buildVersion"]).await;
+    let hostname = quick_output("hostname", &[]).await;
+    let kernel = quick_output("uname", &["-sr"]).await;
+
+    let payload = serde_json::json!({
+        "platform": std::env::consts::OS,
+        "arch": std::env::consts::ARCH,
+        "hostname": if hostname.is_empty() { serde_json::Value::Null } else { serde_json::Value::String(hostname) },
+        "os": {
+            "name": if product_name.is_empty() { "macOS".to_string() } else { product_name },
+            "version": product_version,
+            "build": build_version,
+        },
+        "kernel": kernel,
+        "desktop": {
+            "app": "Isol8 Desktop",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+    });
+    Ok(ok_payload(request, payload))
+}
+
+async fn handle_device_status(
+    request: &NodeInvokeRequest,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    // kern.boottime: "{ sec = 1776000000, usec = 0 } Sun ... "
+    let boottime_raw = quick_output("sysctl", &["-n", "kern.boottime"]).await;
+    let boot_secs = boottime_raw
+        .split("sec = ")
+        .nth(1)
+        .and_then(|s| s.split(',').next())
+        .and_then(|s| s.trim().parse::<u64>().ok());
+    let uptime_secs = boot_secs.map(|b| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs().saturating_sub(b))
+            .unwrap_or(0)
+    });
+
+    let mem_total_raw = quick_output("sysctl", &["-n", "hw.memsize"]).await;
+    let mem_total_bytes: Option<u64> = mem_total_raw.parse().ok();
+
+    let payload = serde_json::json!({
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        "uptimeSec": uptime_secs,
+        "memory": {
+            "totalBytes": mem_total_bytes,
+        },
+    });
+    Ok(ok_payload(request, payload))
+}
+
+async fn handle_device_health(
+    request: &NodeInvokeRequest,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    let payload = serde_json::json!({
+        "ok": true,
+        "ts": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+    });
+    Ok(ok_payload(request, payload))
+}
+
+async fn handle_device_permissions(
+    request: &NodeInvokeRequest,
+) -> Result<NodeInvokeResult, Box<dyn std::error::Error + Send + Sync>> {
+    // We don't (yet) request camera/photos/screen/location permissions from
+    // macOS, so reporting the TCC state here would be misleading — the only
+    // honest answer is "we haven't asked". When those capabilities land we
+    // can probe the actual authorization status via AVFoundation/
+    // CoreLocation/Photos/ScreenCaptureKit and swap this out.
+    let payload = serde_json::json!({
+        "camera": "not-requested",
+        "microphone": "not-requested",
+        "photos": "not-requested",
+        "location": "not-requested",
+        "screenRecording": "not-requested",
+        "notifications": "granted",  // osascript display notification works without explicit grant
+        "accessibility": "not-requested",
+    });
+    Ok(ok_payload(request, payload))
+}
+
+/// Convenience: wrap a serde_json::Value into a successful NodeInvokeResult.
+fn ok_payload(request: &NodeInvokeRequest, payload: serde_json::Value) -> NodeInvokeResult {
+    NodeInvokeResult {
+        id: request.id.clone(),
+        node_id: request.node_id.clone(),
+        ok: true,
+        payload_json: Some(payload.to_string()),
+        error: None,
     }
 }
 
