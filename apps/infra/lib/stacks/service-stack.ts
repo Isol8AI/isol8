@@ -595,6 +595,14 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
+        // One-off nonce to force a service-stack template diff. The prod-container
+        // stack could not update ExportsOutputRefOpenClawTaskDefDC1884BEC2B7400A
+        // while prod-service had no pending template changes (CFN blocks export
+        // updates when a consumer is still importing the old value and has no
+        // in-flight diff to resequence). Giving the consumer a trivial change
+        // lets CDK's stack ordering reorchestrate the export refresh. Unrelated
+        // to runtime behavior; can be deleted once PR #323's prod deploy lands.
+        DEPLOY_NONCE: "2026-04-20-unlock-openclaw-taskdef-export",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
