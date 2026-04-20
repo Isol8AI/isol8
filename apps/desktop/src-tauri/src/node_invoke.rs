@@ -819,7 +819,10 @@ async fn handle_browser_proxy(
     let method = params.method.unwrap_or_else(|| "GET".into());
     let path = params.path.unwrap_or_else(|| "/".into());
 
-    // Lazily start the sidecar on first call. Later calls reuse it.
+    // Ensure the sidecar handle is initialized, then ensure the
+    // subprocess is running. Call start() on every invoke because it's
+    // idempotent and respawns a dead child via try_wait() probe — so
+    // a sidecar that crashed between invokes gets revived here.
     let handle = app.state::<crate::browser_sidecar::BrowserSidecarHandle>();
     {
         let guard = handle.read().await;
@@ -829,16 +832,26 @@ async fn handle_browser_proxy(
             if w.is_none() {
                 let sc = crate::browser_sidecar::BrowserSidecar::for_app(&app)
                     .map_err(|e| format!("sidecar init: {}", e))?;
-                sc.start().await.map_err(|e| format!("sidecar start: {}", e))?;
                 *w = Some(sc);
             }
         }
     }
+    {
+        let guard = handle.read().await;
+        if let Some(sc) = guard.as_ref() {
+            sc.start().await.map_err(|e| format!("sidecar start: {}", e))?;
+        }
+    }
 
-    // Port is deterministic — OpenClaw binds browser control on
-    // gatewayPort+2, and the launcher pins gatewayPort to 18789.
-    // The reqwest client's connect timeout handles the case where
-    // the sidecar is still coming up on first invocation.
+    // Port is deterministic (gatewayPort+2 = 18791), but the child
+    // takes a moment to bind after spawn — cold start on M-series is
+    // ~1-2s. Wait until the port accepts a TCP connection before
+    // issuing the first HTTP request, otherwise the caller sees a
+    // confusing connection-refused mid-race.
+    wait_for_control_port(crate::browser_sidecar::BROWSER_CONTROL_PORT)
+        .await
+        .map_err(|e| format!("sidecar readiness: {}", e))?;
+
     let url = build_proxy_url(
         crate::browser_sidecar::BROWSER_CONTROL_PORT,
         &path,
@@ -883,6 +896,27 @@ async fn handle_browser_proxy(
         payload_json: Some(payload.to_string()),
         error: None,
     })
+}
+
+/// Poll-connect to `127.0.0.1:port` until it accepts or a 10s
+/// deadline elapses. Returns Ok as soon as one connection succeeds.
+/// Used before the first HTTP request so cold-start races don't
+/// surface to the agent as connection-refused.
+async fn wait_for_control_port(port: u16) -> Result<(), String> {
+    use tokio::net::TcpStream;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(format!(
+                "control port {} did not accept within 10s",
+                port
+            ));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 }
 
 fn build_proxy_url(port: u16, path: &str, query: Option<&serde_json::Value>) -> String {
