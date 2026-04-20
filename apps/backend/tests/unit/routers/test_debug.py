@@ -208,9 +208,13 @@ class TestDeleteUserData:
 
         assert res.status_code == 500
         body = res.json()["detail"]
-        # All DDB steps still ran despite the ECS failure.
+        # Every other DDB step still ran despite the ECS failure...
         mock_user_repo.delete.assert_called_once_with("user_test_123")
-        mock_container_repo.delete.assert_called_once_with("user_test_123")
+        # ...EXCEPT the containers row, which is preserved when ECS failed
+        # so retries still have access_point_id + task_definition_arn to
+        # clean up the orphaned resources (Codex P1 on PR #309).
+        mock_container_repo.delete.assert_not_called()
+        assert "containers" not in body["deleted"]["ddb"]
         # The failure list surfaces the ECS error so the caller knows what leaked.
         assert any("ecs" in f.lower() for f in body["failures"])
         assert body["deleted"]["ecs"] is False  # ECS step did NOT complete

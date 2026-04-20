@@ -271,9 +271,11 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # idempotent success — Codex P1 on PR #309).
     container = await container_repo.get_by_owner_id(owner_id)
     ecs_mgr = get_ecs_manager()
+    ecs_succeeded = False
     try:
         await ecs_mgr.delete_user_service(owner_id)
         deleted["ecs"] = True
+        ecs_succeeded = True
     except Exception as e:
         logger.warning("ECS teardown failed for %s: %s", owner_id, e)
         failures.append(f"ecs: {e}")
@@ -300,16 +302,27 @@ async def delete_user_data(auth: AuthContext = Depends(get_current_user)):
     # doesn't abort the rest of the teardown — we want every table attempted,
     # then surface a 500 with the failure list at the end if anything broke
     # (Codex P1 on PR #309).
-    ddb_steps = [
-        ("containers", lambda: container_repo.delete(owner_id)),
-        ("billing-accounts", lambda: billing_repo.delete(owner_id)),
-        ("api-keys", lambda: api_key_repo.delete_all_for_owner(owner_id)),
-        ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
-        ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
-        ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
-        ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
-        ("users", lambda: user_repo.delete(user_id)),
-    ]
+    # NB: do NOT add ("containers", ...) here unconditionally. If ECS
+    # teardown failed, the row still holds the access_point_id +
+    # task_definition_arn that the next retry needs to clean up the
+    # orphaned resources — wiping the row turns a transient ECS error
+    # into an unrecoverable leak (Codex P1 on PR #309). On the happy
+    # path delete_user_service has already removed the row, so the
+    # explicit delete here is just belt-and-suspenders.
+    ddb_steps = []
+    if ecs_succeeded:
+        ddb_steps.append(("containers", lambda: container_repo.delete(owner_id)))
+    ddb_steps.extend(
+        [
+            ("billing-accounts", lambda: billing_repo.delete(owner_id)),
+            ("api-keys", lambda: api_key_repo.delete_all_for_owner(owner_id)),
+            ("usage-counters", lambda: usage_repo.delete_all_for_owner(owner_id)),
+            ("pending-updates", lambda: update_repo.delete_all_for_owner(owner_id)),
+            ("channel-links", lambda: channel_link_repo.delete_all_for_owner(owner_id)),
+            ("ws-connections", lambda: connection_service.delete_all_for_user(user_id)),
+            ("users", lambda: user_repo.delete(user_id)),
+        ]
+    )
     for table_name, action in ddb_steps:
         try:
             await action()
