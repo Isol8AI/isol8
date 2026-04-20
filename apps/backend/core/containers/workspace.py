@@ -11,6 +11,8 @@ No S3 or Docker involved -- plain file operations on a mounted volume.
 """
 
 import base64
+import io
+import json
 import logging
 import mimetypes
 import os
@@ -530,3 +532,39 @@ class Workspace:
                     user_id,
                     exc,
                 )
+
+    # ------------------------------------------------------------------
+    # Agent catalog helpers
+    # ------------------------------------------------------------------
+
+    def extract_tarball_to_workspace(
+        self,
+        user_id: str,
+        agent_id: str,
+        tar_bytes: bytes,
+    ) -> None:
+        """Extract a workspace tarball into {mount}/{user_id}/workspaces/{agent_id}/.
+
+        Rejects path traversal via catalog_package.untar_to_directory.
+        """
+        # Deferred import avoids a circular import if catalog_package ever
+        # grows a workspace dependency.
+        from core.services.catalog_package import untar_to_directory
+
+        target = self.user_path(user_id) / "workspaces" / agent_id
+        target.mkdir(parents=True, exist_ok=True)
+        untar_to_directory(io.BytesIO(tar_bytes), target)
+
+        for path in target.rglob("*"):
+            self._chown_for_access_point(path, user_id)
+        self._chown_for_access_point(target, user_id)
+
+    def read_template_sidecar(self, user_id: str, agent_id: str) -> dict | None:
+        """Return parsed `.template` sidecar JSON for an agent, or None if missing/corrupt."""
+        sidecar = self.user_path(user_id) / "workspaces" / agent_id / ".template"
+        if not sidecar.exists():
+            return None
+        try:
+            return json.loads(sidecar.read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
