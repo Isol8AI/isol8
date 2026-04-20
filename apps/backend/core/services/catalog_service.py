@@ -179,3 +179,27 @@ class CatalogService:
         )
 
         return {"slug": slug, "version": next_version, "s3_prefix": prefix}
+
+
+_catalog_service: CatalogService | None = None
+
+
+def get_catalog_service() -> CatalogService:
+    global _catalog_service
+    if _catalog_service is not None:
+        return _catalog_service
+
+    from core.config import settings
+    from core.containers import get_workspace
+    from core.services.catalog_s3_client import CatalogS3Client
+    from core.services.config_patcher import patch_openclaw_config
+
+    if not settings.AGENT_CATALOG_BUCKET:
+        raise RuntimeError("AGENT_CATALOG_BUCKET is not configured")
+
+    _catalog_service = CatalogService(
+        s3=CatalogS3Client(bucket_name=settings.AGENT_CATALOG_BUCKET),
+        workspace=get_workspace(),
+        patch_openclaw_config=patch_openclaw_config,
+    )
+    return _catalog_service
