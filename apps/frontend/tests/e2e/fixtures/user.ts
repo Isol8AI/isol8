@@ -93,6 +93,18 @@ export async function cleanupUser(user: E2EUser): Promise<void> {
   try {
     const baseUrl = process.env.BASE_URL ?? user.page.url();
     await user.page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+    // domcontentloaded fires before Clerk's JS bootstraps the session, so
+    // AuthedFetch.token() can throw if we issue the delete immediately.
+    // Wait for window.Clerk.session to be live (Codex P2 on PR #309).
+    await user.page.waitForFunction(
+      () => {
+        const w = window as Window & {
+          Clerk?: { loaded?: boolean; session?: unknown };
+        };
+        return w.Clerk?.loaded === true && w.Clerk?.session != null;
+      },
+      { timeout: 30_000 },
+    );
     await user.api.delete('/debug/user-data');
   } catch (err) {
     if (err instanceof AuthedFetchError && err.status === 404) {

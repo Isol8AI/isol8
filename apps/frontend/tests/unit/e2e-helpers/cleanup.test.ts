@@ -38,6 +38,7 @@ function makeUser(overrides: Partial<E2EUser> = {}): E2EUser {
     page: {
       goto: vi.fn().mockResolvedValue(null),
       url: vi.fn().mockReturnValue('http://localhost:3000/chat'),
+      waitForFunction: vi.fn().mockResolvedValue(null),
     } as unknown as E2EUser['page'],
     api: { delete: vi.fn().mockResolvedValue({ deleted: {} }) } as unknown as E2EUser['api'],
     ddb: {} as E2EUser['ddb'],

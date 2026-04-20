@@ -44,8 +44,13 @@ test.describe('E2E: Org happy path', () => {
   });
 
   test('Step 2: organization onboarding', async () => {
-    const { orgId } = await onboardOrganization(user.page, `e2e-org-${user.runId}`);
-    user.orgId = orgId;
+    // Record orgId on `user` the instant Clerk reports it, BEFORE the
+    // /chat redirect wait — otherwise a downstream UI failure here would
+    // leak the org because afterAll's cleanupUser would skip deleteOrg
+    // (Codex P1 on PR #309).
+    await onboardOrganization(user.page, `e2e-org-${user.runId}`, (orgId) => {
+      user.orgId = orgId;
+    });
     expect(user.page.url()).toContain('/chat');
   });
 
