@@ -202,16 +202,20 @@ fn is_oauth_url(url: &Url) -> bool {
 /// handler launch). Extracts the sign-in ticket if present, focuses the
 /// existing main window, and re-emits the `auth:sign-in-ticket` event
 /// so the frontend's useDesktopAuth hook can complete the sign-in.
+/// Produce a log-safe representation of a URL by dropping the query
+/// string and fragment. Applied everywhere we log URLs because
+/// /tmp/isol8-desktop.log is world-readable — Clerk sign-in tickets,
+/// OAuth `code`/`state`, and similar short-lived credentials must not
+/// land there.
+fn redact_url(url_str: &str) -> String {
+    match url::Url::parse(url_str) {
+        Ok(u) => format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), u.path()),
+        Err(_) => "<unparseable>".to_string(),
+    }
+}
+
 fn handle_deep_link_url(app: &tauri::AppHandle, url_str: &str) {
-    // Log the scheme+path only — never the full URL. The isol8://auth
-    // redirect carries a Clerk one-time `ticket` query param that can
-    // create a signed-in session; writing it to /tmp/isol8-desktop.log
-    // (world-readable) would let any local process/user race to consume
-    // it and hijack the account.
-    let safe = url::Url::parse(url_str)
-        .map(|u| format!("{}://{}{}", u.scheme(), u.host_str().unwrap_or(""), u.path()))
-        .unwrap_or_else(|_| "<unparseable>".to_string());
-    log(&format!("[deep-link] received: {}", safe));
+    log(&format!("[deep-link] received: {}", redact_url(url_str)));
     if url_str.starts_with("isol8://auth") {
         if let Ok(parsed) = url::Url::parse(url_str) {
             if let Some(ticket) = parsed
@@ -242,7 +246,14 @@ pub fn run() {
         // With single_instance, the second launch's argv gets forwarded
         // to this callback on the ORIGINAL process and we can wake it up.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            log(&format!("[single-instance] second launch argv={:?}", argv));
+            // Redact each argv entry before logging. Protocol-handler
+            // launches include isol8://auth?...&ticket=... in argv, which
+            // would leak the Clerk one-time sign-in ticket otherwise.
+            let redacted: Vec<String> = argv.iter().map(|a| redact_url(a)).collect();
+            log(&format!(
+                "[single-instance] second launch argv={:?}",
+                redacted
+            ));
             // The deep-link URL appears as one of the argv entries.
             for arg in argv {
                 if arg.starts_with("isol8://") {
@@ -256,11 +267,16 @@ pub fn run() {
         .plugin(
             tauri::plugin::Builder::<tauri::Wry>::new("oauth-intercept")
                 .on_navigation(|_window, url| {
-                    log(&format!("[oauth-intercept] navigating to: {}", url));
+                    // Redact: Clerk OAuth callbacks carry short-lived
+                    // `code`/`state` credentials in query params.
+                    log(&format!(
+                        "[oauth-intercept] navigating to: {}",
+                        redact_url(url.as_str())
+                    ));
                     if is_oauth_url(url) {
                         log(&format!(
                             "[oauth-intercept] matched OAuth domain; opening callback in system browser: {}",
-                            DESKTOP_CALLBACK_URL
+                            redact_url(DESKTOP_CALLBACK_URL)
                         ));
                         // Use AppleScript so Safari is force-activated to
                         // the foreground. Plain `open -a Safari URL` from
