@@ -400,7 +400,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "chunk") {
-        const runId = msg.runId ?? "_default";
+        const runId = msg.runId;
         const messageId = getOrCreateBubble(runId);
         // Late event for a finalized run — drop.
         if (!messageId) return;
@@ -416,7 +416,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "done") {
-        const runId = msg.runId ?? "_default";
+        const runId = msg.runId;
         finalizeBubble(runId);
         return;
       }
@@ -505,7 +505,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "thinking") {
-        const runId = msg.runId ?? "_default";
+        const runId = msg.runId;
         const messageId = getOrCreateBubble(runId);
         // Late event for a finalized run — drop.
         if (!messageId) return;
@@ -521,7 +521,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "tool_start") {
-        const runId = msg.runId ?? "_default";
+        const runId = msg.runId;
         const messageId = getOrCreateBubble(runId);
         // Late event for a finalized run — drop.
         if (!messageId) return;
@@ -562,7 +562,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "tool_end" || msg.type === "tool_error") {
-        const runId = msg.runId ?? "_default";
+        const runId = msg.runId;
         const run = runsRef.current.get(runId);
         const messageId = run?.messageId;
         const nextStatus = msg.type === "tool_end" ? "done" : "error";

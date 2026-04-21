@@ -47,9 +47,9 @@ export interface BudgetExceededPayload {
 export type ToolResultBlock = { type: string; text?: string; bytes?: number; omitted?: boolean };
 
 export type ChatIncomingMessage =
-  | { type: "chunk"; content: string; agent_id?: string; runId?: string }
-  | { type: "thinking"; content: string; agent_id?: string; runId?: string }
-  | { type: "done"; agent_id?: string; runId?: string }
+  | { type: "chunk"; content: string; agent_id?: string; runId: string }
+  | { type: "thinking"; content: string; agent_id?: string; runId: string }
+  | { type: "done"; agent_id?: string; runId: string }
   | ({ type: "error"; message: string; code?: string; agent_id?: string; runId?: string } & Partial<BudgetExceededPayload>)
   | { type: "heartbeat" }
   | {
@@ -58,7 +58,7 @@ export type ChatIncomingMessage =
       toolCallId?: string;
       args?: Record<string, unknown>;
       agent_id?: string;
-      runId?: string;
+      runId: string;
     }
   | {
       type: "tool_end";
@@ -67,7 +67,7 @@ export type ChatIncomingMessage =
       result?: ToolResultBlock[];
       meta?: string;
       agent_id?: string;
-      runId?: string;
+      runId: string;
     }
   | {
       type: "tool_error";
@@ -76,7 +76,7 @@ export type ChatIncomingMessage =
       result?: ToolResultBlock[];
       meta?: string;
       agent_id?: string;
-      runId?: string;
+      runId: string;
     }
   | { type: "update_available" };
 
