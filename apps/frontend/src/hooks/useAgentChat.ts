@@ -58,8 +58,12 @@ function isChatDebugEnabled(): boolean {
 }
 function chatDebug(event: string, payload: Record<string, unknown> = {}) {
   if (!isChatDebugEnabled()) return;
+  // Using console.log rather than console.debug so entries show up at
+  // the Chrome default log level (debug is a Verbose-only level, hidden
+  // by default and a common source of "I see nothing in the console"
+  // confusion).
   // eslint-disable-next-line no-console
-  console.debug("[chat-debug]", event, { ts: Date.now(), ...payload });
+  console.log("[chat-debug]", event, { ts: Date.now(), ...payload });
   try {
     posthog?.capture?.("chat_debug", { event, ...payload });
   } catch {
