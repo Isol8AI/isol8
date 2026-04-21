@@ -34,16 +34,30 @@ import type {
 // decision, and the subsequent post-approval stream lands in the NEXT
 // user-message bubble.
 //
-// Emits to BOTH console.debug (live devtools inspection) AND posthog
-// (persistent, queryable timeline for sessions where the user can't / won't
-// keep devtools open). Chunk events are filtered out (high volume) — we
-// capture only state transitions and rare-event types.
+// OFF BY DEFAULT IN PRODUCTION. User opts in per-browser via devtools:
+//   localStorage.setItem("chat_debug", "1")   // then reload
+//   localStorage.removeItem("chat_debug")     // to disable
+//
+// When enabled, emits to console.debug (live devtools inspection) AND
+// posthog ("chat_debug" event, persistent queryable timeline). Chunk /
+// heartbeat events are excluded from posthog to keep volume down.
+//
+// Payload scrubbing: never include raw user messages, assistant content,
+// or command args. Only log shape/metadata — lengths, counts, type tags,
+// boolean flags, identifiers.
 //
 // Rip this out once the bug is identified.
 // =============================================================================
-const CHAT_DEBUG = true;
+function isChatDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem("chat_debug") === "1";
+  } catch {
+    return false;
+  }
+}
 function chatDebug(event: string, payload: Record<string, unknown> = {}) {
-  if (!CHAT_DEBUG) return;
+  if (!isChatDebugEnabled()) return;
   // eslint-disable-next-line no-console
   console.debug("[chat-debug]", event, { ts: Date.now(), ...payload });
   try {
@@ -277,7 +291,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           ref: currentAssistantIdRef.current,
           streaming: isStreamingRef.current,
           error_code: (msg as { code?: string }).code,
-          error_message: (msg as { message?: string }).message?.slice(0, 120),
+          // NOTE: deliberately do not include the error message string — it
+          // can carry user-provided content (budget/tier labels, partial
+          // agent output on aborted runs).
+          has_error_message: Boolean((msg as { message?: string }).message),
         });
       }
 
@@ -500,8 +517,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       };
       chatDebug("approval_requested_event_rx", {
         id: payload?.id,
-        command: payload?.request?.command?.slice(0, 80),
         host: payload?.request?.host,
+        // shape only — no raw command (may contain paths/args)
+        has_command: Boolean(payload?.request?.command),
         ref: currentAssistantIdRef.current,
         streaming: isStreamingRef.current,
       });
@@ -637,7 +655,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         prev_ref: currentAssistantIdRef.current,
         prev_streaming: isStreamingRef.current,
         agent: agentIdRef.current,
-        msg_preview: message.slice(0, 80),
+        // shape only — no raw user content
+        msg_length: message.length,
       });
 
       if (!agentIdRef.current) {
