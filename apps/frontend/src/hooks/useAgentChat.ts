@@ -229,7 +229,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // across dozens of turns).
   const finalizedRunsRef = useRef<Set<string>>(new Set());
 
+  // When cancelMessage/clearMessages fires before any event has arrived for
+  // the in-flight turn, we don't know what runId the server will use — so
+  // we can't pre-populate finalizedRunsRef. This flag closes the window:
+  // any unknown runId arriving while pending-cancel is set is treated as
+  // the cancelled turn and silently dropped. Cleared on the next
+  // sendMessage.
+  const pendingCancelRef = useRef<boolean>(false);
+
   const getOrCreateBubble = useCallback((runId: string): string | null => {
+    // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
+    // chunk/thinking/tool_start arrived for the in-flight turn, runsRef was
+    // empty — so finalizeAllActiveRuns had no runIds to tombstone. A late
+    // first event for that cancelled turn would otherwise fall through to
+    // bubble-creation below, spawning a ghost bubble and flipping
+    // isStreaming back to true (silently undoing the cancel). Treat any
+    // unknown runId arriving during the pending-cancel window as the
+    // cancelled turn and drop it.
+    const existing = runsRef.current.get(runId);
+    if (!existing && pendingCancelRef.current) {
+      finalizedRunsRef.current.add(runId);
+      if (finalizedRunsRef.current.size > 100) {
+        const first = finalizedRunsRef.current.values().next().value;
+        if (first) finalizedRunsRef.current.delete(first);
+      }
+      return null;
+    }
+
     // Late event for an already-finalized run — drop silently. This
     // replicates the old `if (!currentAssistantIdRef.current) return;`
     // blanket guard, but scoped to truly-finalized runs instead of the
@@ -238,7 +264,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       return null;
     }
 
-    const existing = runsRef.current.get(runId);
     if (existing) return existing.messageId;
 
     const messageId = `assistant-${crypto.randomUUID()}`;
@@ -248,7 +273,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       { id: messageId, role: "assistant", content: "" },
     ]);
     if (!isStreamingRef.current) {
-      setIsStreaming(true, `run-${runId.slice(0, 12)}-start`);
+      setIsStreaming(true, `run-${String(runId).slice(0, 12)}-start`);
     }
     return messageId;
   }, [setIsStreaming]);
@@ -264,7 +289,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (first) finalizedRunsRef.current.delete(first);
     }
     if (runsRef.current.size === 0) {
-      setIsStreaming(false, `run-${runId.slice(0, 12)}-done`);
+      setIsStreaming(false, `run-${String(runId).slice(0, 12)}-done`);
     }
   }, [setIsStreaming]);
 
@@ -459,6 +484,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           );
           setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
           finalizeAllActiveRuns();
+          // Close the window for late stragglers whose runId we never saw.
+          pendingCancelRef.current = true;
           setIsStreaming(false, "error-budget");
           return;
         }
@@ -517,6 +544,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         );
         setError(displayError);
         finalizeAllActiveRuns();
+        // Close the window for late stragglers whose runId we never saw.
+        pendingCancelRef.current = true;
         setIsStreaming(false, "error-generic");
         return;
       }
@@ -862,6 +891,10 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         msg_length: message.length,
       });
 
+      // A new turn invalidates any pending-cancel window from the previous
+      // turn. Events for this new turn must be allowed through normally.
+      pendingCancelRef.current = false;
+
       if (!agentIdRef.current) {
         throw new Error("No agent selected");
       }
@@ -927,6 +960,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // Immediately update local state so the UI feels responsive
     setIsStreaming(false, "cancelMessage");
     finalizeAllActiveRuns();
+    // Close the cancel-before-first-event window: if runsRef was empty at
+    // this point (cancel fired before any event for the in-flight turn),
+    // finalizeAllActiveRuns had no runIds to tombstone, so the next late
+    // first-event would spawn a ghost bubble without this flag.
+    pendingCancelRef.current = true;
   }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----
@@ -944,6 +982,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setError(null);
     setIsStreaming(false, "clearMessages");
     finalizeAllActiveRuns();
+    // Same reasoning as cancelMessage: cover the case where clear fires
+    // before any event for the in-flight turn has arrived.
+    pendingCancelRef.current = true;
   }, [sessionName, finalizeAllActiveRuns]);
 
   // ---- Resolve approval (allow-once / allow-always / deny) ----

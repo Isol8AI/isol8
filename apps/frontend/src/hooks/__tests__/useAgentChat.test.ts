@@ -473,4 +473,83 @@ describe("useAgentChat — multi-bubble", () => {
     expect(assistantCountAfterLate).toBe(assistantCountAfterCancel);
     expect(result.current.isStreaming).toBe(false);
   });
+
+  it("late events after cancel-before-first-event are tombstoned as ghost bubbles", async () => {
+    // Regression test for Codex (useAgentChat line ~281): if the user hits
+    // Stop BEFORE any chunk/thinking/tool_start for the in-flight turn has
+    // arrived, runsRef is empty at cancel time — so finalizeAllActiveRuns
+    // has no runIds to tombstone. A late first event then fell through to
+    // getOrCreateBubble's bubble-creation path, spawning a ghost bubble and
+    // flipping isStreaming back to true (silently undoing the cancel). The
+    // pendingCancelRef flag closes that window.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    // User sends a message; sendMessage flips isStreaming=true but we never
+    // emit any chunk/thinking/tool_start before cancel fires.
+    await act(async () => {
+      await result.current.sendMessage("go");
+    });
+    expect(result.current.isStreaming).toBe(true);
+    expect(
+      result.current.messages.filter((m) => m.role === "assistant"),
+    ).toHaveLength(0);
+
+    // User hits Stop before any event arrives — runsRef is empty here.
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(result.current.isStreaming).toBe(false);
+
+    // Late first chunk arrives for a runId we've never seen. Must be dropped.
+    emit({
+      type: "chunk",
+      content: "late straggler",
+      agent_id: agentId,
+      runId: "R-late",
+    });
+
+    expect(
+      result.current.messages.filter((m) => m.role === "assistant"),
+    ).toHaveLength(0);
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it("pendingCancelRef is cleared on new sendMessage so new runs are not dropped", async () => {
+    // Companion test: verify the pendingCancelRef flag does not persist
+    // past the next sendMessage. A new turn must allow events for its
+    // new runId through normally.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    // Turn 1: send + cancel before any event arrives.
+    await act(async () => {
+      await result.current.sendMessage("first");
+    });
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(result.current.isStreaming).toBe(false);
+
+    // Turn 2: new sendMessage must reset pendingCancelRef so a normal chunk
+    // for the new turn creates a bubble and flips isStreaming back on.
+    await act(async () => {
+      await result.current.sendMessage("second");
+    });
+    emit({
+      type: "chunk",
+      content: "normal reply",
+      agent_id: agentId,
+      runId: "R-fresh",
+    });
+
+    const assistants = result.current.messages.filter(
+      (m) => m.role === "assistant",
+    );
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe("normal reply");
+    expect(result.current.isStreaming).toBe(true);
+  });
 });
