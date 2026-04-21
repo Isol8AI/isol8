@@ -20,11 +20,13 @@ export async function waitForChatReady(page: Page): Promise<void> {
   // agents.list sometimes returns empty during container cold-start
   // (PR #340 run 24705367375: empty sidebar + disabled send, click hung
   // 25 min).
-  const deadline = Date.now() + 10 * 60_000;
+  const deadline = Date.now() + 15 * 60_000;
   const sendButton = page.getByTestId('send-button');
   const wizardCancel = page.getByRole('button', { name: 'Cancel' });
   const emptyState = page.getByText('Select an agent', { exact: false });
+  const refreshButton = page.getByRole('button', { name: 'Refresh' });
   let lastRefresh = Date.now();
+  let lastRefreshClick = 0;
 
   while (Date.now() < deadline) {
     if (await sendButton.isVisible({ timeout: 500 }).catch(() => false)) {
@@ -32,6 +34,19 @@ export async function waitForChatReady(page: Page): Promise<void> {
     }
     if (await wizardCancel.isVisible({ timeout: 500 }).catch(() => false)) {
       await wizardCancel.click().catch(() => {});
+      continue;
+    }
+    // "Connecting to AI gateway…" + "Taking longer than expected" +
+    // a Refresh button appears when the container is slow to provision.
+    // Click Refresh to kick the gateway handshake along. Verified from
+    // PR #344 e2e-dev artifact (run 24727433942, 2026-04-21) — org Step
+    // 3 screenshot showed this state after 17 min.
+    if (
+      (await refreshButton.isVisible({ timeout: 500 }).catch(() => false)) &&
+      Date.now() - lastRefreshClick > 30_000
+    ) {
+      await refreshButton.click().catch(() => {});
+      lastRefreshClick = Date.now();
       continue;
     }
     if (
@@ -45,7 +60,7 @@ export async function waitForChatReady(page: Page): Promise<void> {
     await page.waitForTimeout(1_000);
   }
   throw new Error(
-    'waitForChatReady: send-button never became visible within 10 min ' +
+    'waitForChatReady: send-button never became visible within 15 min ' +
       '(wizard persisting, empty agent list, or container stuck provisioning)',
   );
 }
