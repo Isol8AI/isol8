@@ -443,6 +443,25 @@ class TestTransformAgentEvent:
             "runId": "run-tool-2",
         }
 
+    def test_forwards_run_id_on_tool_error(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-err",
+            "data": {
+                "phase": "result",
+                "name": "exec",
+                "toolCallId": "tc-err",
+                "isError": True,
+            },
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_error",
+            "tool": "exec",
+            "toolCallId": "tc-err",
+            "runId": "run-tool-err",
+        }
+
     def test_omits_run_id_when_not_in_payload(self):
         """Transform should not add runId key when source payload lacks it."""
         payload = {"stream": "assistant", "data": {"text": "Hello"}}
