@@ -56,16 +56,27 @@ export class AuthedFetch {
   }
 
   private async send(method: string, path: string, body?: unknown): Promise<Response> {
-    const token = await this.token();
-    return fetch(`${this.apiUrl}${path}`, {
-      method,
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'X-E2E-Run-Id': this.runId,
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    // Retry on transient 502/503/504 — the gateway proxies RPC to the
+    // user's OpenClaw container over WebSocket, and during an upgrade
+    // (free→starter) the container is reconfigured (model swap) and the
+    // gateway briefly returns "Gateway RPC call failed" (502). Up to 5
+    // attempts with 2s backoff covers typical reconfig windows. Non-5xx
+    // errors return immediately.
+    for (let attempt = 0; ; attempt++) {
+      const token = await this.token();
+      const res = await fetch(`${this.apiUrl}${path}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-E2E-Run-Id': this.runId,
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const transient = res.status === 502 || res.status === 503 || res.status === 504;
+      if (!transient || attempt >= 4) return res;
+      await new Promise((r) => setTimeout(r, 2_000));
+    }
   }
 
   private async unwrap<T>(method: string, path: string, res: Response): Promise<T> {
