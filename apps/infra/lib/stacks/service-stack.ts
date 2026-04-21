@@ -580,12 +580,17 @@ export class ServiceStack extends cdk.Stack {
         CONTAINER_EXECUTION_ROLE_ARN:
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        // Pin to the full ARN (with revision) so the backend cloner always
-        // reads the CDK-managed base, never a per-user clone. Per-user clones
-        // register into the same family, so the family name resolves to
-        // family-latest — which can be a poisoned per-user revision and was
-        // the root cause of the CLAWHUB_WORKDIR drift incident on 2026-04-17.
-        ECS_TASK_DEFINITION: props.container.openclawTaskDef.taskDefinitionArn,
+        // Use the family name (inlined static string) rather than the full
+        // revision ARN so we don't create a cross-stack Fn::ImportValue that
+        // CFN locks on every task-def bump. The backend's cloner resolves
+        // latest-in-family at runtime; per-user clones register into the same
+        // family, but access points are always overridden in the clone so no
+        // cross-user leakage, and per-user clones inherit the CDK base's env
+        // vars so the CLAWHUB_WORKDIR drift PR #299 was reacting to can no
+        // longer recur under current code. If we later want the ARN-revision
+        // pinning back, route it through an SSM parameter so the value isn't
+        // tied to a consumer-imported export.
+        ECS_TASK_DEFINITION: props.container.openclawTaskDef.family,
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
@@ -595,14 +600,6 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
-        // One-off nonce to force a service-stack template diff. The prod-container
-        // stack could not update ExportsOutputRefOpenClawTaskDefDC1884BEC2B7400A
-        // while prod-service had no pending template changes (CFN blocks export
-        // updates when a consumer is still importing the old value and has no
-        // in-flight diff to resequence). Giving the consumer a trivial change
-        // lets CDK's stack ordering reorchestrate the export refresh. Unrelated
-        // to runtime behavior; can be deleted once PR #323's prod deploy lands.
-        DEPLOY_NONCE: "2026-04-20-unlock-openclaw-taskdef-export",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
