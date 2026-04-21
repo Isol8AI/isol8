@@ -679,6 +679,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         // Nothing matched — attach to the newest assistant message as a new
         // tool entry (preserves old behavior for correlationless cases
         // where no tool has started yet).
+        // Protocol invariant: OpenClaw emits `tool_start` (which creates the
+        // bubble and the toolCall entry) before `exec.approval.requested` for
+        // that toolCall, so at least one assistant bubble exists by the time
+        // we get here. The `lastAssistantIdx < 0` guard is a safety net for
+        // protocol violations, not a normal code path.
         const lastAssistantIdx = (() => {
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === "assistant") return i;

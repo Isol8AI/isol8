@@ -200,40 +200,45 @@ describe("useAgentChat — multi-bubble", () => {
 
   it("sendMessage does NOT create an assistant placeholder before first event", async () => {
     const useAgentChat = await importHook();
-    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
 
     await act(async () => {
       await result.current.sendMessage("hi");
     });
 
-    // Only a user message exists; no assistant placeholder yet.
-    const assistants = result.current.messages.filter((m) => m.role === "assistant");
-    expect(assistants).toHaveLength(0);
-    // No runs yet
+    // Only a user message exists; no assistant placeholder yet. `runsRef` is
+    // hook-internal, so we assert on the observable outcome: after
+    // sendMessage resolves but before any chunk arrives, there should be
+    // zero assistant messages.
+    expect(
+      result.current.messages.filter((m) => m.role === "assistant"),
+    ).toHaveLength(0);
     expect(result.current.isStreaming).toBe(true); // sendMessage sets isStreaming = true early
   });
 
   it("approval.requested event matches toolCallId across any assistant bubble", async () => {
     const useAgentChat = await importHook();
-    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
 
     await act(async () => {
       await result.current.sendMessage("install");
     });
 
     // Chunk + tool_start into R1
-    emit({ type: "chunk", content: "Running", agent_id: "agent-A", runId: "R1" });
+    emit({ type: "chunk", content: "Running", agent_id: agentId, runId: "R1" });
     emit({
       type: "tool_start",
       tool: "exec",
       toolCallId: "tc-1",
-      agent_id: "agent-A",
+      agent_id: agentId,
       runId: "R1",
     });
 
     // First run finishes with tool_use; second run starts
-    emit({ type: "done", agent_id: "agent-A", runId: "R1" });
-    emit({ type: "chunk", content: "More", agent_id: "agent-A", runId: "R2" });
+    emit({ type: "done", agent_id: agentId, runId: "R1" });
+    emit({ type: "chunk", content: "More", agent_id: agentId, runId: "R2" });
 
     // Approval event arrives for the tool in R1's bubble (not the active R2).
     emitEvent("exec.approval.requested", {
@@ -241,7 +246,7 @@ describe("useAgentChat — multi-bubble", () => {
       request: {
         command: "rm -rf /tmp/foo",
         host: "gateway" as const,
-        agentId: "agent-A",
+        agentId: agentId,
         toolCallId: "tc-1",
         allowedDecisions: ["allow-once", "deny"],
       },
