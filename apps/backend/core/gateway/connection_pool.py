@@ -294,56 +294,59 @@ class GatewayConnection:
         - ``stream: "assistant"`` events with text are forwarded as chunks.
         - ``stream: "reasoning"`` / ``"thinking"`` events are forwarded for real-time thinking.
         - ``stream: "tool"`` events are forwarded as tool_start/tool_end/tool_error.
+
+        The OpenClaw ``runId`` on the source payload is propagated onto every
+        transformed event so the frontend can route chunks/tools to the
+        correct per-run assistant bubble (multi-bubble rendering).
         """
         stream = payload.get("stream")
         data = payload.get("data")
         if not isinstance(data, dict):
             return None
 
+        transformed: dict | None = None
+
         if stream == "assistant":
             text = data.get("text", "")
             if text:
-                return {"type": "chunk", "content": text}
-            return None
+                transformed = {"type": "chunk", "content": text}
 
-        if stream in ("reasoning", "thinking"):
+        elif stream in ("reasoning", "thinking"):
             text = data.get("text", "")
             if text:
-                return {"type": "thinking", "content": text}
-            return None
+                transformed = {"type": "thinking", "content": text}
 
-        if stream == "tool":
+        elif stream == "tool":
             phase = data.get("phase", "")
             name = data.get("name", "")
-            if not name:
-                return None
-            tool_call_id = data.get("toolCallId", "")
-            if phase == "start":
-                # OpenClaw never strips `args` — it's safe to forward at any
-                # verboseLevel. Shows the user what the tool was called with.
-                msg: dict = {"type": "tool_start", "tool": name}
-                if tool_call_id:
-                    msg["toolCallId"] = tool_call_id
-                if "args" in data:
-                    msg["args"] = data["args"]
-                return msg
-            if phase == "result":
-                # OpenClaw signals tool errors via isError flag on the result
-                # phase, not a separate "error" phase. `result` and `meta`
-                # are only populated when verboseLevel is "full" (set in
-                # agents.defaults.verboseDefault).
-                is_error = bool(data.get("isError"))
-                msg = {"type": "tool_error" if is_error else "tool_end", "tool": name}
-                if tool_call_id:
-                    msg["toolCallId"] = tool_call_id
-                if "result" in data:
-                    msg["result"] = data["result"]
-                if data.get("meta"):
-                    msg["meta"] = data["meta"]
-                return msg
+            if name:
+                tool_call_id = data.get("toolCallId", "")
+                if phase == "start":
+                    transformed = {"type": "tool_start", "tool": name}
+                    if tool_call_id:
+                        transformed["toolCallId"] = tool_call_id
+                    if "args" in data:
+                        transformed["args"] = data["args"]
+                elif phase == "result":
+                    is_error = bool(data.get("isError"))
+                    transformed = {
+                        "type": "tool_error" if is_error else "tool_end",
+                        "tool": name,
+                    }
+                    if tool_call_id:
+                        transformed["toolCallId"] = tool_call_id
+                    if "result" in data:
+                        transformed["result"] = data["result"]
+                    if data.get("meta"):
+                        transformed["meta"] = data["meta"]
+
+        if transformed is None:
             return None
 
-        return None
+        run_id = payload.get("runId")
+        if run_id:
+            transformed["runId"] = run_id
+        return transformed
 
     @staticmethod
     def _extract_thinking_text(payload: dict) -> str | None:
@@ -745,6 +748,8 @@ class GatewayConnection:
                 # Tag all chat messages with agent_id so the frontend can
                 # route responses to the correct agent conversation.
                 event_agent_id = parsed_key.get("agent_id")
+                # runId lets the frontend route to a per-run assistant bubble.
+                run_id = payload.get("runId") if isinstance(payload, dict) else None
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -757,6 +762,8 @@ class GatewayConnection:
                         fwd: dict = {"type": "thinking", "content": thinking_text}
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
+                        if run_id:
+                            fwd["runId"] = run_id
                         self._forward_to_frontends(fwd, target_member)
                     # OpenClaw guarantees the full text reached us via agent
                     # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
@@ -764,6 +771,8 @@ class GatewayConnection:
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
+                    if run_id:
+                        fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     put_metric("chat.error", dimensions={"reason": "agent_error"})
@@ -776,12 +785,16 @@ class GatewayConnection:
                     fwd = {"type": "error", "message": err_msg}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
+                    if run_id:
+                        fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
                     fwd = {"type": "error", "message": "Agent run was cancelled"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
+                    if run_id:
+                        fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
 
             else:

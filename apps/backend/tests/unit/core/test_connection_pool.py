@@ -389,6 +389,86 @@ class TestTransformAgentEvent:
         payload = {"stream": "assistant"}
         assert GatewayConnection._transform_agent_event(payload) is None
 
+    def test_forwards_run_id_on_chunk(self):
+        payload = {
+            "stream": "assistant",
+            "runId": "run-abc-123",
+            "data": {"text": "Hello"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "chunk",
+            "content": "Hello",
+            "runId": "run-abc-123",
+        }
+
+    def test_forwards_run_id_on_thinking(self):
+        payload = {
+            "stream": "thinking",
+            "runId": "run-xyz",
+            "data": {"text": "let me think"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "thinking",
+            "content": "let me think",
+            "runId": "run-xyz",
+        }
+
+    def test_forwards_run_id_on_tool_start(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-1",
+            "data": {"phase": "start", "name": "exec", "toolCallId": "tc-1"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_start",
+            "tool": "exec",
+            "toolCallId": "tc-1",
+            "runId": "run-tool-1",
+        }
+
+    def test_forwards_run_id_on_tool_end(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-2",
+            "data": {"phase": "result", "name": "exec", "toolCallId": "tc-2"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_end",
+            "tool": "exec",
+            "toolCallId": "tc-2",
+            "runId": "run-tool-2",
+        }
+
+    def test_forwards_run_id_on_tool_error(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-err",
+            "data": {
+                "phase": "result",
+                "name": "exec",
+                "toolCallId": "tc-err",
+                "isError": True,
+            },
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_error",
+            "tool": "exec",
+            "toolCallId": "tc-err",
+            "runId": "run-tool-err",
+        }
+
+    def test_omits_run_id_when_not_in_payload(self):
+        """Transform should not add runId key when source payload lacks it."""
+        payload = {"stream": "assistant", "data": {"text": "Hello"}}
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {"type": "chunk", "content": "Hello"}
+        assert "runId" not in result
+
 
 class TestHandleMessageChatEvents:
     """Test _handle_message routing for chat event states."""
@@ -640,3 +720,99 @@ class TestStatusChangeEvents:
         conn._emit_status_change("HEALTHY", "Gateway connected")
 
         mock_mgmt.send_message.assert_not_called()
+
+
+class TestChatEventForwarding:
+    """_handle_message forwards runId on chat terminal events (done/error)."""
+
+    @pytest.fixture
+    def mock_management_api(self):
+        client = MagicMock()
+        client.send_message = MagicMock(return_value=True)
+        return client
+
+    @pytest.fixture
+    def connection(self, mock_management_api):
+        c = GatewayConnection(
+            frontend_connections={"conn-1"},
+            conn_member_map={"conn-1": "user-1"},
+            user_id="user-1",
+            ip="10.0.0.1",
+            token="t",
+            management_api=mock_management_api,
+        )
+        return c
+
+    def test_done_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-done-1",
+                },
+            }
+        )
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert done_msgs[0]["runId"] == "run-done-1"
+
+    def test_error_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-err-1",
+                    "error": {"message": "model unavailable"},
+                },
+            }
+        )
+        error_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
+        ]
+        assert len(error_msgs) == 1
+        assert error_msgs[0]["runId"] == "run-err-1"
+        assert error_msgs[0]["message"] == "model unavailable"
+
+    def test_aborted_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-abort-1",
+                },
+            }
+        )
+        error_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
+        ]
+        assert len(error_msgs) == 1
+        assert error_msgs[0]["runId"] == "run-abort-1"
+
+    def test_done_without_run_id_still_forwarded(self, connection, mock_management_api):
+        """When OpenClaw omits runId, the forwarded done has no runId key (not None)."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                },
+            }
+        )
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert "runId" not in done_msgs[0]
