@@ -649,13 +649,27 @@ class GatewayConnection:
                 return
             if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
+                # Temporary extra fields for the post-approval chunk-routing
+                # investigation. `runId`/`seq`/`clientRunId` show up on chat
+                # events; `id` shows up on exec.approval.{requested,resolved}.
+                # Remove after the bug is diagnosed.
+                extras = ""
+                if isinstance(payload, dict):
+                    approval_id = payload.get("id", "-") if event_name.startswith("exec.approval") else "-"
+                    extras = (
+                        f" runId={payload.get('runId', '-')}"
+                        f" seq={payload.get('seq', '-')}"
+                        f" clientRunId={payload.get('clientRunId', '-')}"
+                        f" approvalId={approval_id}"
+                    )
                 logger.info(
-                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
+                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s%s",
                     self.user_id,
                     event_name,
                     state,
                     session_key[:60] if session_key else "-",
                     target_member or "broadcast",
+                    extras,
                 )
 
             if event_name == "agent":
@@ -708,12 +722,25 @@ class GatewayConnection:
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
                 if state in ("final", "error", "aborted"):
+                    # Temporary debug logging: dump identifying fields
+                    # (runId, seq, clientRunId) so we can tell whether
+                    # OpenClaw assigns a new runId per LLM turn or reuses
+                    # one across the whole chat.send — needed to
+                    # disambiguate the "mid-run chat.final fires before
+                    # user approves" case from a true end-of-run.
+                    # Remove once the post-approval chunk-routing bug
+                    # is diagnosed.
                     logger.info(
-                        "[%s] chat %s sessionKey=%s target=%s",
+                        "[%s] chat %s sessionKey=%s target=%s runId=%s seq=%s clientRunId=%s parentRunId=%s stopReason=%s",
                         self.user_id,
                         state,
                         session_key[:60] if session_key else "-",
                         target_member or "broadcast",
+                        payload.get("runId", "-"),
+                        payload.get("seq", "-"),
+                        payload.get("clientRunId", "-"),
+                        payload.get("parentRunId", "-"),
+                        payload.get("stopReason", "-"),
                     )
                 # Tag all chat messages with agent_id so the frontend can
                 # route responses to the correct agent conversation.
