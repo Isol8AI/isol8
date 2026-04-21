@@ -70,6 +70,17 @@ export async function completeStripeCheckout(
   await fillIfVisible(page.getByRole('textbox', { name: 'Cardholder name' }), TEST_CARD.name);
   await fillIfVisible(page.getByRole('textbox', { name: 'ZIP' }), TEST_CARD.zip);
 
+  // Uncheck "Save my information for faster checkout" — it's checked by
+  // default and enrolls the customer in Stripe Link, which makes Phone
+  // number a required field. Test card has no phone; submit gets rejected
+  // with a red border on Phone (verified from PR #334 e2e-dev artifact).
+  const linkOptIn = page.getByRole('checkbox', {
+    name: /save my information for faster checkout/i,
+  });
+  if (await linkOptIn.isChecked({ timeout: 2_000 }).catch(() => false)) {
+    await linkOptIn.uncheck();
+  }
+
   await page.getByTestId('hosted-payment-submit-button').click();
   await page.waitForURL(/\/chat\?subscription=success/, { timeout: 60_000 });
 }
