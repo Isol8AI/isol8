@@ -420,4 +420,57 @@ describe("useAgentChat — multi-bubble", () => {
     const tool = r1!.toolUses!.find((t) => t.toolCallId === "tc-1")!;
     expect(tool.status).toBe("pending-approval");
   });
+
+  it("late events after cancelMessage do not resurrect a ghost bubble", async () => {
+    // Regression test for Codex P2 (useAgentChat line ~912/930): cancelMessage
+    // and clearMessages used to do `runsRef.clear(); finalizedRunsRef.clear()`,
+    // which wiped the ghost-bubble guard for runs that were just aborted. A
+    // late in-flight chunk/thinking/tool_start for one of those runIds would
+    // then miss BOTH refs inside getOrCreateBubble, spawn a fresh empty
+    // assistant bubble, and flip isStreaming back to true — silently undoing
+    // the cancel. The fix migrates active runIds into finalizedRunsRef before
+    // clearing runsRef so late stragglers are dropped.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("go");
+    });
+
+    // First chunk for R1 creates the bubble and keeps isStreaming=true.
+    emit({ type: "chunk", content: "partial", agent_id: agentId, runId: "R1" });
+    expect(result.current.isStreaming).toBe(true);
+    expect(
+      result.current.messages.filter((m) => m.role === "assistant"),
+    ).toHaveLength(1);
+
+    // User hits Stop.
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+    expect(result.current.isStreaming).toBe(false);
+    const assistantCountAfterCancel = result.current.messages.filter(
+      (m) => m.role === "assistant",
+    ).length;
+
+    // Late stragglers for R1 arrive after cancel (WebSocket reorder / OpenClaw
+    // still flushing). These must NOT create a new bubble and must NOT flip
+    // isStreaming back on.
+    emit({ type: "chunk", content: "late chunk", agent_id: agentId, runId: "R1" });
+    emit({ type: "thinking", content: "late thinking", agent_id: agentId, runId: "R1" });
+    emit({
+      type: "tool_start",
+      tool: "exec",
+      toolCallId: "tc-late",
+      agent_id: agentId,
+      runId: "R1",
+    });
+
+    const assistantCountAfterLate = result.current.messages.filter(
+      (m) => m.role === "assistant",
+    ).length;
+    expect(assistantCountAfterLate).toBe(assistantCountAfterCancel);
+    expect(result.current.isStreaming).toBe(false);
+  });
 });

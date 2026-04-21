@@ -268,6 +268,25 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
   }, [setIsStreaming]);
 
+  // Mark every currently-active run as finalized, then clear runsRef. Used by
+  // cancel / clear / global-error branches: wiping runsRef without also
+  // populating finalizedRunsRef would let a late in-flight chunk/thinking/
+  // tool_start event slip past getOrCreateBubble (it wouldn't find the runId
+  // in either ref) and spawn a ghost assistant bubble that re-enables
+  // isStreaming — silently undoing the cancel/clear. Never clear
+  // finalizedRunsRef for the same reason; rely on the 100-entry FIFO cap in
+  // finalizeBubble to bound growth.
+  const finalizeAllActiveRuns = useCallback(() => {
+    for (const runId of runsRef.current.keys()) {
+      finalizedRunsRef.current.add(runId);
+      if (finalizedRunsRef.current.size > 100) {
+        const first = finalizedRunsRef.current.values().next().value;
+        if (first) finalizedRunsRef.current.delete(first);
+      }
+    }
+    runsRef.current.clear();
+  }, []);
+
   const agentIdRef = useRef(agentId);
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -439,8 +458,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             Array.from(runsRef.current.values()).map((r) => r.messageId),
           );
           setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
-          runsRef.current.clear();
-          finalizedRunsRef.current.clear();
+          finalizeAllActiveRuns();
           setIsStreaming(false, "error-budget");
           return;
         }
@@ -498,8 +516,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           ),
         );
         setError(displayError);
-        runsRef.current.clear();
-        finalizedRunsRef.current.clear();
+        finalizeAllActiveRuns();
         setIsStreaming(false, "error-generic");
         return;
       }
@@ -909,9 +926,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
     // Immediately update local state so the UI feels responsive
     setIsStreaming(false, "cancelMessage");
-    runsRef.current.clear();
-    finalizedRunsRef.current.clear();
-  }, [isStreaming, sendReq, sessionName]);
+    finalizeAllActiveRuns();
+  }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----
 
@@ -927,9 +943,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
     setError(null);
     setIsStreaming(false, "clearMessages");
-    runsRef.current.clear();
-    finalizedRunsRef.current.clear();
-  }, [sessionName]);
+    finalizeAllActiveRuns();
+  }, [sessionName, finalizeAllActiveRuns]);
 
   // ---- Resolve approval (allow-once / allow-always / deny) ----
 
