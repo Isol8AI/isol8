@@ -389,6 +389,67 @@ class TestTransformAgentEvent:
         payload = {"stream": "assistant"}
         assert GatewayConnection._transform_agent_event(payload) is None
 
+    def test_forwards_run_id_on_chunk(self):
+        payload = {
+            "stream": "assistant",
+            "runId": "run-abc-123",
+            "data": {"text": "Hello"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "chunk",
+            "content": "Hello",
+            "runId": "run-abc-123",
+        }
+
+    def test_forwards_run_id_on_thinking(self):
+        payload = {
+            "stream": "thinking",
+            "runId": "run-xyz",
+            "data": {"text": "let me think"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "thinking",
+            "content": "let me think",
+            "runId": "run-xyz",
+        }
+
+    def test_forwards_run_id_on_tool_start(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-1",
+            "data": {"phase": "start", "name": "exec", "toolCallId": "tc-1"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_start",
+            "tool": "exec",
+            "toolCallId": "tc-1",
+            "runId": "run-tool-1",
+        }
+
+    def test_forwards_run_id_on_tool_end(self):
+        payload = {
+            "stream": "tool",
+            "runId": "run-tool-2",
+            "data": {"phase": "result", "name": "exec", "toolCallId": "tc-2"},
+        }
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {
+            "type": "tool_end",
+            "tool": "exec",
+            "toolCallId": "tc-2",
+            "runId": "run-tool-2",
+        }
+
+    def test_omits_run_id_when_not_in_payload(self):
+        """Transform should not add runId key when source payload lacks it."""
+        payload = {"stream": "assistant", "data": {"text": "Hello"}}
+        result = GatewayConnection._transform_agent_event(payload)
+        assert result == {"type": "chunk", "content": "Hello"}
+        assert "runId" not in result
+
 
 class TestHandleMessageChatEvents:
     """Test _handle_message routing for chat event states."""
