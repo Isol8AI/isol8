@@ -205,8 +205,113 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
 
-  const currentAssistantIdRef = useRef<string | null>(null);
-  const streamContentRef = useRef<string>("");
+  // Multi-bubble: one assistant message per OpenClaw runId. OpenClaw assigns
+  // a new runId per LLM turn within a single chat.send; each turn gets its
+  // own bubble.
+  // See docs/superpowers/specs/2026-04-21-multi-bubble-chat-design.md.
+  type RunState = {
+    messageId: string;
+    streamContent: string;
+    thinking: string;
+  };
+  const runsRef = useRef<Map<string, RunState>>(new Map());
+
+  // Tracks runIds that have been finalized (done / error / budget / cancel /
+  // clear / agent-drop). Any late chunk/thinking/tool_start event arriving for
+  // one of these runIds is silently dropped by getOrCreateBubble — without
+  // this, such a late event would create a brand-new empty assistant bubble
+  // and flip isStreaming back to true (ghost-bubble regression, M1).
+  //
+  // Bounded to ~100 entries via FIFO eviction below; the first-inserted runId
+  // is evicted when the set would otherwise grow past the cap. This avoids
+  // unbounded growth over long sessions while still covering the protocol's
+  // realistic out-of-order window (events straggle within a single turn, not
+  // across dozens of turns).
+  const finalizedRunsRef = useRef<Set<string>>(new Set());
+
+  // When cancelMessage/clearMessages fires before any event has arrived for
+  // the in-flight turn, we don't know what runId the server will use — so
+  // we can't pre-populate finalizedRunsRef. This flag closes the window:
+  // any unknown runId arriving while pending-cancel is set is treated as
+  // the cancelled turn and silently dropped. Cleared on the next
+  // sendMessage.
+  const pendingCancelRef = useRef<boolean>(false);
+
+  const getOrCreateBubble = useCallback((runId: string): string | null => {
+    // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
+    // chunk/thinking/tool_start arrived for the in-flight turn, runsRef was
+    // empty — so finalizeAllActiveRuns had no runIds to tombstone. A late
+    // first event for that cancelled turn would otherwise fall through to
+    // bubble-creation below, spawning a ghost bubble and flipping
+    // isStreaming back to true (silently undoing the cancel). Treat any
+    // unknown runId arriving during the pending-cancel window as the
+    // cancelled turn and drop it.
+    const existing = runsRef.current.get(runId);
+    if (!existing && pendingCancelRef.current) {
+      finalizedRunsRef.current.add(runId);
+      if (finalizedRunsRef.current.size > 100) {
+        const first = finalizedRunsRef.current.values().next().value;
+        if (first) finalizedRunsRef.current.delete(first);
+      }
+      return null;
+    }
+
+    // Late event for an already-finalized run — drop silently. This
+    // replicates the old `if (!currentAssistantIdRef.current) return;`
+    // blanket guard, but scoped to truly-finalized runs instead of the
+    // global streaming flag.
+    if (finalizedRunsRef.current.has(runId)) {
+      return null;
+    }
+
+    if (existing) return existing.messageId;
+
+    const messageId = `assistant-${crypto.randomUUID()}`;
+    runsRef.current.set(runId, { messageId, streamContent: "", thinking: "" });
+    setMessages((prev) => [
+      ...prev,
+      { id: messageId, role: "assistant", content: "" },
+    ]);
+    if (!isStreamingRef.current) {
+      setIsStreaming(true, `run-${String(runId).slice(0, 12)}-start`);
+    }
+    return messageId;
+  }, [setIsStreaming]);
+
+  const finalizeBubble = useCallback((runId: string) => {
+    runsRef.current.delete(runId);
+    finalizedRunsRef.current.add(runId);
+    // Bounded LRU-ish: cap size to avoid unbounded growth on long sessions.
+    // Set iteration order is insertion order, so values().next() gives the
+    // oldest entry.
+    if (finalizedRunsRef.current.size > 100) {
+      const first = finalizedRunsRef.current.values().next().value;
+      if (first) finalizedRunsRef.current.delete(first);
+    }
+    if (runsRef.current.size === 0) {
+      setIsStreaming(false, `run-${String(runId).slice(0, 12)}-done`);
+    }
+  }, [setIsStreaming]);
+
+  // Mark every currently-active run as finalized, then clear runsRef. Used by
+  // cancel / clear / global-error branches: wiping runsRef without also
+  // populating finalizedRunsRef would let a late in-flight chunk/thinking/
+  // tool_start event slip past getOrCreateBubble (it wouldn't find the runId
+  // in either ref) and spawn a ghost assistant bubble that re-enables
+  // isStreaming — silently undoing the cancel/clear. Never clear
+  // finalizedRunsRef for the same reason; rely on the 100-entry FIFO cap in
+  // finalizeBubble to bound growth.
+  const finalizeAllActiveRuns = useCallback(() => {
+    for (const runId of runsRef.current.keys()) {
+      finalizedRunsRef.current.add(runId);
+      if (finalizedRunsRef.current.size > 100) {
+        const first = finalizedRunsRef.current.values().next().value;
+        if (first) finalizedRunsRef.current.delete(first);
+      }
+    }
+    runsRef.current.clear();
+  }, []);
+
   const agentIdRef = useRef(agentId);
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -292,7 +397,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           msg_type: msg.type,
           msg_agent_id: (msg as { agent_id?: string }).agent_id,
           my_agent_id: agentIdRef.current,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
           error_code: (msg as { code?: string }).code,
           // NOTE: deliberately do not include the error message string — it
@@ -314,24 +419,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           content_length: msg.content?.length ?? 0,
           msg_agent_id: msg.agent_id,
           my_agent_id: agentIdRef.current,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
         });
-      }
-
-      // Only process if we're currently streaming
-      if (!currentAssistantIdRef.current) {
-        if (msg.type !== "chunk" && msg.type !== "heartbeat") {
-          chatDebug("chat_msg_dropped_no_ref", { msg_type: msg.type });
-        } else if (msg.type === "chunk" && isChatDebugEnabled()) {
-          // Dropped chunk — critical signal for the post-approval bug.
-          // eslint-disable-next-line no-console
-          console.log("[chat-debug]", "chunk_dropped_no_ref", {
-            ts: Date.now(),
-            content_length: msg.content?.length ?? 0,
-          });
-        }
-        return;
       }
 
       // Drop messages meant for a different agent. Heartbeat and
@@ -354,30 +444,29 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "chunk") {
-        // OpenClaw sends cumulative text (full response so far) in each
-        // chunk, so we replace rather than append — matching how OpenClaw's
-        // own frontend handles streaming.
-        streamContentRef.current = msg.content;
-        const updatedContent = streamContentRef.current;
+        const runId = msg.runId;
+        const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
+        const run = runsRef.current.get(runId)!;
+        run.streamContent = msg.content;
+        const updatedContent = run.streamContent;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, content: updatedContent }
-              : m,
+            m.id === messageId ? { ...m, content: updatedContent } : m,
           ),
         );
         return;
       }
 
       if (msg.type === "done") {
-        setIsStreaming(false, "done-event");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
+        const runId = msg.runId;
+        finalizeBubble(runId);
         return;
       }
 
       if (msg.type === "error") {
-        // Handle budget exceeded errors specially
+        // Budget-exceeded is a global terminal — not tied to a specific run.
         if (msg.code === "BUDGET_EXCEEDED") {
           setBudgetError({
             code: "BUDGET_EXCEEDED",
@@ -389,134 +478,214 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             is_subscribed: msg.is_subscribed ?? false,
             tier: msg.tier ?? "free",
           });
-          // Remove the empty assistant message placeholder
-          if (currentAssistantIdRef.current) {
-            setMessages((prev) =>
-              prev.filter((m) => m.id !== currentAssistantIdRef.current),
-            );
-          }
+          // Remove any empty assistant placeholders across active runs.
+          const activeMessageIds = new Set(
+            Array.from(runsRef.current.values()).map((r) => r.messageId),
+          );
+          setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
+          finalizeAllActiveRuns();
+          // Close the window for late stragglers whose runId we never saw.
+          pendingCancelRef.current = true;
           setIsStreaming(false, "error-budget");
-          currentAssistantIdRef.current = null;
-          streamContentRef.current = "";
           return;
         }
 
         const displayError = friendlyError(msg.message);
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, content: displayError }
-                : m,
-            ),
-          );
+
+        if (msg.runId) {
+          // Scoped error: finalize that bubble only. Other runs continue.
+          const run = runsRef.current.get(msg.runId);
+          if (run) {
+            const messageId = run.messageId;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId ? { ...m, content: `Error: ${displayError}` } : m,
+              ),
+            );
+            finalizeBubble(msg.runId);
+          } else {
+            // Unknown runId: the error fired before any chunk/thinking/
+            // tool_start arrived, so no bubble exists yet. Append a visible
+            // error-marked assistant message so the user sees the failure
+            // (same UX as the sendMessage catch branch below), and clear
+            // the streaming flag if no other runs are active — otherwise
+            // sendMessage's early setIsStreaming(true) leaves the input
+            // stuck in "Stop" mode (Codex P1 / S3).
+            const errMsgId = `assistant-${crypto.randomUUID()}`;
+            setMessages((prev) => [
+              ...prev,
+              { id: errMsgId, role: "assistant", content: `Error: ${displayError}` },
+            ]);
+            // Remember this runId as finalized so any late straggler events
+            // for it don't create a ghost bubble.
+            finalizedRunsRef.current.add(msg.runId);
+            if (finalizedRunsRef.current.size > 100) {
+              const first = finalizedRunsRef.current.values().next().value;
+              if (first) finalizedRunsRef.current.delete(first);
+            }
+            if (runsRef.current.size === 0) {
+              setIsStreaming(false, "error-scoped-unknown-run");
+            }
+          }
+          setError(displayError);
+          return;
         }
+
+        // Global error (no runId): mark every active bubble and clear state.
+        const activeMessageIds = new Set(
+          Array.from(runsRef.current.values()).map((r) => r.messageId),
+        );
+        setMessages((prev) =>
+          prev.map((m) =>
+            activeMessageIds.has(m.id)
+              ? { ...m, content: `Error: ${displayError}` }
+              : m,
+          ),
+        );
         setError(displayError);
+        finalizeAllActiveRuns();
+        // Close the window for late stragglers whose runId we never saw.
+        pendingCancelRef.current = true;
         setIsStreaming(false, "error-generic");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
         return;
       }
 
       if (msg.type === "thinking") {
-        // Streamed thinking events carry the cumulative thinking text, so
-        // replace rather than append. The chat.final batch sends a single
-        // event with the full text — replace works for that too.
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, thinking: msg.content }
-                : m,
-            ),
-          );
-        }
+        const runId = msg.runId;
+        const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
+        const run = runsRef.current.get(runId)!;
+        run.thinking = msg.content;
+        const updatedThinking = run.thinking;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, thinking: updatedThinking } : m,
+          ),
+        );
         return;
       }
 
       if (msg.type === "tool_start") {
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== currentAssistantIdRef.current) return m;
-              const existing = m.toolUses ?? [];
-              // If an approval request already created a ToolUse for this call
-              // (race where exec.approval.requested lands before tool_start),
-              // merge into that entry rather than appending a duplicate.
-              const existingIdx =
-                msg.toolCallId !== undefined
-                  ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
-                  : -1;
-              if (existingIdx >= 0) {
-                const next = existing.slice();
-                const prior = next[existingIdx];
-                next[existingIdx] = {
-                  ...prior,
-                  tool: msg.tool,
-                  // Keep pending-approval/denied if approval already landed;
-                  // only default to "running" when we had no prior status.
-                  status: prior.status ?? ("running" as const),
-                  ...(msg.args ? { args: msg.args } : {}),
-                };
-                return { ...m, toolUses: next };
-              }
-              return {
-                ...m,
-                toolUses: [
-                  ...existing,
-                  {
-                    tool: msg.tool,
-                    toolCallId: msg.toolCallId,
-                    status: "running" as const,
-                    ...(msg.args ? { args: msg.args } : {}),
-                  },
-                ],
+        const runId = msg.runId;
+        const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const existing = m.toolUses ?? [];
+            const existingIdx =
+              msg.toolCallId !== undefined
+                ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
+                : -1;
+            if (existingIdx >= 0) {
+              const next = existing.slice();
+              const prior = next[existingIdx];
+              next[existingIdx] = {
+                ...prior,
+                tool: msg.tool,
+                status: prior.status ?? ("running" as const),
+                ...(msg.args ? { args: msg.args } : {}),
               };
-            }),
-          );
-        }
+              return { ...m, toolUses: next };
+            }
+            return {
+              ...m,
+              toolUses: [
+                ...existing,
+                {
+                  tool: msg.tool,
+                  toolCallId: msg.toolCallId,
+                  status: "running" as const,
+                  ...(msg.args ? { args: msg.args } : {}),
+                },
+              ],
+            };
+          }),
+        );
         return;
       }
 
       if (msg.type === "tool_end" || msg.type === "tool_error") {
+        const runId = msg.runId;
+        const run = runsRef.current.get(runId);
+        const messageId = run?.messageId;
         const nextStatus = msg.type === "tool_end" ? "done" : "error";
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== currentAssistantIdRef.current) return m;
-              const toolUses = (m.toolUses || []).map((t) => {
-                const matchesCallId =
-                  msg.toolCallId !== undefined &&
-                  t.toolCallId === msg.toolCallId;
-                const matchesName =
-                  msg.toolCallId === undefined && t.tool === msg.tool;
-                const isRunning = t.status === "running";
-                if (isRunning && (matchesCallId || matchesName)) {
-                  return {
-                    ...t,
-                    status: nextStatus as "done" | "error",
-                    ...(msg.result ? { result: msg.result } : {}),
-                    ...(msg.meta ? { meta: msg.meta } : {}),
-                  };
-                }
-                return t;
+
+        if (!messageId) {
+          // No active run for this runId — the bubble was already finalized
+          // (late tool_end after chat.final, or error-scoped-unknown-run).
+          // Fall back to a toolCallId scan across all assistant messages so
+          // the toolCall doesn't stay stuck at status "running" forever (S2).
+          if (msg.toolCallId !== undefined) {
+            const targetCallId = msg.toolCallId;
+            setMessages((prev) => {
+              let matched = false;
+              const next = prev.map((m) => {
+                if (m.role !== "assistant") return m;
+                const toolUses = m.toolUses ?? [];
+                const idx = toolUses.findIndex(
+                  (t) => t.toolCallId === targetCallId && t.status === "running",
+                );
+                if (idx < 0) return m;
+                matched = true;
+                const updated = toolUses.slice();
+                updated[idx] = {
+                  ...updated[idx],
+                  status: nextStatus as "done" | "error",
+                  ...(msg.result ? { result: msg.result } : {}),
+                  ...(msg.meta ? { meta: msg.meta } : {}),
+                };
+                return { ...m, toolUses: updated };
               });
-              return { ...m, toolUses };
-            }),
-          );
+              return matched ? next : prev;
+            });
+          }
+          // If no toolCallId or no match, silently drop (same as before).
+          return;
         }
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const toolUses = (m.toolUses || []).map((t) => {
+              const matchesCallId =
+                msg.toolCallId !== undefined &&
+                t.toolCallId === msg.toolCallId;
+              const matchesName =
+                msg.toolCallId === undefined && t.tool === msg.tool;
+              const isRunning = t.status === "running";
+              if (isRunning && (matchesCallId || matchesName)) {
+                return {
+                  ...t,
+                  status: nextStatus as "done" | "error",
+                  ...(msg.result ? { result: msg.result } : {}),
+                  ...(msg.meta ? { meta: msg.meta } : {}),
+                };
+              }
+              return t;
+            });
+            return { ...m, toolUses };
+          }),
+        );
         return;
       }
 
       if (msg.type === "heartbeat") {
-        if (!streamContentRef.current && currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, content: "Agent is working..." }
-                : m,
-            ),
-          );
+        // If any run has empty content so far, show a "working..." hint on
+        // its bubble. Picks the first empty run (usually there's only one).
+        for (const run of runsRef.current.values()) {
+          if (!run.streamContent) {
+            const messageId = run.messageId;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId && !m.content
+                  ? { ...m, content: "Agent is working..." }
+                  : m,
+              ),
+            );
+            break;
+          }
         }
       }
     });
@@ -548,7 +717,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         host: payload?.request?.host,
         // shape only — no raw command (may contain paths/args)
         has_command: Boolean(payload?.request?.command),
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       if (!payload?.id || !payload.request?.command) return;
@@ -574,59 +743,95 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       };
       const correlation = payload.request.toolCallId ?? payload.request.approvalCorrelationId;
 
-      if (!currentAssistantIdRef.current) return;
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== currentAssistantIdRef.current) return m;
-          const existing = m.toolUses ?? [];
-
-          // Idempotent: a retry/reconnect can redeliver the same approval.
-          // Overwrite the existing entry rather than creating a duplicate.
-          const idDupeIdx = existing.findIndex(
+      setMessages((prev) => {
+        // Idempotent: a retry/reconnect can redeliver the same approval.
+        // First pass: find any existing bubble that already has this approval
+        // id (dedupe).
+        for (const m of prev) {
+          if (m.role !== "assistant") continue;
+          const idx = (m.toolUses ?? []).findIndex(
             (t) => t.pendingApproval?.id === req.id,
           );
-          if (idDupeIdx >= 0) {
-            const next = existing.slice();
-            next[idDupeIdx] = {
-              ...next[idDupeIdx],
-              status: "pending-approval",
-              pendingApproval: req,
-            };
-            return { ...m, toolUses: next };
+          if (idx >= 0) {
+            return prev.map((row) => {
+              if (row.id !== m.id) return row;
+              const next = (row.toolUses ?? []).slice();
+              next[idx] = {
+                ...next[idx],
+                status: "pending-approval",
+                pendingApproval: req,
+              };
+              return { ...row, toolUses: next };
+            });
           }
+        }
 
-          // Pick the target ToolUse to promote to pending-approval.
-          // Prefer exact toolCallId match. For correlationless events, bind
-          // to the NEWEST running exec so concurrent commands don't misroute
-          // the card to an older, unrelated call.
-          let targetIdx = -1;
-          if (correlation) {
-            targetIdx = existing.findIndex(
+        // Second pass: find the target tool use by correlation id across
+        // all assistant messages. Prefer exact toolCallId match; for
+        // correlationless events, bind to the NEWEST running exec.
+        if (correlation) {
+          for (const m of prev) {
+            if (m.role !== "assistant") continue;
+            const idx = (m.toolUses ?? []).findIndex(
               (t) => t.toolCallId === correlation,
             );
-          } else {
-            for (let i = existing.length - 1; i >= 0; i--) {
-              if (existing[i].tool === "exec" && existing[i].status === "running") {
-                targetIdx = i;
-                break;
+            if (idx >= 0) {
+              return prev.map((row) => {
+                if (row.id !== m.id) return row;
+                const next = (row.toolUses ?? []).slice();
+                next[idx] = {
+                  ...next[idx],
+                  status: "pending-approval",
+                  pendingApproval: req,
+                };
+                return { ...row, toolUses: next };
+              });
+            }
+          }
+        } else {
+          // Scan from newest message backwards for a running exec.
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i];
+            if (m.role !== "assistant") continue;
+            const toolUses = m.toolUses ?? [];
+            for (let j = toolUses.length - 1; j >= 0; j--) {
+              if (toolUses[j].tool === "exec" && toolUses[j].status === "running") {
+                return prev.map((row, rowIdx) => {
+                  if (rowIdx !== i) return row;
+                  const next = toolUses.slice();
+                  next[j] = {
+                    ...next[j],
+                    status: "pending-approval",
+                    pendingApproval: req,
+                  };
+                  return { ...row, toolUses: next };
+                });
               }
             }
           }
+        }
 
-          if (targetIdx >= 0) {
-            const next = existing.slice();
-            next[targetIdx] = {
-              ...next[targetIdx],
-              status: "pending-approval",
-              pendingApproval: req,
-            };
-            return { ...m, toolUses: next };
+        // Nothing matched — attach to the newest assistant message as a new
+        // tool entry (preserves old behavior for correlationless cases
+        // where no tool has started yet).
+        // Protocol invariant: OpenClaw emits `tool_start` (which creates the
+        // bubble and the toolCall entry) before `exec.approval.requested` for
+        // that toolCall, so at least one assistant bubble exists by the time
+        // we get here. The `lastAssistantIdx < 0` guard is a safety net for
+        // protocol violations, not a normal code path.
+        const lastAssistantIdx = (() => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === "assistant") return i;
           }
-
+          return -1;
+        })();
+        if (lastAssistantIdx < 0) return prev;
+        return prev.map((row, i) => {
+          if (i !== lastAssistantIdx) return row;
           return {
-            ...m,
+            ...row,
             toolUses: [
-              ...existing,
+              ...(row.toolUses ?? []),
               {
                 tool: "exec",
                 toolCallId: correlation,
@@ -635,8 +840,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               },
             ],
           };
-        }),
-      );
+        });
+      });
     });
 
     const unsubResolved = onEvent((eventName, data) => {
@@ -645,7 +850,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       chatDebug("approval_resolved_event_rx", {
         id: payload?.id,
         decision: payload?.decision,
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       if (!payload?.id) return;
@@ -680,12 +885,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
       chatDebug("sendMessage_entry", {
-        prev_ref: currentAssistantIdRef.current,
+        prev_run_count: runsRef.current.size,
         prev_streaming: isStreamingRef.current,
         agent: agentIdRef.current,
-        // shape only — no raw user content
         msg_length: message.length,
       });
+
+      // A new turn invalidates any pending-cancel window from the previous
+      // turn. Events for this new turn must be allowed through normally.
+      pendingCancelRef.current = false;
 
       if (!agentIdRef.current) {
         throw new Error("No agent selected");
@@ -699,20 +907,17 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       setError(null);
       setBudgetError(null);
 
-      // Clear bootstrap flag once user sends their first message
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
 
       const userMsgId = `user-${crypto.randomUUID()}`;
-      const assistantMsgId = `assistant-${crypto.randomUUID()}`;
 
-      currentAssistantIdRef.current = assistantMsgId;
-      streamContentRef.current = "";
-
+      // Add only the user message. Assistant bubbles are created lazily
+      // when OpenClaw emits the first event for a new runId — matches
+      // OpenClaw control-ui's implicit-bubble design. See spec §4.
       setMessages((prev) => [
         ...prev,
         { id: userMsgId, role: "user", content: message },
-        { id: assistantMsgId, role: "assistant", content: "" },
       ]);
       setIsStreaming(true, "sendMessage");
 
@@ -723,16 +928,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           err instanceof Error ? err.message : "Failed to send message",
         );
         setError(errorMessage);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: errorMessage }
-              : m,
-          ),
-        );
+        // No placeholder to update — append an error-marked assistant
+        // message so the user sees failure feedback.
+        const errMsgId = `assistant-${crypto.randomUUID()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
+        ]);
         setIsStreaming(false, "sendMessage-catch");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
       }
     },
     [sendChat, isConnected, sessionName],
@@ -742,7 +945,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const cancelMessage = useCallback(async () => {
     chatDebug("cancelMessage_entry", {
-      ref: currentAssistantIdRef.current,
+      run_count: runsRef.current.size,
       streaming: isStreamingRef.current,
     });
     if (!agentIdRef.current || !isStreaming) return;
@@ -756,15 +959,19 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
     // Immediately update local state so the UI feels responsive
     setIsStreaming(false, "cancelMessage");
-    currentAssistantIdRef.current = null;
-    streamContentRef.current = "";
-  }, [isStreaming, sendReq, sessionName]);
+    finalizeAllActiveRuns();
+    // Close the cancel-before-first-event window: if runsRef was empty at
+    // this point (cancel fired before any event for the in-flight turn),
+    // finalizeAllActiveRuns had no runIds to tombstone, so the next late
+    // first-event would spawn a ghost bubble without this flag.
+    pendingCancelRef.current = true;
+  }, [isStreaming, sendReq, sessionName, finalizeAllActiveRuns]);
 
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
     chatDebug("clearMessages_entry", {
-      ref: currentAssistantIdRef.current,
+      run_count: runsRef.current.size,
       streaming: isStreamingRef.current,
     });
     setMessages([]);
@@ -774,9 +981,11 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
     setError(null);
     setIsStreaming(false, "clearMessages");
-    currentAssistantIdRef.current = null;
-    streamContentRef.current = "";
-  }, [sessionName]);
+    finalizeAllActiveRuns();
+    // Same reasoning as cancelMessage: cover the case where clear fires
+    // before any event for the in-flight turn has arrived.
+    pendingCancelRef.current = true;
+  }, [sessionName, finalizeAllActiveRuns]);
 
   // ---- Resolve approval (allow-once / allow-always / deny) ----
 
@@ -784,14 +993,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     async (id: string, decision: ExecApprovalDecision): Promise<void> => {
       chatDebug("resolveApproval_start", {
         decision,
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       try {
         const result = await sendReq("exec.approval.resolve", { id, decision });
         chatDebug("resolveApproval_done", {
           decision,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
           result_keys: result && typeof result === "object" ? Object.keys(result as object) : null,
         });
