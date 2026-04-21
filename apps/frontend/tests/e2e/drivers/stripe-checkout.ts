@@ -83,6 +83,18 @@ export async function completeStripeCheckout(
 
   await page.getByTestId('hosted-payment-submit-button').click();
   await page.waitForURL(/\/chat\?subscription=success/, { timeout: 60_000 });
+
+  // After redirect, Clerk hasn't finished hydrating on the fresh /chat
+  // page yet — the very next AuthedFetch call would throw "no Clerk
+  // session on current page" (verified from PR #335 e2e-dev artifact).
+  // Wait for Clerk.session to be available before returning.
+  await page.waitForFunction(
+    () => {
+      const w = window as Window & { Clerk?: { session?: unknown } };
+      return Boolean(w.Clerk?.session);
+    },
+    { timeout: 30_000 },
+  );
 }
 
 async function fillIfVisible(locator: Locator, value: string): Promise<void> {
