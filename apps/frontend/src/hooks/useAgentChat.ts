@@ -207,6 +207,41 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const currentAssistantIdRef = useRef<string | null>(null);
   const streamContentRef = useRef<string>("");
+
+  // Multi-bubble: one assistant message per OpenClaw runId. This replaces
+  // currentAssistantIdRef + streamContentRef. OpenClaw assigns a new runId
+  // per LLM turn within a single chat.send; each turn gets its own bubble.
+  // See docs/superpowers/specs/2026-04-21-multi-bubble-chat-design.md.
+  type RunState = {
+    messageId: string;
+    streamContent: string;
+    thinking: string;
+  };
+  const runsRef = useRef<Map<string, RunState>>(new Map());
+
+  const getOrCreateBubble = useCallback((runId: string): string => {
+    const existing = runsRef.current.get(runId);
+    if (existing) return existing.messageId;
+
+    const messageId = `assistant-${crypto.randomUUID()}`;
+    runsRef.current.set(runId, { messageId, streamContent: "", thinking: "" });
+    setMessages((prev) => [
+      ...prev,
+      { id: messageId, role: "assistant", content: "" },
+    ]);
+    if (!isStreamingRef.current) {
+      setIsStreaming(true, `run-${runId.slice(0, 12)}-start`);
+    }
+    return messageId;
+  }, [setIsStreaming]);
+
+  const finalizeBubble = useCallback((runId: string) => {
+    runsRef.current.delete(runId);
+    if (runsRef.current.size === 0) {
+      setIsStreaming(false, `run-${runId.slice(0, 12)}-done`);
+    }
+  }, [setIsStreaming]);
+
   const agentIdRef = useRef(agentId);
   useEffect(() => {
     agentIdRef.current = agentId;
@@ -354,16 +389,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "chunk") {
-        // OpenClaw sends cumulative text (full response so far) in each
-        // chunk, so we replace rather than append — matching how OpenClaw's
-        // own frontend handles streaming.
-        streamContentRef.current = msg.content;
-        const updatedContent = streamContentRef.current;
+        const runId = msg.runId ?? "_default";
+        const messageId = getOrCreateBubble(runId);
+        const run = runsRef.current.get(runId)!;
+        run.streamContent = msg.content;
+        const updatedContent = run.streamContent;
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === currentAssistantIdRef.current
-              ? { ...m, content: updatedContent }
-              : m,
+            m.id === messageId ? { ...m, content: updatedContent } : m,
           ),
         );
         return;
@@ -419,92 +452,90 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "thinking") {
-        // Streamed thinking events carry the cumulative thinking text, so
-        // replace rather than append. The chat.final batch sends a single
-        // event with the full text — replace works for that too.
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, thinking: msg.content }
-                : m,
-            ),
-          );
-        }
+        const runId = msg.runId ?? "_default";
+        const messageId = getOrCreateBubble(runId);
+        const run = runsRef.current.get(runId)!;
+        run.thinking = msg.content;
+        const updatedThinking = run.thinking;
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === messageId ? { ...m, thinking: updatedThinking } : m,
+          ),
+        );
         return;
       }
 
       if (msg.type === "tool_start") {
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== currentAssistantIdRef.current) return m;
-              const existing = m.toolUses ?? [];
-              // If an approval request already created a ToolUse for this call
-              // (race where exec.approval.requested lands before tool_start),
-              // merge into that entry rather than appending a duplicate.
-              const existingIdx =
-                msg.toolCallId !== undefined
-                  ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
-                  : -1;
-              if (existingIdx >= 0) {
-                const next = existing.slice();
-                const prior = next[existingIdx];
-                next[existingIdx] = {
-                  ...prior,
-                  tool: msg.tool,
-                  // Keep pending-approval/denied if approval already landed;
-                  // only default to "running" when we had no prior status.
-                  status: prior.status ?? ("running" as const),
-                  ...(msg.args ? { args: msg.args } : {}),
-                };
-                return { ...m, toolUses: next };
-              }
-              return {
-                ...m,
-                toolUses: [
-                  ...existing,
-                  {
-                    tool: msg.tool,
-                    toolCallId: msg.toolCallId,
-                    status: "running" as const,
-                    ...(msg.args ? { args: msg.args } : {}),
-                  },
-                ],
+        const runId = msg.runId ?? "_default";
+        const messageId = getOrCreateBubble(runId);
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const existing = m.toolUses ?? [];
+            const existingIdx =
+              msg.toolCallId !== undefined
+                ? existing.findIndex((t) => t.toolCallId === msg.toolCallId)
+                : -1;
+            if (existingIdx >= 0) {
+              const next = existing.slice();
+              const prior = next[existingIdx];
+              next[existingIdx] = {
+                ...prior,
+                tool: msg.tool,
+                status: prior.status ?? ("running" as const),
+                ...(msg.args ? { args: msg.args } : {}),
               };
-            }),
-          );
-        }
+              return { ...m, toolUses: next };
+            }
+            return {
+              ...m,
+              toolUses: [
+                ...existing,
+                {
+                  tool: msg.tool,
+                  toolCallId: msg.toolCallId,
+                  status: "running" as const,
+                  ...(msg.args ? { args: msg.args } : {}),
+                },
+              ],
+            };
+          }),
+        );
         return;
       }
 
       if (msg.type === "tool_end" || msg.type === "tool_error") {
-        const nextStatus = msg.type === "tool_end" ? "done" : "error";
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) => {
-              if (m.id !== currentAssistantIdRef.current) return m;
-              const toolUses = (m.toolUses || []).map((t) => {
-                const matchesCallId =
-                  msg.toolCallId !== undefined &&
-                  t.toolCallId === msg.toolCallId;
-                const matchesName =
-                  msg.toolCallId === undefined && t.tool === msg.tool;
-                const isRunning = t.status === "running";
-                if (isRunning && (matchesCallId || matchesName)) {
-                  return {
-                    ...t,
-                    status: nextStatus as "done" | "error",
-                    ...(msg.result ? { result: msg.result } : {}),
-                    ...(msg.meta ? { meta: msg.meta } : {}),
-                  };
-                }
-                return t;
-              });
-              return { ...m, toolUses };
-            }),
-          );
+        const runId = msg.runId ?? "_default";
+        const run = runsRef.current.get(runId);
+        const messageId = run?.messageId;
+        if (!messageId) {
+          // No bubble for this run (unknown runId) — nothing to update.
+          return;
         }
+        const nextStatus = msg.type === "tool_end" ? "done" : "error";
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.id !== messageId) return m;
+            const toolUses = (m.toolUses || []).map((t) => {
+              const matchesCallId =
+                msg.toolCallId !== undefined &&
+                t.toolCallId === msg.toolCallId;
+              const matchesName =
+                msg.toolCallId === undefined && t.tool === msg.tool;
+              const isRunning = t.status === "running";
+              if (isRunning && (matchesCallId || matchesName)) {
+                return {
+                  ...t,
+                  status: nextStatus as "done" | "error",
+                  ...(msg.result ? { result: msg.result } : {}),
+                  ...(msg.meta ? { meta: msg.meta } : {}),
+                };
+              }
+              return t;
+            });
+            return { ...m, toolUses };
+          }),
+        );
         return;
       }
 

@@ -66,8 +66,77 @@ describe("useAgentChat — multi-bubble", () => {
     sendChat.mockReset();
   });
 
-  it("is a scaffold", () => {
-    // Placeholder test - real assertions come in later tasks.
-    expect(true).toBe(true);
+  it("creates one bubble per runId and mirrors cumulative chunk content", async () => {
+    const useAgentChat = await importHook();
+    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+
+    // Send a user message
+    await act(async () => {
+      await result.current.sendMessage("hello");
+    });
+
+    // First chunk for runId=R1 creates the bubble.
+    emit({ type: "chunk", content: "Hi", agent_id: "agent-A", runId: "R1" });
+
+    // Find the assistant message
+    const assistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe("Hi");
+    expect(result.current.isStreaming).toBe(true);
+
+    // Second chunk — cumulative text for R1
+    emit({ type: "chunk", content: "Hi there", agent_id: "agent-A", runId: "R1" });
+    expect(result.current.messages.filter((m) => m.role === "assistant")[0].content).toBe("Hi there");
+
+    // done finalizes
+    emit({ type: "done", agent_id: "agent-A", runId: "R1" });
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it("renders two assistant bubbles when two runIds stream within one chat.send", async () => {
+    const useAgentChat = await importHook();
+    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("do it");
+    });
+
+    // Run 1
+    emit({ type: "chunk", content: "Let me try", agent_id: "agent-A", runId: "R1" });
+    emit({ type: "done", agent_id: "agent-A", runId: "R1" });
+
+    // Run 2 — different runId, should create a new bubble
+    emit({ type: "chunk", content: "Done.", agent_id: "agent-A", runId: "R2" });
+    emit({ type: "done", agent_id: "agent-A", runId: "R2" });
+
+    const assistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0].content).toBe("Let me try");
+    expect(assistants[1].content).toBe("Done.");
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it("isStreaming stays true while any run is active (union of runs)", async () => {
+    const useAgentChat = await importHook();
+    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("work");
+    });
+
+    emit({ type: "chunk", content: "a", agent_id: "agent-A", runId: "R1" });
+    expect(result.current.isStreaming).toBe(true);
+
+    // Second run starts before first finishes (interleaved deltas)
+    emit({ type: "chunk", content: "b", agent_id: "agent-A", runId: "R2" });
+    expect(result.current.isStreaming).toBe(true);
+
+    emit({ type: "done", agent_id: "agent-A", runId: "R1" });
+    // Still streaming — R2 still active
+    expect(result.current.isStreaming).toBe(true);
+
+    emit({ type: "done", agent_id: "agent-A", runId: "R2" });
+    // All runs done — streaming false
+    expect(result.current.isStreaming).toBe(false);
   });
 });
