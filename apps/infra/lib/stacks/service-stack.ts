@@ -590,7 +590,7 @@ export class ServiceStack extends cdk.Stack {
         // longer recur under current code. If we later want the ARN-revision
         // pinning back, route it through an SSM parameter so the value isn't
         // tied to a consumer-imported export.
-        ECS_TASK_DEFINITION: props.container.openclawTaskDef.family,
+        ECS_TASK_DEFINITION: `isol8-${env}-openclaw`,
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
