@@ -1,53 +1,39 @@
 import { expect, type Page } from '@playwright/test';
 
 export async function waitForChatReady(page: Page): Promise<void> {
-  // Poll for the send-button up to 10 min. While polling, dismiss any
-  // channel-onboarding wizard that appears (Set up Telegram / Discord /
-  // WhatsApp) — it auto-opens AFTER the WS reconnects post-upgrade, and
-  // it covers the chat input so send-button never renders.
+  // Ready signal: the "Start a conversation with your agent" paragraph is
+  // visible. That paragraph only renders when an agent is selected and
+  // loaded — so it differentiates "agent loaded, input empty (send
+  // disabled — normal)" from "no agent selected, send disabled (broken
+  // state)". Previous attempts waited for the send-button to be
+  // visible+enabled, which fails on the legitimate "empty input" state
+  // (verified from PR #341 e2e-dev artifact run 24714987157 — send-button
+  // was correctly disabled because the textbox had no user text yet; the
+  // agent was fully loaded).
   //
-  // Why a loop instead of a one-shot probe: the wizard appears
-  // asynchronously after the page settles (verified from PR #339 e2e-dev
-  // artifact — at 10-min timeout, screenshot still showed the wizard
-  // covering the surface, meaning a single check at the start of
-  // waitForChatReady fires before the wizard is on-screen).
-  //
-  // Why we still need to handle the send-button being slow on free tier:
-  // the free-tier container can scale to zero in the gap between
-  // containerHealthy returning (status:running) and the frontend gateway-WS
-  // handshake completing — page rebounds to "Container provisioning —
-  // waiting for ECS task" and send-button disappears. The same loop covers
-  // that case (Codex re-flag from PR #314 deploy 2026-04-20).
+  // While polling, also dismiss the channel-onboarding wizard (Set up
+  // Telegram / Discord / WhatsApp) if it appears — it auto-opens after
+  // the WS reconnects post-upgrade and covers the chat input. And reload
+  // the page every 60s if the "Select an agent" empty state is stuck —
+  // agents.list sometimes returns empty during the container cold-start
+  // race (verified from PR #340 artifact run 24705367375 — personal Step
+  // 3 showed empty sidebar + disabled send, click hung 25 min).
   const deadline = Date.now() + 10 * 60_000;
-  const sendButton = page.getByTestId('send-button');
+  const readyHeading = page.getByText('Start a conversation with', {
+    exact: false,
+  });
   const wizardCancel = page.getByRole('button', { name: 'Cancel' });
   const emptyState = page.getByText('Select an agent', { exact: false });
   let lastRefresh = Date.now();
 
   while (Date.now() < deadline) {
-    // Ready: send-button visible AND enabled. Playwright's click waits
-    // for actionability, but we've seen it hang 25 min on a disabled
-    // send-button (no agent selected because agents.list returned empty).
-    if (
-      (await sendButton.isVisible({ timeout: 500 }).catch(() => false)) &&
-      (await sendButton.isEnabled({ timeout: 500 }).catch(() => false))
-    ) {
+    if (await readyHeading.isVisible({ timeout: 500 }).catch(() => false)) {
       return;
     }
-
-    // Dismiss the channel-onboarding wizard if it's up — it covers the
-    // chat input so send-button never renders.
     if (await wizardCancel.isVisible({ timeout: 500 }).catch(() => false)) {
       await wizardCancel.click().catch(() => {});
       continue;
     }
-
-    // "Select an agent" empty state = agents.list returned empty even
-    // though the container is healthy. Refresh the page every 60s to
-    // re-run agents.list; if a stale cached result is the issue, a fresh
-    // fetch will pick up the newly-created agent. Verified from PR #340
-    // e2e-dev artifact (run 24705367375) — personal Step 3 screenshot
-    // showed empty sidebar + disabled send.
     if (
       (await emptyState.isVisible({ timeout: 500 }).catch(() => false)) &&
       Date.now() - lastRefresh > 60_000
@@ -56,12 +42,12 @@ export async function waitForChatReady(page: Page): Promise<void> {
       lastRefresh = Date.now();
       continue;
     }
-
     await page.waitForTimeout(1_000);
   }
   throw new Error(
-    'waitForChatReady: send-button never enabled within 10 min ' +
-      '(wizard persisting, empty agent list, or container stuck provisioning)',
+    'waitForChatReady: chat-ready signal ("Start a conversation") never ' +
+      'appeared within 10 min (wizard persisting, empty agent list, or ' +
+      'container stuck provisioning)',
   );
 }
 
@@ -85,7 +71,10 @@ export async function sendMessageAndWaitForResponse(
   const before = await assistants.count();
 
   await fillChatInput(page, message);
-  await page.getByTestId('send-button').click();
+  // Click with a short explicit timeout — if actionability fails fast,
+  // the test budget won't be consumed by a 25-min retry loop. Falls back
+  // to standard click if the element is actionable.
+  await page.getByTestId('send-button').click({ timeout: 30_000 });
 
   // Wait for a strictly-newer assistant message to appear and contain text.
   const timeout = opts.timeoutMs ?? 90_000;
