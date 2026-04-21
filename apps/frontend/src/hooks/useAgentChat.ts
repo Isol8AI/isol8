@@ -302,10 +302,34 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         });
       }
 
+      // Chunk arrival tracer (console-only — NEVER posthog, NEVER content).
+      // We need to know WHEN chunks arrive relative to approval events to
+      // decide whether the post-approval chunk-routing bug is a same-bubble
+      // or cross-bubble misrouting. Logs length only (shape, not content).
+      // Skips posthog entirely to avoid per-token volume.
+      if (msg.type === "chunk" && isChatDebugEnabled()) {
+        // eslint-disable-next-line no-console
+        console.log("[chat-debug]", "chunk_rx", {
+          ts: Date.now(),
+          content_length: msg.content?.length ?? 0,
+          msg_agent_id: msg.agent_id,
+          my_agent_id: agentIdRef.current,
+          ref: currentAssistantIdRef.current,
+          streaming: isStreamingRef.current,
+        });
+      }
+
       // Only process if we're currently streaming
       if (!currentAssistantIdRef.current) {
         if (msg.type !== "chunk" && msg.type !== "heartbeat") {
           chatDebug("chat_msg_dropped_no_ref", { msg_type: msg.type });
+        } else if (msg.type === "chunk" && isChatDebugEnabled()) {
+          // Dropped chunk — critical signal for the post-approval bug.
+          // eslint-disable-next-line no-console
+          console.log("[chat-debug]", "chunk_dropped_no_ref", {
+            ts: Date.now(),
+            content_length: msg.content?.length ?? 0,
+          });
         }
         return;
       }
