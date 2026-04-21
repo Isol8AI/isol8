@@ -216,7 +216,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   };
   const runsRef = useRef<Map<string, RunState>>(new Map());
 
-  const getOrCreateBubble = useCallback((runId: string): string => {
+  // Tracks runIds that have been finalized (done / error / budget / cancel /
+  // clear / agent-drop). Any late chunk/thinking/tool_start event arriving for
+  // one of these runIds is silently dropped by getOrCreateBubble — without
+  // this, such a late event would create a brand-new empty assistant bubble
+  // and flip isStreaming back to true (ghost-bubble regression, M1).
+  //
+  // Bounded to ~100 entries via FIFO eviction below; the first-inserted runId
+  // is evicted when the set would otherwise grow past the cap. This avoids
+  // unbounded growth over long sessions while still covering the protocol's
+  // realistic out-of-order window (events straggle within a single turn, not
+  // across dozens of turns).
+  const finalizedRunsRef = useRef<Set<string>>(new Set());
+
+  const getOrCreateBubble = useCallback((runId: string): string | null => {
+    // Late event for an already-finalized run — drop silently. This
+    // replicates the old `if (!currentAssistantIdRef.current) return;`
+    // blanket guard, but scoped to truly-finalized runs instead of the
+    // global streaming flag.
+    if (finalizedRunsRef.current.has(runId)) {
+      return null;
+    }
+
     const existing = runsRef.current.get(runId);
     if (existing) return existing.messageId;
 
@@ -234,6 +255,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const finalizeBubble = useCallback((runId: string) => {
     runsRef.current.delete(runId);
+    finalizedRunsRef.current.add(runId);
+    // Bounded LRU-ish: cap size to avoid unbounded growth on long sessions.
+    // Set iteration order is insertion order, so values().next() gives the
+    // oldest entry.
+    if (finalizedRunsRef.current.size > 100) {
+      const first = finalizedRunsRef.current.values().next().value;
+      if (first) finalizedRunsRef.current.delete(first);
+    }
     if (runsRef.current.size === 0) {
       setIsStreaming(false, `run-${runId.slice(0, 12)}-done`);
     }
@@ -373,6 +402,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "chunk") {
         const runId = msg.runId ?? "_default";
         const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
         const run = runsRef.current.get(runId)!;
         run.streamContent = msg.content;
         const updatedContent = run.streamContent;
@@ -409,6 +440,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           );
           setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
           runsRef.current.clear();
+          finalizedRunsRef.current.clear();
           setIsStreaming(false, "error-budget");
           return;
         }
@@ -426,6 +458,29 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               ),
             );
             finalizeBubble(msg.runId);
+          } else {
+            // Unknown runId: the error fired before any chunk/thinking/
+            // tool_start arrived, so no bubble exists yet. Append a visible
+            // error-marked assistant message so the user sees the failure
+            // (same UX as the sendMessage catch branch below), and clear
+            // the streaming flag if no other runs are active — otherwise
+            // sendMessage's early setIsStreaming(true) leaves the input
+            // stuck in "Stop" mode (Codex P1 / S3).
+            const errMsgId = `assistant-${crypto.randomUUID()}`;
+            setMessages((prev) => [
+              ...prev,
+              { id: errMsgId, role: "assistant", content: `Error: ${displayError}` },
+            ]);
+            // Remember this runId as finalized so any late straggler events
+            // for it don't create a ghost bubble.
+            finalizedRunsRef.current.add(msg.runId);
+            if (finalizedRunsRef.current.size > 100) {
+              const first = finalizedRunsRef.current.values().next().value;
+              if (first) finalizedRunsRef.current.delete(first);
+            }
+            if (runsRef.current.size === 0) {
+              setIsStreaming(false, "error-scoped-unknown-run");
+            }
           }
           setError(displayError);
           return;
@@ -444,6 +499,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         );
         setError(displayError);
         runsRef.current.clear();
+        finalizedRunsRef.current.clear();
         setIsStreaming(false, "error-generic");
         return;
       }
@@ -451,6 +507,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "thinking") {
         const runId = msg.runId ?? "_default";
         const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
         const run = runsRef.current.get(runId)!;
         run.thinking = msg.content;
         const updatedThinking = run.thinking;
@@ -465,6 +523,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (msg.type === "tool_start") {
         const runId = msg.runId ?? "_default";
         const messageId = getOrCreateBubble(runId);
+        // Late event for a finalized run — drop.
+        if (!messageId) return;
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
@@ -505,11 +565,40 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         const runId = msg.runId ?? "_default";
         const run = runsRef.current.get(runId);
         const messageId = run?.messageId;
+        const nextStatus = msg.type === "tool_end" ? "done" : "error";
+
         if (!messageId) {
-          // No bubble for this run (unknown runId) — nothing to update.
+          // No active run for this runId — the bubble was already finalized
+          // (late tool_end after chat.final, or error-scoped-unknown-run).
+          // Fall back to a toolCallId scan across all assistant messages so
+          // the toolCall doesn't stay stuck at status "running" forever (S2).
+          if (msg.toolCallId !== undefined) {
+            const targetCallId = msg.toolCallId;
+            setMessages((prev) => {
+              let matched = false;
+              const next = prev.map((m) => {
+                if (m.role !== "assistant") return m;
+                const toolUses = m.toolUses ?? [];
+                const idx = toolUses.findIndex(
+                  (t) => t.toolCallId === targetCallId && t.status === "running",
+                );
+                if (idx < 0) return m;
+                matched = true;
+                const updated = toolUses.slice();
+                updated[idx] = {
+                  ...updated[idx],
+                  status: nextStatus as "done" | "error",
+                  ...(msg.result ? { result: msg.result } : {}),
+                  ...(msg.meta ? { meta: msg.meta } : {}),
+                };
+                return { ...m, toolUses: updated };
+              });
+              return matched ? next : prev;
+            });
+          }
+          // If no toolCallId or no match, silently drop (same as before).
           return;
         }
-        const nextStatus = msg.type === "tool_end" ? "done" : "error";
         setMessages((prev) =>
           prev.map((m) => {
             if (m.id !== messageId) return m;
@@ -821,6 +910,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     // Immediately update local state so the UI feels responsive
     setIsStreaming(false, "cancelMessage");
     runsRef.current.clear();
+    finalizedRunsRef.current.clear();
   }, [isStreaming, sendReq, sessionName]);
 
   // ---- Clear messages ----
@@ -838,6 +928,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     setError(null);
     setIsStreaming(false, "clearMessages");
     runsRef.current.clear();
+    finalizedRunsRef.current.clear();
   }, [sessionName]);
 
   // ---- Resolve approval (allow-once / allow-always / deny) ----

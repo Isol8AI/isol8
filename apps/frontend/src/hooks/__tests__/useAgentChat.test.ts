@@ -217,6 +217,166 @@ describe("useAgentChat — multi-bubble", () => {
     expect(result.current.isStreaming).toBe(true); // sendMessage sets isStreaming = true early
   });
 
+  it("post-approval chunks with new runId create a new bubble, not displace next user message's turn", async () => {
+    // Regression test for the original bug this PR fixes: post-approval
+    // stream chunks arriving after exec.approval.resolved were landing in
+    // the NEXT user message's assistant bubble. With multi-bubble routing,
+    // a distinct runId per turn should create a distinct assistant bubble.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    // --- Turn 1: user sends message #1, agent starts exec that needs approval
+    await act(async () => {
+      await result.current.sendMessage("install something");
+    });
+
+    // tool_start with runId "R1" — creates first assistant bubble
+    emit({
+      type: "tool_start",
+      tool: "exec",
+      toolCallId: "tc-1",
+      agent_id: agentId,
+      runId: "R1",
+    });
+
+    // Approval requested for the tool. R1 is still active (no done yet;
+    // OpenClaw stalls the run until the approval resolves).
+    emitEvent("exec.approval.requested", {
+      id: "appr-1",
+      request: {
+        command: "rm -rf /tmp/foo",
+        host: "gateway" as const,
+        agentId: agentId,
+        toolCallId: "tc-1",
+        allowedDecisions: ["allow-once", "deny"],
+      },
+    });
+
+    // Simulate approval resolution (does not finalize R1; the run continues).
+    emitEvent("exec.approval.resolved", { id: "appr-1", decision: "allow-once" });
+
+    // R1 finishes with a done
+    emit({ type: "tool_end", tool: "exec", toolCallId: "tc-1", agent_id: agentId, runId: "R1" });
+    emit({ type: "done", agent_id: agentId, runId: "R1" });
+
+    // --- Turn 2: post-approval followup. OpenClaw assigns a NEW runId for
+    // the follow-up stream (e.g. "exec-approval-followup:..."). Under the
+    // fix this should create a SECOND assistant bubble, not reuse R1's.
+    emit({
+      type: "chunk",
+      content: "Followup output",
+      agent_id: agentId,
+      runId: "exec-approval-followup:1",
+    });
+    emit({ type: "done", agent_id: agentId, runId: "exec-approval-followup:1" });
+
+    const afterTurn2 = result.current.messages.filter((m) => m.role === "assistant");
+    expect(afterTurn2).toHaveLength(2);
+    // Turn 2 content is isolated to the second bubble.
+    expect(afterTurn2[0].content).not.toContain("Followup output");
+    expect(afterTurn2[1].content).toBe("Followup output");
+
+    // --- Turn 3: user sends message #2 → new chat.send with runId "R3".
+    await act(async () => {
+      await result.current.sendMessage("next");
+    });
+    emit({ type: "chunk", content: "Third turn reply", agent_id: agentId, runId: "R3" });
+    emit({ type: "done", agent_id: agentId, runId: "R3" });
+
+    const finalAssistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(finalAssistants).toHaveLength(3);
+
+    // Critical assertion: turn 2's content did NOT get displaced into turn 3's bubble.
+    expect(finalAssistants[2].content).toBe("Third turn reply");
+    expect(finalAssistants[2].content).not.toContain("Followup output");
+    // Each bubble has a distinct identity.
+    const assistantIdsInternal = new Set(
+      result.current.messages
+        .filter((m) => m.role === "assistant")
+        .map((m) => m.content),
+    );
+    expect(assistantIdsInternal.size).toBe(3);
+  });
+
+  it("late chunk after done does not create a ghost bubble or re-enable streaming", async () => {
+    // Regression test for M1: after finalizeBubble(runId) deletes the run,
+    // a trailing chunk for the same runId used to re-create a fresh empty
+    // bubble and flip isStreaming back to true. The finalizedRunsRef guard
+    // should silently drop such late events.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("hi");
+    });
+
+    emit({ type: "chunk", content: "Hello", agent_id: agentId, runId: "R1" });
+    emit({ type: "done", agent_id: agentId, runId: "R1" });
+
+    // After done: 1 assistant bubble, not streaming.
+    expect(result.current.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+    expect(result.current.isStreaming).toBe(false);
+
+    // Late straggler chunk for the same finalized runId.
+    emit({ type: "chunk", content: "Late content", agent_id: agentId, runId: "R1" });
+
+    // Should NOT create a ghost bubble, NOT re-enable streaming, and should
+    // NOT mutate the existing bubble's content.
+    const assistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe("Hello");
+    expect(result.current.isStreaming).toBe(false);
+
+    // Also verify late thinking + tool_start are dropped.
+    emit({ type: "thinking", content: "late thought", agent_id: agentId, runId: "R1" });
+    emit({
+      type: "tool_start",
+      tool: "exec",
+      toolCallId: "tc-late",
+      agent_id: agentId,
+      runId: "R1",
+    });
+    expect(result.current.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
+    expect(result.current.isStreaming).toBe(false);
+  });
+
+  it("scoped error with unknown runId clears isStreaming", async () => {
+    // Regression test for Codex P1 / S3: sendMessage sets isStreaming=true
+    // before any bubble exists. If a run errors before any chunk/thinking/
+    // tool_start arrives, runsRef.get(runId) is undefined and the old
+    // scoped-error branch only called setError() — leaving isStreaming
+    // stuck at true and the input in "Stop" mode.
+    const useAgentChat = await importHook();
+    const agentId = nextAgent();
+    const { result } = renderHook(() => useAgentChat(agentId, "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("boom");
+    });
+
+    // sendMessage flipped isStreaming=true, no bubble yet.
+    expect(result.current.isStreaming).toBe(true);
+    expect(result.current.messages.filter((m) => m.role === "assistant")).toHaveLength(0);
+
+    // Scoped error for a runId that was never bubbled.
+    emit({
+      type: "error",
+      message: "provider failed",
+      agent_id: agentId,
+      runId: "R-never-bubbled",
+    });
+
+    // isStreaming must be cleared (otherwise input stays stuck).
+    expect(result.current.isStreaming).toBe(false);
+    // An error-marked assistant message was appended so the failure is visible.
+    const assistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toContain("Error:");
+    expect(result.current.error).toBeTruthy();
+  });
+
   it("approval.requested event matches toolCallId across any assistant bubble", async () => {
     const useAgentChat = await importHook();
     const agentId = nextAgent();
