@@ -9,6 +9,32 @@ const nextConfig: NextConfig = {
     root: path.resolve(__dirname, '../../'),
   },
 
+  // Reverse-proxy PostHog through our own domain so ad-blockers /
+  // privacy extensions (uBlock, Brave shields, NextDNS, etc.) don't
+  // block telemetry. Requests go to isol8.co/ingest/* which Vercel
+  // rewrites to the PostHog ingestion + asset origins. Per PostHog's
+  // documented pattern: https://posthog.com/docs/advanced/proxy/nextjs
+  // Order matters: /ingest/static/* must come before the catch-all.
+  // skipTrailingSlashRedirect is required so PostHog's `decide`
+  // endpoint is reached without a 307.
+  skipTrailingSlashRedirect: true,
+  async rewrites() {
+    return [
+      {
+        source: "/ingest/static/:path*",
+        destination: "https://us-assets.i.posthog.com/static/:path*",
+      },
+      {
+        source: "/ingest/:path*",
+        destination: "https://us.i.posthog.com/:path*",
+      },
+      {
+        source: "/ingest/decide",
+        destination: "https://us.i.posthog.com/decide",
+      },
+    ];
+  },
+
   // Exclude heavy ML packages from Vercel's output file tracing
   // We do CLIENT-SIDE inference only, so we don't need onnxruntime-node at all
   // See: https://github.com/huggingface/transformers.js/issues/1164

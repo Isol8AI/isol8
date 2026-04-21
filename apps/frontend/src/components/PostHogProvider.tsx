@@ -7,11 +7,19 @@ import posthog from "posthog-js";
 import { PostHogProvider as PHProvider } from "posthog-js/react";
 
 const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
-const POSTHOG_HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST;
+// Route PostHog through our own domain via the Next rewrite in
+// next.config.ts ("/ingest/*" → us.i.posthog.com). Same-origin requests
+// bypass ad-blockers / privacy extensions that otherwise drop every
+// posthog call with ERR_BLOCKED_BY_CLIENT and flood the console with
+// retries. `ui_host` keeps links in the PostHog dashboard pointed at
+// the real PostHog UI.
+const POSTHOG_API_HOST = "/ingest";
+const POSTHOG_UI_HOST = "https://us.posthog.com";
 
 if (typeof window !== "undefined" && POSTHOG_KEY) {
   posthog.init(POSTHOG_KEY, {
-    api_host: POSTHOG_HOST,
+    api_host: POSTHOG_API_HOST,
+    ui_host: POSTHOG_UI_HOST,
     person_profiles: "identified_only",
     capture_pageview: false,
     capture_pageleave: true,
