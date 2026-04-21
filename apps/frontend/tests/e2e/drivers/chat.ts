@@ -1,6 +1,19 @@
 import { expect, type Page } from '@playwright/test';
 
 export async function waitForChatReady(page: Page): Promise<void> {
+  // After upgrading to a paid tier, the channel-onboarding wizard
+  // (Set up Telegram / Discord / WhatsApp) auto-opens and blocks the
+  // chat input — no send-button is rendered while the modal is up.
+  // Free tier never triggers this (channels are disabled). Dismiss it
+  // if present so the chat surface is reachable. Verified from PR #337
+  // e2e-dev artifact (run 24703932223, 2026-04-21) — Step 5 timed out
+  // at 10 min waiting for send-button while the Telegram wizard was
+  // covering it.
+  const wizardCancel = page.getByRole('button', { name: 'Cancel' });
+  if (await wizardCancel.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await wizardCancel.click().catch(() => {});
+  }
+
   // The free-tier container can scale to zero in the gap between
   // containerHealthy returning (status:running) and the frontend gateway-WS
   // handshake completing (the user is "idle" from scale-to-zero's
