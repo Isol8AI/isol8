@@ -21,22 +21,47 @@ export async function waitForChatReady(page: Page): Promise<void> {
   const deadline = Date.now() + 10 * 60_000;
   const sendButton = page.getByTestId('send-button');
   const wizardCancel = page.getByRole('button', { name: 'Cancel' });
+  const emptyState = page.getByText('Select an agent', { exact: false });
+  let lastRefresh = Date.now();
 
   while (Date.now() < deadline) {
-    if (await sendButton.isVisible({ timeout: 500 }).catch(() => false)) {
+    // Ready: send-button visible AND enabled. Playwright's click waits
+    // for actionability, but we've seen it hang 25 min on a disabled
+    // send-button (no agent selected because agents.list returned empty).
+    if (
+      (await sendButton.isVisible({ timeout: 500 }).catch(() => false)) &&
+      (await sendButton.isEnabled({ timeout: 500 }).catch(() => false))
+    ) {
       return;
     }
+
+    // Dismiss the channel-onboarding wizard if it's up — it covers the
+    // chat input so send-button never renders.
     if (await wizardCancel.isVisible({ timeout: 500 }).catch(() => false)) {
       await wizardCancel.click().catch(() => {});
-      // Loop again — wizard may have multiple steps or there may be a
-      // follow-up wizard for another channel.
       continue;
     }
+
+    // "Select an agent" empty state = agents.list returned empty even
+    // though the container is healthy. Refresh the page every 60s to
+    // re-run agents.list; if a stale cached result is the issue, a fresh
+    // fetch will pick up the newly-created agent. Verified from PR #340
+    // e2e-dev artifact (run 24705367375) — personal Step 3 screenshot
+    // showed empty sidebar + disabled send.
+    if (
+      (await emptyState.isVisible({ timeout: 500 }).catch(() => false)) &&
+      Date.now() - lastRefresh > 60_000
+    ) {
+      await page.reload().catch(() => {});
+      lastRefresh = Date.now();
+      continue;
+    }
+
     await page.waitForTimeout(1_000);
   }
   throw new Error(
-    'waitForChatReady: send-button never appeared within 10 min ' +
-      '(wizard may keep reappearing or container is stuck provisioning)',
+    'waitForChatReady: send-button never enabled within 10 min ' +
+      '(wizard persisting, empty agent list, or container stuck provisioning)',
   );
 }
 
