@@ -230,18 +230,33 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   useEffect(() => {
     return onChatMessage((msg: ChatIncomingMessage) => {
-      // Only process if we're currently streaming
+      // Gate on "am I in an active stream" — mirrors OpenClaw control-ui's
+      // own pattern, which holds a single `chatStream` string and treats
+      // "non-null chatStream" as the implicit active bubble. Only `done` /
+      // `error` / `aborted` (all tied to `chat:"final"` on the server)
+      // tear this down.
       if (!currentAssistantIdRef.current) return;
 
-      // Drop messages meant for a different agent. Heartbeat and
-      // update_available aren't tied to a specific run. Errors are
-      // allowed through even without agent_id as a safety valve —
-      // some failure paths (client-side validation, etc.) have no
-      // agent context but still need to clear the streaming state.
-      const isUntaggedBroadcast =
-        msg.type === "heartbeat" || msg.type === "update_available";
-      const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
-      if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) return;
+      // NOTE: deliberately NOT filtering by msg.agent_id. OpenClaw's
+      // reference control-ui gates at the SESSION level (sessionKey equality)
+      // and then trusts the pipe; it never per-message filters by agent id.
+      // Our prior `msg.agent_id !== agentIdRef.current` drop broke the
+      // post-approval stream: OpenClaw can emit chunks without a sessionKey
+      // attached (notably after an exec approval resolves), those reach the
+      // frontend untagged, and `undefined !== "agent-xyz"` dropped them —
+      // producing the "one message behind" glitch (next sendMessage
+      // re-rendered the assistant bubble with the accumulated-but-unflushed
+      // content).
+      //
+      // Safety invariants this relies on:
+      //   - The backend already filters channel/cron-originated events
+      //     (`is_channel_session || is_cron_session` early-return in
+      //     connection_pool.py), so frontend only sees the user's own
+      //     webchat stream.
+      //   - Only one `useAgentChat` is mounted at a time (see the file-
+      //     level comment). Agent switch clears state via unmount/remount.
+      // See feedback_no_speculative_event_filtering: never add untested
+      // filters to the event pipeline.
 
       if (msg.type === "chunk") {
         // OpenClaw sends cumulative text (full response so far) in each
