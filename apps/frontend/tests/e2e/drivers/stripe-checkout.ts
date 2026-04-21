@@ -1,4 +1,4 @@
-import type { Page, Frame } from '@playwright/test';
+import type { Page, Frame, Locator } from '@playwright/test';
 
 const TEST_CARD = {
   number: '4242424242424242',
@@ -11,20 +11,19 @@ const TEST_CARD = {
 /**
  * Drive the Stripe-hosted Checkout page (`checkout.stripe.com/c/...`).
  *
- * Layout (verified against the PR #320 deploy artifact, 2026-04-20):
- *   - Top: Express Checkout iframes (Pay with Link, Amazon Pay) — ignore.
+ * Layouts seen in this account (verified from PR #321 deploy artifact,
+ * 2026-04-21):
  *   - Email field is required and NOT pre-filled (backend creates the
  *     Stripe customer with email=null when the Clerk JWT template doesn't
  *     include the `email` claim — separate bug). Fill it.
- *   - Payment method appears as a list of radios (Card / Cash App / Klarna
- *     / Bank). The card form only renders once Card is selected.
- *   - Stripe's card form layout VARIES between accounts/versions:
- *       - Sometimes 3 separate iframes (number/expiry/CVC) titled
- *         "Secure card number input frame", etc.
- *       - Sometimes 1 combined iframe with all three inputs visible.
- *     Driver enumerates frames to find the one hosting `cardnumber` and
- *     fills inside that frame — works for both layouts.
- *   - Cardholder name + ZIP + Country are on the page (not in iframe).
+ *   - Payment method radio list (Card / Cash App / Klarna / Bank). Card
+ *     is checked by default and its form is already expanded.
+ *   - Card form layout VARIES across accounts/versions:
+ *       (a) Native on-page inputs — `getByRole('textbox', name: 'Card number')`,
+ *           etc. No iframe. Seen on this dev account.
+ *       (b) Single combined iframe with all three inputs.
+ *       (c) Three separate iframes (number / exp / CVC).
+ *     Driver tries native (a) first, falls back to iframe (b/c).
  *   - Submit button: stable `data-testid="hosted-payment-submit-button"`.
  */
 export async function completeStripeCheckout(
@@ -36,41 +35,49 @@ export async function completeStripeCheckout(
 
   await page.getByRole('textbox', { name: /email/i }).fill(email);
 
-  // Click the Card listitem — Stripe wraps the radio with a custom div
-  // that handles the click; the underlying <input> is visually hidden.
-  await page
+  // Select the Card payment method if not already selected. The radio is
+  // visually hidden — click the listitem wrapper which is what handles
+  // the click. If Card is already checked + form expanded, this is a no-op.
+  const cardListItem = page
     .getByRole('listitem')
-    .filter({ has: page.getByRole('radio', { name: 'Card' }) })
-    .click();
-
-  // Find the iframe that hosts the card form by polling all frames for
-  // the one that contains the cardnumber input. This handles both the
-  // 3-iframe layout and the single combined-card-iframe layout.
-  const cardFrame = await findFrameWith(page, '[name="cardnumber"]', 30_000);
-  await cardFrame.locator('[name="cardnumber"]').fill(TEST_CARD.number);
-  await cardFrame.locator('[name="exp-date"]').fill(TEST_CARD.expiry);
-  await cardFrame.locator('[name="cvc"]').fill(TEST_CARD.cvc);
-  // Combined-iframe layout puts ZIP inside the card iframe too. Try
-  // there first, fall back to the page-level input.
-  const zipInFrame = cardFrame.locator('[name="postalCode"]');
-  if (await zipInFrame.count().then((n) => n > 0).catch(() => false)) {
-    await zipInFrame.fill(TEST_CARD.zip);
+    .filter({ has: page.getByRole('radio', { name: 'Card' }) });
+  if (await cardListItem.count().then((n) => n > 0).catch(() => false)) {
+    await cardListItem.click().catch(() => {
+      // Already selected, or click target moved — proceed.
+    });
   }
 
-  // Cardholder name (page-level on both layouts; sometimes absent).
-  const nameInput = page.locator('input[name="billingName"]');
-  if (await nameInput.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await nameInput.fill(TEST_CARD.name);
+  // Try native on-page inputs first (layout a). 5s probe — if they
+  // appear, fill and skip iframe path entirely.
+  const pageCardNumber = page.getByRole('textbox', { name: 'Card number' });
+  if (await pageCardNumber.isVisible({ timeout: 5_000 }).catch(() => false)) {
+    await pageCardNumber.fill(TEST_CARD.number);
+    await page.getByRole('textbox', { name: /^Expiration/i }).fill(TEST_CARD.expiry);
+    await page.getByRole('textbox', { name: 'CVC' }).fill(TEST_CARD.cvc);
+  } else {
+    // Layouts b/c: card inputs live inside an iframe. Enumerate frames.
+    const cardFrame = await findFrameWith(page, '[name="cardnumber"]', 30_000);
+    await cardFrame.locator('[name="cardnumber"]').fill(TEST_CARD.number);
+    await cardFrame.locator('[name="exp-date"]').fill(TEST_CARD.expiry);
+    await cardFrame.locator('[name="cvc"]').fill(TEST_CARD.cvc);
+    const zipInFrame = cardFrame.locator('[name="postalCode"]');
+    if (await zipInFrame.count().then((n) => n > 0).catch(() => false)) {
+      await zipInFrame.fill(TEST_CARD.zip);
+    }
   }
 
-  // ZIP at page level (split-iframe layout has it outside the card iframe).
-  const zipPage = page.getByLabel(/zip|postal/i);
-  if (await zipPage.isVisible({ timeout: 1_000 }).catch(() => false)) {
-    await zipPage.fill(TEST_CARD.zip).catch(() => {});
-  }
+  // Cardholder name + ZIP are always page-level (when present).
+  await fillIfVisible(page.getByRole('textbox', { name: 'Cardholder name' }), TEST_CARD.name);
+  await fillIfVisible(page.getByRole('textbox', { name: 'ZIP' }), TEST_CARD.zip);
 
   await page.getByTestId('hosted-payment-submit-button').click();
   await page.waitForURL(/\/chat\?subscription=success/, { timeout: 60_000 });
+}
+
+async function fillIfVisible(locator: Locator, value: string): Promise<void> {
+  if (await locator.isVisible({ timeout: 1_000 }).catch(() => false)) {
+    await locator.fill(value).catch(() => {});
+  }
 }
 
 async function findFrameWith(page: Page, selector: string, timeoutMs: number): Promise<Frame> {
