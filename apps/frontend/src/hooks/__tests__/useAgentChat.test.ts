@@ -197,4 +197,62 @@ describe("useAgentChat — multi-bubble", () => {
 
     expect(result.current.isStreaming).toBe(false);
   });
+
+  it("sendMessage does NOT create an assistant placeholder before first event", async () => {
+    const useAgentChat = await importHook();
+    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("hi");
+    });
+
+    // Only a user message exists; no assistant placeholder yet.
+    const assistants = result.current.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(0);
+    // No runs yet
+    expect(result.current.isStreaming).toBe(true); // sendMessage sets isStreaming = true early
+  });
+
+  it("approval.requested event matches toolCallId across any assistant bubble", async () => {
+    const useAgentChat = await importHook();
+    const { result } = renderHook(() => useAgentChat("agent-A", "main"));
+
+    await act(async () => {
+      await result.current.sendMessage("install");
+    });
+
+    // Chunk + tool_start into R1
+    emit({ type: "chunk", content: "Running", agent_id: "agent-A", runId: "R1" });
+    emit({
+      type: "tool_start",
+      tool: "exec",
+      toolCallId: "tc-1",
+      agent_id: "agent-A",
+      runId: "R1",
+    });
+
+    // First run finishes with tool_use; second run starts
+    emit({ type: "done", agent_id: "agent-A", runId: "R1" });
+    emit({ type: "chunk", content: "More", agent_id: "agent-A", runId: "R2" });
+
+    // Approval event arrives for the tool in R1's bubble (not the active R2).
+    emitEvent("exec.approval.requested", {
+      id: "appr-1",
+      request: {
+        command: "rm -rf /tmp/foo",
+        host: "gateway" as const,
+        agentId: "agent-A",
+        toolCallId: "tc-1",
+        allowedDecisions: ["allow-once", "deny"],
+      },
+    });
+
+    // Expect R1's bubble to have the tool in pending-approval status.
+    const r1 = result.current.messages.find((m) =>
+      m.toolUses?.some((t) => t.toolCallId === "tc-1"),
+    );
+    expect(r1).toBeDefined();
+    const tool = r1!.toolUses!.find((t) => t.toolCallId === "tc-1")!;
+    expect(tool.status).toBe("pending-approval");
+  });
 });

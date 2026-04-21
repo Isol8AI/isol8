@@ -205,12 +205,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
 
-  const currentAssistantIdRef = useRef<string | null>(null);
-  const streamContentRef = useRef<string>("");
-
-  // Multi-bubble: one assistant message per OpenClaw runId. This replaces
-  // currentAssistantIdRef + streamContentRef. OpenClaw assigns a new runId
-  // per LLM turn within a single chat.send; each turn gets its own bubble.
+  // Multi-bubble: one assistant message per OpenClaw runId. OpenClaw assigns
+  // a new runId per LLM turn within a single chat.send; each turn gets its
+  // own bubble.
   // See docs/superpowers/specs/2026-04-21-multi-bubble-chat-design.md.
   type RunState = {
     messageId: string;
@@ -327,7 +324,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           msg_type: msg.type,
           msg_agent_id: (msg as { agent_id?: string }).agent_id,
           my_agent_id: agentIdRef.current,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
           error_code: (msg as { code?: string }).code,
           // NOTE: deliberately do not include the error message string — it
@@ -349,24 +346,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           content_length: msg.content?.length ?? 0,
           msg_agent_id: msg.agent_id,
           my_agent_id: agentIdRef.current,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
         });
-      }
-
-      // Only process if we're currently streaming
-      if (!currentAssistantIdRef.current) {
-        if (msg.type !== "chunk" && msg.type !== "heartbeat") {
-          chatDebug("chat_msg_dropped_no_ref", { msg_type: msg.type });
-        } else if (msg.type === "chunk" && isChatDebugEnabled()) {
-          // Dropped chunk — critical signal for the post-approval bug.
-          // eslint-disable-next-line no-console
-          console.log("[chat-debug]", "chunk_dropped_no_ref", {
-            ts: Date.now(),
-            content_length: msg.content?.length ?? 0,
-          });
-        }
-        return;
       }
 
       // Drop messages meant for a different agent. Heartbeat and
@@ -555,14 +537,20 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "heartbeat") {
-        if (!streamContentRef.current && currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, content: "Agent is working..." }
-                : m,
-            ),
-          );
+        // If any run has empty content so far, show a "working..." hint on
+        // its bubble. Picks the first empty run (usually there's only one).
+        for (const run of runsRef.current.values()) {
+          if (!run.streamContent) {
+            const messageId = run.messageId;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId && !m.content
+                  ? { ...m, content: "Agent is working..." }
+                  : m,
+              ),
+            );
+            break;
+          }
         }
       }
     });
@@ -594,7 +582,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         host: payload?.request?.host,
         // shape only — no raw command (may contain paths/args)
         has_command: Boolean(payload?.request?.command),
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       if (!payload?.id || !payload.request?.command) return;
@@ -620,59 +608,90 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       };
       const correlation = payload.request.toolCallId ?? payload.request.approvalCorrelationId;
 
-      if (!currentAssistantIdRef.current) return;
-      setMessages((prev) =>
-        prev.map((m) => {
-          if (m.id !== currentAssistantIdRef.current) return m;
-          const existing = m.toolUses ?? [];
-
-          // Idempotent: a retry/reconnect can redeliver the same approval.
-          // Overwrite the existing entry rather than creating a duplicate.
-          const idDupeIdx = existing.findIndex(
+      setMessages((prev) => {
+        // Idempotent: a retry/reconnect can redeliver the same approval.
+        // First pass: find any existing bubble that already has this approval
+        // id (dedupe).
+        for (const m of prev) {
+          if (m.role !== "assistant") continue;
+          const idx = (m.toolUses ?? []).findIndex(
             (t) => t.pendingApproval?.id === req.id,
           );
-          if (idDupeIdx >= 0) {
-            const next = existing.slice();
-            next[idDupeIdx] = {
-              ...next[idDupeIdx],
-              status: "pending-approval",
-              pendingApproval: req,
-            };
-            return { ...m, toolUses: next };
+          if (idx >= 0) {
+            return prev.map((row) => {
+              if (row.id !== m.id) return row;
+              const next = (row.toolUses ?? []).slice();
+              next[idx] = {
+                ...next[idx],
+                status: "pending-approval",
+                pendingApproval: req,
+              };
+              return { ...row, toolUses: next };
+            });
           }
+        }
 
-          // Pick the target ToolUse to promote to pending-approval.
-          // Prefer exact toolCallId match. For correlationless events, bind
-          // to the NEWEST running exec so concurrent commands don't misroute
-          // the card to an older, unrelated call.
-          let targetIdx = -1;
-          if (correlation) {
-            targetIdx = existing.findIndex(
+        // Second pass: find the target tool use by correlation id across
+        // all assistant messages. Prefer exact toolCallId match; for
+        // correlationless events, bind to the NEWEST running exec.
+        if (correlation) {
+          for (const m of prev) {
+            if (m.role !== "assistant") continue;
+            const idx = (m.toolUses ?? []).findIndex(
               (t) => t.toolCallId === correlation,
             );
-          } else {
-            for (let i = existing.length - 1; i >= 0; i--) {
-              if (existing[i].tool === "exec" && existing[i].status === "running") {
-                targetIdx = i;
-                break;
+            if (idx >= 0) {
+              return prev.map((row) => {
+                if (row.id !== m.id) return row;
+                const next = (row.toolUses ?? []).slice();
+                next[idx] = {
+                  ...next[idx],
+                  status: "pending-approval",
+                  pendingApproval: req,
+                };
+                return { ...row, toolUses: next };
+              });
+            }
+          }
+        } else {
+          // Scan from newest message backwards for a running exec.
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i];
+            if (m.role !== "assistant") continue;
+            const toolUses = m.toolUses ?? [];
+            for (let j = toolUses.length - 1; j >= 0; j--) {
+              if (toolUses[j].tool === "exec" && toolUses[j].status === "running") {
+                return prev.map((row, rowIdx) => {
+                  if (rowIdx !== i) return row;
+                  const next = toolUses.slice();
+                  next[j] = {
+                    ...next[j],
+                    status: "pending-approval",
+                    pendingApproval: req,
+                  };
+                  return { ...row, toolUses: next };
+                });
               }
             }
           }
+        }
 
-          if (targetIdx >= 0) {
-            const next = existing.slice();
-            next[targetIdx] = {
-              ...next[targetIdx],
-              status: "pending-approval",
-              pendingApproval: req,
-            };
-            return { ...m, toolUses: next };
+        // Nothing matched — attach to the newest assistant message as a new
+        // tool entry (preserves old behavior for correlationless cases
+        // where no tool has started yet).
+        const lastAssistantIdx = (() => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === "assistant") return i;
           }
-
+          return -1;
+        })();
+        if (lastAssistantIdx < 0) return prev;
+        return prev.map((row, i) => {
+          if (i !== lastAssistantIdx) return row;
           return {
-            ...m,
+            ...row,
             toolUses: [
-              ...existing,
+              ...(row.toolUses ?? []),
               {
                 tool: "exec",
                 toolCallId: correlation,
@@ -681,8 +700,8 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               },
             ],
           };
-        }),
-      );
+        });
+      });
     });
 
     const unsubResolved = onEvent((eventName, data) => {
@@ -691,7 +710,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       chatDebug("approval_resolved_event_rx", {
         id: payload?.id,
         decision: payload?.decision,
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       if (!payload?.id) return;
@@ -726,10 +745,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
       chatDebug("sendMessage_entry", {
-        prev_ref: currentAssistantIdRef.current,
+        prev_run_count: runsRef.current.size,
         prev_streaming: isStreamingRef.current,
         agent: agentIdRef.current,
-        // shape only — no raw user content
         msg_length: message.length,
       });
 
@@ -745,20 +763,17 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       setError(null);
       setBudgetError(null);
 
-      // Clear bootstrap flag once user sends their first message
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
 
       const userMsgId = `user-${crypto.randomUUID()}`;
-      const assistantMsgId = `assistant-${crypto.randomUUID()}`;
 
-      currentAssistantIdRef.current = assistantMsgId;
-      streamContentRef.current = "";
-
+      // Add only the user message. Assistant bubbles are created lazily
+      // when OpenClaw emits the first event for a new runId — matches
+      // OpenClaw control-ui's implicit-bubble design. See spec §4.
       setMessages((prev) => [
         ...prev,
         { id: userMsgId, role: "user", content: message },
-        { id: assistantMsgId, role: "assistant", content: "" },
       ]);
       setIsStreaming(true, "sendMessage");
 
@@ -769,16 +784,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           err instanceof Error ? err.message : "Failed to send message",
         );
         setError(errorMessage);
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: errorMessage }
-              : m,
-          ),
-        );
+        // No placeholder to update — append an error-marked assistant
+        // message so the user sees failure feedback.
+        const errMsgId = `assistant-${crypto.randomUUID()}`;
+        setMessages((prev) => [
+          ...prev,
+          { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
+        ]);
         setIsStreaming(false, "sendMessage-catch");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
       }
     },
     [sendChat, isConnected, sessionName],
@@ -788,7 +801,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const cancelMessage = useCallback(async () => {
     chatDebug("cancelMessage_entry", {
-      ref: currentAssistantIdRef.current,
+      run_count: runsRef.current.size,
       streaming: isStreamingRef.current,
     });
     if (!agentIdRef.current || !isStreaming) return;
@@ -802,15 +815,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
     // Immediately update local state so the UI feels responsive
     setIsStreaming(false, "cancelMessage");
-    currentAssistantIdRef.current = null;
-    streamContentRef.current = "";
+    runsRef.current.clear();
   }, [isStreaming, sendReq, sessionName]);
 
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
     chatDebug("clearMessages_entry", {
-      ref: currentAssistantIdRef.current,
+      run_count: runsRef.current.size,
       streaming: isStreamingRef.current,
     });
     setMessages([]);
@@ -820,8 +832,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
     setError(null);
     setIsStreaming(false, "clearMessages");
-    currentAssistantIdRef.current = null;
-    streamContentRef.current = "";
+    runsRef.current.clear();
   }, [sessionName]);
 
   // ---- Resolve approval (allow-once / allow-always / deny) ----
@@ -830,14 +841,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     async (id: string, decision: ExecApprovalDecision): Promise<void> => {
       chatDebug("resolveApproval_start", {
         decision,
-        ref: currentAssistantIdRef.current,
+        run_count: runsRef.current.size,
         streaming: isStreamingRef.current,
       });
       try {
         const result = await sendReq("exec.approval.resolve", { id, decision });
         chatDebug("resolveApproval_done", {
           decision,
-          ref: currentAssistantIdRef.current,
+          run_count: runsRef.current.size,
           streaming: isStreamingRef.current,
           result_keys: result && typeof result === "object" ? Object.keys(result as object) : null,
         });
