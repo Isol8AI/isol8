@@ -403,14 +403,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "done") {
-        setIsStreaming(false, "done-event");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
+        const runId = msg.runId ?? "_default";
+        finalizeBubble(runId);
         return;
       }
 
       if (msg.type === "error") {
-        // Handle budget exceeded errors specially
+        // Budget-exceeded is a global terminal — not tied to a specific run.
         if (msg.code === "BUDGET_EXCEEDED") {
           setBudgetError({
             code: "BUDGET_EXCEEDED",
@@ -422,32 +421,48 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             is_subscribed: msg.is_subscribed ?? false,
             tier: msg.tier ?? "free",
           });
-          // Remove the empty assistant message placeholder
-          if (currentAssistantIdRef.current) {
-            setMessages((prev) =>
-              prev.filter((m) => m.id !== currentAssistantIdRef.current),
-            );
-          }
+          // Remove any empty assistant placeholders across active runs.
+          const activeMessageIds = new Set(
+            Array.from(runsRef.current.values()).map((r) => r.messageId),
+          );
+          setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
+          runsRef.current.clear();
           setIsStreaming(false, "error-budget");
-          currentAssistantIdRef.current = null;
-          streamContentRef.current = "";
           return;
         }
 
         const displayError = friendlyError(msg.message);
-        if (currentAssistantIdRef.current) {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === currentAssistantIdRef.current
-                ? { ...m, content: displayError }
-                : m,
-            ),
-          );
+
+        if (msg.runId) {
+          // Scoped error: finalize that bubble only. Other runs continue.
+          const run = runsRef.current.get(msg.runId);
+          if (run) {
+            const messageId = run.messageId;
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === messageId ? { ...m, content: `Error: ${displayError}` } : m,
+              ),
+            );
+            finalizeBubble(msg.runId);
+          }
+          setError(displayError);
+          return;
         }
+
+        // Global error (no runId): mark every active bubble and clear state.
+        const activeMessageIds = new Set(
+          Array.from(runsRef.current.values()).map((r) => r.messageId),
+        );
+        setMessages((prev) =>
+          prev.map((m) =>
+            activeMessageIds.has(m.id)
+              ? { ...m, content: `Error: ${displayError}` }
+              : m,
+          ),
+        );
         setError(displayError);
+        runsRef.current.clear();
         setIsStreaming(false, "error-generic");
-        currentAssistantIdRef.current = null;
-        streamContentRef.current = "";
         return;
       }
 
