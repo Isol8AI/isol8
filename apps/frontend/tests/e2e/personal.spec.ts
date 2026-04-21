@@ -18,7 +18,7 @@ test.describe('E2E: Personal happy path', () => {
   // that scale-to-zeros mid-handshake (containerHealthy 10m + waitForChatReady
   // 10m + chat round-trip 90s). 25 min gives headroom; the slow path
   // dominates in practice.
-  test.setTimeout(25 * 60_000);
+  test.setTimeout(35 * 60_000);
 
   let user: E2EUser;
 

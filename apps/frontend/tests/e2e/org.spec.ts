@@ -16,7 +16,7 @@ test.describe('E2E: Org happy path', () => {
   test.describe.configure({ mode: 'serial' });
   // Same as personal.spec — Step 3 cold-start can hit 20 min when scale-to-zero
   // races the gateway WS handshake.
-  test.setTimeout(25 * 60_000);
+  test.setTimeout(35 * 60_000);
 
   let user: E2EUser;
 

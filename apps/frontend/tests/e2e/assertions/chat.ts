@@ -16,7 +16,7 @@ export async function modelUsed(
   // transient 5xx to keep trying. PR #343 e2e-dev artifact (run
   // 24725288866, 2026-04-21) hit this — 502 on modelUsed ~12s after
   // Step 4 completed.
-  const deadline = Date.now() + (opts.timeoutMs ?? 3 * 60_000);
+  const deadline = Date.now() + (opts.timeoutMs ?? 5 * 60_000);
   while (Date.now() < deadline) {
     try {
       const data = await api.post<SessionsListResponse>('/container/rpc', {
@@ -37,6 +37,6 @@ export async function modelUsed(
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error(
-    `modelUsed: expected ${expectedModel}, never observed within 3 min`,
+    `modelUsed: expected ${expectedModel}, never observed within 5 min`,
   );
 }
