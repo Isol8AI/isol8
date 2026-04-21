@@ -720,3 +720,99 @@ class TestStatusChangeEvents:
         conn._emit_status_change("HEALTHY", "Gateway connected")
 
         mock_mgmt.send_message.assert_not_called()
+
+
+class TestChatEventForwarding:
+    """_handle_message forwards runId on chat terminal events (done/error)."""
+
+    @pytest.fixture
+    def mock_management_api(self):
+        client = MagicMock()
+        client.send_message = MagicMock(return_value=True)
+        return client
+
+    @pytest.fixture
+    def connection(self, mock_management_api):
+        c = GatewayConnection(
+            frontend_connections={"conn-1"},
+            conn_member_map={"conn-1": "user-1"},
+            user_id="user-1",
+            ip="10.0.0.1",
+            token="t",
+            management_api=mock_management_api,
+        )
+        return c
+
+    def test_done_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-done-1",
+                },
+            }
+        )
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert done_msgs[0]["runId"] == "run-done-1"
+
+    def test_error_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "error",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-err-1",
+                    "error": {"message": "model unavailable"},
+                },
+            }
+        )
+        error_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
+        ]
+        assert len(error_msgs) == 1
+        assert error_msgs[0]["runId"] == "run-err-1"
+        assert error_msgs[0]["message"] == "model unavailable"
+
+    def test_aborted_event_carries_run_id(self, connection, mock_management_api):
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "aborted",
+                    "sessionKey": "agent:main:user-1",
+                    "runId": "run-abort-1",
+                },
+            }
+        )
+        error_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "error"
+        ]
+        assert len(error_msgs) == 1
+        assert error_msgs[0]["runId"] == "run-abort-1"
+
+    def test_done_without_run_id_still_forwarded(self, connection, mock_management_api):
+        """When OpenClaw omits runId, the forwarded done has no runId key (not None)."""
+        connection._handle_message(
+            {
+                "type": "event",
+                "event": "chat",
+                "payload": {
+                    "state": "final",
+                    "sessionKey": "agent:main:user-1",
+                },
+            }
+        )
+        done_msgs = [
+            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
+        ]
+        assert len(done_msgs) == 1
+        assert "runId" not in done_msgs[0]
