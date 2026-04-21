@@ -17,6 +17,7 @@ export async function modelUsed(
   // 24725288866, 2026-04-21) hit this — 502 on modelUsed ~12s after
   // Step 4 completed.
   const deadline = Date.now() + (opts.timeoutMs ?? 5 * 60_000);
+  let lastSeen: string[] = [];
   while (Date.now() < deadline) {
     try {
       const data = await api.post<SessionsListResponse>('/container/rpc', {
@@ -25,7 +26,18 @@ export async function modelUsed(
       });
       const sessions = data.sessions ?? [];
       const used = sessions.flatMap((s) => (s.usage?.model ? [s.usage.model] : []));
-      if (used.some((m) => m === expectedModel)) return;
+      lastSeen = used;
+      // Tolerate provider prefix — the backend config stores
+      // "amazon-bedrock/qwen.qwen3-vl-235b-a22b" while some session
+      // usage records strip the "amazon-bedrock/" prefix
+      // (bedrock_pricing.py uses the bare id; apps/backend/core/config.py
+      // uses the prefixed form). Match either (PR #345 e2e-dev artifact
+      // run 24729067287, 2026-04-21: modelUsed never matched the bare-id
+      // expected value).
+      const suffix = expectedModel.replace(/^.*\//, '');
+      if (used.some((m) => m === expectedModel || m === suffix || m.endsWith(`/${suffix}`))) {
+        return;
+      }
     } catch (err) {
       // Swallow transient 5xx — the gateway is temporarily disconnected
       // from the reconfiguring container. Let any other error propagate
@@ -37,6 +49,7 @@ export async function modelUsed(
     await new Promise((r) => setTimeout(r, 2000));
   }
   throw new Error(
-    `modelUsed: expected ${expectedModel}, never observed within 5 min`,
+    `modelUsed: expected ${expectedModel}, never observed within 5 min. ` +
+      `Last seen models across sessions: [${lastSeen.join(', ')}]`,
   );
 }
