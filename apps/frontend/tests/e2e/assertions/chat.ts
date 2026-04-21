@@ -22,7 +22,14 @@ export async function modelUsed(
     try {
       const data = await api.post<SessionsListResponse>('/container/rpc', {
         method: 'sessions.list',
-        params: {},
+        params: {
+          // Match SessionsPanel defaults — without these, sessions.list
+          // returns a narrow scope and the agent's chat session isn't
+          // included (verified from PR #346 e2e-dev artifact run
+          // 24734250785, 2026-04-21: "Last seen models: []").
+          includeGlobal: true,
+          includeUnknown: true,
+        },
       });
       const sessions = data.sessions ?? [];
       const used = sessions.flatMap((s) => (s.usage?.model ? [s.usage.model] : []));
