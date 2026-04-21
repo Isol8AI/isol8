@@ -96,6 +96,7 @@ export class Isol8Stage extends cdk.Stage {
         taskExecutionRole: container.taskExecutionRole,
         taskRole: container.taskRole,
         openclawTaskDef: container.openclawTaskDef,
+        openclawTaskDefArnParam: container.openclawTaskDefArnParam,
       },
       managementApiUrl: api.managementApiUrl,
       connectionsTableName: api.connectionsTableName,

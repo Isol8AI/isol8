@@ -12,6 +12,7 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
+import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 /**
@@ -55,6 +56,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     taskExecutionRole: iam.IRole;
     taskRole: iam.IRole;
     openclawTaskDef: ecs.ITaskDefinition;
+    openclawTaskDefArnParam: ssm.IStringParameter;
   };
   managementApiUrl: string;
   connectionsTableName: string;
@@ -580,17 +582,8 @@ export class ServiceStack extends cdk.Stack {
         CONTAINER_EXECUTION_ROLE_ARN:
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        // Use the family name (inlined static string) rather than the full
-        // revision ARN so we don't create a cross-stack Fn::ImportValue that
-        // CFN locks on every task-def bump. The backend's cloner resolves
-        // latest-in-family at runtime; per-user clones register into the same
-        // family, but access points are always overridden in the clone so no
-        // cross-user leakage, and per-user clones inherit the CDK base's env
-        // vars so the CLAWHUB_WORKDIR drift PR #299 was reacting to can no
-        // longer recur under current code. If we later want the ARN-revision
-        // pinning back, route it through an SSM parameter so the value isn't
-        // tied to a consumer-imported export.
-        ECS_TASK_DEFINITION: `isol8-${env}-openclaw`,
+        // ECS_TASK_DEFINITION is injected via `secrets` below (SSM-backed).
+        // Resolves at container start to the current CDK-managed task-def ARN.
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
@@ -625,6 +618,14 @@ export class ServiceStack extends cdk.Stack {
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
+        ),
+        // Task-def ARN comes from SSM rather than a cross-stack Fn::ImportValue.
+        // The backend reads this env var and uses it as the base to clone per-user
+        // task defs. Resolved by ECS at task start — new backend deploys always see
+        // the current CDK-managed revision. Grants ssm:GetParameters on the param's
+        // ARN to the execution role automatically.
+        ECS_TASK_DEFINITION: ecs.Secret.fromSsmParameter(
+          props.container.openclawTaskDefArnParam,
         ),
       },
       healthCheck: {
