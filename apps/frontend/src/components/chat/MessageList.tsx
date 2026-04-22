@@ -411,13 +411,91 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
   function MessageList({ messages, isTyping, agentName, onRetry, onOpenFile, onDecide }, ref) {
     const { containerRef, endRef, scrollToBottom } = useScrollToBottom();
 
+    // Track whether the user is at (or near) the bottom of the scroll
+    // container. While true, incoming streamed chunks pull the view down.
+    // If the user scrolls up to re-read an earlier message, we stop
+    // pulling — they'll scroll back down themselves. Threshold matches
+    // Tailwind's `space-y-10` (~40px) plus a comfortable margin.
+    const isNearBottomRef = React.useRef(true);
+    const hasMountedRef = React.useRef(false);
+    const prevMessagesLengthRef = React.useRef(0);
+    const prevLastContentLengthRef = React.useRef(0);
+    const prevLastRoleRef = React.useRef<"user" | "assistant" | undefined>(undefined);
+
     React.useImperativeHandle(ref, () => ({
       scrollToBottom,
     }));
 
+    const handleScroll = React.useCallback(() => {
+      const c = containerRef.current;
+      if (!c) return;
+      const distance = c.scrollHeight - c.scrollTop - c.clientHeight;
+      isNearBottomRef.current = distance < 120;
+    }, [containerRef]);
+
+    // Auto-scroll rules:
+    //   - First render (agent switch / history load) → snap to bottom.
+    //   - Length increased → a new message arrived; snap if near bottom,
+    //     or unconditionally if the new message is from the user (they
+    //     just sent it, they want to see it).
+    //   - Length same, last message's content grew → streaming chunk on
+    //     the tail bubble; snap only if near bottom (so a user who
+    //     scrolled up isn't yanked back while reading).
+    React.useEffect(() => {
+      const container = containerRef.current;
+      const end = endRef.current;
+      if (!container || !end) return;
+
+      const lastMsg = messages[messages.length - 1];
+      const lastContentLength = lastMsg?.content?.length ?? 0;
+      const lastRole = lastMsg?.role;
+
+      const lengthIncreased = messages.length > prevMessagesLengthRef.current;
+      const contentGrew =
+        messages.length === prevMessagesLengthRef.current &&
+        lastContentLength > prevLastContentLengthRef.current;
+      // Any new message whose tail is a user message is a fresh user send
+      // (multi-bubble `sendMessage` appends only the user row, and a
+      // cancel-before-first-event turn can leave the previous tail as
+      // user too — so don't gate on role *changing*, just on "new tail
+      // is user"). Always snap so the user's own message is visible.
+      const newUserMessage = lengthIncreased && lastRole === "user";
+
+      const isFirstPaintWithMessages = !hasMountedRef.current && messages.length > 0;
+
+      // JSDOM test envs don't always polyfill scrollIntoView; production
+      // browsers always have it. Optional-chain so tests that don't mock
+      // it don't crash when they transitively render MessageList.
+      if (isFirstPaintWithMessages || newUserMessage) {
+        end.scrollIntoView?.({ behavior: "auto", block: "end" });
+        isNearBottomRef.current = true;
+        hasMountedRef.current = true;
+      } else if ((lengthIncreased || contentGrew) && isNearBottomRef.current) {
+        end.scrollIntoView?.({ behavior: "auto", block: "end" });
+      }
+
+      if (messages.length > 0) hasMountedRef.current = true;
+      prevMessagesLengthRef.current = messages.length;
+      prevLastContentLengthRef.current = lastContentLength;
+      prevLastRoleRef.current = lastRole;
+    }, [messages, containerRef, endRef]);
+
+    // The "typing placeholder" shows the agent header (animated thinking
+    // glyph) during the window between `sendMessage` and the first
+    // streamed chunk. Since multi-bubble rendering creates assistant
+    // bubbles lazily on first event (spec §4), nothing else is on screen
+    // to signal "the agent received your message and is working." This
+    // placeholder is rendered only when streaming is active AND the last
+    // message is a user message (or there are no messages yet).
+    const showTypingPlaceholder =
+      !!isTyping &&
+      (messages.length === 0 ||
+        messages[messages.length - 1].role === "user");
+
     return (
       <div
         ref={containerRef}
+        onScroll={handleScroll}
         className="flex-1 min-h-0 overflow-y-auto p-4 md:px-8"
         data-lenis-prevent
       >
@@ -478,6 +556,16 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
             </div>
           );
           })}
+          {showTypingPlaceholder && (
+            <div
+              data-testid="typing-placeholder"
+              className="flex w-full justify-start"
+            >
+              <div className="flex flex-col min-w-0 max-w-[85%]">
+                <AgentHead name={agentName || "Assistant"} state="thinking" />
+              </div>
+            </div>
+          )}
           <div ref={endRef} />
         </div>
       </div>
