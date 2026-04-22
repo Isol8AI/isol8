@@ -128,17 +128,10 @@ impl BrowserSidecar {
     }
 }
 
-/// Sidecar filename suffix. On macOS our bundle ships a single
-/// universal dispatch shim (`-universal-apple-darwin`) — tauri-bundler
-/// requires exactly that suffix when invoked with
-/// `--target universal-apple-darwin`. The shim itself picks the
-/// matching node binary + openclaw-host at runtime.
-#[cfg(target_os = "macos")]
-fn current_sidecar_triple() -> Result<String, String> {
-    Ok("universal-apple-darwin".into())
-}
-
-#[cfg(not(target_os = "macos"))]
+/// Sidecar filename suffix for the running binary's arch. We ship
+/// per-arch DMGs (aarch64 + x86_64), so `std::env::consts::ARCH`
+/// reflects the arch of THIS compiled binary — matches the one
+/// tauri-bundler copied next to the main executable.
 fn current_sidecar_triple() -> Result<String, String> {
     match std::env::consts::ARCH {
         "aarch64" => Ok("aarch64-apple-darwin".into()),

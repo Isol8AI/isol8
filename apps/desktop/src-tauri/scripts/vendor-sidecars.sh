@@ -78,48 +78,52 @@ EOF
     )
 }
 
-vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
-vendor_arch "x86_64-apple-darwin"  "x64"   "x64"
-
-# Universal dispatch shim. Tauri's build-script checks externalBin
-# existence THREE TIMES during a --target universal-apple-darwin build:
-#   1. aarch64-apple-darwin compile pass expects `-aarch64-apple-darwin`
-#   2. x86_64-apple-darwin compile pass expects `-x86_64-apple-darwin`
-#   3. final bundle expects `-universal-apple-darwin`
-# Only the bundled copy actually runs at runtime; the per-arch files
-# just need to exist. One shim + two symlinks satisfies all three
-# checks with identical content.
-LAUNCHER="$BIN_DIR/isol8-browser-service-universal-apple-darwin"
-cat > "$LAUNCHER" <<'LAUNCHER_EOF'
+# Write a per-triple launcher shim that finds node + openclaw-host
+# at runtime. In dev builds the shim sits next to the siblings in
+# target/debug/; in packaged builds the launcher is in
+# Contents/MacOS/ and the resources land in Contents/Resources/.
+write_launcher() {
+    local TRIPLE="$1"
+    local LAUNCHER="$BIN_DIR/isol8-browser-service-${TRIPLE}"
+    cat > "$LAUNCHER" <<LAUNCHER_EOF
 #!/usr/bin/env bash
 set -euo pipefail
-HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-case "$(uname -m)" in
-    arm64)  TRIPLE="aarch64-apple-darwin" ;;
-    x86_64) TRIPLE="x86_64-apple-darwin"  ;;
-    *) echo "isol8-browser-service: unsupported arch $(uname -m)" >&2; exit 1 ;;
-esac
-
-if [ -f "$HERE/../Resources/node-$TRIPLE" ]; then
-    ASSETS="$HERE/../Resources"
+HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
+    ASSETS="\$HERE/../Resources"
 else
-    ASSETS="$HERE"
+    ASSETS="\$HERE"
 fi
-
-exec "$ASSETS/node-$TRIPLE" \
-    "$ASSETS/openclaw-host-$TRIPLE/node_modules/openclaw/openclaw.mjs" \
-    node run --host 127.0.0.1 --port 18789 "$@"
+exec "\$ASSETS/node-${TRIPLE}" \\
+    "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
+    node run --host 127.0.0.1 --port 18789 "\$@"
 LAUNCHER_EOF
-chmod +x "$LAUNCHER"
+    chmod +x "$LAUNCHER"
+}
 
-# Per-arch file names for the build-script existence checks. Copy
-# rather than symlink — symlinks can break during Tauri's bundle copy
-# + macOS codesign pass.
-cp "$LAUNCHER" "$BIN_DIR/isol8-browser-service-aarch64-apple-darwin"
-cp "$LAUNCHER" "$BIN_DIR/isol8-browser-service-x86_64-apple-darwin"
-chmod +x "$BIN_DIR/isol8-browser-service-aarch64-apple-darwin" \
-         "$BIN_DIR/isol8-browser-service-x86_64-apple-darwin"
+# CI passes a single target triple; local dev (no args) vendors both
+# so `cargo tauri dev` works on either arch without re-running.
+TARGET="${1:-}"
+case "$TARGET" in
+    aarch64-apple-darwin)
+        vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
+        write_launcher "aarch64-apple-darwin"
+        ;;
+    x86_64-apple-darwin)
+        vendor_arch "x86_64-apple-darwin" "x64" "x64"
+        write_launcher "x86_64-apple-darwin"
+        ;;
+    "")
+        vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
+        vendor_arch "x86_64-apple-darwin" "x64" "x64"
+        write_launcher "aarch64-apple-darwin"
+        write_launcher "x86_64-apple-darwin"
+        ;;
+    *)
+        echo "usage: $0 [aarch64-apple-darwin | x86_64-apple-darwin]" >&2
+        exit 1
+        ;;
+esac
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"

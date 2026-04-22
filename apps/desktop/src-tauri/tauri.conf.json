@@ -39,10 +39,8 @@
       "bin/isol8-browser-service"
     ],
     "resources": [
-      "bin/node-aarch64-apple-darwin",
-      "bin/node-x86_64-apple-darwin",
-      "bin/openclaw-host-aarch64-apple-darwin/**/*",
-      "bin/openclaw-host-x86_64-apple-darwin/**/*"
+      "bin/node-*",
+      "bin/openclaw-host-*/**/*"
     ],
     "macOS": {
       "entitlements": "entitlements.plist",
