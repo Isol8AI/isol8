@@ -1,9 +1,15 @@
 name: Desktop App Build
 
+# Two release tracks, one workflow:
+#   desktop-dev-v*  → dev build (points at dev.isol8.co). Internal smoke testing.
+#   desktop-v*      → prod build (points at isol8.co).    Public distribution.
+# Both cut a draft GitHub release with the DMG attached; approve + publish
+# manually to make it visible.
 on:
   push:
     tags:
       - 'desktop-v*'
+      - 'desktop-dev-v*'
   workflow_dispatch:
 
 jobs:
@@ -29,6 +35,50 @@ jobs:
       - name: Install dependencies
         run: pnpm install
 
+      # Tag prefix decides which environment endpoints the bundle
+      # points at. Keeps one workflow, two outputs.
+      - name: Resolve target environment
+        id: env
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/desktop-dev-v* ]]; then
+            echo "target_env=dev" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=https://dev.isol8.co/chat" >> "$GITHUB_OUTPUT"
+            echo "callback_url=https://dev.isol8.co/auth/desktop-callback" >> "$GITHUB_OUTPUT"
+            echo "release_name=Isol8 Desktop [DEV] ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          elif [[ "${GITHUB_REF}" == refs/tags/desktop-v* ]]; then
+            echo "target_env=prod" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=https://isol8.co/chat" >> "$GITHUB_OUTPUT"
+            echo "callback_url=https://isol8.co/auth/desktop-callback" >> "$GITHUB_OUTPUT"
+            echo "release_name=Isol8 Desktop ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            # workflow_dispatch or future branch push — default to dev
+            # so we never accidentally ship a prod-pointing binary from
+            # a non-tag trigger.
+            echo "target_env=dev" >> "$GITHUB_OUTPUT"
+            echo "frontend_url=https://dev.isol8.co/chat" >> "$GITHUB_OUTPUT"
+            echo "callback_url=https://dev.isol8.co/auth/desktop-callback" >> "$GITHUB_OUTPUT"
+            echo "release_name=Isol8 Desktop [DEV] dispatch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Patch tauri.conf.json for ${{ steps.env.outputs.target_env }}
+        run: |
+          TAURI_CFG="apps/desktop/src-tauri/tauri.conf.json"
+          jq --arg url "${{ steps.env.outputs.frontend_url }}" '
+            .build.devUrl = $url |
+            .build.frontendDist = $url |
+            .app.windows[0].url = $url
+          ' "$TAURI_CFG" > "$TAURI_CFG.new"
+          mv "$TAURI_CFG.new" "$TAURI_CFG"
+          echo "Patched URLs in tauri.conf.json:"
+          jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url}' "$TAURI_CFG"
+
+      # Vendor Node.js + pinned `openclaw` npm package for both macOS
+      # archs. Tauri's externalBin + resources point at these paths;
+      # the bundler fails if they're missing. ~5min the first time
+      # (downloads + 2× npm install), cached in the job sandbox.
+      - name: Vendor browser sidecar
+        run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh
+
       # tauri-action builds, signs/notarizes (when Apple env vars are present),
       # and — when tagName is set — creates a GitHub release and uploads the
       # produced .dmg + .app.tar.gz. On workflow_dispatch we build without
@@ -38,7 +88,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tagName: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '' }}
-          releaseName: 'Isol8 Desktop ${{ github.ref_name }}'
+          releaseName: ${{ steps.env.outputs.release_name }}
           releaseDraft: true
           prerelease: true
           args: --target universal-apple-darwin
@@ -47,3 +97,4 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ISOL8_CALLBACK_URL: ${{ steps.env.outputs.callback_url }}
