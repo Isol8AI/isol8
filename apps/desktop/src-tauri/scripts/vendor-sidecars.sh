@@ -81,11 +81,14 @@ EOF
 vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
 vendor_arch "x86_64-apple-darwin"  "x64"   "x64"
 
-# Universal dispatch shim. Named `-universal-apple-darwin` so
-# tauri-bundler's externalBin resolver finds it under
-# `--target universal-apple-darwin`. Locates its own node + openclaw-host
-# at runtime: prod builds land in Contents/Resources; dev builds leave
-# siblings next to the shim in target/debug/.
+# Universal dispatch shim. Tauri's build-script checks externalBin
+# existence THREE TIMES during a --target universal-apple-darwin build:
+#   1. aarch64-apple-darwin compile pass expects `-aarch64-apple-darwin`
+#   2. x86_64-apple-darwin compile pass expects `-x86_64-apple-darwin`
+#   3. final bundle expects `-universal-apple-darwin`
+# Only the bundled copy actually runs at runtime; the per-arch files
+# just need to exist. One shim + two symlinks satisfies all three
+# checks with identical content.
 LAUNCHER="$BIN_DIR/isol8-browser-service-universal-apple-darwin"
 cat > "$LAUNCHER" <<'LAUNCHER_EOF'
 #!/usr/bin/env bash
@@ -109,6 +112,14 @@ exec "$ASSETS/node-$TRIPLE" \
     node run --host 127.0.0.1 --port 18789 "$@"
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
+
+# Per-arch file names for the build-script existence checks. Copy
+# rather than symlink — symlinks can break during Tauri's bundle copy
+# + macOS codesign pass.
+cp "$LAUNCHER" "$BIN_DIR/isol8-browser-service-aarch64-apple-darwin"
+cp "$LAUNCHER" "$BIN_DIR/isol8-browser-service-x86_64-apple-darwin"
+chmod +x "$BIN_DIR/isol8-browser-service-aarch64-apple-darwin" \
+         "$BIN_DIR/isol8-browser-service-x86_64-apple-darwin"
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"
