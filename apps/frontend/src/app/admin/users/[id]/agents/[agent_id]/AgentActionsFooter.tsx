@@ -7,10 +7,18 @@ import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
 import { clearAgentSessions, deleteAgent } from "@/app/admin/_actions/agent";
+import { publishAgent } from "@/app/admin/_actions/catalog";
 
 export interface AgentActionsFooterProps {
   userId: string;
   agentId: string;
+  agentName?: string;
+  /**
+   * When true, the admin is viewing their own agent and the "Publish to
+   * catalog" action is enabled. Publishing someone else's agent is blocked
+   * on the backend; the UI surfaces that up-front as a disabled button.
+   */
+  isOwnAgent: boolean;
 }
 
 /**
@@ -20,7 +28,12 @@ export interface AgentActionsFooterProps {
  * phrase and the 3-attempt lockout. We surface backend errors inline rather
  * than throwing so the SC stays mounted.
  */
-export function AgentActionsFooter({ userId, agentId }: AgentActionsFooterProps) {
+export function AgentActionsFooter({
+  userId,
+  agentId,
+  agentName,
+  isOwnAgent,
+}: AgentActionsFooterProps) {
   const router = useRouter();
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -52,6 +65,18 @@ export function AgentActionsFooter({ userId, agentId }: AgentActionsFooterProps)
     router.refresh();
   }
 
+  async function handlePublish() {
+    setError(null);
+    setNotice(null);
+    const result = await publishAgent(agentId);
+    if (!result.ok) {
+      setError(result.error ?? "publish_failed");
+      return;
+    }
+    setNotice("Agent published to catalog.");
+    router.refresh();
+  }
+
   return (
     <div className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
       <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
@@ -80,6 +105,28 @@ export function AgentActionsFooter({ userId, agentId }: AgentActionsFooterProps)
             Clear sessions
           </Button>
         </ConfirmActionDialog>
+
+        {isOwnAgent ? (
+          <ConfirmActionDialog
+            confirmText={`publish ${agentName ?? agentId}`}
+            actionLabel="Publish to catalog"
+            onConfirm={handlePublish}
+          >
+            <Button type="button" variant="outline" size="sm">
+              Publish to catalog
+            </Button>
+          </ConfirmActionDialog>
+        ) : (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            disabled
+            title="Only your own agents can be published"
+          >
+            Publish to catalog
+          </Button>
+        )}
       </div>
     </div>
   );
