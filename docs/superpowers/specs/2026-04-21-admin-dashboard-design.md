@@ -10,14 +10,14 @@
 
 A dedicated admin surface at `admin.isol8.co` lets the Isol8 team debug user issues without jumping between Clerk, Stripe, AWS Console, CloudWatch, and PostHog. Each user's full state — identity, billing, container, agents, frontend activity, backend logs — is surfaced on one page. A bounded set of safe admin actions (container reprovision, billing adjustments, account controls, config overrides, per-agent actions) is available inline, with every action audited forever in a dedicated DynamoDB table. A `/admin/health` page surfaces platform-wide system status.
 
-The admin surface lives as a **route group inside `apps/frontend/`** (not a separate Next.js app), gated by host-based middleware so `/admin/*` is only reachable from the `admin.isol8.co` hostname. Cloudflare Access fronts the subdomain as an SSO edge gate. Backend enforcement is `Depends(require_platform_admin)` — the Clerk-user-ID allowlist from `PLATFORM_ADMIN_USER_IDS` env var.
+The admin surface lives as a **route group inside `apps/frontend/`** (not a separate Next.js app), gated by host-based middleware so `/admin/*` is only reachable from the `admin.isol8.co` hostname. **No edge SSO gate** — defense relies on Clerk auth + the backend `require_platform_admin` allowlist + audit-every-action. (Edge gate options like Cloudflare Access, Vercel Deployment Protection, or HTTP basic auth are documented as Phase 2 hardening if probes become a concern.)
 
 ## Goals
 
 - Admins can find any user by email or Clerk ID and see everything about them on one page — identity, billing, container, agents, frontend activity, backend logs — in under 60 seconds.
 - Common support actions (reprovision a stuck container, cancel a subscription, issue a credit, delete a misbehaving agent) are one click + typed-confirmation away.
 - Every admin write action is audited forever: actor, target, action, payload, result, HTTP status, elapsed time, user-agent, IP.
-- The admin surface is invisible from the public internet (Cloudflare Access edge gate) and gated server-side by the platform-admin allowlist (belt and braces).
+- The admin surface is gated server-side by the platform-admin allowlist; the admin login page is publicly reachable but unrecognized Clerk users get 403, audited in `admin-actions`.
 - Zero risk of admin code leaking into the public user-facing bundle: Server Components by default, Server Actions for writes, ESLint import-boundary enforcement.
 - `/admin/health` answers "is the platform OK right now?" in one view — fleet counts, upstream probes, background-task status, recent errors, recent admin activity.
 - CloudWatch errors for a specific user render inline on the Logs tab — no AWS Console hop for the common case.
@@ -39,13 +39,10 @@ The admin surface lives as a **route group inside `apps/frontend/`** (not a sepa
 ```
  admin.isol8.co (end-user browser)
         │
+        │  (no edge SSO gate — admin login page is publicly reachable;
+        │   unrecognized Clerk users get 403 from require_platform_admin)
+        │
         ▼
- ┌──────────────────────────┐
- │  Cloudflare Access       │  SSO via GitHub / Google; only
- │  (edge gate, prod/dev)   │  allowlisted email domains reach Vercel.
- └────────┬─────────────────┘
-          │
-          ▼
  ┌──────────────────────────────────────────────────────────────────┐
  │  Vercel (single project: isol8-frontend-*)                       │
  │                                                                  │
@@ -103,11 +100,12 @@ The admin surface lives as a **route group inside `apps/frontend/`** (not a sepa
     └──────────┘         └───────────────────────────────┘
 ```
 
-### Three layers of defense
+### Two layers of defense (no edge gate in v1)
 
-1. **Edge (Cloudflare Access):** The `admin.isol8.co` hostname is only resolvable / fetchable from someone already authenticated via GitHub/Google SSO with an Isol8-allowlisted email. Configured in the Cloudflare dashboard.
-2. **Frontend auth (Next.js middleware + Clerk):** If Cloudflare Access is bypassed somehow, Next.js middleware enforces `host === 'admin.isol8.co'` AND signed-in-via-Clerk. The admin UI calls `GET /admin/me` on mount; a 403 surfaces `/admin/not-authorized`. Unknown hosts requesting `/admin/*` return 404 (default-deny).
-3. **Backend auth (`require_platform_admin`):** On every `/api/v1/admin/*` endpoint. A non-admin Clerk-authed user gets `403 Platform admin access required`. This is the real enforcement — edge gates are defense, not authority.
+1. **Frontend auth (Next.js middleware + Clerk):** Next.js middleware enforces `host === 'admin.isol8.co'` AND signed-in-via-Clerk. The admin UI calls `GET /admin/me` on mount; a 403 surfaces `/admin/not-authorized`. Unknown hosts requesting `/admin/*` return 404 (default-deny — protects against host-header probes from public traffic).
+2. **Backend auth (`require_platform_admin`):** On every `/api/v1/admin/*` endpoint. A non-admin Clerk-authed user gets `403 Platform admin access required`. This is the real enforcement.
+
+**No edge SSO gate in v1.** The admin login page is publicly reachable from anyone who knows the URL. The realistic worst case: probe traffic hits Clerk sign-in, fails to authenticate as a platform admin, gets 403, and the attempt is audited (`audit_status` records the failed `/admin/me` probe pattern via the metrics middleware). Phase 2 priorities: rate-limit on admin write endpoints + 2FA enforcement on platform admins. If probe volume becomes a real concern, the same Phase 2 batch picks up an edge gate (Cloudflare Access, Vercel Deployment Protection, or HTTP basic auth via middleware — see Phase 2 backlog item 14).
 
 ## Auth model — `require_platform_admin` vs `require_org_admin`
 
@@ -141,7 +139,7 @@ Admin add/remove in v1 = Secrets Manager edit + backend redeploy. (Phase 2: DDB-
 | `elapsed_ms` | Number | yes | Server wall-clock time for the handler |
 | `error_message` | String | no | Populated when `result=error` |
 | `user_agent` | String | yes | Admin browser user agent |
-| `ip` | String | yes | Admin client IP (first `X-Forwarded-For` hop from Cloudflare) |
+| `ip` | String | yes | Admin client IP (first `X-Forwarded-For` hop from Vercel's edge) |
 
 **GSI:** `target-timestamp-index` — PK `target_user_id`, SK `timestamp_action_id`. Answers "show me all actions taken against this user."
 
@@ -299,8 +297,8 @@ apps/frontend/src/
 |---|---|
 | Unit | `pytest apps/backend/tests/unit/routers/test_admin.py` — auth gate rejects non-platform-admin; source composition in `admin_service`; audit row written on each action; audit fail-closed path (DDB write error → panic log); timeout wrappers on parallel fetches; CWL pagination; PostHog 404 handling; redaction. |
 | Unit (FE) | `pnpm test -- admin` — middleware host-gating (200 on admin.isol8.co, 404 elsewhere); ConfirmActionDialog 3-attempt lockout; EmptyState; LogRow expansion. |
-| Integration | Deploy to dev → admin signs into `admin-dev.isol8.co` via Cloudflare Access → sees user directory → loads a test user's overview → fires container.reprovision → confirms audit row in DDB. |
-| Security | Non-admin Clerk user → `/admin/me` → expects 403. Logged-out browser → `admin-dev.isol8.co` → expects Cloudflare Access SSO redirect before hitting Vercel. |
+| Integration | Deploy to dev → admin signs into `admin-dev.isol8.co` via Clerk → sees user directory → loads a test user's overview → fires container.reprovision → confirms audit row in DDB. |
+| Security | Non-admin Clerk user → `/admin/me` → expects 403. Unknown host (e.g. `curl -H "Host: random.com" admin-dev.isol8.co/admin/`) → expects 404. Logged-out browser → `admin-dev.isol8.co` → expects Clerk sign-in page (no edge gate). |
 | Rollout | `ADMIN_UI_ENABLED=false` → `/admin/*` returns 404. Per-user opt-in via `ADMIN_UI_ENABLED_USER_IDS` verified. |
 | E2E | One Playwright spec: sign in as admin → /admin/users → click user → fire read-only action → audit row appears on Actions tab. |
 
@@ -311,7 +309,7 @@ apps/frontend/src/
 | Backend `/admin/*` endpoints | Work against LocalStack DDB (`admin-actions` table auto-created by CDK bootstrap) + real dev Clerk/Stripe. |
 | `PLATFORM_ADMIN_USER_IDS` | Set in `apps/backend/.env.local` to your dev Clerk user_id. |
 | Host gating | `NEXT_PUBLIC_ADMIN_HOST` env (default `admin.isol8.co`) overrideable to `admin.localhost:3000`. Chrome/Safari resolve `*.localhost` → 127.0.0.1 automatically. |
-| Cloudflare Access | Production-only. Bypassed entirely for localhost. |
+| Edge gate | None in v1. Localhost dev is gated by the host check + Clerk + allowlist same as prod. |
 | PostHog | `POSTHOG_PROJECT_API_KEY` unset → `posthog_admin` returns `{events: [], stubbed: true}`. No local failures. |
 | CloudWatch Logs | LocalStack Pro emulates CloudWatch Logs — `FilterLogEvents` works against LocalStack if you enable it. Inline viewer shows "LocalStack: no logs" as fallback. |
 | Deep link to AWS Console | Points at real AWS. Noted as "dev/prod only" in the UI. |
@@ -321,12 +319,13 @@ Full local runbook is in the plan doc, Task 45.
 ## Rollout
 
 1. Deploy backend with `ADMIN_UI_ENABLED=false` and `PLATFORM_ADMIN_USER_IDS` populated → nothing visible to users.
-2. Deploy frontend with admin routes present but 404ing.
-3. Add `admin-dev.isol8.co` Cloudflare Access policy; verify SSO works end-to-end.
+2. Deploy frontend with admin routes present but 404ing on non-admin hosts.
+3. Add `admin-dev.isol8.co` DNS record + Vercel domain alias.
 4. Flip `ADMIN_UI_ENABLED_USER_IDS=<first-admin>` → single admin can access in dev.
 5. Exercise the read and write paths manually; confirm audit rows.
 6. Repeat for prod (`admin.isol8.co`).
 7. Expand `ADMIN_UI_ENABLED_USER_IDS` to the rest of the team.
+8. Monitor `admin_api.errors` + failed `/admin/me` patterns; if probe traffic shows up, prioritize Phase 2 edge gate.
 
 Rollback: remove `PLATFORM_ADMIN_USER_IDS` → every admin endpoint 403s. DNS alias remains; UI shows not-authorized.
 
@@ -347,7 +346,7 @@ Complete list in the issue; relevant fixes implemented per task in the plan:
 - **C1** — `admin_service` composes existing services (no duplication).
 - **P1/P2** — timeout wrappers on parallel fetches; 30s cache on /admin/health upstream probes.
 - **O1** — `admin_api.*` metrics per endpoint.
-- **R1/R2** — `ADMIN_UI_ENABLED` feature flag + Cloudflare Access staged-rollout runbook.
+- **R1/R2** — `ADMIN_UI_ENABLED` feature flag + admin rollout runbook (host alias + per-user opt-in; no edge gate in v1).
 - **U1/U2** — empty states + tab layout compression.
 
 ## Phase 2 backlog (deferred scope)
@@ -357,11 +356,12 @@ Complete list in the issue; relevant fixes implemented per task in the plan:
 3. Fleet dashboard (richer than `/admin/health`).
 4. Bulk actions (surface existing fleet image update from `updates.py`).
 5. Self-service admin add/remove (DDB-backed allowlist).
-6. Per-admin rate-limit on write endpoints.
-7. 2FA enforcement on platform admins.
+6. **Per-admin rate-limit on write endpoints** (PRIORITY — moved up after dropping edge gate in v1).
+7. **2FA enforcement on platform admins** (PRIORITY — moved up after dropping edge gate in v1).
 8. Correlation IDs threaded through admin actions + downstream Stripe/Clerk/gateway calls.
 9. Slack alerts on destructive admin actions.
 10. Two-person rule on high-risk actions.
 11. Per-user notes field (cross-admin handoff breadcrumbs).
 12. `stripe_webhook_log` DDB table (enables webhook queue depth metric).
 13. Full custom CloudWatch search UI (replaces AWS Console deep link).
+14. **Edge gate (optional)** — Cloudflare Access, Vercel Deployment Protection, or HTTP basic auth via Next.js middleware. Add only if probe traffic on `/admin/me` becomes a real concern. Triggered by metrics from `admin_api.errors` showing repeated 403s from unknown clients.

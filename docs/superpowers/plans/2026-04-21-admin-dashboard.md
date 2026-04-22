@@ -4,7 +4,7 @@
 
 **Goal:** Ship a read + safe-actions admin surface at `admin.isol8.co` with inline CloudWatch log viewer, PostHog activity, full Clerk/Stripe/DDB/gateway aggregation, every write audited forever, and `/admin/health` answering "is the platform OK right now?"
 
-**Architecture:** Admin surface is a **route group inside `apps/frontend/`** gated by host-based middleware. Cloudflare Access fronts the subdomain. Backend enforces via `Depends(require_platform_admin)` (existing, driven by `PLATFORM_ADMIN_USER_IDS` env var). Server Components by default; Server Actions for writes; ESLint import-boundary rule keeps admin code out of the public bundle.
+**Architecture:** Admin surface is a **route group inside `apps/frontend/`** gated by host-based middleware. **No edge SSO gate in v1** — defense relies on Clerk auth + the backend `require_platform_admin` allowlist + audit-every-action. Backend enforces via `Depends(require_platform_admin)` (existing, driven by `PLATFORM_ADMIN_USER_IDS` env var). Server Components by default; Server Actions for writes; ESLint import-boundary rule keeps admin code out of the public bundle.
 
 **Tech Stack:** Next.js 16 App Router + React 19 (existing frontend), FastAPI (backend), AWS CDK (infra), DynamoDB (audit), CloudWatch Logs API (inline viewer), Clerk Backend API, Stripe API, PostHog Persons API, boto3, pytest + vitest + Playwright.
 
@@ -86,7 +86,7 @@
 - (modify) `apps/infra/lib/stacks/service-stack.ts` — IAM additions for CloudWatch Logs
 
 **New scripts / docs:**
-- `docs/runbooks/admin-cloudflare-access-rollout.md` — CF Access staged rollout
+- `docs/runbooks/admin-rollout.md` — staged rollout sequence + adding/removing admins + breaking-glass procedure
 - `docs/runbooks/admin-local-dev.md` — how to run the admin UI locally
 
 ---
@@ -311,59 +311,63 @@ Otherwise do this via the Route53 console.
 dig admin-dev.isol8.co CNAME
 # Expect: cname.vercel-dns.com or Vercel-provided target.
 curl -I https://admin-dev.isol8.co
-# Expect: 401 or the existing frontend index (not hooked up to admin yet —
-# that's Task 13 middleware).
+# Expect: 200 (the existing frontend index is served; the admin route group
+# isn't gated yet — middleware comes in Task 25).
+curl -I -H "Host: random.com" https://admin-dev.isol8.co/admin
+# Expect: after Task 25 lands, 404 (default-deny on unknown host).
 ```
 
 - [ ] **Step 4: Commit** (if any code changed; manual-only tasks need no commit)
 
 ---
 
-### Task 5: Configure Cloudflare Access policy for `admin-dev.isol8.co` and `admin.isol8.co`
+### Task 5: Write the admin rollout runbook (no edge gate in v1)
 
 **Files:**
-- `docs/runbooks/admin-cloudflare-access-rollout.md` (new)
+- `docs/runbooks/admin-rollout.md` (new)
 
-Cloudflare Access sits in front of Vercel for the admin subdomain. Only SSO-authenticated users from allowlisted domains reach Vercel at all.
+V1 ships without an edge SSO gate (Cloudflare Access / Vercel Deployment Protection / basic auth). Defense-in-depth comes from host-check + Clerk + `require_platform_admin` + audit. The rollout runbook documents the per-user enablement flow and the breaking-glass procedure.
 
-- [ ] **Step 1: Configure in Cloudflare dashboard**
+- [ ] **Step 1: Write the runbook**
 
-Zero Trust → Access → Applications → Add self-hosted app:
-- Name: `isol8-admin-dev` (and another for prod)
-- Domain: `admin-dev.isol8.co`
-- Session duration: 12 hours
-- Identity providers: GitHub, Google
-- Policy: "Allow team" — include rule: "Emails matching email domain: isol8.co" OR "Email exact match: <list of personal emails>"
-
-- [ ] **Step 2: Write the rollout runbook**
-
-Create `docs/runbooks/admin-cloudflare-access-rollout.md`:
+Create `docs/runbooks/admin-rollout.md`:
 
 ```markdown
-# Admin Cloudflare Access rollout
+# Admin dashboard rollout
 
-## Testing a new admin user
+## Adding a new admin
 
-1. Add their email to the Cloudflare Access policy (Zero Trust → Access → Applications → isol8-admin-{env} → Policies).
-2. Add their Clerk user_id to `ADMIN_UI_ENABLED_USER_IDS` in `isol8/{env}/backend-env` Secrets Manager entry.
-3. Redeploy backend so the env var propagates.
-4. Have the user open `https://admin-{env}.isol8.co/admin` → expect SSO prompt → `/admin/users` loads.
+1. Get their Clerk user_id (visible in the user's profile page on the customer-facing app, or `clerk_sync_service.get_user_by_email`).
+2. Add to `PLATFORM_ADMIN_USER_IDS` in `isol8/{env}/backend-env` Secrets Manager entry. Comma-separated.
+3. Add to `ADMIN_UI_ENABLED_USER_IDS` in the same Secrets Manager entry (per-user opt-in for staged rollout).
+4. Redeploy backend so env vars propagate.
+5. Have the new admin open `https://admin-{env}.isol8.co/admin` → Clerk sign-in → `/admin/users` loads.
+
+## Removing an admin (immediate)
+
+1. Remove their user_id from `PLATFORM_ADMIN_USER_IDS` in Secrets Manager.
+2. Redeploy backend. Within ~2 min any open admin session 403s on the next API call.
+3. Optionally also revoke their Clerk sessions: `POST /admin/users/{user_id}/account/force-signout` from another admin.
 
 ## Troubleshooting
 
-- **SSO succeeds but /admin 403s:** their Clerk user_id isn't in `PLATFORM_ADMIN_USER_IDS`. Add it.
-- **SSO succeeds but /admin 404s:** `ADMIN_UI_ENABLED=false` or their user_id isn't in `ADMIN_UI_ENABLED_USER_IDS`.
-- **Cloudflare Access redirect loop:** policy is scoped too narrowly. Check the "Policy" tab in CF dashboard.
+- **`/admin` 404s:** they're not on the admin host (check URL). Or `ADMIN_UI_ENABLED=false`. Or `ADMIN_UI_ENABLED_USER_IDS` missing their user_id.
+- **`/admin/me` 403s:** their Clerk user_id isn't in `PLATFORM_ADMIN_USER_IDS`. Add it.
+- **`audit_status: "panic"` returned on a write:** DDB write failed; the action still ran. Check CloudWatch for `ADMIN_AUDIT_PANIC` log entries; investigate DDB connectivity / IAM.
 
 ## Breaking glass
 
-Disable admin entirely: set `PLATFORM_ADMIN_USER_IDS=""` in Secrets Manager → redeploy backend. Every /admin endpoint 403s. UI shows /admin/not-authorized.
+Disable admin entirely: set `PLATFORM_ADMIN_USER_IDS=""` in Secrets Manager → redeploy backend. Every `/admin/*` endpoint 403s. DNS + UI remain; UI shows `/admin/not-authorized`.
+
+## When to consider an edge gate (Phase 2)
+
+Monitor `admin_api.errors` for repeated 403s on `/admin/me` from unknown clients. If probe traffic shows up, prioritize Phase 2 backlog item 14 (Cloudflare Access, Vercel Deployment Protection, or HTTP basic auth via middleware).
 ```
 
-- [ ] **Step 3: Commit the runbook**
+- [ ] **Step 2: Commit**
 
 ```
-docs(runbook): Cloudflare Access rollout for admin subdomain
+docs(runbook): admin dashboard rollout (no edge gate v1)
 
 Refs #351
 ```
@@ -2395,11 +2399,12 @@ Refs #351
 
 1. Merge this PR with all tests green.
 2. Deploy backend with `ADMIN_UI_ENABLED=false`, `PLATFORM_ADMIN_USER_IDS` populated.
-3. Deploy frontend (admin routes present but middleware gates).
-4. Add CF Access policy for `admin-dev.isol8.co`, verify SSO works.
+3. Deploy frontend (admin routes present but middleware gates by host).
+4. Verify `https://admin-dev.isol8.co/admin` returns Clerk sign-in (no edge gate; intentional).
 5. Set `ADMIN_UI_ENABLED_USER_IDS=<your_clerk_id>` in dev. Access `/admin`, verify full flow.
 6. Repeat for prod (`admin.isol8.co`).
 7. Expand `ADMIN_UI_ENABLED_USER_IDS` to the rest of the team.
+8. Watch `admin_api.errors` metric for probe traffic; if it materializes, prioritize Phase 2 backlog item 14 (edge gate).
 
 **Rollback:** set `PLATFORM_ADMIN_USER_IDS=""` → every endpoint 403s. DNS remains; UI shows not-authorized.
 
@@ -2414,17 +2419,18 @@ Before merge:
 - [ ] Integration test passes against LocalStack: `uv run pytest tests/integration/test_admin_flow.py -v`
 - [ ] E2E test passes: `pnpm --filter @isol8/frontend test:e2e -- admin.spec.ts`
 - [ ] Manual check: non-admin JWT → `/admin/me` 403
-- [ ] Manual check: Cloudflare Access SSO gate triggers on `admin-dev.isol8.co`
+- [ ] Manual check: `curl -H "Host: random.com" admin-dev.isol8.co/admin/` returns 404 (host default-deny)
 - [ ] Manual check: fire `container.reprovision` → audit row visible in Actions tab with correct admin + target + timestamp
 - [ ] Manual check: deliberately break DDB connectivity → fire action → response returns with `audit_status: "panic"`; CloudWatch log shows CRITICAL panic entry
 - [ ] Manual check: visit `admin.localhost:3000/admin` locally → full read flow works with LocalStack
 
 After merge:
 
-- [ ] Dev deploy + CF Access policy + per-user rollout
+- [ ] Dev deploy + DNS alias + per-user rollout
 - [ ] 48h dev soak
-- [ ] Prod deploy + CF Access policy + per-user rollout
+- [ ] Prod deploy + DNS alias + per-user rollout
 - [ ] Add dashboard panel: `admin_api.call_count` by endpoint + admin_user_id
+- [ ] Add alert: repeated 403s on `/admin/me` from unknown IPs → prioritize Phase 2 edge gate
 
 ---
 
@@ -2451,6 +2457,6 @@ After merge:
 | P2 | 30s health cache | Task 12 |
 | O1 | admin_api metrics | Task 22 |
 | R1 | ADMIN_UI_ENABLED feature flag | Task 3, 25 |
-| R2 | Cloudflare Access runbook | Task 5 |
+| R2 | Admin rollout runbook (no edge gate v1) | Task 5 |
 | U1 | Empty states | Task 29, 31 |
 | U2 | Tab compression | Task 32 |
