@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { AdminCatalog, CatalogVersion } from "@/app/admin/_lib/api";
 
@@ -23,11 +23,22 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [versions, setVersions] = useState<CatalogVersion[] | null>(null);
   const [retiredOpen, setRetiredOpen] = useState(false);
+  // Increments on every openVersionsFor invocation and on panel close; the
+  // in-flight request captures the current value at send time and discards
+  // its own result if it no longer matches. Prevents a stale response from
+  // overwriting the panel when the operator clicks a second row (or closes
+  // the panel) before the first fetch resolves.
+  const versionsRequestIdRef = useRef(0);
 
   async function openVersionsFor(slug: string) {
+    const requestId = ++versionsRequestIdRef.current;
     setSelectedSlug(slug);
     setVersions(null);
     const result = await fetchVersions(slug);
+    if (requestId !== versionsRequestIdRef.current) {
+      // A newer request (or panel close) superseded this one — drop the stale result.
+      return;
+    }
     setVersions(result);
   }
 
@@ -128,6 +139,7 @@ export function CatalogPageClient({ catalog }: CatalogPageClientProps) {
         slug={selectedSlug}
         versions={versions}
         onClose={() => {
+          versionsRequestIdRef.current += 1;
           setSelectedSlug(null);
           setVersions(null);
         }}

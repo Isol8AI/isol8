@@ -2,11 +2,26 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { unpublishMock } = vi.hoisted(() => ({
+const { unpublishMock, refreshMock } = vi.hoisted(() => ({
   unpublishMock: vi.fn(async () => ({ ok: true, status: 200 })),
+  refreshMock: vi.fn(),
 }));
 vi.mock("@/app/admin/_actions/catalog", () => ({
   unpublishSlug: unpublishMock,
+}));
+
+// Per-file override of the global setup.ts next/navigation mock so we can
+// assert on router.refresh() — the global mock doesn't expose refresh.
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    refresh: refreshMock,
+    push: vi.fn(),
+    replace: vi.fn(),
+    prefetch: vi.fn(),
+    back: vi.fn(),
+  }),
+  usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/admin/ConfirmActionDialog", () => ({
@@ -32,6 +47,7 @@ describe("CatalogRowActions", () => {
   beforeEach(() => {
     unpublishMock.mockReset();
     unpublishMock.mockResolvedValue({ ok: true, status: 200 });
+    refreshMock.mockReset();
   });
 
   it("renders Unpublish + View versions buttons", () => {
@@ -76,5 +92,35 @@ describe("CatalogRowActions", () => {
       screen.getByRole("button", { name: /view versions/i }),
     );
     expect(onOpenVersions).toHaveBeenCalledWith("pitch");
+  });
+
+  it("calls router.refresh after successful unpublish", async () => {
+    render(
+      <CatalogRowActions slug="pitch" name="Pitch" onOpenVersions={vi.fn()} />,
+    );
+    const confirm = within(screen.getByTestId("confirm-dialog")).getByText(
+      "__confirm__",
+    );
+    await userEvent.click(confirm);
+    await vi.waitFor(() => expect(refreshMock).toHaveBeenCalled());
+  });
+
+  it("shows inline error when unpublish fails", async () => {
+    unpublishMock.mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      error: "Internal Server Error",
+    });
+    render(
+      <CatalogRowActions slug="pitch" name="Pitch" onOpenVersions={vi.fn()} />,
+    );
+    const confirm = within(screen.getByTestId("confirm-dialog")).getByText(
+      "__confirm__",
+    );
+    await userEvent.click(confirm);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /Internal Server Error/,
+    );
+    expect(refreshMock).not.toHaveBeenCalled();
   });
 });

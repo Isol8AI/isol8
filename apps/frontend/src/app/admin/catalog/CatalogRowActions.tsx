@@ -1,5 +1,8 @@
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
 import { ConfirmActionDialog } from "@/components/admin/ConfirmActionDialog";
 import { Button } from "@/components/ui/button";
 import { unpublishSlug } from "@/app/admin/_actions/catalog";
@@ -18,20 +21,30 @@ export interface CatalogRowActionsProps {
  *
  * The Unpublish flow wraps `unpublishSlug` in `ConfirmActionDialog` with the
  * CEO S5 convention: the operator must type the literal phrase
- * `unpublish <slug>` before the action fires. We rethrow backend errors so the
- * dialog's own busy / error state handles the failure — keeping this island
- * state-free and cheap to re-render per row.
+ * `unpublish <slug>` before the action fires. On success we call
+ * `router.refresh()` so the parent Server Component re-runs and the retired
+ * slug moves out of the Live table immediately — without this, the row
+ * lingers until a manual reload and a second click hits a 404. Failures are
+ * captured into local state and surfaced inline; the dialog component itself
+ * has no error slot, so throwing would end up as an unhandled rejection with
+ * no operator-visible feedback.
  */
 export function CatalogRowActions({
   slug,
   name,
   onOpenVersions,
 }: CatalogRowActionsProps) {
+  const router = useRouter();
+  const [error, setError] = useState<string | null>(null);
+
   async function handleUnpublish() {
+    setError(null);
     const result = await unpublishSlug(slug);
     if (!result.ok) {
-      throw new Error(result.error ?? `unpublish_failed_${result.status}`);
+      setError(result.error ?? `unpublish_failed_${result.status}`);
+      return;
     }
+    router.refresh();
   }
 
   return (
@@ -54,6 +67,11 @@ export function CatalogRowActions({
       >
         View versions
       </Button>
+      {error && (
+        <span className="text-xs text-red-400 ml-2" role="alert">
+          {error}
+        </span>
+      )}
     </div>
   );
 }
