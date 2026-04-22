@@ -578,6 +578,36 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
+    async def reprovision_for_user(self, user_id: str) -> dict:
+        """Force a fresh deploy: stop then start the ECS service so the
+        next task picks up the latest task definition. Less destructive
+        than delete_user_service + create_user_service (which would lose
+        the gateway token + EFS access point binding). Used by the admin
+        dashboard's container-reprovision action.
+        """
+        await self.stop_user_service(user_id)
+        await self.start_user_service(user_id)
+        return {"status": "started"}
+
+    async def resize_for_user(self, user_id: str, tier: str) -> dict:
+        """Resize to the per-tier CPU/memory profile.
+
+        Mirrors the tier mapping in CLAUDE.md (free/starter: 0.5 vCPU /
+        1 GB; pro: 1 vCPU / 2 GB; enterprise: 2 vCPU / 4 GB). Wraps the
+        existing resize_user_container method.
+        """
+        tier_resources = {
+            "free": ("512", "1024"),
+            "starter": ("512", "1024"),
+            "pro": ("1024", "2048"),
+            "enterprise": ("2048", "4096"),
+        }
+        if tier not in tier_resources:
+            raise EcsManagerError(f"unknown tier: {tier}", user_id)
+        cpu, memory = tier_resources[tier]
+        await self.resize_user_container(user_id, new_cpu=cpu, new_memory=memory)
+        return {"status": "resized", "tier": tier, "cpu": cpu, "memory": memory}
+
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
 
