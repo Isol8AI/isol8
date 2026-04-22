@@ -404,3 +404,128 @@ async def test_publish_removes_retired_entry_when_republishing(service, mock_s3,
     new_catalog = catalog_put.args[1]
     assert [a["slug"] for a in new_catalog["agents"]] == ["pitch"]
     assert new_catalog["retired"] == []
+
+
+def test_list_all_returns_live_and_retired(service, mock_s3):
+    """Admin view: live entries include full manifest preview; retired
+    entries include the metadata we stored at retire time."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {
+                "agents": [
+                    {"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"},
+                ],
+                "retired": [
+                    {
+                        "slug": "echo",
+                        "last_version": 1,
+                        "last_manifest_url": "echo/v1/manifest.json",
+                        "retired_at": "2026-04-22T00:00:00Z",
+                        "retired_by": "user_admin",
+                    },
+                ],
+            }
+        if key == "pitch/v3/manifest.json":
+            return {
+                "slug": "pitch",
+                "version": 3,
+                "name": "Pitch",
+                "emoji": "🎯",
+                "vibe": "Direct",
+                "description": "Sales",
+                "suggested_model": "qwen",
+                "suggested_channels": [],
+                "required_skills": [],
+                "required_plugins": [],
+                "required_tools": [],
+                "published_at": "2026-04-20T00:00:00Z",
+                "published_by": "user_admin",
+            }
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+
+    result = service.list_all()
+
+    assert len(result["live"]) == 1
+    assert result["live"][0]["slug"] == "pitch"
+    assert result["live"][0]["name"] == "Pitch"
+    assert result["live"][0]["current_version"] == 3
+    assert "published_at" in result["live"][0]
+
+    assert len(result["retired"]) == 1
+    assert result["retired"][0]["slug"] == "echo"
+    assert result["retired"][0]["retired_by"] == "user_admin"
+    assert result["retired"][0]["last_version"] == 1
+
+
+def test_list_all_empty_catalog(service, mock_s3):
+    mock_s3.get_json.return_value = {"agents": [], "retired": []}
+    result = service.list_all()
+    assert result == {"live": [], "retired": []}
+
+
+def test_list_all_handles_missing_retired_key(service, mock_s3):
+    mock_s3.get_json.side_effect = lambda key, default=None: {"agents": []} if key == "catalog.json" else default
+    result = service.list_all()
+    assert result == {"live": [], "retired": []}
+
+
+def test_list_versions_returns_sorted_with_manifests(service, mock_s3):
+    """Versions sorted ascending; each entry includes manifest JSON + timestamps."""
+    mock_s3.list_versions.return_value = [1, 2, 3]
+
+    def _get_json(key, default=None):
+        if key == "pitch/v1/manifest.json":
+            return {
+                "slug": "pitch",
+                "version": 1,
+                "name": "Pitch",
+                "published_at": "2026-04-19T00:00:00Z",
+                "published_by": "user_admin",
+            }
+        if key == "pitch/v2/manifest.json":
+            return {
+                "slug": "pitch",
+                "version": 2,
+                "name": "Pitch",
+                "published_at": "2026-04-20T00:00:00Z",
+                "published_by": "user_admin",
+            }
+        if key == "pitch/v3/manifest.json":
+            return {
+                "slug": "pitch",
+                "version": 3,
+                "name": "Pitch",
+                "published_at": "2026-04-21T00:00:00Z",
+                "published_by": "user_admin",
+            }
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+
+    result = service.list_versions("pitch")
+
+    assert [v["version"] for v in result] == [1, 2, 3]
+    assert result[2]["published_at"] == "2026-04-21T00:00:00Z"
+    assert result[0]["manifest"]["name"] == "Pitch"
+    assert result[0]["manifest_url"] == "pitch/v1/manifest.json"
+
+
+def test_list_versions_empty_for_unknown_slug(service, mock_s3):
+    mock_s3.list_versions.return_value = []
+    result = service.list_versions("ghost")
+    assert result == []
+
+
+def test_list_versions_skips_missing_manifest(service, mock_s3):
+    """If an S3 manifest is missing, the version is omitted rather than crashing."""
+    mock_s3.list_versions.return_value = [1, 2]
+    mock_s3.get_json.side_effect = lambda key, default=None: (
+        {"slug": "pitch", "version": 2, "name": "Pitch", "published_at": "2026-04-22T00:00:00Z", "published_by": "u"}
+        if key == "pitch/v2/manifest.json"
+        else default
+    )
+    result = service.list_versions("pitch")
+    assert [v["version"] for v in result] == [2]

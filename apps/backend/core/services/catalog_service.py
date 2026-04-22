@@ -61,6 +61,63 @@ class CatalogService:
             )
         return entries
 
+    # ---- list_all (admin) ----
+
+    def list_all(self) -> dict[str, list[dict[str, Any]]]:
+        """Admin view: return {"live": [...with manifest preview], "retired": [...]}.
+        Live entries include the full manifest (same shape as list()).
+        Retired entries include only the metadata stored at retire time.
+        """
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
+        live: list[dict[str, Any]] = []
+        for item in catalog.get("agents") or []:
+            manifest = self._s3.get_json(item["manifest_url"], default=None)
+            if not manifest:
+                continue
+            live.append(
+                {
+                    "slug": manifest["slug"],
+                    "name": manifest.get("name", manifest["slug"]),
+                    "emoji": manifest.get("emoji", ""),
+                    "vibe": manifest.get("vibe", ""),
+                    "description": manifest.get("description", ""),
+                    "current_version": manifest["version"],
+                    "published_at": manifest.get("published_at", ""),
+                    "published_by": manifest.get("published_by", ""),
+                    "suggested_model": manifest.get("suggested_model", ""),
+                    "suggested_channels": manifest.get("suggested_channels", []),
+                    "required_skills": manifest.get("required_skills", []),
+                    "required_plugins": manifest.get("required_plugins", []),
+                }
+            )
+
+        retired = list(catalog.get("retired") or [])
+        return {"live": live, "retired": retired}
+
+    # ---- list_versions (admin) ----
+
+    def list_versions(self, slug: str) -> list[dict[str, Any]]:
+        """List all published versions of a slug, ascending.
+        Each entry: {version, manifest_url, published_at, published_by, manifest}.
+        """
+        versions = self._s3.list_versions(slug)
+        out: list[dict[str, Any]] = []
+        for v in versions:
+            manifest_url = f"{slug}/v{v}/manifest.json"
+            manifest = self._s3.get_json(manifest_url, default=None)
+            if not manifest:
+                continue
+            out.append(
+                {
+                    "version": v,
+                    "manifest_url": manifest_url,
+                    "published_at": manifest.get("published_at", ""),
+                    "published_by": manifest.get("published_by", ""),
+                    "manifest": manifest,
+                }
+            )
+        return out
+
     # ---- deploy ----
 
     async def deploy(self, *, user_id: str, slug: str) -> dict[str, Any]:
