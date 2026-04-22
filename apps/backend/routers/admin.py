@@ -63,17 +63,23 @@ class ConfigPatchRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/me")
+@router.get("/me", description="Auth probe: returns the calling admin's profile or 403.")
 async def admin_me(auth: AuthContext = Depends(require_platform_admin)):
     return {"user_id": auth.user_id, "email": auth.email, "is_admin": True}
 
 
-@router.get("/system/health")
+@router.get(
+    "/system/health",
+    description="Platform health: container fleet counts, upstream probes, background-task state, recent errors.",
+)
 async def admin_system_health(auth: AuthContext = Depends(require_platform_admin)):
     return await system_health.get_system_health()
 
 
-@router.get("/actions")
+@router.get(
+    "/actions",
+    description="Admin-action audit viewer. Filter by target_user_id or admin_user_id.",
+)
 async def admin_actions_audit(
     target_user_id: str | None = Query(None),
     admin_user_id: str | None = Query(None),
@@ -97,7 +103,10 @@ async def admin_actions_audit(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/users")
+@router.get(
+    "/users",
+    description="Paginated user directory with container status join.",
+)
 async def admin_list_users(
     q: str = Query(""),
     plan_tier: str | None = Query(None),
@@ -109,7 +118,10 @@ async def admin_list_users(
     return await admin_service.list_users(q=q, limit=limit, cursor=cursor)
 
 
-@router.get("/users/{user_id}/overview")
+@router.get(
+    "/users/{user_id}/overview",
+    description="Per-user identity + billing + container + usage merged from Clerk/Stripe/DDB.",
+)
 async def admin_user_overview(
     user_id: str,
     auth: AuthContext = Depends(require_platform_admin),
@@ -117,7 +129,10 @@ async def admin_user_overview(
     return await admin_service.get_overview(user_id)
 
 
-@router.get("/users/{user_id}/agents")
+@router.get(
+    "/users/{user_id}/agents",
+    description="List a user's agents via gateway RPC. Returns container_status when not running.",
+)
 async def admin_user_agents(
     user_id: str,
     cursor: str | None = Query(None),
@@ -127,7 +142,10 @@ async def admin_user_agents(
     return await admin_service.list_user_agents(user_id, cursor=cursor, limit=limit)
 
 
-@router.get("/users/{user_id}/agents/{agent_id}")
+@router.get(
+    "/users/{user_id}/agents/{agent_id}",
+    description="Full agent detail (config, sessions, skills) with secret redaction. 409 when container not running.",
+)
 async def admin_agent_detail(
     user_id: str,
     agent_id: str,
@@ -139,7 +157,10 @@ async def admin_agent_detail(
     return result
 
 
-@router.get("/users/{user_id}/posthog")
+@router.get(
+    "/users/{user_id}/posthog",
+    description="PostHog Persons API timeline for the user (events + session replay links).",
+)
 async def admin_user_posthog(
     user_id: str,
     limit: int = Query(100, le=500),
@@ -148,7 +169,10 @@ async def admin_user_posthog(
     return await admin_service.get_posthog_timeline(user_id, limit=limit)
 
 
-@router.get("/users/{user_id}/logs")
+@router.get(
+    "/users/{user_id}/logs",
+    description="Inline CloudWatch Logs filtered to the user with cursor pagination.",
+)
 async def admin_user_logs(
     user_id: str,
     level: str = Query("ERROR"),
@@ -160,7 +184,10 @@ async def admin_user_logs(
     return await admin_service.get_logs(user_id, level=level, hours=hours, limit=limit, cursor=cursor)
 
 
-@router.get("/users/{user_id}/cloudwatch-url")
+@router.get(
+    "/users/{user_id}/cloudwatch-url",
+    description="Build a CloudWatch Logs Insights deep-link pre-filtered to the user.",
+)
 async def admin_user_cloudwatch_url(
     user_id: str,
     start: str = Query(...),
@@ -176,7 +203,10 @@ async def admin_user_cloudwatch_url(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/users/{user_id}/container/reprovision")
+@router.post(
+    "/users/{user_id}/container/reprovision",
+    description="Force a fresh container deploy (stop+start). Idempotency-Key supported.",
+)
 @idempotency()
 @audit_admin_action("container.reprovision")
 async def admin_container_reprovision(
@@ -188,7 +218,10 @@ async def admin_container_reprovision(
     return await ecs.reprovision_for_user(user_id)
 
 
-@router.post("/users/{user_id}/container/stop")
+@router.post(
+    "/users/{user_id}/container/stop",
+    description="Stop the user's ECS service (scale to 0). Idempotency-Key supported.",
+)
 @idempotency()
 @audit_admin_action("container.stop")
 async def admin_container_stop(
@@ -200,7 +233,10 @@ async def admin_container_stop(
     return await ecs.stop_user_service(user_id)
 
 
-@router.post("/users/{user_id}/container/start")
+@router.post(
+    "/users/{user_id}/container/start",
+    description="Start the user's ECS service (scale to 1). Idempotency-Key supported.",
+)
 @idempotency()
 @audit_admin_action("container.start")
 async def admin_container_start(
@@ -212,7 +248,10 @@ async def admin_container_start(
     return await ecs.start_user_service(user_id)
 
 
-@router.post("/users/{user_id}/container/resize")
+@router.post(
+    "/users/{user_id}/container/resize",
+    description="Resize the user's container CPU/memory to the per-tier profile.",
+)
 @idempotency()
 @audit_admin_action("container.resize")
 async def admin_container_resize(
@@ -230,7 +269,10 @@ async def admin_container_resize(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/users/{user_id}/billing/cancel-subscription")
+@router.post(
+    "/users/{user_id}/billing/cancel-subscription",
+    description="Cancel the user's Stripe subscription and revert to free tier.",
+)
 @idempotency()
 @audit_admin_action("billing.cancel_subscription")
 async def admin_billing_cancel_subscription(
@@ -241,7 +283,10 @@ async def admin_billing_cancel_subscription(
     return await billing_service.cancel_subscription_for_owner(user_id)
 
 
-@router.post("/users/{user_id}/billing/pause-subscription")
+@router.post(
+    "/users/{user_id}/billing/pause-subscription",
+    description="Pause Stripe subscription billing (mark_uncollectible). Resumes on unpause.",
+)
 @idempotency()
 @audit_admin_action("billing.pause_subscription")
 async def admin_billing_pause_subscription(
@@ -252,7 +297,10 @@ async def admin_billing_pause_subscription(
     return await billing_service.pause_subscription_for_owner(user_id)
 
 
-@router.post("/users/{user_id}/billing/issue-credit")
+@router.post(
+    "/users/{user_id}/billing/issue-credit",
+    description="Apply a credit to the user's Stripe customer balance (cents).",
+)
 @idempotency()
 @audit_admin_action("billing.issue_credit")
 async def admin_billing_issue_credit(
@@ -264,7 +312,10 @@ async def admin_billing_issue_credit(
     return await billing_service.issue_credit_for_owner(user_id, amount_cents=body.amount_cents, reason=body.reason)
 
 
-@router.post("/users/{user_id}/billing/mark-invoice-resolved")
+@router.post(
+    "/users/{user_id}/billing/mark-invoice-resolved",
+    description="Mark a Stripe invoice as paid out-of-band (e.g. wire transfer).",
+)
 @idempotency()
 @audit_admin_action("billing.mark_invoice_resolved")
 async def admin_billing_mark_invoice_resolved(
@@ -281,7 +332,10 @@ async def admin_billing_mark_invoice_resolved(
 # ---------------------------------------------------------------------------
 
 
-@router.post("/users/{user_id}/account/suspend")
+@router.post(
+    "/users/{user_id}/account/suspend",
+    description="Suspend the user — Clerk ban so they can't sign in.",
+)
 @audit_admin_action("account.suspend")
 async def admin_account_suspend(
     user_id: str,
@@ -291,7 +345,10 @@ async def admin_account_suspend(
     return await clerk_admin.ban_user(user_id)
 
 
-@router.post("/users/{user_id}/account/reactivate")
+@router.post(
+    "/users/{user_id}/account/reactivate",
+    description="Reactivate a previously-suspended user (Clerk unban).",
+)
 @audit_admin_action("account.reactivate")
 async def admin_account_reactivate(
     user_id: str,
@@ -301,7 +358,10 @@ async def admin_account_reactivate(
     return await clerk_admin.unban_user(user_id)
 
 
-@router.post("/users/{user_id}/account/force-signout")
+@router.post(
+    "/users/{user_id}/account/force-signout",
+    description="Revoke all of the user's active Clerk sessions.",
+)
 @audit_admin_action("account.force_signout")
 async def admin_account_force_signout(
     user_id: str,
@@ -311,7 +371,10 @@ async def admin_account_force_signout(
     return await clerk_admin.revoke_sessions(user_id)
 
 
-@router.post("/users/{user_id}/account/resend-verification")
+@router.post(
+    "/users/{user_id}/account/resend-verification",
+    description="Resend the email-verification link to the user's primary email.",
+)
 @audit_admin_action("account.resend_verification")
 async def admin_account_resend_verification(
     user_id: str,
@@ -326,7 +389,10 @@ async def admin_account_resend_verification(
 # ---------------------------------------------------------------------------
 
 
-@router.patch("/users/{user_id}/config")
+@router.patch(
+    "/users/{user_id}/config",
+    description="Deep-merge a config patch into the user's openclaw.json. Patch field redacted in audit row.",
+)
 @audit_admin_action("config.patch", redact_paths=["patch"])
 async def admin_config_patch(
     user_id: str,
@@ -338,7 +404,10 @@ async def admin_config_patch(
     return {"status": "patched"}
 
 
-@router.post("/users/{user_id}/agents/{agent_id}/delete")
+@router.post(
+    "/users/{user_id}/agents/{agent_id}/delete",
+    description="Delete a user's agent via gateway agents.delete RPC.",
+)
 @audit_admin_action("agent.delete")
 async def admin_agent_delete(
     user_id: str,
@@ -361,7 +430,10 @@ async def admin_agent_delete(
     )
 
 
-@router.post("/users/{user_id}/agents/{agent_id}/clear-sessions")
+@router.post(
+    "/users/{user_id}/agents/{agent_id}/clear-sessions",
+    description="Clear an agent's session history via gateway sessions.clear RPC.",
+)
 @audit_admin_action("agent.clear_sessions")
 async def admin_agent_clear_sessions(
     user_id: str,
