@@ -1,0 +1,240 @@
+import { auth } from "@clerk/nextjs/server";
+
+import {
+  getCloudwatchUrl,
+  getLogs,
+  getPosthog,
+} from "@/app/admin/_lib/api";
+import { EmptyState } from "@/components/admin/EmptyState";
+import { ErrorBanner } from "@/components/admin/ErrorBanner";
+import { LogRow, type LogEntry } from "@/components/admin/LogRow";
+
+export const metadata = { title: "Activity \u00b7 Admin" };
+
+// ---------------------------------------------------------------------------
+// Local response narrowings
+//
+// `_lib/api.ts` types `events: unknown[]` so the SC degrades if the backend
+// shape evolves. We narrow per-render to keep call sites readable.
+// ---------------------------------------------------------------------------
+
+interface PosthogEvent {
+  timestamp?: string;
+  event?: string;
+  properties?: Record<string, unknown>;
+  session_id?: string | null;
+}
+
+const POSTHOG_HOST_DEFAULT = "https://app.posthog.com";
+
+function posthogHost(): string {
+  return process.env.NEXT_PUBLIC_POSTHOG_HOST || POSTHOG_HOST_DEFAULT;
+}
+
+function asLogEntry(raw: unknown): LogEntry {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    timestamp: typeof r.timestamp === "string" ? r.timestamp : "",
+    level:
+      typeof r.level === "string" || r.level === null
+        ? (r.level as LogEntry["level"])
+        : null,
+    message: typeof r.message === "string" ? r.message : "",
+    correlation_id:
+      typeof r.correlation_id === "string" ? r.correlation_id : null,
+    raw_json:
+      r.raw_json && typeof r.raw_json === "object"
+        ? (r.raw_json as Record<string, unknown>)
+        : null,
+  };
+}
+
+function asPosthogEvent(raw: unknown): PosthogEvent {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return {
+    timestamp: typeof r.timestamp === "string" ? r.timestamp : undefined,
+    event: typeof r.event === "string" ? r.event : undefined,
+    properties:
+      r.properties && typeof r.properties === "object"
+        ? (r.properties as Record<string, unknown>)
+        : undefined,
+    session_id:
+      typeof r.session_id === "string" ? r.session_id : null,
+  };
+}
+
+// PostHog property previews — render the whole object as JSON inside <details>
+// for now. Cheap and good enough: admins typically only care about `path`,
+// `current_url`, `$browser`, etc. and can scan the JSON. A polished property
+// table can come later without breaking the data shape.
+function PropertiesDetails({
+  properties,
+}: {
+  properties?: Record<string, unknown>;
+}) {
+  if (!properties || Object.keys(properties).length === 0) return null;
+  return (
+    <details className="mt-1 text-xs text-zinc-400">
+      <summary className="cursor-pointer select-none text-zinc-500 hover:text-zinc-300">
+        Properties
+      </summary>
+      <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-white/5 bg-black/30 p-2 font-mono text-[11px] text-zinc-300">
+        {JSON.stringify(properties, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+interface ActivityPageProps {
+  params: Promise<{ id: string }>;
+}
+
+export default async function ActivityPage({ params }: ActivityPageProps) {
+  const { id } = await params;
+  const { getToken } = await auth();
+  const token = await getToken();
+  // Layout already gates admin access, but typeguard for the Server Action API.
+  if (!token) {
+    return (
+      <div className="space-y-6">
+        <h1 className="text-xl font-semibold text-zinc-100">Activity</h1>
+        <ErrorBanner error="Missing Clerk session token." />
+      </div>
+    );
+  }
+
+  // 24-hour CloudWatch window for both the inline error preview AND the
+  // "open in CloudWatch" deep link button.
+  const end = new Date();
+  const start = new Date(end.getTime() - 86_400_000);
+  const startIso = start.toISOString();
+  const endIso = end.toISOString();
+
+  const [posthog, logs, cwUrl] = await Promise.all([
+    getPosthog(token, id),
+    getLogs(token, id, { level: "ERROR", hours: 24, limit: 20 }),
+    getCloudwatchUrl(token, id, startIso, endIso, "ERROR"),
+  ]);
+
+  const logEntries = (logs.events ?? []).map(asLogEntry);
+  const posthogEvents = (posthog.events ?? []).map(asPosthogEvent);
+
+  return (
+    <div className="space-y-10">
+      <h1 className="text-xl font-semibold text-zinc-100">Activity</h1>
+
+      {/* --- Recent error logs ----------------------------------------- */}
+      <section aria-labelledby="recent-logs-heading" className="space-y-3">
+        <div className="flex items-baseline justify-between">
+          <h2
+            id="recent-logs-heading"
+            className="text-sm font-medium uppercase tracking-wide text-zinc-400"
+          >
+            Recent error logs (last 24h)
+          </h2>
+          {cwUrl?.url ? (
+            <a
+              href={cwUrl.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-sky-300 hover:underline"
+            >
+              {"Open full search in CloudWatch \u2192"}
+            </a>
+          ) : null}
+        </div>
+
+        {logs.error ? (
+          <ErrorBanner error={logs.error} source="CloudWatch" />
+        ) : null}
+
+        {logs.missing ? (
+          <EmptyState
+            title="No log group"
+            body="The backend log group is not yet created. Run a request to populate it."
+          />
+        ) : logEntries.length === 0 ? (
+          <EmptyState
+            title="No errors in the last 24h"
+            body="The user hasn't hit any backend errors recently."
+          />
+        ) : (
+          <div className="space-y-1.5">
+            {logEntries.slice(0, 20).map((entry, i) => (
+              <LogRow
+                key={`${entry.timestamp}-${entry.correlation_id ?? i}`}
+                entry={entry}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* --- PostHog timeline ------------------------------------------ */}
+      <section aria-labelledby="posthog-heading" className="space-y-3">
+        <h2
+          id="posthog-heading"
+          className="text-sm font-medium uppercase tracking-wide text-zinc-400"
+        >
+          PostHog timeline
+        </h2>
+
+        {posthog.stubbed ? (
+          <ErrorBanner
+            error="POSTHOG_PROJECT_API_KEY not configured."
+            variant="warning"
+            source="PostHog"
+          />
+        ) : null}
+
+        {posthog.error ? (
+          <ErrorBanner error={posthog.error} source="PostHog" />
+        ) : null}
+
+        {!posthog.stubbed && posthog.missing ? (
+          <EmptyState
+            title="No PostHog activity recorded"
+            body="This user may not have visited the frontend yet."
+          />
+        ) : !posthog.stubbed && posthogEvents.length === 0 ? (
+          <EmptyState
+            title="No recent events"
+            body="No PostHog events captured for this user in the recent window."
+          />
+        ) : (
+          <ul className="space-y-1.5">
+            {posthogEvents.map((evt, i) => (
+              <li
+                key={`${evt.timestamp ?? "ts"}-${i}`}
+                className="rounded-md border border-white/5 bg-white/[0.02] px-3 py-2 text-xs"
+              >
+                <div className="flex items-center gap-3">
+                  <time
+                    className="font-mono text-zinc-400"
+                    dateTime={evt.timestamp ?? ""}
+                  >
+                    {evt.timestamp ?? "\u2014"}
+                  </time>
+                  <span className="font-semibold text-zinc-100">
+                    {evt.event ?? "(unnamed)"}
+                  </span>
+                  {evt.session_id ? (
+                    <a
+                      href={`${posthogHost()}/replay/${encodeURIComponent(evt.session_id)}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="ml-auto text-sky-300 hover:underline"
+                    >
+                      {"Watch session \u2192"}
+                    </a>
+                  ) : null}
+                </div>
+                <PropertiesDetails properties={evt.properties} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
+  );
+}
