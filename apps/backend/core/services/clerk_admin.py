@@ -61,6 +61,67 @@ async def list_users(*, query: str = "", limit: int = 50, offset: int = 0) -> di
     return {"users": users, "next_offset": next_offset, "stubbed": False}
 
 
+async def _post_no_body(path: str) -> dict:
+    """Helper for fire-and-forget POST endpoints (ban/unban/revoke/resend).
+
+    Returns the response JSON on success, or {error: ...} on failure.
+    Stubs gracefully when CLERK_SECRET_KEY is unset (returns
+    {stubbed: True}).
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return {"stubbed": True}
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.post(f"{_CLERK_API_BASE}{path}", headers=headers)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin POST %s network error: %s", path, e)
+        return {"error": str(e)}
+
+    if response.status_code >= 400:
+        logger.warning("clerk_admin POST %s HTTP %s", path, response.status_code)
+        return {"error": f"http_{response.status_code}"}
+
+    try:
+        return response.json()
+    except ValueError:
+        return {"ok": True}
+
+
+async def ban_user(user_id: str) -> dict:
+    """Suspend a user — they cannot sign in until unbanned."""
+    return await _post_no_body(f"/users/{user_id}/ban")
+
+
+async def unban_user(user_id: str) -> dict:
+    """Reactivate a previously-banned user."""
+    return await _post_no_body(f"/users/{user_id}/unban")
+
+
+async def revoke_sessions(user_id: str) -> dict:
+    """Force-signout all of a user's active sessions."""
+    return await _post_no_body(f"/users/{user_id}/revoke_session")
+
+
+async def resend_verification(user_id: str) -> dict:
+    """Resend the email-verification link to the user's primary email.
+
+    Clerk requires the email_address_id rather than user_id for this op,
+    so we fetch the user first to get their primary email's id, then
+    issue the resend POST. If the user fetch fails, returns {error}.
+    """
+    user = await get_user(user_id)
+    if not user:
+        return {"error": "user_not_found"}
+
+    primary_email_id = user.get("primary_email_address_id")
+    if not primary_email_id:
+        return {"error": "no_primary_email"}
+
+    return await _post_no_body(f"/email_addresses/{primary_email_id}/verification")
+
+
 async def get_user(user_id: str) -> dict | None:
     """Single user by Clerk user_id. Returns None on 404."""
     if not settings.CLERK_SECRET_KEY:

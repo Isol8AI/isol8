@@ -220,6 +220,12 @@ app.add_middleware(
 # same e2e_run_id field. No-op for traffic that doesn't send the header.
 app.add_middleware(E2ECorrelationMiddleware)
 
+# Admin metrics middleware (CEO O1) — emits admin_api.* CloudWatch metrics
+# for every /api/v1/admin/* request. No-op for non-admin paths.
+from core.middleware.admin_metrics import AdminMetricsMiddleware  # noqa: E402
+
+app.add_middleware(AdminMetricsMiddleware)
+
 
 def custom_openapi():
     """Override OpenAPI schema generation to inject BearerAuth security scheme."""
@@ -297,6 +303,11 @@ app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
 # Agent catalog (user-facing list/deploy/deployed + admin publish)
 app.include_router(catalog.router, prefix="/api/v1")
 app.include_router(admin_catalog.router, prefix="/api/v1")
+
+# Admin dashboard (#351) — every endpoint gated by Depends(require_platform_admin).
+from routers import admin as admin_router  # noqa: E402
+
+app.include_router(admin_router.router, prefix="/api/v1")
 
 
 @app.get(

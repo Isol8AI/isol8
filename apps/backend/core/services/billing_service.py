@@ -217,3 +217,71 @@ class BillingService:
         )
         # Disable overage on cancellation
         await billing_repo.set_overage_enabled(billing_account["owner_id"], False)
+
+
+# ---------------------------------------------------------------------------
+# Module-level admin wrappers
+# ---------------------------------------------------------------------------
+#
+# Used by routers/admin.py — operate by Clerk user_id rather than billing_account
+# dict so the admin router doesn't have to load the row first. Each function
+# loads billing_repo + calls Stripe + updates DDB. Errors raise BillingServiceError.
+
+
+async def cancel_subscription_for_owner(user_id: str) -> dict:
+    """Admin: cancel a user's Stripe subscription. Idempotent on no-sub."""
+    billing = await billing_repo.get_by_owner_id(user_id)
+    if not billing:
+        return {"status": "no_billing_account"}
+    sub_id = billing.get("stripe_subscription_id")
+    if not sub_id:
+        return {"status": "no_subscription"}
+    try:
+        stripe.Subscription.delete(sub_id)
+    except Exception as e:  # noqa: BLE001
+        raise BillingServiceError(f"stripe_cancel_failed: {e}")
+    await BillingService().cancel_subscription(billing)
+    return {"status": "cancelled", "subscription_id": sub_id}
+
+
+async def pause_subscription_for_owner(user_id: str) -> dict:
+    """Admin: pause Stripe subscription billing (mark_uncollectible)."""
+    billing = await billing_repo.get_by_owner_id(user_id)
+    if not billing or not billing.get("stripe_subscription_id"):
+        return {"status": "no_subscription"}
+    sub_id = billing["stripe_subscription_id"]
+    try:
+        stripe.Subscription.modify(sub_id, pause_collection={"behavior": "mark_uncollectible"})
+    except Exception as e:  # noqa: BLE001
+        raise BillingServiceError(f"stripe_pause_failed: {e}")
+    return {"status": "paused", "subscription_id": sub_id}
+
+
+async def issue_credit_for_owner(user_id: str, *, amount_cents: int, reason: str) -> dict:
+    """Admin: credit the user's Stripe customer balance by amount_cents.
+
+    Stripe applies negative balance amounts as a credit toward future invoices.
+    """
+    billing = await billing_repo.get_by_owner_id(user_id)
+    if not billing or not billing.get("stripe_customer_id"):
+        return {"status": "no_customer"}
+    customer_id = billing["stripe_customer_id"]
+    try:
+        txn = stripe.Customer.create_balance_transaction(
+            customer_id,
+            amount=-abs(amount_cents),
+            currency="usd",
+            description=reason,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise BillingServiceError(f"stripe_credit_failed: {e}")
+    return {"status": "credited", "transaction_id": txn["id"], "amount_cents": amount_cents}
+
+
+async def mark_invoice_resolved(user_id: str, invoice_id: str) -> dict:
+    """Admin: mark a Stripe invoice as paid out-of-band (e.g. wire transfer)."""
+    try:
+        invoice = stripe.Invoice.pay(invoice_id, paid_out_of_band=True)
+    except Exception as e:  # noqa: BLE001
+        raise BillingServiceError(f"stripe_invoice_pay_failed: {e}")
+    return {"status": "resolved", "invoice_id": invoice_id, "stripe_status": invoice.get("status")}
