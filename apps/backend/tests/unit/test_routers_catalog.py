@@ -144,3 +144,113 @@ def test_publish_writes_audit_row(client, mock_service, admin_env):
     assert row_kwargs["admin_user_id"] == "user_admin_42"
 
     app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_admin_list_catalog_returns_live_and_retired(client, mock_service):
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.list_all = MagicMock(
+        return_value={
+            "live": [
+                {
+                    "slug": "pitch",
+                    "name": "Pitch",
+                    "current_version": 3,
+                    "emoji": "🎯",
+                    "vibe": "",
+                    "description": "",
+                    "suggested_model": "",
+                    "suggested_channels": [],
+                    "required_skills": [],
+                    "required_plugins": [],
+                    "published_at": "2026-04-22T00:00:00Z",
+                    "published_by": "user_admin",
+                }
+            ],
+            "retired": [],
+        }
+    )
+    r = client.get("/api/v1/admin/catalog")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["live"][0]["slug"] == "pitch"
+    assert body["retired"] == []
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_admin_unpublish_soft_deletes_slug(client, mock_service):
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.unpublish = AsyncMock(
+        return_value={"slug": "pitch", "last_version": 3, "last_manifest_url": "pitch/v3/manifest.json"}
+    )
+
+    audit_mock = AsyncMock()
+    with patch("core.repositories.admin_actions_repo.create", new=audit_mock):
+        r = client.post("/api/v1/admin/catalog/pitch/unpublish")
+
+    assert r.status_code == 200
+    assert r.json()["slug"] == "pitch"
+    mock_service.unpublish.assert_awaited_once_with(admin_user_id="user_admin", slug="pitch")
+    assert audit_mock.await_count == 1
+    row_kwargs = audit_mock.await_args.kwargs
+    assert row_kwargs["action"] == "catalog.unpublish"
+    assert row_kwargs["target_user_id"] == "__catalog__"
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_admin_unpublish_missing_slug_404(client, mock_service):
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.unpublish = AsyncMock(side_effect=KeyError("not live"))
+
+    r = client.post("/api/v1/admin/catalog/ghost/unpublish")
+    assert r.status_code == 404
+
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_admin_list_versions(client, mock_service):
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.list_versions = MagicMock(
+        return_value=[
+            {
+                "version": 1,
+                "manifest_url": "pitch/v1/manifest.json",
+                "published_at": "2026-04-19T00:00:00Z",
+                "published_by": "user_admin",
+                "manifest": {"slug": "pitch", "version": 1},
+            },
+        ]
+    )
+    r = client.get("/api/v1/admin/catalog/pitch/versions")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["versions"][0]["version"] == 1
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_admin_catalog_endpoints_require_platform_admin(client):
+    """Any non-admin user hitting /admin/catalog/* returns 403."""
+    from core.auth import require_platform_admin
+    from main import app
+    from fastapi import HTTPException
+
+    def _deny():
+        raise HTTPException(status_code=403, detail="Platform admin access required")
+
+    app.dependency_overrides[require_platform_admin] = _deny
+
+    assert client.get("/api/v1/admin/catalog").status_code == 403
+    assert client.post("/api/v1/admin/catalog/pitch/unpublish").status_code == 403
+    assert client.get("/api/v1/admin/catalog/pitch/versions").status_code == 403
+    app.dependency_overrides.pop(require_platform_admin, None)
