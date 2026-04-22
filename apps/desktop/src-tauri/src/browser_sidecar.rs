@@ -100,6 +100,11 @@ impl BrowserSidecar {
     /// (not in Resources/) with a `-<target-triple>` suffix — mirror
     /// that resolution here. Works for both dev (`target/debug/`) and
     /// packaged builds (`Isol8.app/Contents/MacOS/`).
+    ///
+    /// We ship a universal-apple-darwin dispatch shim (a bash script
+    /// that picks node-<arch> + openclaw-host-<arch> at runtime via
+    /// uname -m), so this always resolves the same filename regardless
+    /// of the slice the loader selected.
     pub fn for_app(_app: &tauri::AppHandle) -> Result<Self, String> {
         let exe = std::env::current_exe()
             .map_err(|e| format!("current_exe: {}", e))?;
@@ -123,11 +128,17 @@ impl BrowserSidecar {
     }
 }
 
-/// Pick the externalBin target-triple suffix matching the slice of
-/// the (potentially universal) binary we are executing under. On
-/// universal-apple-darwin, `std::env::consts::ARCH` reflects the
-/// slice selected by the loader at launch time, so Intel Macs pick
-/// the x86_64 sidecar and Apple Silicon picks the aarch64 one.
+/// Sidecar filename suffix. On macOS our bundle ships a single
+/// universal dispatch shim (`-universal-apple-darwin`) — tauri-bundler
+/// requires exactly that suffix when invoked with
+/// `--target universal-apple-darwin`. The shim itself picks the
+/// matching node binary + openclaw-host at runtime.
+#[cfg(target_os = "macos")]
+fn current_sidecar_triple() -> Result<String, String> {
+    Ok("universal-apple-darwin".into())
+}
+
+#[cfg(not(target_os = "macos"))]
 fn current_sidecar_triple() -> Result<String, String> {
     match std::env::consts::ARCH {
         "aarch64" => Ok("aarch64-apple-darwin".into()),
