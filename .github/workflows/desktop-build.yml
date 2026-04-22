@@ -15,6 +15,12 @@ on:
 jobs:
   build:
     runs-on: macos-latest
+    # tauri-action creates a draft release + uploads the DMG via the
+    # GitHub REST API using GITHUB_TOKEN. The default token is
+    # read-only for contents; grant write so the create-release step
+    # doesn't 403 with "Resource not accessible by integration".
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
