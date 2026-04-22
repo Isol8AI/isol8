@@ -286,9 +286,14 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // CloudWatch Logs read — for the admin dashboard inline log viewer
-    // (apps/backend/core/services/cloudwatch_logs.py). Scoped to the
-    // backend's own log group ARN; never "*" — least privilege per CEO
-    // review (#351, Phase A Task 2).
+    // (apps/backend/core/services/cloudwatch_logs.py, Phase B). Scoped to
+    // the backend's own log group ARN; never "*" — least privilege per
+    // CEO review (#351, Phase A Task 2).
+    //
+    // Log group name matches service-stack.ts:519 + isol8-stage.ts:113 +
+    // local-stage.ts:116 — `/ecs/isol8-${env}` (no /aws prefix, no
+    // -backend suffix). The Phase B cloudwatch_logs service must use this
+    // same name when constructing FilterLogEvents calls.
     this.taskRole.addToPolicy(
       new iam.PolicyStatement({
         sid: "CloudWatchLogsReadForAdmin",
@@ -301,7 +306,7 @@ export class ServiceStack extends cdk.Stack {
           "logs:DescribeLogStreams",
         ],
         resources: [
-          `arn:aws:logs:${this.region}:${this.account}:log-group:/aws/ecs/isol8-${env}-backend:*`,
+          `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/isol8-${env}:*`,
         ],
       }),
     );
