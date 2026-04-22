@@ -365,9 +365,9 @@ class TestTransformAgentEvent:
     """Test static helper for extracting streaming text from agent events."""
 
     def test_returns_chunk_for_assistant_stream(self):
-        payload = {"stream": "assistant", "data": {"text": "Hello world"}}
+        payload = {"stream": "assistant", "data": {"text": "Hello world"}, "runId": "run-1"}
         result = GatewayConnection._transform_agent_event(payload)
-        assert result == {"type": "chunk", "content": "Hello world"}
+        assert result == {"type": "chunk", "content": "Hello world", "runId": "run-1"}
 
     def test_returns_none_for_non_assistant_stream(self):
         payload = {"stream": "system", "data": {"text": "ignored"}}
@@ -462,12 +462,15 @@ class TestTransformAgentEvent:
             "runId": "run-tool-err",
         }
 
-    def test_omits_run_id_when_not_in_payload(self):
-        """Transform should not add runId key when source payload lacks it."""
+    def test_raises_when_run_id_missing(self):
+        """runId is a required field on agent events — absence is a protocol bug.
+
+        Guarding would hide a contract violation (frontend keys per-run
+        assistant bubbles on this id). Surface it loudly instead.
+        """
         payload = {"stream": "assistant", "data": {"text": "Hello"}}
-        result = GatewayConnection._transform_agent_event(payload)
-        assert result == {"type": "chunk", "content": "Hello"}
-        assert "runId" not in result
+        with pytest.raises(KeyError):
+            GatewayConnection._transform_agent_event(payload)
 
 
 class TestHandleMessageChatEvents:
@@ -494,11 +497,11 @@ class TestHandleMessageChatEvents:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "final", "message": {"content": []}},
+                "payload": {"state": "final", "runId": "run-1", "message": {"content": []}},
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
-        assert {"type": "done"} in calls
+        assert {"type": "done", "runId": "run-1"} in calls
 
     def test_chat_final_does_not_emit_text_chunk(self, connection):
         """chat state=final emits only the done signal — assistant text already
@@ -510,13 +513,14 @@ class TestHandleMessageChatEvents:
                 "event": "chat",
                 "payload": {
                     "state": "final",
+                    "runId": "run-1",
                     "message": {"content": [{"type": "text", "text": "complete answer"}]},
                 },
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
         assert all(c.get("type") != "chunk" for c in calls)
-        assert {"type": "done"} in calls
+        assert {"type": "done", "runId": "run-1"} in calls
 
     def test_chat_error_sends_error_message(self, connection):
         """chat state=error forwards an error type message."""
@@ -525,7 +529,7 @@ class TestHandleMessageChatEvents:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "error", "error": {"message": "timeout"}},
+                "payload": {"state": "error", "runId": "run-e", "error": {"message": "timeout"}},
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
@@ -539,7 +543,7 @@ class TestHandleMessageChatEvents:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "aborted"},
+                "payload": {"state": "aborted", "runId": "run-a"},
             }
         )
         calls = [c.args[1] for c in mgmt.send_message.call_args_list]
@@ -799,20 +803,18 @@ class TestChatEventForwarding:
         assert len(error_msgs) == 1
         assert error_msgs[0]["runId"] == "run-abort-1"
 
-    def test_done_without_run_id_still_forwarded(self, connection, mock_management_api):
-        """When OpenClaw omits runId, the forwarded done has no runId key (not None)."""
-        connection._handle_message(
-            {
-                "type": "event",
-                "event": "chat",
-                "payload": {
-                    "state": "final",
-                    "sessionKey": "agent:main:user-1",
-                },
-            }
-        )
-        done_msgs = [
-            c.args[1] for c in mock_management_api.send_message.call_args_list if c.args[1].get("type") == "done"
-        ]
-        assert len(done_msgs) == 1
-        assert "runId" not in done_msgs[0]
+    def test_done_without_run_id_raises(self, connection, mock_management_api):
+        """runId is required on chat-terminal events. Missing runId is a
+        protocol violation — fail loudly rather than silently forwarding
+        without it (frontend multi-bubble routing would break)."""
+        with pytest.raises(KeyError):
+            connection._handle_message(
+                {
+                    "type": "event",
+                    "event": "chat",
+                    "payload": {
+                        "state": "final",
+                        "sessionKey": "agent:main:user-1",
+                    },
+                }
+            )

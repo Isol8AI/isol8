@@ -343,9 +343,11 @@ class GatewayConnection:
         if transformed is None:
             return None
 
-        run_id = payload.get("runId")
-        if run_id:
-            transformed["runId"] = run_id
+        # OpenClaw emits runId on every agent event we forward (assistant/
+        # reasoning/thinking/tool streams), so treat it as a required field.
+        # Frontend routes chunks/tools to a per-run assistant bubble keyed by
+        # this id — a missing runId would silently break multi-bubble rendering.
+        transformed["runId"] = payload["runId"]
         return transformed
 
     @staticmethod
@@ -652,27 +654,13 @@ class GatewayConnection:
                 return
             if event_name != "agent":
                 state = payload.get("state", "") if isinstance(payload, dict) else ""
-                # Temporary extra fields for the post-approval chunk-routing
-                # investigation. `runId`/`seq`/`clientRunId` show up on chat
-                # events; `id` shows up on exec.approval.{requested,resolved}.
-                # Remove after the bug is diagnosed.
-                extras = ""
-                if isinstance(payload, dict):
-                    approval_id = payload.get("id", "-") if event_name.startswith("exec.approval") else "-"
-                    extras = (
-                        f" runId={payload.get('runId', '-')}"
-                        f" seq={payload.get('seq', '-')}"
-                        f" clientRunId={payload.get('clientRunId', '-')}"
-                        f" approvalId={approval_id}"
-                    )
                 logger.info(
-                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s%s",
+                    "[%s] gateway event=%s state=%s sessionKey=%s target=%s",
                     self.user_id,
                     event_name,
                     state,
                     session_key[:60] if session_key else "-",
                     target_member or "broadcast",
-                    extras,
                 )
 
             if event_name == "agent":
@@ -724,32 +712,17 @@ class GatewayConnection:
                 # Chat events -- only terminal states.
                 # Delta states are skipped; agent events handle streaming.
                 state = payload.get("state", "")
-                if state in ("final", "error", "aborted"):
-                    # Temporary debug logging: dump identifying fields
-                    # (runId, seq, clientRunId) so we can tell whether
-                    # OpenClaw assigns a new runId per LLM turn or reuses
-                    # one across the whole chat.send — needed to
-                    # disambiguate the "mid-run chat.final fires before
-                    # user approves" case from a true end-of-run.
-                    # Remove once the post-approval chunk-routing bug
-                    # is diagnosed.
-                    logger.info(
-                        "[%s] chat %s sessionKey=%s target=%s runId=%s seq=%s clientRunId=%s parentRunId=%s stopReason=%s",
-                        self.user_id,
-                        state,
-                        session_key[:60] if session_key else "-",
-                        target_member or "broadcast",
-                        payload.get("runId", "-"),
-                        payload.get("seq", "-"),
-                        payload.get("clientRunId", "-"),
-                        payload.get("parentRunId", "-"),
-                        payload.get("stopReason", "-"),
-                    )
                 # Tag all chat messages with agent_id so the frontend can
                 # route responses to the correct agent conversation.
                 event_agent_id = parsed_key.get("agent_id")
-                # runId lets the frontend route to a per-run assistant bubble.
-                run_id = payload.get("runId") if isinstance(payload, dict) else None
+                # runId is a required field on every chat-terminal event we
+                # forward: the frontend keys its per-run assistant bubble on
+                # it. OpenClaw guarantees it on final/error/aborted (server-
+                # chat.ts `chat` event emitter), so no defensive guard here.
+                # Delta/unknown states never forward, so they don't need it.
+                if state not in ("final", "error", "aborted"):
+                    return
+                run_id = payload["runId"]
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -762,8 +735,7 @@ class GatewayConnection:
                         fwd: dict = {"type": "thinking", "content": thinking_text}
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
-                        if run_id:
-                            fwd["runId"] = run_id
+                        fwd["runId"] = run_id
                         self._forward_to_frontends(fwd, target_member)
                     # OpenClaw guarantees the full text reached us via agent
                     # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
@@ -771,8 +743,7 @@ class GatewayConnection:
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     put_metric("chat.error", dimensions={"reason": "agent_error"})
@@ -785,16 +756,14 @@ class GatewayConnection:
                     fwd = {"type": "error", "message": err_msg}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
                     fwd = {"type": "error", "message": "Agent run was cancelled"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
 
             else:
