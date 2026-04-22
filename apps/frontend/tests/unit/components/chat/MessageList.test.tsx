@@ -219,6 +219,30 @@ describe('MessageList', () => {
       expect(scrollSpy).toHaveBeenCalled();
     });
 
+    it('scrolls when a SECOND user message is sent back-to-back (tail role stays "user")', () => {
+      // Multi-bubble sendMessage appends only a user row — so two sends
+      // in a row (no assistant response between) leave the tail role as
+      // user. The force-scroll rule must not gate on role *changing*.
+      const scrollSpy = vi.fn();
+      Element.prototype.scrollIntoView = scrollSpy;
+
+      const { rerender } = render(
+        <MessageList messages={[{ id: '1', role: 'user', content: 'first' }]} />
+      );
+      scrollSpy.mockClear();
+
+      rerender(
+        <MessageList
+          messages={[
+            { id: '1', role: 'user', content: 'first' },
+            { id: '2', role: 'user', content: 'second' },
+          ]}
+        />
+      );
+
+      expect(scrollSpy).toHaveBeenCalled();
+    });
+
     it('scrolls when streamed content grows on the tail assistant bubble', () => {
       const scrollSpy = vi.fn();
       Element.prototype.scrollIntoView = scrollSpy;

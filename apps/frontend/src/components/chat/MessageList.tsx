@@ -454,8 +454,12 @@ export const MessageList = React.forwardRef<MessageListHandle, MessageListProps>
       const contentGrew =
         messages.length === prevMessagesLengthRef.current &&
         lastContentLength > prevLastContentLengthRef.current;
-      const newUserMessage =
-        lengthIncreased && lastRole === "user" && lastRole !== prevLastRoleRef.current;
+      // Any new message whose tail is a user message is a fresh user send
+      // (multi-bubble `sendMessage` appends only the user row, and a
+      // cancel-before-first-event turn can leave the previous tail as
+      // user too — so don't gate on role *changing*, just on "new tail
+      // is user"). Always snap so the user's own message is visible.
+      const newUserMessage = lengthIncreased && lastRole === "user";
 
       const isFirstPaintWithMessages = !hasMountedRef.current && messages.length > 0;
 
