@@ -41,6 +41,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     usageCountersTable: dynamodb.Table;
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
+    adminActionsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -229,6 +230,7 @@ export class ServiceStack extends cdk.Stack {
     props.database.usageCountersTable.grantReadWriteData(this.taskRole);
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
     props.database.channelLinksTable.grantReadWriteData(this.taskRole);
+    props.database.adminActionsTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -280,6 +282,32 @@ export class ServiceStack extends cdk.Stack {
           "cloudwatch:PutMetricData",
         ],
         resources: ["*"],
+      }),
+    );
+
+    // CloudWatch Logs read — for the admin dashboard inline log viewer
+    // (apps/backend/core/services/cloudwatch_logs.py, Phase B). Scoped to
+    // the backend's own log group ARN; never "*" — least privilege per
+    // CEO review (#351, Phase A Task 2).
+    //
+    // Log group name matches service-stack.ts:519 + isol8-stage.ts:113 +
+    // local-stage.ts:116 — `/ecs/isol8-${env}` (no /aws prefix, no
+    // -backend suffix). The Phase B cloudwatch_logs service must use this
+    // same name when constructing FilterLogEvents calls.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "CloudWatchLogsReadForAdmin",
+        actions: [
+          "logs:FilterLogEvents",
+          "logs:StartQuery",
+          "logs:StopQuery",
+          "logs:GetQueryResults",
+          "logs:GetLogEvents",
+          "logs:DescribeLogStreams",
+        ],
+        resources: [
+          `arn:aws:logs:${this.region}:${this.account}:log-group:/ecs/isol8-${env}:*`,
+        ],
       }),
     );
 

@@ -22,6 +22,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly pendingUpdatesTable: dynamodb.Table;
   public readonly channelLinksTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
+  public readonly adminActionsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -146,6 +147,33 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "WebhookDedupTableName", {
       value: this.webhookDedupTable.tableName,
       exportName: `${this.stackName}-webhook-dedup-table`,
+    });
+
+    // Admin-actions audit table — every platform-admin write to /api/v1/admin/*
+    // appends a row via @audit_admin_action. PK admin_user_id + SK timestamp#uuidv7
+    // for chronological-per-admin queries; GSI flips to target_user_id for the
+    // "show me all actions taken against this user" view. No TTL (CEO review:
+    // audit rows kept forever). Customer-managed KMS encryption like every
+    // other table in this stack.
+    this.adminActionsTable = new dynamodb.Table(this, "AdminActionsTable", {
+      tableName: `isol8-${env}-admin-actions`,
+      partitionKey: { name: "admin_user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "timestamp_action_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.adminActionsTable.addGlobalSecondaryIndex({
+      indexName: "target-timestamp-index",
+      partitionKey: { name: "target_user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "timestamp_action_id", type: dynamodb.AttributeType.STRING },
+    });
+
+    new cdk.CfnOutput(this, "AdminActionsTableName", {
+      value: this.adminActionsTable.tableName,
+      exportName: `${this.stackName}-admin-actions-table`,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
