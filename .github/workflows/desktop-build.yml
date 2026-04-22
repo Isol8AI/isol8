@@ -85,9 +85,17 @@ jobs:
           # via APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD secrets
           # (separate follow-up).
           if [[ "${{ steps.env.outputs.target_env }}" == "dev" ]]; then
-            jq 'del(.bundle.macOS.signingIdentity)' "$TAURI_CFG" > "$TAURI_CFG.new"
+            # Strip signingIdentity → unsigned .app (right-click > Open
+            # to bypass Gatekeeper). Also switch bundle.targets from
+            # dmg → app: Tauri's bundle_dmg.sh uses osascript to drive
+            # Finder for DMG window styling, which hangs ~10min on CI
+            # runners and then fails. Shipping a .app.tar.gz avoids
+            # that codepath entirely — users untar + drag to
+            # Applications.
+            jq 'del(.bundle.macOS.signingIdentity) | .bundle.targets = ["app"]' \
+              "$TAURI_CFG" > "$TAURI_CFG.new"
             mv "$TAURI_CFG.new" "$TAURI_CFG"
-            echo "Stripped bundle.macOS.signingIdentity for dev build (unsigned DMG)"
+            echo "Dev build: unsigned .app, no DMG"
           fi
           echo "Patched URLs in tauri.conf.json:"
           jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity}' "$TAURI_CFG"
