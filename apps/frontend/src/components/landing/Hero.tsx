@@ -172,7 +172,18 @@ export function Hero() {
             Learn more
           </Link>
         </div>
-        <p className="hero-fine">Free to start · No credit card required</p>
+        <p className="hero-fine">
+          Free to start · No credit card required ·{" "}
+          <a
+            href="https://github.com/Isol8AI/isol8/releases/latest"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="hero-download-link"
+            onClick={() => posthog?.capture("landing_download_clicked")}
+          >
+            Download for Mac
+          </a>
+        </p>
       </div>
 
       <div className="hero-right wf-seq" id="wfSeq">
