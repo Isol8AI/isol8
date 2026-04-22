@@ -108,10 +108,18 @@ async def lifespan(app: FastAPI):
 
     idle_checker_task = asyncio.create_task(_safe_idle_checker())
 
+    # Register background tasks so /admin/system/health can surface their state.
+    # See core/services/system_health.py — admin dashboard reads this dict.
+    from core.services import system_health
+
+    system_health.BACKGROUND_TASKS["scheduled_worker"] = worker_task
+    system_health.BACKGROUND_TASKS["idle_checker"] = idle_checker_task
+
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
+    system_health.BACKGROUND_TASKS.clear()
     idle_checker_task.cancel()
     worker_task.cancel()
     try:
