@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -27,6 +27,12 @@ def mock_service():
     app.dependency_overrides[get_catalog_service] = lambda: svc
     yield svc
     app.dependency_overrides.pop(get_catalog_service, None)
+
+
+@pytest.fixture
+def admin_env(monkeypatch):
+    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_admin_42")
+    yield
 
 
 def test_list_returns_catalog_entries(client, mock_service):
@@ -110,4 +116,31 @@ def test_publish_happy_path(client, mock_service):
     assert r.status_code == 200
     assert r.json()["version"] == 4
     mock_service.publish.assert_awaited_once()
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_publish_writes_audit_row(client, mock_service, admin_env):
+    """POST /admin/catalog/publish creates an admin-actions row with
+    action=catalog.publish and target_user_id=__catalog__."""
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin_42")
+    mock_service.publish = AsyncMock(return_value={"slug": "pitch", "version": 1, "s3_prefix": "pitch/v1"})
+
+    audit_mock = AsyncMock()
+    with patch("core.repositories.admin_actions_repo.create", new=audit_mock):
+        r = client.post(
+            "/api/v1/admin/catalog/publish",
+            json={"agent_id": "agent_abc"},
+        )
+
+    assert r.status_code == 200
+    assert audit_mock.await_count == 1
+
+    row_kwargs = audit_mock.await_args.kwargs
+    assert row_kwargs["action"] == "catalog.publish"
+    assert row_kwargs["target_user_id"] == "__catalog__"
+    assert row_kwargs["admin_user_id"] == "user_admin_42"
+
     app.dependency_overrides.pop(require_platform_admin, None)

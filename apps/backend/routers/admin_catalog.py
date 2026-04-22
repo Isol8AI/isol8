@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from core.auth import AuthContext, require_platform_admin
+from core.services.admin_audit import audit_admin_action
 from core.services.catalog_service import CatalogService, get_catalog_service
 
 
@@ -18,8 +19,13 @@ class PublishRequest(BaseModel):
     "/publish",
     description="Package an agent from the admin's EFS workspace and upload it to the shared catalog bucket.",
 )
+@audit_admin_action(
+    "catalog.publish",
+    target_user_id_override="__catalog__",
+)
 async def publish(
     req: PublishRequest,
+    request: Request,
     auth: AuthContext = Depends(require_platform_admin),
     service: CatalogService = Depends(get_catalog_service),
 ) -> dict:
