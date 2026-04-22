@@ -282,6 +282,80 @@ def test_unpublish_audit_captures_slug_in_payload(client, mock_service):
     app.dependency_overrides.pop(require_platform_admin, None)
 
 
+def test_unpublish_idempotency_returns_cached_on_replay(client, mock_service):
+    """Replayed POST with the same Idempotency-Key short-circuits — service runs once.
+
+    Without @idempotency(), the second call would hit service.unpublish again
+    which, after the first call retired the slug, would raise KeyError and
+    surface as a 404 to the client (a completed action wrongly reported as
+    a failure). With @idempotency(), the cached 200 payload is returned.
+    """
+    from core.auth import AuthContext, require_platform_admin
+    from core.services.idempotency import reset_cache
+    from main import app
+
+    reset_cache()
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.unpublish = AsyncMock(
+        return_value={
+            "slug": "pitch",
+            "last_version": 3,
+            "last_manifest_url": "pitch/v3/manifest.json",
+        }
+    )
+    headers = {"Idempotency-Key": "test-unpublish-key-12345"}
+
+    with patch("core.repositories.admin_actions_repo.create", new=AsyncMock()):
+        r1 = client.post("/api/v1/admin/catalog/pitch/unpublish", headers=headers)
+        r2 = client.post("/api/v1/admin/catalog/pitch/unpublish", headers=headers)
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json() == r2.json()
+    # Service was called exactly once; second POST returned the cached result.
+    assert mock_service.unpublish.await_count == 1
+
+    app.dependency_overrides.pop(require_platform_admin, None)
+    reset_cache()
+
+
+def test_publish_idempotency_returns_cached_on_replay(client, mock_service):
+    """Replayed publish POST with the same Idempotency-Key short-circuits.
+
+    Without @idempotency(), a retried publish would bump the version on
+    every network retry. With @idempotency(), the cached 200 payload is
+    returned and service.publish runs exactly once.
+    """
+    from core.auth import AuthContext, require_platform_admin
+    from core.services.idempotency import reset_cache
+    from main import app
+
+    reset_cache()
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.publish = AsyncMock(return_value={"slug": "pitch", "version": 4, "s3_prefix": "pitch/v4"})
+    headers = {"Idempotency-Key": "test-publish-key-67890"}
+
+    with patch("core.repositories.admin_actions_repo.create", new=AsyncMock()):
+        r1 = client.post(
+            "/api/v1/admin/catalog/publish",
+            json={"agent_id": "agent_abc"},
+            headers=headers,
+        )
+        r2 = client.post(
+            "/api/v1/admin/catalog/publish",
+            json={"agent_id": "agent_abc"},
+            headers=headers,
+        )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert r1.json() == r2.json()
+    assert mock_service.publish.await_count == 1
+
+    app.dependency_overrides.pop(require_platform_admin, None)
+    reset_cache()
+
+
 def test_admin_catalog_endpoints_require_platform_admin(client):
     """Any non-admin user hitting /admin/catalog/* returns 403."""
     from core.auth import require_platform_admin

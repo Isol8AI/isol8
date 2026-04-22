@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from core.auth import AuthContext, require_platform_admin
 from core.services.admin_audit import audit_admin_action
 from core.services.catalog_service import CatalogService, get_catalog_service
+from core.services.idempotency import idempotency
 
 
 router = APIRouter(prefix="/admin/catalog", tags=["admin", "catalog"])
@@ -19,6 +20,7 @@ class PublishRequest(BaseModel):
     "/publish",
     description="Package an agent from the admin's EFS workspace and upload it to the shared catalog bucket.",
 )
+@idempotency()
 @audit_admin_action(
     "catalog.publish",
     target_user_id_override="__catalog__",
@@ -53,6 +55,7 @@ async def list_all(
     "/{slug}/unpublish",
     description="Soft-delete a catalog slug. Moves the slug to catalog.json's retired list; S3 artifacts preserved.",
 )
+@idempotency()
 @audit_admin_action(
     "catalog.unpublish",
     target_user_id_override="__catalog__",
