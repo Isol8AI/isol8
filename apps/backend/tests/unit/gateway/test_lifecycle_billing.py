@@ -158,6 +158,7 @@ async def test_chat_final_no_longer_calls_billing(conn):
     payload = {
         "sessionKey": "agent:main:main",
         "state": "final",
+        "runId": "run-1",
         "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
     }
 

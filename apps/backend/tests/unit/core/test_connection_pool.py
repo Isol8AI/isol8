@@ -365,9 +365,9 @@ class TestTransformAgentEvent:
     """Test static helper for extracting streaming text from agent events."""
 
     def test_returns_chunk_for_assistant_stream(self):
-        payload = {"stream": "assistant", "data": {"text": "Hello world"}}
+        payload = {"stream": "assistant", "data": {"text": "Hello world"}, "runId": "run-1"}
         result = GatewayConnection._transform_agent_event(payload)
-        assert result == {"type": "chunk", "content": "Hello world"}
+        assert result == {"type": "chunk", "content": "Hello world", "runId": "run-1"}
 
     def test_returns_none_for_non_assistant_stream(self):
         payload = {"stream": "system", "data": {"text": "ignored"}}

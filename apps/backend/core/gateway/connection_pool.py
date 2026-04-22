@@ -716,9 +716,12 @@ class GatewayConnection:
                 # route responses to the correct agent conversation.
                 event_agent_id = parsed_key.get("agent_id")
                 # runId is a required field on every chat-terminal event we
-                # forward: the frontend keys its per-run assistant bubble on it.
-                # OpenClaw guarantees it (server-chat.ts `chat` event emitter),
-                # so no defensive guard here.
+                # forward: the frontend keys its per-run assistant bubble on
+                # it. OpenClaw guarantees it on final/error/aborted (server-
+                # chat.ts `chat` event emitter), so no defensive guard here.
+                # Delta/unknown states never forward, so they don't need it.
+                if state not in ("final", "error", "aborted"):
+                    return
                 run_id = payload["runId"]
                 if state == "final":
                     put_metric("chat.message.count")

@@ -65,19 +65,21 @@ class TestTransformAgentEvent:
 
     def test_assistant_stream_with_text(self):
         result = GatewayConnection._transform_agent_event(
-            {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}}
+            {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}, "runId": "run-1"}
         )
-        assert result == {"type": "chunk", "content": "Hello"}
+        assert result == {"type": "chunk", "content": "Hello", "runId": "run-1"}
 
     def test_assistant_stream_cumulative(self):
         """Successive events carry progressively longer cumulative text."""
-        r1 = GatewayConnection._transform_agent_event({"stream": "assistant", "data": {"text": "He", "delta": "He"}})
-        assert r1 == {"type": "chunk", "content": "He"}
+        r1 = GatewayConnection._transform_agent_event(
+            {"stream": "assistant", "data": {"text": "He", "delta": "He"}, "runId": "run-1"}
+        )
+        assert r1 == {"type": "chunk", "content": "He", "runId": "run-1"}
 
         r2 = GatewayConnection._transform_agent_event(
-            {"stream": "assistant", "data": {"text": "Hello world", "delta": "llo world"}}
+            {"stream": "assistant", "data": {"text": "Hello world", "delta": "llo world"}, "runId": "run-1"}
         )
-        assert r2 == {"type": "chunk", "content": "Hello world"}
+        assert r2 == {"type": "chunk", "content": "Hello world", "runId": "run-1"}
 
     def test_non_assistant_non_tool_stream_ignored(self):
         assert GatewayConnection._transform_agent_event({"stream": "lifecycle", "data": {"phase": "start"}}) is None
@@ -93,6 +95,7 @@ class TestTransformAgentEvent:
                     "toolCallId": "abc-123",
                     "args": {"query": "weather in Berwyn"},
                 },
+                "runId": "run-1",
             }
         )
         assert result == {
@@ -100,14 +103,19 @@ class TestTransformAgentEvent:
             "tool": "web_search",
             "toolCallId": "abc-123",
             "args": {"query": "weather in Berwyn"},
+            "runId": "run-1",
         }
 
     def test_tool_stream_start_without_args(self):
         """args key missing — output omits it rather than sending null."""
         result = GatewayConnection._transform_agent_event(
-            {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"}}
+            {
+                "stream": "tool",
+                "data": {"name": "web_search", "phase": "start", "toolCallId": "abc-123"},
+                "runId": "run-1",
+            }
         )
-        assert result == {"type": "tool_start", "tool": "web_search", "toolCallId": "abc-123"}
+        assert result == {"type": "tool_start", "tool": "web_search", "toolCallId": "abc-123", "runId": "run-1"}
 
     def test_tool_stream_result_phase(self):
         result = GatewayConnection._transform_agent_event(
@@ -120,6 +128,7 @@ class TestTransformAgentEvent:
                     "result": [{"type": "text", "text": "72°F"}],
                     "meta": "Berwyn, PA",
                 },
+                "runId": "run-1",
             }
         )
         assert result == {
@@ -128,6 +137,7 @@ class TestTransformAgentEvent:
             "toolCallId": "abc-123",
             "result": [{"type": "text", "text": "72°F"}],
             "meta": "Berwyn, PA",
+            "runId": "run-1",
         }
 
     def test_tool_stream_result_with_is_error(self):
@@ -142,6 +152,7 @@ class TestTransformAgentEvent:
                     "isError": True,
                     "result": [{"type": "text", "text": "Perplexity API 404"}],
                 },
+                "runId": "run-1",
             }
         )
         assert result == {
@@ -149,6 +160,7 @@ class TestTransformAgentEvent:
             "tool": "web_search",
             "toolCallId": "abc-123",
             "result": [{"type": "text", "text": "Perplexity API 404"}],
+            "runId": "run-1",
         }
 
     def test_tool_stream_update_phase_ignored(self):
@@ -166,16 +178,16 @@ class TestTransformAgentEvent:
 
     def test_thinking_stream_with_text(self):
         result = GatewayConnection._transform_agent_event(
-            {"stream": "thinking", "data": {"text": "Let me think...", "delta": "..."}}
+            {"stream": "thinking", "data": {"text": "Let me think...", "delta": "..."}, "runId": "run-1"}
         )
-        assert result == {"type": "thinking", "content": "Let me think..."}
+        assert result == {"type": "thinking", "content": "Let me think...", "runId": "run-1"}
 
     def test_reasoning_stream_with_text(self):
         """OpenClaw may emit reasoning events under either stream name."""
         result = GatewayConnection._transform_agent_event(
-            {"stream": "reasoning", "data": {"text": "Considering options", "delta": "s"}}
+            {"stream": "reasoning", "data": {"text": "Considering options", "delta": "s"}, "runId": "run-1"}
         )
-        assert result == {"type": "thinking", "content": "Considering options"}
+        assert result == {"type": "thinking", "content": "Considering options", "runId": "run-1"}
 
     def test_thinking_stream_empty_text_ignored(self):
         assert GatewayConnection._transform_agent_event({"stream": "thinking", "data": {"text": ""}}) is None
@@ -231,10 +243,12 @@ class TestHandleMessage:
             {
                 "type": "event",
                 "event": "agent",
-                "payload": {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}},
+                "payload": {"stream": "assistant", "data": {"text": "Hello", "delta": "o"}, "runId": "run-1"},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "chunk", "content": "Hello"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "chunk", "content": "Hello", "runId": "run-1"}
+        )
 
     def test_agent_non_assistant_event_skipped(self, connection, mock_management_api):
         connection._handle_message(
@@ -251,11 +265,15 @@ class TestHandleMessage:
             {
                 "type": "event",
                 "event": "agent",
-                "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "start", "toolCallId": "t1"}},
+                "payload": {
+                    "stream": "tool",
+                    "data": {"name": "web_search", "phase": "start", "toolCallId": "t1"},
+                    "runId": "run-1",
+                },
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "tool_start", "tool": "web_search", "toolCallId": "t1"}
+            "conn-1", {"type": "tool_start", "tool": "web_search", "toolCallId": "t1", "runId": "run-1"}
         )
 
     def test_agent_tool_end_forwarded(self, connection, mock_management_api):
@@ -263,11 +281,15 @@ class TestHandleMessage:
             {
                 "type": "event",
                 "event": "agent",
-                "payload": {"stream": "tool", "data": {"name": "web_search", "phase": "result", "toolCallId": "t1"}},
+                "payload": {
+                    "stream": "tool",
+                    "data": {"name": "web_search", "phase": "result", "toolCallId": "t1"},
+                    "runId": "run-1",
+                },
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "tool_end", "tool": "web_search", "toolCallId": "t1"}
+            "conn-1", {"type": "tool_end", "tool": "web_search", "toolCallId": "t1", "runId": "run-1"}
         )
 
     def test_agent_events_tagged_with_agent_id_from_session_key(self, connection, mock_management_api):
@@ -280,11 +302,12 @@ class TestHandleMessage:
                     "stream": "assistant",
                     "data": {"text": "Hello"},
                     "sessionKey": "agent:my-agent-id:main",
+                    "runId": "run-1",
                 },
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "chunk", "content": "Hello", "agent_id": "my-agent-id"}
+            "conn-1", {"type": "chunk", "content": "Hello", "agent_id": "my-agent-id", "runId": "run-1"}
         )
 
     def test_chat_final_tagged_with_agent_id(self, connection, mock_management_api):
@@ -295,12 +318,15 @@ class TestHandleMessage:
                 "event": "chat",
                 "payload": {
                     "state": "final",
+                    "runId": "run-1",
                     "sessionKey": "agent:my-agent-id:main",
                     "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]},
                 },
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "agent_id": "my-agent-id"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "done", "agent_id": "my-agent-id", "runId": "run-1"}
+        )
 
     # -- Chat events (terminal states only) --
 
@@ -326,6 +352,7 @@ class TestHandleMessage:
                 "event": "chat",
                 "payload": {
                     "state": "final",
+                    "runId": "run-1",
                     "message": {
                         "role": "assistant",
                         "content": [{"type": "text", "text": "Complete response here."}],
@@ -333,7 +360,7 @@ class TestHandleMessage:
                 },
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done"})
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "runId": "run-1"})
 
     def test_chat_final_with_thinking_sends_thinking_then_done(self, connection, mock_management_api):
         """Thinking blocks in the final message are forwarded for models that batch reasoning."""
@@ -343,6 +370,7 @@ class TestHandleMessage:
                 "event": "chat",
                 "payload": {
                     "state": "final",
+                    "runId": "run-1",
                     "message": {
                         "role": "assistant",
                         "content": [
@@ -355,39 +383,43 @@ class TestHandleMessage:
         )
         assert mock_management_api.send_message.call_count == 2
         calls = mock_management_api.send_message.call_args_list
-        assert calls[0] == call("conn-1", {"type": "thinking", "content": "Let me reason about this..."})
-        assert calls[1] == call("conn-1", {"type": "done"})
+        assert calls[0] == call(
+            "conn-1", {"type": "thinking", "content": "Let me reason about this...", "runId": "run-1"}
+        )
+        assert calls[1] == call("conn-1", {"type": "done", "runId": "run-1"})
 
     def test_chat_final_without_text_sends_only_done(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "final"},
+                "payload": {"state": "final", "runId": "run-1"},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done"})
+        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "done", "runId": "run-1"})
 
     def test_chat_error_with_dict(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "error", "error": {"message": "Rate limited"}},
+                "payload": {"state": "error", "runId": "run-1", "error": {"message": "Rate limited"}},
             }
         )
-        mock_management_api.send_message.assert_called_once_with("conn-1", {"type": "error", "message": "Rate limited"})
+        mock_management_api.send_message.assert_called_once_with(
+            "conn-1", {"type": "error", "message": "Rate limited", "runId": "run-1"}
+        )
 
     def test_chat_error_with_string(self, connection, mock_management_api):
         connection._handle_message(
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "error", "error": "Something broke"},
+                "payload": {"state": "error", "runId": "run-1", "error": "Something broke"},
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "error", "message": "Something broke"}
+            "conn-1", {"type": "error", "message": "Something broke", "runId": "run-1"}
         )
 
     def test_chat_aborted(self, connection, mock_management_api):
@@ -395,11 +427,11 @@ class TestHandleMessage:
             {
                 "type": "event",
                 "event": "chat",
-                "payload": {"state": "aborted"},
+                "payload": {"state": "aborted", "runId": "run-1"},
             }
         )
         mock_management_api.send_message.assert_called_once_with(
-            "conn-1", {"type": "error", "message": "Agent run was cancelled"}
+            "conn-1", {"type": "error", "message": "Agent run was cancelled", "runId": "run-1"}
         )
 
     def test_chat_unknown_state_skipped(self, connection, mock_management_api):
@@ -433,7 +465,7 @@ class TestHandleMessage:
             {
                 "type": "event",
                 "event": "agent",
-                "payload": {"stream": "assistant", "data": {"text": "Hi"}},
+                "payload": {"stream": "assistant", "data": {"text": "Hi"}, "runId": "run-1"},
             }
         )
         assert mock_management_api.send_message.call_count == 2
