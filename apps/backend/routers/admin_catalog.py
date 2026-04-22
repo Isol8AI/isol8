@@ -22,6 +22,7 @@ class PublishRequest(BaseModel):
 @audit_admin_action(
     "catalog.publish",
     target_user_id_override="__catalog__",
+    capture_params=["req"],
 )
 async def publish(
     req: PublishRequest,
@@ -55,6 +56,7 @@ async def list_all(
 @audit_admin_action(
     "catalog.unpublish",
     target_user_id_override="__catalog__",
+    capture_params=["slug"],
 )
 async def unpublish(
     slug: str,

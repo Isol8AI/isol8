@@ -239,6 +239,49 @@ def test_admin_list_versions(client, mock_service):
     app.dependency_overrides.pop(require_platform_admin, None)
 
 
+def test_publish_audit_captures_agent_id_in_payload(client, mock_service):
+    """Publish audit row includes the agent_id (and optional slug/description) from req."""
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin_42")
+    mock_service.publish = AsyncMock(return_value={"slug": "pitch", "version": 1, "s3_prefix": "pitch/v1"})
+
+    audit_mock = AsyncMock()
+    with patch("core.repositories.admin_actions_repo.create", new=audit_mock):
+        r = client.post(
+            "/api/v1/admin/catalog/publish",
+            json={"agent_id": "agent_abc", "slug": "custom-pitch"},
+        )
+
+    assert r.status_code == 200
+    payload = audit_mock.await_args.kwargs["payload"]
+    assert payload["req"]["agent_id"] == "agent_abc"
+    assert payload["req"]["slug"] == "custom-pitch"
+
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+def test_unpublish_audit_captures_slug_in_payload(client, mock_service):
+    """Unpublish audit row includes the slug path param."""
+    from core.auth import AuthContext, require_platform_admin
+    from main import app
+
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(user_id="user_admin")
+    mock_service.unpublish = AsyncMock(
+        return_value={"slug": "pitch", "last_version": 3, "last_manifest_url": "pitch/v3/manifest.json"}
+    )
+
+    audit_mock = AsyncMock()
+    with patch("core.repositories.admin_actions_repo.create", new=audit_mock):
+        r = client.post("/api/v1/admin/catalog/pitch/unpublish")
+
+    assert r.status_code == 200
+    assert audit_mock.await_args.kwargs["payload"] == {"slug": "pitch"}
+
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
 def test_admin_catalog_endpoints_require_platform_admin(client):
     """Any non-admin user hitting /admin/catalog/* returns 403."""
     from core.auth import require_platform_admin

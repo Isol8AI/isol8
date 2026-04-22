@@ -66,3 +66,89 @@ async def test_audit_falls_back_to_kwarg_without_override():
 
     assert create_mock.await_count == 1
     assert create_mock.await_args.kwargs["target_user_id"] == "user_target_xyz"
+
+
+@pytest.mark.asyncio
+async def test_audit_captures_specified_kwargs_as_payload():
+    """capture_params=['slug'] stores {slug: 'pitch'} in payload."""
+    create_mock = AsyncMock()
+
+    @audit_admin_action("catalog.test", target_user_id_override="__catalog__", capture_params=["slug"])
+    async def handler(slug, request, auth):
+        return {"ok": True}
+
+    class _Req:
+        headers = {"user-agent": "pytest"}
+        client = type("c", (), {"host": "127.0.0.1"})()
+
+    from core.auth import AuthContext
+
+    with patch("core.repositories.admin_actions_repo.create", new=create_mock):
+        await handler(slug="pitch", request=_Req(), auth=AuthContext(user_id="user_admin"))
+
+    row = create_mock.await_args.kwargs
+    assert row["payload"] == {"slug": "pitch"}
+
+
+@pytest.mark.asyncio
+async def test_audit_captures_pydantic_model_via_capture_params():
+    """capture_params on a Pydantic kwarg serializes via model_dump()."""
+    from pydantic import BaseModel
+
+    class DummyReq(BaseModel):
+        agent_id: str
+        slug: str | None = None
+
+    create_mock = AsyncMock()
+
+    @audit_admin_action("catalog.test", target_user_id_override="__catalog__", capture_params=["req"])
+    async def handler(req, request, auth):
+        return {"ok": True}
+
+    class _Req:
+        headers = {"user-agent": "pytest"}
+        client = type("c", (), {"host": "127.0.0.1"})()
+
+    from core.auth import AuthContext
+
+    with patch("core.repositories.admin_actions_repo.create", new=create_mock):
+        await handler(
+            req=DummyReq(agent_id="agent_abc", slug="pitch"),
+            request=_Req(),
+            auth=AuthContext(user_id="user_admin"),
+        )
+
+    row = create_mock.await_args.kwargs
+    assert row["payload"] == {"req": {"agent_id": "agent_abc", "slug": "pitch"}}
+
+
+@pytest.mark.asyncio
+async def test_audit_falls_back_to_body_when_capture_params_absent():
+    """Existing behavior: without capture_params, still extracts body kwarg."""
+    from pydantic import BaseModel
+
+    class DummyBody(BaseModel):
+        note: str
+
+    create_mock = AsyncMock()
+
+    @audit_admin_action("existing.test")
+    async def handler(user_id, body, request, auth):
+        return {"ok": True}
+
+    class _Req:
+        headers = {"user-agent": "pytest"}
+        client = type("c", (), {"host": "127.0.0.1"})()
+
+    from core.auth import AuthContext
+
+    with patch("core.repositories.admin_actions_repo.create", new=create_mock):
+        await handler(
+            user_id="user_xyz",
+            body=DummyBody(note="hello"),
+            request=_Req(),
+            auth=AuthContext(user_id="user_admin"),
+        )
+
+    row = create_mock.await_args.kwargs
+    assert row["payload"] == {"note": "hello"}
