@@ -343,9 +343,11 @@ class GatewayConnection:
         if transformed is None:
             return None
 
-        run_id = payload.get("runId")
-        if run_id:
-            transformed["runId"] = run_id
+        # OpenClaw emits runId on every agent event we forward (assistant/
+        # reasoning/thinking/tool streams), so treat it as a required field.
+        # Frontend routes chunks/tools to a per-run assistant bubble keyed by
+        # this id — a missing runId would silently break multi-bubble rendering.
+        transformed["runId"] = payload["runId"]
         return transformed
 
     @staticmethod
@@ -713,8 +715,11 @@ class GatewayConnection:
                 # Tag all chat messages with agent_id so the frontend can
                 # route responses to the correct agent conversation.
                 event_agent_id = parsed_key.get("agent_id")
-                # runId lets the frontend route to a per-run assistant bubble.
-                run_id = payload.get("runId") if isinstance(payload, dict) else None
+                # runId is a required field on every chat-terminal event we
+                # forward: the frontend keys its per-run assistant bubble on it.
+                # OpenClaw guarantees it (server-chat.ts `chat` event emitter),
+                # so no defensive guard here.
+                run_id = payload["runId"]
                 if state == "final":
                     put_metric("chat.message.count")
                     # Deliver thinking from content blocks for models that
@@ -727,8 +732,7 @@ class GatewayConnection:
                         fwd: dict = {"type": "thinking", "content": thinking_text}
                         if event_agent_id:
                             fwd["agent_id"] = event_agent_id
-                        if run_id:
-                            fwd["runId"] = run_id
+                        fwd["runId"] = run_id
                         self._forward_to_frontends(fwd, target_member)
                     # OpenClaw guarantees the full text reached us via agent
                     # stream="assistant" events (with flushBufferedChatDeltaIfNeeded
@@ -736,8 +740,7 @@ class GatewayConnection:
                     fwd = {"type": "done"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "error":
                     put_metric("chat.error", dimensions={"reason": "agent_error"})
@@ -750,16 +753,14 @@ class GatewayConnection:
                     fwd = {"type": "error", "message": err_msg}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
                 elif state == "aborted":
                     put_metric("chat.error", dimensions={"reason": "aborted"})
                     fwd = {"type": "error", "message": "Agent run was cancelled"}
                     if event_agent_id:
                         fwd["agent_id"] = event_agent_id
-                    if run_id:
-                        fwd["runId"] = run_id
+                    fwd["runId"] = run_id
                     self._forward_to_frontends(fwd, target_member)
 
             else:
