@@ -91,6 +91,7 @@ def audit_admin_action(
     action: str,
     *,
     target_param: str = "user_id",
+    target_user_id_override: str | None = None,
     redact_paths: list[str] | None = None,
 ) -> Callable:
     """Decorate an admin router handler to write an audit row per call.
@@ -98,6 +99,12 @@ def audit_admin_action(
     See module docstring for the contract. `action` is a dotted name like
     'container.reprovision' that ends up in the audit_actions DDB row's
     `action` field (the same value the audit viewer uses for filtering).
+
+    `target_user_id_override`: when set (e.g. "__catalog__"), the audit
+    row's `target_user_id` is this static value rather than being pulled
+    from the handler's kwargs. Intended for actions that operate on a
+    shared resource (the catalog, platform config, etc.) rather than a
+    specific user.
     """
     redact_paths = redact_paths or []
 
@@ -110,7 +117,10 @@ def audit_admin_action(
                 raise RuntimeError(f"@audit_admin_action({action!r}) requires AuthContext in args or kwargs")
 
             request = kwargs.get("request")
-            target_user_id = kwargs.get(target_param) or "system"
+            if target_user_id_override is not None:
+                target_user_id = target_user_id_override
+            else:
+                target_user_id = kwargs.get(target_param) or "system"
             payload = _redact_payload(_payload_from_body(kwargs.get("body")), redact_paths)
 
             user_agent = _extract_user_agent(request)
