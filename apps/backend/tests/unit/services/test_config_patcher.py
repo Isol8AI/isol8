@@ -99,6 +99,87 @@ async def test_patch_nonexistent_owner_raises(efs_dir):
         await patch_openclaw_config("nonexistent_user", {"agents": {}})
 
 
+@pytest.mark.asyncio
+async def test_patch_autowires_route_binding_for_new_channel_account(efs_dir):
+    """A patch that introduces channels.<provider>.accounts.<agent_id> must
+    also land a matching top-level route binding in the same atomic write.
+    Without the binding OpenClaw's dispatcher falls through to the default
+    agent — see desktop/openclaw src/routing/bindings.ts.
+    """
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"telegram": {"accounts": {"ray": {"botToken": "T"}}}}},
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result["channels"]["telegram"]["accounts"]["ray"]["botToken"] == "T"
+    assert result["bindings"] == [
+        {"type": "route", "agentId": "ray", "match": {"channel": "telegram", "accountId": "ray"}}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_patch_autowires_binding_per_account_across_providers(efs_dir):
+    await patch_openclaw_config(
+        "user_1",
+        {
+            "channels": {
+                "telegram": {"accounts": {"ray": {"botToken": "T1"}}},
+                "discord": {"accounts": {"sales": {"token": "D1"}}},
+            }
+        },
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    by_agent = {b["agentId"]: b for b in result["bindings"]}
+    assert by_agent["ray"]["match"] == {"channel": "telegram", "accountId": "ray"}
+    assert by_agent["sales"]["match"] == {"channel": "discord", "accountId": "sales"}
+    assert len(result["bindings"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_patch_dedupes_binding_on_repeat(efs_dir):
+    for _ in range(2):
+        await patch_openclaw_config(
+            "user_1",
+            {"channels": {"telegram": {"accounts": {"ray": {"botToken": "T"}}}}},
+        )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert len(result["bindings"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_patch_preserves_existing_unrelated_bindings(efs_dir):
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"telegram": {"accounts": {"main": {"botToken": "M"}}}}},
+    )
+    await patch_openclaw_config(
+        "user_1",
+        {"channels": {"telegram": {"accounts": {"ray": {"botToken": "R"}}}}},
+    )
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert sorted(b["agentId"] for b in result["bindings"]) == ["main", "ray"]
+
+
+@pytest.mark.asyncio
+async def test_patch_no_binding_when_patch_has_no_channels(efs_dir):
+    await patch_openclaw_config("user_1", {"tools": {"profile": "full"}})
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert "bindings" not in result
+
+
+@pytest.mark.asyncio
+async def test_patch_no_binding_when_channels_touched_without_accounts(efs_dir):
+    await patch_openclaw_config("user_1", {"channels": {"telegram": {"enabled": True}}})
+    with open(os.path.join(efs_dir, "user_1", "openclaw.json")) as f:
+        result = json.load(f)
+    assert result.get("bindings", []) == []
+
+
 @pytest.fixture
 def tmp_efs_with_config(monkeypatch):
     """Write a minimal openclaw.json to a tmp 'EFS' dir and point the patcher at it."""
