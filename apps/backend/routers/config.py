@@ -20,6 +20,7 @@ from core.containers.config import read_openclaw_config_from_efs
 from core.repositories import billing_repo
 from core.services.config_patcher import (
     ConfigPatchError,
+    append_to_openclaw_config_list,
     patch_openclaw_config,
 )
 
@@ -99,6 +100,40 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
                 )
 
 
+async def _ensure_bindings_for_accounts(owner_id: str, patch: dict) -> None:
+    """For every channels.<provider>.accounts.<agent_id> written by this patch,
+    ensure a matching routing binding exists in openclaw.json.
+
+    OpenClaw's inbound-message dispatcher (desktop/openclaw src/routing/bindings.ts
+    buildChannelAccountBindings) routes (channel, accountId) to an agent ONLY
+    via the top-level ``bindings`` array. Without a matching entry, messages
+    fall through to the default agent. The frontend's PATCH body sends the
+    account but not the binding, so we append it here — dedupe-safe, so repeat
+    PATCHes are a no-op.
+    """
+    channels = patch.get("channels")
+    if not isinstance(channels, dict):
+        return
+    for provider, provider_cfg in channels.items():
+        if not isinstance(provider_cfg, dict):
+            continue
+        accounts = provider_cfg.get("accounts")
+        if not isinstance(accounts, dict):
+            continue
+        for agent_id, account_cfg in accounts.items():
+            if not isinstance(account_cfg, dict):
+                continue
+            await append_to_openclaw_config_list(
+                owner_id,
+                ["bindings"],
+                {
+                    "type": "route",
+                    "agentId": agent_id,
+                    "match": {"channel": provider, "accountId": agent_id},
+                },
+            )
+
+
 @router.patch(
     "",
     summary="Patch the caller's openclaw.json config",
@@ -134,5 +169,10 @@ async def patch_config(
         await patch_openclaw_config(owner_id, body.patch)
     except ConfigPatchError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
+    # Mirror of admin_delete_bot's dual-write: every new channel account needs
+    # a matching routing binding or OpenClaw defaults the channel to `main`.
+    if _patch_touches_channels(body.patch):
+        await _ensure_bindings_for_accounts(owner_id, body.patch)
 
     return {"status": "patched", "owner_id": owner_id}
