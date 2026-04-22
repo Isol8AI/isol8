@@ -14,7 +14,6 @@
 
 import * as React from "react";
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
-import posthog from "posthog-js";
 import {
   useGateway,
   type ChatIncomingMessage,
@@ -25,51 +24,6 @@ import type {
   ExecApprovalDecision,
   ToolUse,
 } from "@/components/chat/MessageList";
-
-// =============================================================================
-// Debug instrumentation
-//
-// Temporary. Wired to diagnose the "one-turn-behind after tool approval" bug —
-// where isStreaming appears to flip to false at the click of an approval
-// decision, and the subsequent post-approval stream lands in the NEXT
-// user-message bubble.
-//
-// OFF BY DEFAULT IN PRODUCTION. User opts in per-browser via devtools:
-//   localStorage.setItem("chat_debug", "1")   // then reload
-//   localStorage.removeItem("chat_debug")     // to disable
-//
-// When enabled, emits to console.debug (live devtools inspection) AND
-// posthog ("chat_debug" event, persistent queryable timeline). Chunk /
-// heartbeat events are excluded from posthog to keep volume down.
-//
-// Payload scrubbing: never include raw user messages, assistant content,
-// or command args. Only log shape/metadata — lengths, counts, type tags,
-// boolean flags, identifiers.
-//
-// Rip this out once the bug is identified.
-// =============================================================================
-function isChatDebugEnabled(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem("chat_debug") === "1";
-  } catch {
-    return false;
-  }
-}
-function chatDebug(event: string, payload: Record<string, unknown> = {}) {
-  if (!isChatDebugEnabled()) return;
-  // Using console.log rather than console.debug so entries show up at
-  // the Chrome default log level (debug is a Verbose-only level, hidden
-  // by default and a common source of "I see nothing in the console"
-  // confusion).
-  // eslint-disable-next-line no-console
-  console.log("[chat-debug]", event, { ts: Date.now(), ...payload });
-  try {
-    posthog?.capture?.("chat_debug", { event, ...payload });
-  } catch {
-    // posthog not initialized (local dev without key) — ignore.
-  }
-}
 
 // Re-export ToolUse so existing consumers (AgentChatWindow) keep working
 // after this hook switched to the canonical MessageList definition.
@@ -191,13 +145,9 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     () => (cacheKey ? _messageCache.get(cacheKey) ?? [] : []),
   );
   const [isStreaming, _setIsStreamingRaw] = useState(false);
-  // Debug wrapper: every streaming-flag flip is logged with source. Removing
-  // this wrapper once the post-approval bug is diagnosed.
   const isStreamingRef = useRef(false);
-  const setIsStreaming = useCallback((value: boolean, source?: string) => {
-    const prev = isStreamingRef.current;
+  const setIsStreaming = useCallback((value: boolean) => {
     isStreamingRef.current = value;
-    chatDebug("setIsStreaming", { from: prev, to: value, source: source ?? "unknown" });
     _setIsStreamingRaw(value);
   }, []);
   const [error, setError] = useState<string | null>(null);
@@ -273,7 +223,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       { id: messageId, role: "assistant", content: "" },
     ]);
     if (!isStreamingRef.current) {
-      setIsStreaming(true, `run-${String(runId).slice(0, 12)}-start`);
+      setIsStreaming(true);
     }
     return messageId;
   }, [setIsStreaming]);
@@ -289,7 +239,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       if (first) finalizedRunsRef.current.delete(first);
     }
     if (runsRef.current.size === 0) {
-      setIsStreaming(false, `run-${String(runId).slice(0, 12)}-done`);
+      setIsStreaming(false);
     }
   }, [setIsStreaming]);
 
@@ -390,40 +340,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   useEffect(() => {
     return onChatMessage((msg: ChatIncomingMessage) => {
-      // Debug: log every non-chunk message at arrival, plus chunk metadata
-      // (not content — chunks fire per-token and would spam posthog).
-      if (msg.type !== "chunk" && msg.type !== "heartbeat") {
-        chatDebug("chat_msg_rx", {
-          msg_type: msg.type,
-          msg_agent_id: (msg as { agent_id?: string }).agent_id,
-          my_agent_id: agentIdRef.current,
-          run_count: runsRef.current.size,
-          streaming: isStreamingRef.current,
-          error_code: (msg as { code?: string }).code,
-          // NOTE: deliberately do not include the error message string — it
-          // can carry user-provided content (budget/tier labels, partial
-          // agent output on aborted runs).
-          has_error_message: Boolean((msg as { message?: string }).message),
-        });
-      }
-
-      // Chunk arrival tracer (console-only — NEVER posthog, NEVER content).
-      // We need to know WHEN chunks arrive relative to approval events to
-      // decide whether the post-approval chunk-routing bug is a same-bubble
-      // or cross-bubble misrouting. Logs length only (shape, not content).
-      // Skips posthog entirely to avoid per-token volume.
-      if (msg.type === "chunk" && isChatDebugEnabled()) {
-        // eslint-disable-next-line no-console
-        console.log("[chat-debug]", "chunk_rx", {
-          ts: Date.now(),
-          content_length: msg.content?.length ?? 0,
-          msg_agent_id: msg.agent_id,
-          my_agent_id: agentIdRef.current,
-          run_count: runsRef.current.size,
-          streaming: isStreamingRef.current,
-        });
-      }
-
       // Drop messages meant for a different agent. Heartbeat and
       // update_available aren't tied to a specific run. Errors are
       // allowed through even without agent_id as a safety valve —
@@ -433,13 +349,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         msg.type === "heartbeat" || msg.type === "update_available";
       const isUntaggedError = msg.type === "error" && msg.agent_id === undefined;
       if (!isUntaggedBroadcast && !isUntaggedError && msg.agent_id !== agentIdRef.current) {
-        // TS has narrowed out "heartbeat"/"chunk" by this point via the
-        // isUntaggedBroadcast aliased condition; log unconditionally.
-        chatDebug("chat_msg_dropped_agent_mismatch", {
-          msg_type: (msg as { type: string }).type,
-          msg_agent_id: (msg as { agent_id?: string }).agent_id,
-          my_agent_id: agentIdRef.current,
-        });
         return;
       }
 
@@ -486,7 +395,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           finalizeAllActiveRuns();
           // Close the window for late stragglers whose runId we never saw.
           pendingCancelRef.current = true;
-          setIsStreaming(false, "error-budget");
+          setIsStreaming(false);
           return;
         }
 
@@ -524,7 +433,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
               if (first) finalizedRunsRef.current.delete(first);
             }
             if (runsRef.current.size === 0) {
-              setIsStreaming(false, "error-scoped-unknown-run");
+              setIsStreaming(false);
             }
           }
           setError(displayError);
@@ -546,7 +455,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         finalizeAllActiveRuns();
         // Close the window for late stragglers whose runId we never saw.
         pendingCancelRef.current = true;
-        setIsStreaming(false, "error-generic");
+        setIsStreaming(false);
         return;
       }
 
@@ -712,14 +621,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         createdAtMs?: number;
         expiresAtMs?: number;
       };
-      chatDebug("approval_requested_event_rx", {
-        id: payload?.id,
-        host: payload?.request?.host,
-        // shape only — no raw command (may contain paths/args)
-        has_command: Boolean(payload?.request?.command),
-        run_count: runsRef.current.size,
-        streaming: isStreamingRef.current,
-      });
       if (!payload?.id || !payload.request?.command) return;
 
       // Scope to this chat's agent. The backend forwards non-agent/chat events
@@ -847,12 +748,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     const unsubResolved = onEvent((eventName, data) => {
       if (eventName !== "exec.approval.resolved") return;
       const payload = data as { id?: string; decision?: ExecApprovalDecision };
-      chatDebug("approval_resolved_event_rx", {
-        id: payload?.id,
-        decision: payload?.decision,
-        run_count: runsRef.current.size,
-        streaming: isStreamingRef.current,
-      });
       if (!payload?.id) return;
 
       setMessages((prev) =>
@@ -884,13 +779,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const sendMessage = useCallback(
     async (message: string): Promise<void> => {
-      chatDebug("sendMessage_entry", {
-        prev_run_count: runsRef.current.size,
-        prev_streaming: isStreamingRef.current,
-        agent: agentIdRef.current,
-        msg_length: message.length,
-      });
-
       // A new turn invalidates any pending-cancel window from the previous
       // turn. Events for this new turn must be allowed through normally.
       pendingCancelRef.current = false;
@@ -919,7 +807,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
         ...prev,
         { id: userMsgId, role: "user", content: message },
       ]);
-      setIsStreaming(true, "sendMessage");
+      setIsStreaming(true);
 
       try {
         sendChat(agentIdRef.current, message);
@@ -935,7 +823,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
           ...prev,
           { id: errMsgId, role: "assistant", content: `Error: ${errorMessage}` },
         ]);
-        setIsStreaming(false, "sendMessage-catch");
+        setIsStreaming(false);
       }
     },
     [sendChat, isConnected, sessionName],
@@ -944,10 +832,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // ---- Cancel / stop agent ----
 
   const cancelMessage = useCallback(async () => {
-    chatDebug("cancelMessage_entry", {
-      run_count: runsRef.current.size,
-      streaming: isStreamingRef.current,
-    });
     if (!agentIdRef.current || !isStreaming) return;
 
     const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
@@ -958,7 +842,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
 
     // Immediately update local state so the UI feels responsive
-    setIsStreaming(false, "cancelMessage");
+    setIsStreaming(false);
     finalizeAllActiveRuns();
     // Close the cancel-before-first-event window: if runsRef was empty at
     // this point (cancel fired before any event for the in-flight turn),
@@ -970,17 +854,13 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // ---- Clear messages ----
 
   const clearMessages = useCallback(() => {
-    chatDebug("clearMessages_entry", {
-      run_count: runsRef.current.size,
-      streaming: isStreamingRef.current,
-    });
     setMessages([]);
     const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
     if (key) {
       _messageCache.delete(key);
     }
     setError(null);
-    setIsStreaming(false, "clearMessages");
+    setIsStreaming(false);
     finalizeAllActiveRuns();
     // Same reasoning as cancelMessage: cover the case where clear fires
     // before any event for the in-flight turn has arrived.
@@ -991,26 +871,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const resolveApproval = React.useCallback(
     async (id: string, decision: ExecApprovalDecision): Promise<void> => {
-      chatDebug("resolveApproval_start", {
-        decision,
-        run_count: runsRef.current.size,
-        streaming: isStreamingRef.current,
-      });
-      try {
-        const result = await sendReq("exec.approval.resolve", { id, decision });
-        chatDebug("resolveApproval_done", {
-          decision,
-          run_count: runsRef.current.size,
-          streaming: isStreamingRef.current,
-          result_keys: result && typeof result === "object" ? Object.keys(result as object) : null,
-        });
-      } catch (err) {
-        chatDebug("resolveApproval_error", {
-          decision,
-          error: err instanceof Error ? err.message : String(err),
-        });
-        throw err;
-      }
+      await sendReq("exec.approval.resolve", { id, decision });
     },
     [sendReq],
   );
