@@ -64,14 +64,27 @@ jobs:
       - name: Patch tauri.conf.json for ${{ steps.env.outputs.target_env }}
         run: |
           TAURI_CFG="apps/desktop/src-tauri/tauri.conf.json"
+          # Patch URLs for the target environment.
           jq --arg url "${{ steps.env.outputs.frontend_url }}" '
             .build.devUrl = $url |
             .build.frontendDist = $url |
             .app.windows[0].url = $url
           ' "$TAURI_CFG" > "$TAURI_CFG.new"
           mv "$TAURI_CFG.new" "$TAURI_CFG"
+          # Dev builds skip codesigning. The macos-latest runner has no
+          # Developer ID cert in its keychain (we only provide APPLE_ID
+          # for notarization). Strip signingIdentity so Tauri produces
+          # an unsigned DMG — testers bypass Gatekeeper via right-click
+          # > Open on first launch. Prod builds require a .p12 imported
+          # via APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD secrets
+          # (separate follow-up).
+          if [[ "${{ steps.env.outputs.target_env }}" == "dev" ]]; then
+            jq 'del(.bundle.macOS.signingIdentity)' "$TAURI_CFG" > "$TAURI_CFG.new"
+            mv "$TAURI_CFG.new" "$TAURI_CFG"
+            echo "Stripped bundle.macOS.signingIdentity for dev build (unsigned DMG)"
+          fi
           echo "Patched URLs in tauri.conf.json:"
-          jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url}' "$TAURI_CFG"
+          jq '{devUrl: .build.devUrl, frontendDist: .build.frontendDist, windowUrl: .app.windows[0].url, signingIdentity: .bundle.macOS.signingIdentity}' "$TAURI_CFG"
 
       # Vendor Node.js + pinned `openclaw` npm package for both macOS
       # archs. Tauri's externalBin + resources point at these paths;
