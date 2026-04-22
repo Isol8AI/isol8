@@ -1,11 +1,16 @@
 #!/usr/bin/env bash
 # Vendor sidecars for the Isol8 desktop browser node.
-# Produces: src-tauri/bin/ containing Node.js binaries AND pinned
-# installs of the `openclaw` npm package for BOTH macOS architectures
-# (aarch64 + x86_64), so universal-apple-darwin bundles resolve a
-# target-triple-specific launcher at runtime.
+# Produces: src-tauri/bin/ containing
+#   - node-<triple>                               (per-arch Mach-O binary)
+#   - openclaw-host-<triple>/                     (per-arch npm install)
+#   - isol8-browser-service-universal-apple-darwin (single dispatch shim)
 #
-# Per-arch installs are required because openclaw ships many
+# Tauri's --target universal-apple-darwin bundler looks for exactly one
+# externalBin file named `<base>-universal-apple-darwin`. Bash shims
+# can't be lipo'd into a fat Mach-O, so we ship ONE shim that detects
+# $(uname -m) at runtime and execs the matching node + openclaw-host.
+#
+# Per-arch npm installs are required because openclaw ships many
 # arch-specific native addons via npm optionalDependencies (node-pty,
 # clipboard, sharp, canvas, koffi, sqlite-vec). Sharing one
 # node_modules across architectures misresolves these.
@@ -71,33 +76,39 @@ EOF
             --cpu="${NPM_CPU}" \
             --os=darwin
     )
-
-    # Tauri externalBin expects a concrete file per target triple.
-    # The shim must locate node + openclaw-host at runtime in two
-    # different layouts:
-    #   dev:   target/debug/<shim> + sibling node-<triple> and openclaw-host-<triple>
-    #   prod:  Isol8.app/Contents/MacOS/<shim>; node-<triple> and
-    #          openclaw-host-<triple> live in ../Resources/ (they're
-    #          declared in tauri.conf.json's `resources`, which macOS
-    #          places under Contents/Resources).
-    cat > "$BIN_DIR/isol8-browser-service-${TRIPLE}" <<LAUNCHER
-#!/usr/bin/env bash
-set -euo pipefail
-HERE="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
-if [ -f "\$HERE/../Resources/node-${TRIPLE}" ]; then
-    ASSETS="\$HERE/../Resources"
-else
-    ASSETS="\$HERE"
-fi
-exec "\$ASSETS/node-${TRIPLE}" \\
-    "\$ASSETS/openclaw-host-${TRIPLE}/node_modules/openclaw/openclaw.mjs" \\
-    node run --host 127.0.0.1 --port 18789 "\$@"
-LAUNCHER
-    chmod +x "$BIN_DIR/isol8-browser-service-${TRIPLE}"
 }
 
 vendor_arch "aarch64-apple-darwin" "arm64" "arm64"
 vendor_arch "x86_64-apple-darwin"  "x64"   "x64"
+
+# Universal dispatch shim. Named `-universal-apple-darwin` so
+# tauri-bundler's externalBin resolver finds it under
+# `--target universal-apple-darwin`. Locates its own node + openclaw-host
+# at runtime: prod builds land in Contents/Resources; dev builds leave
+# siblings next to the shim in target/debug/.
+LAUNCHER="$BIN_DIR/isol8-browser-service-universal-apple-darwin"
+cat > "$LAUNCHER" <<'LAUNCHER_EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+case "$(uname -m)" in
+    arm64)  TRIPLE="aarch64-apple-darwin" ;;
+    x86_64) TRIPLE="x86_64-apple-darwin"  ;;
+    *) echo "isol8-browser-service: unsupported arch $(uname -m)" >&2; exit 1 ;;
+esac
+
+if [ -f "$HERE/../Resources/node-$TRIPLE" ]; then
+    ASSETS="$HERE/../Resources"
+else
+    ASSETS="$HERE"
+fi
+
+exec "$ASSETS/node-$TRIPLE" \
+    "$ASSETS/openclaw-host-$TRIPLE/node_modules/openclaw/openclaw.mjs" \
+    node run --host 127.0.0.1 --port 18789 "$@"
+LAUNCHER_EOF
+chmod +x "$LAUNCHER"
 
 rm -rf "$TMP_DIR"
 echo "==> Sidecars vendored at $BIN_DIR"
