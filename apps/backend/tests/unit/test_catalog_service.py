@@ -296,3 +296,111 @@ async def test_publish_bumps_version_when_prior_exists(service, mock_s3, mock_wo
 
     result = await service.publish(admin_user_id="admin", agent_id="a1")
     assert result["version"] == 6
+
+
+@pytest.mark.asyncio
+async def test_unpublish_moves_slug_from_live_to_retired(service, mock_s3):
+    """Soft delete: slug moves from agents -> retired. S3 artifacts untouched."""
+    mock_s3.get_json.return_value = {
+        "updated_at": "2026-04-22T00:00:00Z",
+        "agents": [
+            {"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"},
+            {"slug": "echo", "current_version": 1, "manifest_url": "echo/v1/manifest.json"},
+        ],
+        "retired": [],
+    }
+
+    result = await service.unpublish(admin_user_id="user_admin", slug="pitch")
+
+    assert result["slug"] == "pitch"
+    assert result["last_version"] == 3
+
+    put_json_calls = [c for c in mock_s3.put_json.call_args_list if c.args[0] == "catalog.json"]
+    assert len(put_json_calls) == 1
+    new_catalog = put_json_calls[0].args[1]
+    assert [a["slug"] for a in new_catalog["agents"]] == ["echo"]
+    assert len(new_catalog["retired"]) == 1
+    assert new_catalog["retired"][0]["slug"] == "pitch"
+    assert new_catalog["retired"][0]["last_version"] == 3
+    assert new_catalog["retired"][0]["retired_by"] == "user_admin"
+    assert "retired_at" in new_catalog["retired"][0]
+
+
+@pytest.mark.asyncio
+async def test_unpublish_missing_slug_raises(service, mock_s3):
+    mock_s3.get_json.return_value = {"agents": [], "retired": []}
+    with pytest.raises(KeyError):
+        await service.unpublish(admin_user_id="user_admin", slug="ghost")
+
+
+@pytest.mark.asyncio
+async def test_unpublish_preserves_other_retired_entries(service, mock_s3):
+    mock_s3.get_json.return_value = {
+        "updated_at": "2026-04-22T00:00:00Z",
+        "agents": [
+            {"slug": "pitch", "current_version": 2, "manifest_url": "pitch/v2/manifest.json"},
+        ],
+        "retired": [
+            {
+                "slug": "oldie",
+                "last_version": 1,
+                "last_manifest_url": "oldie/v1/manifest.json",
+                "retired_at": "2026-04-01T00:00:00Z",
+                "retired_by": "user_admin",
+            },
+        ],
+    }
+    await service.unpublish(admin_user_id="user_admin", slug="pitch")
+
+    new_catalog = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "catalog.json").args[1]
+    retired_slugs = sorted(r["slug"] for r in new_catalog["retired"])
+    assert retired_slugs == ["oldie", "pitch"]
+
+
+@pytest.mark.asyncio
+async def test_unpublish_handles_missing_retired_key(service, mock_s3):
+    """Backward compat: catalog.json without a 'retired' key is treated as []."""
+    mock_s3.get_json.return_value = {
+        "updated_at": "2026-04-22T00:00:00Z",
+        "agents": [
+            {"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"},
+        ],
+    }
+    await service.unpublish(admin_user_id="user_admin", slug="pitch")
+    new_catalog = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "catalog.json").args[1]
+    assert new_catalog["retired"][0]["slug"] == "pitch"
+
+
+@pytest.mark.asyncio
+async def test_publish_removes_retired_entry_when_republishing(service, mock_s3, mock_workspace, tmp_path):
+    """Republishing a retired slug removes it from retired and adds it to agents."""
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "plugins": {},
+        "tools": {},
+    }
+    admin_workspace = tmp_path / "ws"
+    admin_workspace.mkdir()
+    (admin_workspace / "IDENTITY.md").write_text("x")
+    mock_workspace.agent_workspace_path.return_value = admin_workspace
+    mock_s3.list_versions.return_value = [1, 2]
+    mock_s3.get_json.return_value = {
+        "agents": [],
+        "retired": [
+            {
+                "slug": "pitch",
+                "last_version": 2,
+                "last_manifest_url": "pitch/v2/manifest.json",
+                "retired_at": "2026-04-01T00:00:00Z",
+                "retired_by": "user_admin",
+            },
+        ],
+    }
+
+    result = await service.publish(admin_user_id="user_admin", agent_id="a1", slug_override="pitch")
+    assert result["version"] == 3
+
+    catalog_put = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "catalog.json")
+    new_catalog = catalog_put.args[1]
+    assert [a["slug"] for a in new_catalog["agents"]] == ["pitch"]
+    assert new_catalog["retired"] == []

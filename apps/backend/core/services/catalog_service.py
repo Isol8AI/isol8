@@ -205,7 +205,7 @@ class CatalogService:
         self._s3.put_json(f"{prefix}/manifest.json", manifest)
         self._s3.put_json(f"{prefix}/openclaw-slice.json", slice_)
 
-        catalog = self._s3.get_json("catalog.json", default={"agents": []})
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
         entries = [e for e in (catalog.get("agents") or []) if e.get("slug") != slug]
         entries.append(
             {
@@ -214,15 +214,58 @@ class CatalogService:
                 "manifest_url": f"{prefix}/manifest.json",
             }
         )
+        # Republishing a slug removes it from retired (if present)
+        retired = [r for r in (catalog.get("retired") or []) if r.get("slug") != slug]
         self._s3.put_json(
             "catalog.json",
             {
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "agents": entries,
+                "retired": retired,
             },
         )
 
         return {"slug": slug, "version": next_version, "s3_prefix": prefix}
+
+    # ---- unpublish ----
+
+    async def unpublish(self, *, admin_user_id: str, slug: str) -> dict[str, Any]:
+        """Soft-delete: move slug from agents list to retired list in catalog.json.
+        S3 artifacts (versioned manifests + tarballs) remain untouched for audit.
+        Raises KeyError if slug isn't currently live.
+        """
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
+        agents = list(catalog.get("agents") or [])
+        retired = list(catalog.get("retired") or [])
+
+        match = next((a for a in agents if a.get("slug") == slug), None)
+        if not match:
+            raise KeyError(f"slug {slug!r} is not currently live")
+
+        new_agents = [a for a in agents if a.get("slug") != slug]
+        retired_entry = {
+            "slug": slug,
+            "last_version": match["current_version"],
+            "last_manifest_url": match["manifest_url"],
+            "retired_at": datetime.now(timezone.utc).isoformat(),
+            "retired_by": admin_user_id,
+        }
+        new_retired = retired + [retired_entry]
+
+        self._s3.put_json(
+            "catalog.json",
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "agents": new_agents,
+                "retired": new_retired,
+            },
+        )
+
+        return {
+            "slug": slug,
+            "last_version": match["current_version"],
+            "last_manifest_url": match["manifest_url"],
+        }
 
 
 _catalog_service: CatalogService | None = None
