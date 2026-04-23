@@ -61,6 +61,63 @@ class CatalogService:
             )
         return entries
 
+    # ---- list_all (admin) ----
+
+    def list_all(self) -> dict[str, list[dict[str, Any]]]:
+        """Admin view: return {"live": [...with manifest preview], "retired": [...]}.
+        Live entries include the full manifest (same shape as list()).
+        Retired entries include only the metadata stored at retire time.
+        """
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
+        live: list[dict[str, Any]] = []
+        for item in catalog.get("agents") or []:
+            manifest = self._s3.get_json(item["manifest_url"], default=None)
+            if not manifest:
+                continue
+            live.append(
+                {
+                    "slug": manifest["slug"],
+                    "name": manifest.get("name", manifest["slug"]),
+                    "emoji": manifest.get("emoji", ""),
+                    "vibe": manifest.get("vibe", ""),
+                    "description": manifest.get("description", ""),
+                    "current_version": manifest["version"],
+                    "published_at": manifest.get("published_at", ""),
+                    "published_by": manifest.get("published_by", ""),
+                    "suggested_model": manifest.get("suggested_model", ""),
+                    "suggested_channels": manifest.get("suggested_channels", []),
+                    "required_skills": manifest.get("required_skills", []),
+                    "required_plugins": manifest.get("required_plugins", []),
+                }
+            )
+
+        retired = list(catalog.get("retired") or [])
+        return {"live": live, "retired": retired}
+
+    # ---- list_versions (admin) ----
+
+    def list_versions(self, slug: str) -> list[dict[str, Any]]:
+        """List all published versions of a slug, ascending.
+        Each entry: {version, manifest_url, published_at, published_by, manifest}.
+        """
+        versions = self._s3.list_versions(slug)
+        out: list[dict[str, Any]] = []
+        for v in versions:
+            manifest_url = f"{slug}/v{v}/manifest.json"
+            manifest = self._s3.get_json(manifest_url, default=None)
+            if not manifest:
+                continue
+            out.append(
+                {
+                    "version": v,
+                    "manifest_url": manifest_url,
+                    "published_at": manifest.get("published_at", ""),
+                    "published_by": manifest.get("published_by", ""),
+                    "manifest": manifest,
+                }
+            )
+        return out
+
     # ---- deploy ----
 
     async def deploy(self, *, user_id: str, slug: str) -> dict[str, Any]:
@@ -205,7 +262,7 @@ class CatalogService:
         self._s3.put_json(f"{prefix}/manifest.json", manifest)
         self._s3.put_json(f"{prefix}/openclaw-slice.json", slice_)
 
-        catalog = self._s3.get_json("catalog.json", default={"agents": []})
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
         entries = [e for e in (catalog.get("agents") or []) if e.get("slug") != slug]
         entries.append(
             {
@@ -214,15 +271,58 @@ class CatalogService:
                 "manifest_url": f"{prefix}/manifest.json",
             }
         )
+        # Republishing a slug removes it from retired (if present)
+        retired = [r for r in (catalog.get("retired") or []) if r.get("slug") != slug]
         self._s3.put_json(
             "catalog.json",
             {
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "agents": entries,
+                "retired": retired,
             },
         )
 
         return {"slug": slug, "version": next_version, "s3_prefix": prefix}
+
+    # ---- unpublish ----
+
+    async def unpublish(self, *, admin_user_id: str, slug: str) -> dict[str, Any]:
+        """Soft-delete: move slug from agents list to retired list in catalog.json.
+        S3 artifacts (versioned manifests + tarballs) remain untouched for audit.
+        Raises KeyError if slug isn't currently live.
+        """
+        catalog = self._s3.get_json("catalog.json", default={"agents": [], "retired": []})
+        agents = list(catalog.get("agents") or [])
+        retired = list(catalog.get("retired") or [])
+
+        match = next((a for a in agents if a.get("slug") == slug), None)
+        if not match:
+            raise KeyError(f"slug {slug!r} is not currently live")
+
+        new_agents = [a for a in agents if a.get("slug") != slug]
+        retired_entry = {
+            "slug": slug,
+            "last_version": match["current_version"],
+            "last_manifest_url": match["manifest_url"],
+            "retired_at": datetime.now(timezone.utc).isoformat(),
+            "retired_by": admin_user_id,
+        }
+        new_retired = retired + [retired_entry]
+
+        self._s3.put_json(
+            "catalog.json",
+            {
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "agents": new_agents,
+                "retired": new_retired,
+            },
+        )
+
+        return {
+            "slug": slug,
+            "last_version": match["current_version"],
+            "last_manifest_url": match["manifest_url"],
+        }
 
 
 _catalog_service: CatalogService | None = None

@@ -77,6 +77,25 @@ def _payload_from_body(body: Any) -> dict:
     return {}
 
 
+def _audit_value(v: Any) -> Any:
+    """Coerce a kwarg into a JSON-friendly shape for the audit payload."""
+    if hasattr(v, "model_dump"):
+        try:
+            return v.model_dump()
+        except Exception:
+            return str(v)
+    return v
+
+
+def _payload_from_capture_params(kwargs: dict, capture_params: list[str]) -> dict:
+    """Build the audit payload from named kwargs.
+
+    Each listed name becomes a top-level key. Pydantic models are serialized
+    via ``model_dump()``; path/query params pass through as-is.
+    """
+    return {k: _audit_value(kwargs.get(k)) for k in capture_params}
+
+
 def _find_auth(args: tuple, kwargs: dict) -> AuthContext | None:
     auth = kwargs.get("auth")
     if isinstance(auth, AuthContext):
@@ -91,13 +110,29 @@ def audit_admin_action(
     action: str,
     *,
     target_param: str = "user_id",
+    target_user_id_override: str | None = None,
     redact_paths: list[str] | None = None,
+    capture_params: list[str] | None = None,
 ) -> Callable:
     """Decorate an admin router handler to write an audit row per call.
 
     See module docstring for the contract. `action` is a dotted name like
     'container.reprovision' that ends up in the audit_actions DDB row's
     `action` field (the same value the audit viewer uses for filtering).
+
+    `target_user_id_override`: when set (e.g. "__catalog__"), the audit
+    row's `target_user_id` is this static value rather than being pulled
+    from the handler's kwargs. Intended for actions that operate on a
+    shared resource (the catalog, platform config, etc.) rather than a
+    specific user.
+
+    `capture_params`: explicit list of handler kwarg names to include in
+    the audit `payload`. Pydantic models are serialized via
+    ``model_dump()``; other values pass through unchanged. Use this when
+    the request body arg is named something other than `body`, or when
+    the meaningful identifier is a path/query param (e.g. `slug`). When
+    omitted, the decorator falls back to its historical behavior of
+    serializing the `body` kwarg.
     """
     redact_paths = redact_paths or []
 
@@ -110,8 +145,15 @@ def audit_admin_action(
                 raise RuntimeError(f"@audit_admin_action({action!r}) requires AuthContext in args or kwargs")
 
             request = kwargs.get("request")
-            target_user_id = kwargs.get(target_param) or "system"
-            payload = _redact_payload(_payload_from_body(kwargs.get("body")), redact_paths)
+            if target_user_id_override is not None:
+                target_user_id = target_user_id_override
+            else:
+                target_user_id = kwargs.get(target_param) or "system"
+            if capture_params:
+                raw_payload = _payload_from_capture_params(kwargs, capture_params)
+            else:
+                raw_payload = _payload_from_body(kwargs.get("body"))
+            payload = _redact_payload(raw_payload, redact_paths)
 
             user_agent = _extract_user_agent(request)
             ip = _extract_client_ip(request)

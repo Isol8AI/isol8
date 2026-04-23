@@ -96,9 +96,10 @@ function toSessionRow(raw: unknown): SessionRow {
 export default async function AdminAgentDetailPage({ params }: PageProps) {
   const { id, agent_id: agentId } = await params;
 
-  const { getToken } = await auth();
+  const { userId: adminUserId, getToken } = await auth();
   const token = await getToken();
   const detail = token ? await getAgentDetail(token, id, agentId) : null;
+  const isOwnAgent = adminUserId === id;
 
   if (!detail) {
     return (
@@ -253,7 +254,12 @@ export default async function AdminAgentDetailPage({ params }: PageProps) {
       </section>
 
       {/* Destructive actions footer */}
-      <AgentActionsFooter userId={id} agentId={agentId} />
+      <AgentActionsFooter
+        userId={id}
+        agentId={agentId}
+        agentName={meta.name}
+        isOwnAgent={isOwnAgent}
+      />
     </div>
   );
 }
