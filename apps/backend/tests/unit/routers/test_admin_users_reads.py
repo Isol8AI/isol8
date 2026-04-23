@@ -174,18 +174,12 @@ class TestOverview:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_overview", new_callable=AsyncMock)
-    async def test_overview_writes_audit_row_when_ADMIN_AUDIT_VIEWS_true(
-        self, mock_overview, async_client, monkeypatch
-    ):
-        """When ADMIN_AUDIT_VIEWS is true the @audit_admin_action decorator
-        (or equivalent mechanism) must persist an admin_actions row tagged
-        action="user.view" with the target_user_id from the path. We don't
-        enforce the exact mechanism — only that a 200 is returned and that
-        IF admin_actions_repo.create is called, it carries the correct
-        target_user_id. Skipped assertion if the impl chooses a different
-        audit hook (test still asserts the happy-path 200)."""
+    async def test_overview_writes_audit_row(self, mock_overview, async_client, monkeypatch):
+        """Loading /admin/users/{id}/overview must persist an admin_actions
+        row tagged action starting with "user." and target_user_id from the
+        path. The test is loose: it accepts whichever audit mechanism the
+        endpoint uses, and only asserts the shape when one runs."""
         _admit_test_user(monkeypatch)
-        monkeypatch.setattr("core.config.settings.ADMIN_AUDIT_VIEWS", True)
         mock_overview.return_value = {
             "identity": {"id": "user_abc"},
             "container": None,

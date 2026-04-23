@@ -17,55 +17,54 @@ Operational runbook for `admin.isol8.co` (and `admin-dev.isol8.co`).
 ## Prerequisites — one-time per environment
 
 1. **DNS + Vercel domain alias:** `admin-dev.isol8.co` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` → `isol8-frontend-prod`. Verify with `dig admin-dev.isol8.co CNAME`.
-2. **Backend secrets** (Secrets Manager entry `isol8/{env}/backend-env`):
-   - `PLATFORM_ADMIN_USER_IDS` — comma-separated Clerk user IDs of the Isol8 team
-   - `ADMIN_UI_ENABLED=true`
-   - `ADMIN_UI_ENABLED_USER_IDS` — comma-separated subset for staged rollout (start small)
-   - `ADMIN_AUDIT_VIEWS=true`
-   - `POSTHOG_HOST` (default `https://app.posthog.com`), `POSTHOG_PROJECT_ID`, `POSTHOG_PROJECT_API_KEY` (mint a project API key in PostHog dashboard with scopes `person:read`, `events:read`, `session_recording:read`)
-3. **Backend redeploy** so the new env vars propagate (env vars are read at module load).
+2. **Backend secrets** (one Secrets Manager entry per value, consistent with existing `isol8/{env}/clerk_issuer`, `isol8/{env}/stripe_secret_key`, etc.):
+   - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Isol8 team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
+   - `isol8/{env}/posthog_project_api_key` — PostHog personal API key with scopes `person:read`, `events:read`, `session_recording:read`. Wired as `POSTHOG_PROJECT_API_KEY`. Optional; the Activity tab stubs gracefully when absent.
+
+   `POSTHOG_HOST` and `POSTHOG_PROJECT_ID` are plaintext env vars on the backend task definition (not secrets — project ID is public in every PostHog URL).
+3. **CDK deploy** pulls the new secrets into the backend task definition at the next service rollout.
 
 ## Adding a new admin
 
 1. Get the new admin's Clerk user_id (visible in Clerk dashboard → Users; or query via `clerk_sync_service.get_user_by_email`).
-2. Update Secrets Manager:
+2. Update the `platform_admin_user_ids` secret:
 
    ```bash
-   aws secretsmanager get-secret-value --secret-id isol8/dev/backend-env \
-     --query SecretString --output text --profile isol8-admin \
-     | jq --arg id "$NEW_USER_ID" '
-         .PLATFORM_ADMIN_USER_IDS = (.PLATFORM_ADMIN_USER_IDS + "," + $id | sub("^,"; "")) |
-         .ADMIN_UI_ENABLED_USER_IDS = (.ADMIN_UI_ENABLED_USER_IDS + "," + $id | sub("^,"; ""))
-       ' \
-     | aws secretsmanager update-secret --secret-id isol8/dev/backend-env --secret-string file:///dev/stdin --profile isol8-admin
+   CURRENT=$(aws secretsmanager get-secret-value \
+     --secret-id isol8/dev/platform_admin_user_ids \
+     --query SecretString --output text --profile isol8-admin)
+   aws secretsmanager update-secret \
+     --secret-id isol8/dev/platform_admin_user_ids \
+     --secret-string "${CURRENT},${NEW_USER_ID}" \
+     --profile isol8-admin
    ```
 
-3. Redeploy backend. Within ~2 min the new admin can sign into `https://admin-{env}.isol8.co/admin` via Clerk and reach `/admin/users`.
+3. Force a backend rollout (`aws ecs update-service --force-new-deployment ...`). Within ~2 min the new admin can sign into `https://admin-{env}.isol8.co/admin` via Clerk and reach `/admin/users`.
 
 ## Removing an admin (immediate)
 
-1. Remove their user_id from `PLATFORM_ADMIN_USER_IDS` in Secrets Manager (and `ADMIN_UI_ENABLED_USER_IDS`).
-2. Redeploy backend. The next API call from any open admin session 403s.
+1. Update `isol8/{env}/platform_admin_user_ids` with a new comma-separated list that omits their user_id.
+2. Force a backend rollout. The next API call from any open admin session 403s.
 3. Optional: revoke their Clerk sessions via another admin's UI: `Actions → /admin/users/{user_id}/account/force-signout`.
 
 ## Breaking glass — disable admin entirely
 
 ```bash
-aws secretsmanager get-secret-value --secret-id isol8/{env}/backend-env \
-  --query SecretString --output text --profile isol8-admin \
-  | jq '.PLATFORM_ADMIN_USER_IDS = ""' \
-  | aws secretsmanager update-secret --secret-id isol8/{env}/backend-env --secret-string file:///dev/stdin --profile isol8-admin
+aws secretsmanager update-secret \
+  --secret-id isol8/{env}/platform_admin_user_ids \
+  --secret-string "" \
+  --profile isol8-admin
 ```
 
-Redeploy backend. Every `/admin/*` API endpoint 403s within ~2 min. The Next.js middleware still serves the host so users hitting `admin.isol8.co/admin` see the not-authorized page (no information leak).
+Force a backend rollout. Every `/admin/*` API endpoint 403s within ~2 min. The Next.js middleware still serves the host so users hitting `admin.isol8.co/admin` see the not-authorized page (no information leak).
 
-DNS alias and Vercel project remain. Once the incident is resolved, restore the env var and redeploy.
+DNS alias and Vercel project remain. Once the incident is resolved, restore the comma-separated list and force another rollout.
 
 ## Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `/admin` returns 404 in browser | Wrong host (you're on `isol8.co/admin` instead of `admin.isol8.co/admin`); `ADMIN_UI_ENABLED=false`; or your Clerk user_id missing from `ADMIN_UI_ENABLED_USER_IDS` | Check URL; check Secrets Manager values |
+| `/admin` returns 404 in browser | Wrong host (you're on `isol8.co/admin` instead of `admin.isol8.co/admin`) | Check URL |
 | `/admin/me` returns 403 | Your Clerk user_id missing from `PLATFORM_ADMIN_USER_IDS` | Add it; redeploy |
 | Admin page renders but Stripe panel shows error banner | Stripe API timeout or auth issue; `admin_service` returns partial responses on upstream failure | Check Stripe dashboard health; verify `STRIPE_SECRET_KEY` in Secrets Manager |
 | PostHog tab shows "No PostHog activity recorded — user may not have visited the frontend" | User legitimately has no PostHog identify yet; OR `POSTHOG_PROJECT_API_KEY` is unset | Confirm by visiting the frontend as that user; otherwise mint the PostHog project key |
@@ -88,9 +87,6 @@ Watch the `admin_api.errors` CloudWatch metric (added in Phase B) for repeated 4
 
 ```
 PLATFORM_ADMIN_USER_IDS=user_<your dev Clerk id>
-ADMIN_UI_ENABLED=true
-ADMIN_UI_ENABLED_USER_IDS=user_<your dev Clerk id>
-ADMIN_AUDIT_VIEWS=true
 # Stub PostHog — leave POSTHOG_PROJECT_API_KEY unset to short-circuit the API call
 ```
 
