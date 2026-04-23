@@ -623,13 +623,13 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
-        // PostHog server-side reads for the admin Activity tab. Host is the
-        // same for every env; project ID is public (visible in every
-        // PostHog URL). The personal API key is sensitive — comes in via
-        // the secrets: block below. posthog_admin.py stubs when the key is
-        // empty, so leaving POSTHOG_PROJECT_ID unset here is also safe.
-        POSTHOG_HOST: "https://app.posthog.com",
-        POSTHOG_PROJECT_ID: "",
+        // PostHog server-side reads for the admin Activity tab.
+        // us.posthog.com is the API host for US Cloud (our project lives
+        // there). Project ID is public — visible in the PostHog dashboard
+        // URL for the Default project. Personal API key comes in via the
+        // secrets: block below.
+        POSTHOG_HOST: "https://us.posthog.com",
+        POSTHOG_PROJECT_ID: "380894",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
