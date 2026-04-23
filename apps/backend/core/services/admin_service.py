@@ -20,6 +20,7 @@ timeout via _with_timeout. Slow Stripe doesn't starve other panels.
 
 import asyncio
 import logging
+import uuid
 from typing import Any
 
 from core.containers import get_ecs_manager, get_gateway_pool
@@ -32,6 +33,77 @@ logger = logging.getLogger(__name__)
 
 _PARALLEL_TIMEOUT_S = 2.0
 _GATEWAY_RPC_TIMEOUT_S = 3.0
+
+
+async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
+    """Return (owner_id, org_context) for a target user viewed by an admin.
+
+    The DDB partition key ``owner_id`` is the Clerk org_id for org-member
+    resources and the Clerk user_id for personal-mode resources. The admin
+    dashboard receives the target user_id from the URL, so we must ask Clerk
+    which org (if any) the user belongs to before querying repos — otherwise
+    every org-member user renders as "no container provisioned" (CEO
+    admin-org-owner-id bug).
+
+    This is the public helper used by both admin_service read composition and
+    the admin router's mutation handlers (container / billing / config /
+    agents) — org-member mutation targets ``openclaw-{org_id}-{hash}``, not
+    ``openclaw-{user_id}-{hash}``. Account mutations (suspend / reactivate /
+    force-signout / resend-verification) target the Clerk user directly and
+    MUST NOT call this resolver.
+
+    Per ``project_single_org_per_user`` memory, users are assumed to be in at
+    most one org. If Clerk returns multiple (shouldn't happen), pick the
+    first and log a warning.
+
+    Returns:
+      (org_id, org_context_dict) when the user is in an org; org_context is
+        {"id", "slug", "name", "role"}.
+      (user_id, None) when the user is personal-mode (no orgs) or when the
+        Clerk lookup errors (fail-open: better to show personal-mode data
+        than to break the dashboard).
+    """
+    # Bound Clerk call with the same per-panel timeout budget used by
+    # _with_timeout — a slow Clerk upstream must not block overview / agents /
+    # detail before their own _with_timeout-wrapped reads even start. Read the
+    # constant at call time so tests can monkeypatch _PARALLEL_TIMEOUT_S.
+    try:
+        orgs = await asyncio.wait_for(
+            clerk_admin.list_user_organizations(user_id),
+            timeout=_PARALLEL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "admin_service.resolve_admin_owner_id Clerk timeout for %s after %ss; falling back to personal-mode",
+            user_id,
+            _PARALLEL_TIMEOUT_S,
+        )
+        return user_id, None
+    except Exception as e:  # noqa: BLE001 — defensive, Clerk must never take the dashboard down
+        logger.warning("admin_service.resolve_admin_owner_id Clerk error for %s: %s", user_id, e)
+        return user_id, None
+
+    if not orgs:
+        return user_id, None
+
+    if len(orgs) > 1:
+        logger.warning(
+            "admin_service: Clerk returned %d orgs for user %s — single-org-per-user expected; using first",
+            len(orgs),
+            user_id,
+        )
+
+    org = orgs[0]
+    return org["id"], org
+
+
+# Back-compat alias: the helper was previously private (``_resolve_owner_for_admin``)
+# and is still referenced by at least one regression test. Keep the alias so the
+# existing unit test in test_admin_org_resolution.py (``test_resolve_owner_falls_back_
+# to_personal_mode_on_clerk_timeout``) keeps working without churning the test
+# name alongside the rename. Safe to delete in a follow-up once the test is
+# migrated.
+_resolve_owner_for_admin = resolve_admin_owner_id
 
 
 async def _with_timeout(coro, label: str, timeout_s: float | None = None):
@@ -100,16 +172,24 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
 async def get_overview(user_id: str) -> dict:
     """Identity + billing + container + usage in one payload.
 
-    Five parallel fetches with per-call timeout — slow Stripe doesn't
-    starve the others; each panel can render even if its source errors.
+    Parallel fetches with per-call timeout — slow Stripe doesn't starve the
+    others; each panel can render even if its source errors.
+
+    For org-member users the container / billing / usage records are keyed
+    by owner_id == org_id. We resolve the effective owner via Clerk before
+    issuing the DDB reads so admins see the org's resources, not empty
+    personal-mode rows (admin-org-owner-id fix). The returned ``org`` field
+    is null for personal-mode users and {id, slug, name, role} otherwise.
     """
     period = "current"  # usage_repo uses "YYYY-MM" or "current"; current covers month-to-date
 
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
+
     clerk, container, billing, usage = await asyncio.gather(
         _with_timeout(clerk_admin.get_user(user_id), "clerk"),
-        _with_timeout(container_repo.get_by_owner_id(user_id), "ddb_containers"),
-        _with_timeout(billing_repo.get_by_owner_id(user_id), "ddb_billing"),
-        _with_timeout(usage_repo.get_period_usage(user_id, period), "ddb_usage"),
+        _with_timeout(container_repo.get_by_owner_id(owner_id), "ddb_containers"),
+        _with_timeout(billing_repo.get_by_owner_id(owner_id), "ddb_billing"),
+        _with_timeout(usage_repo.get_period_usage(owner_id, period), "ddb_usage"),
     )
 
     return {
@@ -117,30 +197,44 @@ async def get_overview(user_id: str) -> dict:
         "container": container,
         "billing": billing,
         "usage": usage,
+        "org": org_context,
     }
 
 
 async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: int = 50) -> dict:
-    """Agents list via gateway RPC with E2 timeout + E3 stopped detection."""
-    container_row = await container_repo.get_by_owner_id(user_id)
+    """Agents list via gateway RPC with E2 timeout + E3 stopped detection.
+
+    Resolves org context first — org-member users' container is keyed by
+    org_id, not user_id. ``org`` in the response is null for personal-mode
+    users and {id, slug, name, role} otherwise.
+    """
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
+
+    container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":
         return {
             "agents": [],
             "cursor": None,
             "container_status": (container_row or {}).get("status", "none"),
+            "org": org_context,
         }
 
     ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(user_id)
+    container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:
-        return {"agents": [], "cursor": None, "container_status": "unreachable"}
+        return {"agents": [], "cursor": None, "container_status": "unreachable", "org": org_context}
 
     pool = get_gateway_pool()
+    # uuid4 entropy in req_id: after switching to owner_id, all members of an
+    # org share a single gateway connection whose pending-RPC dict is keyed by
+    # req_id. A deterministic id would let concurrent admin requests overwrite
+    # each other's futures (intermittent timeouts / mismatched responses).
+    nonce = uuid.uuid4().hex[:8]
     try:
         result = await asyncio.wait_for(
             pool.send_rpc(
-                user_id=user_id,
-                req_id=f"admin-agents-list-{user_id}",
+                user_id=owner_id,
+                req_id=f"admin-agents-list-{owner_id}-{nonce}",
                 method="agents.list",
                 params={"cursor": cursor, "limit": limit},
                 ip=ip,
@@ -154,15 +248,23 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
             "cursor": None,
             "container_status": "timeout",
             "error": "gateway_rpc_timeout",
+            "org": org_context,
         }
     except Exception as e:  # noqa: BLE001
         logger.warning("admin_service.list_user_agents gateway error: %s", e)
-        return {"agents": [], "cursor": None, "container_status": "error", "error": str(e)}
+        return {
+            "agents": [],
+            "cursor": None,
+            "container_status": "error",
+            "error": str(e),
+            "org": org_context,
+        }
 
     return {
         "agents": result.get("agents", []) if isinstance(result, dict) else [],
         "cursor": result.get("cursor") if isinstance(result, dict) else None,
         "container_status": "running",
+        "org": org_context,
     }
 
 
@@ -171,23 +273,37 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
 
     Four parallel gateway RPCs with a single shared timeout. CEO S3
     redaction applied to the openclaw.json config slice before return.
+
+    Resolves org context first so org-keyed containers are found. ``org`` in
+    the response is null for personal-mode users and {id, slug, name, role}
+    otherwise.
     """
-    container_row = await container_repo.get_by_owner_id(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
+
+    container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":
-        return {"error": "container_not_running", "container_status": (container_row or {}).get("status", "none")}
+        return {
+            "error": "container_not_running",
+            "container_status": (container_row or {}).get("status", "none"),
+            "org": org_context,
+        }
 
     ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(user_id)
+    container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:
-        return {"error": "container_unreachable"}
+        return {"error": "container_unreachable", "org": org_context}
 
     pool = get_gateway_pool()
     token = container["gateway_token"]
 
     async def _rpc(method: str, params: dict, suffix: str) -> Any:
+        # uuid4 entropy in req_id: same org → shared gateway connection whose
+        # pending-RPC dict is keyed by req_id. Deterministic ids collide on
+        # concurrent detail loads for the same agent (see list_user_agents).
+        nonce = uuid.uuid4().hex[:8]
         return await pool.send_rpc(
-            user_id=user_id,
-            req_id=f"admin-{suffix}-{agent_id}",
+            user_id=owner_id,
+            req_id=f"admin-{suffix}-{agent_id}-{nonce}",
             method=method,
             params=params,
             ip=ip,
@@ -205,16 +321,17 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
             timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
         )
     except asyncio.TimeoutError:
-        return {"error": "gateway_rpc_timeout"}
+        return {"error": "gateway_rpc_timeout", "org": org_context}
     except Exception as e:  # noqa: BLE001
         logger.warning("admin_service.get_agent_detail gateway error: %s", e)
-        return {"error": str(e)}
+        return {"error": str(e), "org": org_context}
 
     return {
         "agent": agent,
         "sessions": sessions.get("sessions", []) if isinstance(sessions, dict) else [],
         "skills": skills.get("skills", []) if isinstance(skills, dict) else [],
         "config_redacted": redact_openclaw_config(config),
+        "org": org_context,
     }
 
 

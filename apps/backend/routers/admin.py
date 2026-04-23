@@ -14,6 +14,7 @@ distinct side-effect.
 """
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
@@ -28,6 +29,7 @@ from core.services import (
     system_health,
 )
 from core.services.admin_audit import audit_admin_action
+from core.services.admin_service import resolve_admin_owner_id
 from core.services.config_patcher import patch_openclaw_config
 from core.services.idempotency import idempotency
 
@@ -214,8 +216,12 @@ async def admin_container_reprovision(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    # Resolve owner_id so org-member targets hit ``openclaw-{org_id}-{hash}``,
+    # not the non-existent ``openclaw-{user_id}-{hash}`` (admin-org-owner-id
+    # P1). Audit decorator still captures the URL path param (user_id).
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.reprovision_for_user(user_id)
+    return await ecs.reprovision_for_user(owner_id)
 
 
 @router.post(
@@ -229,8 +235,9 @@ async def admin_container_stop(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.stop_user_service(user_id)
+    return await ecs.stop_user_service(owner_id)
 
 
 @router.post(
@@ -244,8 +251,9 @@ async def admin_container_start(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.start_user_service(user_id)
+    return await ecs.start_user_service(owner_id)
 
 
 @router.post(
@@ -260,8 +268,9 @@ async def admin_container_resize(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     ecs = get_ecs_manager()
-    return await ecs.resize_for_user(user_id, body.tier)
+    return await ecs.resize_for_user(owner_id, body.tier)
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +289,11 @@ async def admin_billing_cancel_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return await billing_service.cancel_subscription_for_owner(user_id)
+    # Billing accounts are partitioned on owner_id (= org_id for org members).
+    # Without the resolver the mutation targets a personal-key account that
+    # doesn't exist for org members (admin-org-owner-id P1).
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return await billing_service.cancel_subscription_for_owner(owner_id)
 
 
 @router.post(
@@ -294,7 +307,8 @@ async def admin_billing_pause_subscription(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return await billing_service.pause_subscription_for_owner(user_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return await billing_service.pause_subscription_for_owner(owner_id)
 
 
 @router.post(
@@ -309,7 +323,8 @@ async def admin_billing_issue_credit(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return await billing_service.issue_credit_for_owner(user_id, amount_cents=body.amount_cents, reason=body.reason)
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return await billing_service.issue_credit_for_owner(owner_id, amount_cents=body.amount_cents, reason=body.reason)
 
 
 @router.post(
@@ -324,7 +339,8 @@ async def admin_billing_mark_invoice_resolved(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    return await billing_service.mark_invoice_resolved(user_id, body.invoice_id)
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    return await billing_service.mark_invoice_resolved(owner_id, body.invoice_id)
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +416,11 @@ async def admin_config_patch(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
-    await patch_openclaw_config(owner_id=user_id, patch=body.patch)
+    # EFS workspace lives at /mnt/efs/users/{owner_id}/openclaw.json. For org
+    # members owner_id is the org_id — patching {user_id} writes to a non-
+    # existent personal dir (admin-org-owner-id P1).
+    owner_id, _ = await resolve_admin_owner_id(user_id)
+    await patch_openclaw_config(owner_id=owner_id, patch=body.patch)
     return {"status": "patched"}
 
 
@@ -415,14 +435,24 @@ async def admin_agent_delete(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    # Container / gateway pool keyed on owner_id. For org members that's the
+    # org_id — resolve before the ECS / gateway dispatch so we don't send the
+    # RPC to a non-existent personal-mode container (admin-org-owner-id P1).
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     pool = get_gateway_pool()
     ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(user_id)
+    container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:
         raise HTTPException(status_code=409, detail="container_not_running")
+    # uuid4 entropy: org members share a single gateway connection whose
+    # pending-RPC dict is keyed by req_id. Deterministic ids (previously
+    # ``admin-agent-delete-{agent_id}``) collide when two admins click delete
+    # on the same shared agent concurrently — same pattern Codex already
+    # flagged on the read path.
+    nonce = uuid.uuid4().hex[:8]
     return await pool.send_rpc(
-        user_id=user_id,
-        req_id=f"admin-agent-delete-{agent_id}",
+        user_id=owner_id,
+        req_id=f"admin-agent-delete-{agent_id}-{nonce}",
         method="agents.delete",
         params={"agent_id": agent_id},
         ip=ip,
@@ -441,14 +471,16 @@ async def admin_agent_clear_sessions(
     request: Request,
     auth: AuthContext = Depends(require_platform_admin),
 ):
+    owner_id, _ = await resolve_admin_owner_id(user_id)
     pool = get_gateway_pool()
     ecs = get_ecs_manager()
-    container, ip = await ecs.resolve_running_container(user_id)
+    container, ip = await ecs.resolve_running_container(owner_id)
     if not container or not ip:
         raise HTTPException(status_code=409, detail="container_not_running")
+    nonce = uuid.uuid4().hex[:8]
     return await pool.send_rpc(
-        user_id=user_id,
-        req_id=f"admin-agent-clear-{agent_id}",
+        user_id=owner_id,
+        req_id=f"admin-agent-clear-{agent_id}-{nonce}",
         method="sessions.clear",
         params={"agent_id": agent_id},
         ip=ip,

@@ -63,11 +63,25 @@ export interface UsersPage {
   stubbed: boolean;
 }
 
+export interface AdminOrgContext {
+  id: string;
+  slug: string;
+  name: string;
+  role: string;
+}
+
 export interface UserOverview {
   identity: unknown;
   container: unknown;
   billing: unknown;
   usage: unknown;
+  /**
+   * Populated when the target user belongs to a Clerk org. The DDB rows in
+   * container/billing/usage are keyed by ``owner_id == org_id`` in that case,
+   * so the dashboard surfaces this as an indigo banner making the provenance
+   * explicit to the admin.
+   */
+  org?: AdminOrgContext | null;
 }
 
 export interface AgentSummary {
@@ -82,6 +96,7 @@ export interface AgentsPage {
   cursor: string | null;
   container_status: string;
   error?: string;
+  org?: AdminOrgContext | null;
 }
 
 export interface AgentDetail {

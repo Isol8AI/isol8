@@ -3,7 +3,11 @@ import { auth } from "@clerk/nextjs/server";
 
 import { EmptyState } from "@/components/admin/EmptyState";
 import { ErrorBanner } from "@/components/admin/ErrorBanner";
-import { listAgents, type AgentSummary } from "@/app/admin/_lib/api";
+import {
+  listAgents,
+  type AdminOrgContext,
+  type AgentSummary,
+} from "@/app/admin/_lib/api";
 
 export const metadata = { title: "Agents \u00b7 Admin" };
 
@@ -63,7 +67,14 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
   const token = await getToken();
   const result = token
     ? await listAgents(token, id, cursor, 50)
-    : { agents: [], cursor: null, container_status: "unknown" as string };
+    : {
+        agents: [],
+        cursor: null,
+        container_status: "unknown" as string,
+        org: null as AdminOrgContext | null,
+      };
+
+  const orgBanner = result.org ? <OrgBanner org={result.org} /> : null;
 
   // Container in a non-running state — render explanatory empty/error states
   // rather than an empty table (CEO U1).
@@ -71,6 +82,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
+        {orgBanner}
         <EmptyState
           title="Container is stopped"
           body="The user's container is not running. Start it first to see their agents."
@@ -87,6 +99,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
+        {orgBanner}
         <EmptyState
           title="No container provisioned"
           body="This user hasn't provisioned a container yet."
@@ -99,6 +112,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
+        {orgBanner}
         <ErrorBanner
           error={result.error || "Gateway RPC failed"}
           source="OpenClaw"
@@ -112,6 +126,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
     return (
       <div className="space-y-6">
         <Header />
+        {orgBanner}
         <EmptyState title="No agents yet" body="The user hasn't created any agents." />
       </div>
     );
@@ -122,6 +137,7 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
   return (
     <div className="space-y-6">
       <Header />
+      {orgBanner}
       <div className="overflow-hidden rounded-md border border-white/10">
         <table className="w-full table-fixed text-sm">
           <thead className="bg-zinc-900 text-left text-xs uppercase tracking-wide text-zinc-400">
@@ -187,4 +203,32 @@ export default async function AdminUserAgentsPage({ params, searchParams }: Page
 // section heading here so the title doesn't duplicate.
 function Header() {
   return <h1 className="text-xl font-semibold text-zinc-100">Agents</h1>;
+}
+
+/**
+ * Indigo banner rendered when the target user belongs to a Clerk org.
+ * Mirrors the overview page so admins get the same provenance hint
+ * regardless of which tab they land on. Container/agents below are the
+ * org's resources (owner_id == org_id).
+ */
+function OrgBanner({ org }: { org: AdminOrgContext }) {
+  const role = org.role ? org.role.replace("org:", "") : "member";
+  const displayName = org.name || org.slug || org.id;
+  return (
+    <div className="rounded-md border border-indigo-800 bg-indigo-950/30 px-4 py-3 text-sm">
+      <div className="text-xs uppercase tracking-wide text-indigo-400">
+        Org member
+      </div>
+      <div className="mt-1 text-indigo-200">
+        {displayName}
+        {org.slug ? (
+          <span className="text-indigo-500"> ({org.slug})</span>
+        ) : null}
+      </div>
+      <div className="mt-1 text-xs text-indigo-400">
+        Role: {role} &mdash; container, billing, and agents below are the
+        org&apos;s resources.
+      </div>
+    </div>
+  );
 }
