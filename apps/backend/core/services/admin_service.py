@@ -130,6 +130,17 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
     cursor is opaque — pass back to fetch next page. Internally a string
     representation of Clerk's offset (since Clerk uses int offsets, we
     stringify them so the frontend treats cursor uniformly).
+
+    For each Clerk user we resolve the effective owner_id via
+    ``resolve_admin_owner_id`` before looking up the container row — org
+    members' containers are keyed by ``owner_id == org_id`` in DDB, so using
+    the raw Clerk user_id would render every org member as "no container
+    provisioned" (admin-org-owner-id fix, list-view follow-up to PR #376).
+
+    Owner_ids are deduped before the container fetch so two org members sharing
+    the same owner_id cost one DDB call, not two. Each row also carries an
+    ``org`` field (``{id, slug, name, role}`` for org members, ``None`` for
+    personal-mode) so the UI can badge org members inline.
     """
     offset = int(cursor) if cursor and cursor.isdigit() else 0
     page = await clerk_admin.list_users(query=q, limit=limit, offset=offset)
@@ -137,28 +148,54 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
     clerk_users = page.get("users", [])
     user_ids = [u["id"] for u in clerk_users]
 
-    # Per-user container lookup. Parallel since container_repo.get_by_owner_id
-    # makes one DDB call each.
-    containers = await asyncio.gather(
-        *(container_repo.get_by_owner_id(uid) for uid in user_ids),
+    # Per-user owner resolution. resolve_admin_owner_id already bounds each
+    # Clerk call with _PARALLEL_TIMEOUT_S and fails open to (user_id, None), so
+    # a slow/down Clerk doesn't take the page down.
+    resolutions = await asyncio.gather(
+        *(resolve_admin_owner_id(uid) for uid in user_ids),
         return_exceptions=True,
     )
-    container_by_uid = {uid: (c if not isinstance(c, BaseException) else None) for uid, c in zip(user_ids, containers)}
+    owner_by_uid: dict[str, str] = {}
+    org_by_uid: dict[str, dict | None] = {}
+    for uid, res in zip(user_ids, resolutions):
+        if isinstance(res, BaseException):
+            # Defensive: resolve_admin_owner_id already catches internally, but
+            # if gather surfaces something unexpected fall back to personal mode.
+            owner_by_uid[uid] = uid
+            org_by_uid[uid] = None
+        else:
+            owner_id, org_context = res
+            owner_by_uid[uid] = owner_id
+            org_by_uid[uid] = org_context
+
+    # Dedupe owner_ids — two members of the same org share one owner_id and
+    # therefore one container row.
+    unique_owner_ids = list({oid for oid in owner_by_uid.values()})
+    containers = await asyncio.gather(
+        *(container_repo.get_by_owner_id(oid) for oid in unique_owner_ids),
+        return_exceptions=True,
+    )
+    container_by_oid: dict[str, dict | None] = {
+        oid: (c if not isinstance(c, BaseException) else None) for oid, c in zip(unique_owner_ids, containers)
+    }
 
     rows = []
     for u in clerk_users:
-        container = container_by_uid.get(u["id"]) or {}
+        uid = u["id"]
+        owner_id = owner_by_uid.get(uid, uid)
+        container = container_by_oid.get(owner_id) or {}
         emails = u.get("email_addresses", [])
         primary_email = emails[0].get("email_address") if emails else None
         rows.append(
             {
-                "clerk_id": u["id"],
+                "clerk_id": uid,
                 "email": primary_email,
                 "created_at": u.get("created_at"),
                 "last_sign_in_at": u.get("last_sign_in_at"),
                 "banned": u.get("banned", False),
                 "container_status": container.get("status", "none"),
                 "plan_tier": container.get("plan_tier", "free"),
+                "org": org_by_uid.get(uid),
             }
         )
 

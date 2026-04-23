@@ -55,6 +55,14 @@ export interface UserDirectoryRow {
   banned: boolean;
   container_status: string;
   plan_tier: string;
+  /**
+   * Populated when the user belongs to a Clerk org. The list-view
+   * container_status is now resolved via owner_id (== org_id for org members)
+   * so org rows surface the real container state; this field lets the table
+   * render an inline `[org:slug]` hint next to the email so admins can tell
+   * at a glance which rows are organizational.
+   */
+  org?: AdminOrgContext | null;
 }
 
 export interface UsersPage {

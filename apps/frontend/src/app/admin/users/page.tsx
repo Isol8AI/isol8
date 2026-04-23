@@ -134,6 +134,14 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
                 >
                   {u.email ?? <span className="text-zinc-500">(no email)</span>}
                 </Link>
+                {u.org ? (
+                  <span
+                    className="ml-2 font-mono text-[10px] text-indigo-300/80"
+                    title={`Org: ${u.org.name} (${u.org.role})`}
+                  >
+                    [org:{u.org.slug}]
+                  </span>
+                ) : null}
               </td>
               <td className="px-3 py-2 font-mono text-xs text-zinc-300" title={u.clerk_id}>
                 {truncateId(u.clerk_id)}
