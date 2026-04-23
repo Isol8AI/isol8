@@ -20,6 +20,7 @@ timeout via _with_timeout. Slow Stripe doesn't starve other panels.
 
 import asyncio
 import logging
+import uuid
 from typing import Any
 
 from core.containers import get_ecs_manager, get_gateway_pool
@@ -55,8 +56,22 @@ async def _resolve_owner_for_admin(user_id: str) -> tuple[str, dict | None]:
         Clerk lookup errors (fail-open: better to show personal-mode data
         than to break the dashboard).
     """
+    # Bound Clerk call with the same per-panel timeout budget used by
+    # _with_timeout — a slow Clerk upstream must not block overview / agents /
+    # detail before their own _with_timeout-wrapped reads even start. Read the
+    # constant at call time so tests can monkeypatch _PARALLEL_TIMEOUT_S.
     try:
-        orgs = await clerk_admin.list_user_organizations(user_id)
+        orgs = await asyncio.wait_for(
+            clerk_admin.list_user_organizations(user_id),
+            timeout=_PARALLEL_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "admin_service._resolve_owner_for_admin Clerk timeout for %s after %ss; falling back to personal-mode",
+            user_id,
+            _PARALLEL_TIMEOUT_S,
+        )
+        return user_id, None
     except Exception as e:  # noqa: BLE001 — defensive, Clerk must never take the dashboard down
         logger.warning("admin_service._resolve_owner_for_admin Clerk error for %s: %s", user_id, e)
         return user_id, None
@@ -194,11 +209,16 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
         return {"agents": [], "cursor": None, "container_status": "unreachable", "org": org_context}
 
     pool = get_gateway_pool()
+    # uuid4 entropy in req_id: after switching to owner_id, all members of an
+    # org share a single gateway connection whose pending-RPC dict is keyed by
+    # req_id. A deterministic id would let concurrent admin requests overwrite
+    # each other's futures (intermittent timeouts / mismatched responses).
+    nonce = uuid.uuid4().hex[:8]
     try:
         result = await asyncio.wait_for(
             pool.send_rpc(
                 user_id=owner_id,
-                req_id=f"admin-agents-list-{owner_id}",
+                req_id=f"admin-agents-list-{owner_id}-{nonce}",
                 method="agents.list",
                 params={"cursor": cursor, "limit": limit},
                 ip=ip,
@@ -261,9 +281,13 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     token = container["gateway_token"]
 
     async def _rpc(method: str, params: dict, suffix: str) -> Any:
+        # uuid4 entropy in req_id: same org → shared gateway connection whose
+        # pending-RPC dict is keyed by req_id. Deterministic ids collide on
+        # concurrent detail loads for the same agent (see list_user_agents).
+        nonce = uuid.uuid4().hex[:8]
         return await pool.send_rpc(
             user_id=owner_id,
-            req_id=f"admin-{suffix}-{agent_id}",
+            req_id=f"admin-{suffix}-{agent_id}-{nonce}",
             method=method,
             params=params,
             ip=ip,

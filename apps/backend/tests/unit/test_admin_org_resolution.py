@@ -15,6 +15,8 @@ These tests pin:
   personal-mode payload (fail-open) rather than 500 the whole dashboard.
 """
 
+import asyncio
+import logging
 import os
 from unittest.mock import AsyncMock, patch
 
@@ -229,3 +231,140 @@ async def test_get_agent_detail_uses_org_id_for_container_lookup():
     mock_container.assert_awaited_once_with("org_abc")
     assert result["error"] == "container_not_running"
     assert result["org"] == org
+
+
+# -----------------------------------------------------------------------------
+# Codex P1+P1+P2 (PR #376) regression tests
+# -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_user_agents_uses_unique_req_ids_per_call():
+    """P1: concurrent admin agents.list calls on the same org must NOT
+    overwrite each other in the gateway's pending-RPC dict. The deterministic
+    req_id (admin-agents-list-{owner_id}) collided; add uuid4 entropy."""
+    from core.services import admin_service
+
+    org = {"id": "org_abc", "slug": "acme", "name": "Acme", "role": "org:admin"}
+
+    captured_req_ids: list[str] = []
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        captured_req_ids.append(req_id)
+        return {"agents": [], "cursor": None}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[org]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        results = await asyncio.gather(
+            admin_service.list_user_agents("user_abc"),
+            admin_service.list_user_agents("user_abc"),
+        )
+
+    assert len(results) == 2
+    assert len(captured_req_ids) == 2
+    # Both req_ids must share the admin-agents-list-{owner_id} prefix but
+    # differ in the trailing uuid4 slug.
+    for rid in captured_req_ids:
+        assert rid.startswith("admin-agents-list-org_abc-")
+    assert captured_req_ids[0] != captured_req_ids[1]
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_uses_unique_req_ids_per_call():
+    """P1: _rpc in get_agent_detail issued 4 RPCs with deterministic
+    admin-{suffix}-{agent_id} ids. Concurrent detail loads on the same agent
+    would clobber each other. Each call must carry uuid4 entropy."""
+    from core.services import admin_service
+
+    org = {"id": "org_abc", "slug": "acme", "name": "Acme", "role": "org:admin"}
+
+    captured_req_ids: list[str] = []
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        captured_req_ids.append(req_id)
+        # Return a plausibly-shaped dict so get_agent_detail doesn't error.
+        return {"agent": {}, "sessions": [], "skills": [], "config": {}}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[org]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch(
+            "core.services.admin_service.redact_openclaw_config",
+            side_effect=lambda x: x,
+        ),
+    ):
+        await asyncio.gather(
+            admin_service.get_agent_detail("user_abc", "agt_1"),
+            admin_service.get_agent_detail("user_abc", "agt_1"),
+        )
+
+    # 4 RPCs per detail call * 2 concurrent calls = 8 unique ids.
+    assert len(captured_req_ids) == 8
+    assert len(set(captured_req_ids)) == 8, f"req_ids collided: {captured_req_ids}"
+    # All still carry the admin-{suffix}-{agent_id} prefix.
+    for rid in captured_req_ids:
+        assert rid.startswith("admin-") and "-agt_1-" in rid
+
+
+@pytest.mark.asyncio
+async def test_resolve_owner_falls_back_to_personal_mode_on_clerk_timeout(caplog):
+    """P2: _resolve_owner_for_admin must bound the Clerk call with the same
+    per-panel timeout budget. When Clerk is slow/unreachable, fall back to
+    personal-mode (user_id, None) and log a warning — don't block the
+    dashboard on upstream latency before _with_timeout-wrapped reads."""
+    from core.services import admin_service
+
+    async def never_returns(user_id: str):  # noqa: ARG001
+        # Sleep far longer than the patched timeout to force asyncio.TimeoutError.
+        await asyncio.sleep(10)
+        return [{"id": "org_never"}]
+
+    with (
+        patch(
+            "core.services.admin_service._PARALLEL_TIMEOUT_S",
+            0.05,  # 50ms — enough time for wait_for to trip, too short for the sleep.
+        ),
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            side_effect=never_returns,
+        ),
+        caplog.at_level(logging.WARNING, logger="core.services.admin_service"),
+    ):
+        owner_id, org_context = await admin_service._resolve_owner_for_admin("user_slow")
+
+    assert owner_id == "user_slow"
+    assert org_context is None
+    # Warning must mention timeout so operators know Clerk is slow.
+    assert any("timeout" in rec.message.lower() for rec in caplog.records)
