@@ -9,6 +9,8 @@ export interface AuthSecrets {
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
+  platformAdminUserIds: secretsmanager.ISecret;
+  posthogProjectApiKey: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -48,12 +50,37 @@ export class AuthStack extends cdk.Stack {
       });
     };
 
+    // Helper for admin-dashboard secrets that default to empty string rather
+    // than a random value. Empty PLATFORM_ADMIN_USER_IDS = no admins (safe
+    // locked-down state); empty POSTHOG_PROJECT_API_KEY = Activity tab stubs.
+    // Operator populates real values via `aws secretsmanager update-secret`.
+    const createAdminSecret = (
+      logicalId: string,
+      secretName: string,
+    ): secretsmanager.Secret =>
+      new secretsmanager.Secret(this, logicalId, {
+        secretName: `isol8/${env}/${secretName}`,
+        description: `Isol8 ${env} ${secretName}`,
+        encryptionKey: this.kmsKey,
+        secretStringValue: cdk.SecretValue.unsafePlainText(
+          secretVals[secretName] ?? "",
+        ),
+      });
+
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       encryptionKey: createSecret("EncryptionKey", "encryption_key"),
+      platformAdminUserIds: createAdminSecret(
+        "PlatformAdminUserIds",
+        "platform_admin_user_ids",
+      ),
+      posthogProjectApiKey: createAdminSecret(
+        "PosthogProjectApiKey",
+        "posthog_project_api_key",
+      ),
     };
   }
 }

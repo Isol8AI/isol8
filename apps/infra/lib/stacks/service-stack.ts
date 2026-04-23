@@ -26,6 +26,10 @@ export interface SecretNames {
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   encryptionKey: string;
+  /** Comma-separated Clerk user IDs for the admin dashboard allowlist. */
+  platformAdminUserIds: string;
+  /** PostHog personal API key for admin Activity tab (optional; stubs if unset). */
+  posthogProjectApiKey: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -621,6 +625,12 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
+        // PostHog server-side reads (admin Activity tab). Host + project ID
+        // are public; the API key comes in via secrets block below. Leave
+        // POSTHOG_PROJECT_ID empty in environments where no PostHog project
+        // is attached yet — core/services/posthog_admin.py stubs gracefully.
+        POSTHOG_HOST: "https://app.posthog.com",
+        POSTHOG_PROJECT_ID: "",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
@@ -646,6 +656,24 @@ export class ServiceStack extends cdk.Stack {
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
+        ),
+        // Admin dashboard allowlist. Rotating an admin = updating this
+        // secret + forcing a new ECS deployment. No CDK redeploy required.
+        PLATFORM_ADMIN_USER_IDS: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportPlatformAdminUserIds",
+            props.secretNames.platformAdminUserIds,
+          ),
+        ),
+        // PostHog personal API key for the admin Activity tab. Optional —
+        // posthog_admin.py stubs to {events: [], stubbed: true} when absent.
+        POSTHOG_PROJECT_API_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportPosthogProjectApiKey",
+            props.secretNames.posthogProjectApiKey,
+          ),
         ),
         // Task-def ARN comes from SSM rather than a cross-stack Fn::ImportValue.
         // The backend reads this env var and uses it as the base to clone per-user

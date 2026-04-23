@@ -88,6 +88,8 @@ export class LocalStage extends cdk.Stage {
         stripeSecretKey: `isol8/${env}/stripe_secret_key`,
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
         encryptionKey: `isol8/${env}/encryption_key`,
+        platformAdminUserIds: `isol8/${env}/platform_admin_user_ids`,
+        posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
       },
       kmsKeyArn: auth.kmsKey.keyArn,
       container: {
