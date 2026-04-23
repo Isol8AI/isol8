@@ -13,12 +13,22 @@ These tests pin:
   ``org: None``.
 - get_overview is defensive: when Clerk itself errors, we still render the
   personal-mode payload (fail-open) rather than 500 the whole dashboard.
+
+The second half of this file (``TestAdminMutationOwnerResolution``) covers
+Codex's follow-up P1: admin MUTATION endpoints must also resolve owner_id
+before dispatching to downstream services. Previously only reads did; writes
+(container stop/start/reprovision/resize, billing cancel/pause/credit/invoice,
+PATCH /config, agent delete/clear-sessions) still targeted the raw
+``{user_id}`` from the URL — so for org members the mutations hit a
+non-existent ``openclaw-{user_id}-{hash}`` ECS service instead of the real
+``openclaw-{org_id}-{hash}``. Account ops (suspend/reactivate/force-signout/
+resend-verification) target the Clerk user directly and MUST NOT resolve.
 """
 
 import asyncio
 import logging
 import os
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -368,3 +378,285 @@ async def test_resolve_owner_falls_back_to_personal_mode_on_clerk_timeout(caplog
     assert org_context is None
     # Warning must mention timeout so operators know Clerk is slow.
     assert any("timeout" in rec.message.lower() for rec in caplog.records)
+
+
+# =============================================================================
+# Codex P1 (PR #376 follow-up): admin MUTATION endpoints must resolve owner_id
+# =============================================================================
+#
+# These tests drive the admin router (routers/admin.py) through FastAPI's
+# TestClient and verify each mutation endpoint's internal dispatch switches
+# from the raw URL path param to the Clerk-resolved owner_id when the target
+# user is in an org. They use the same dependency_overrides pattern as
+# tests/unit/routers/test_admin_actions_writes.py — the ``app`` and
+# ``async_client`` fixtures from conftest.py provide a full FastAPI app with
+# auth shimmed to an @isol8.co admin.
+#
+# Org-mode fixtures mock ``clerk_admin.list_user_organizations`` to return a
+# single org so ``resolve_admin_owner_id`` yields the org_id. Personal-mode
+# tests return []. Account-ops tests assert the raw user_id still flows
+# through (regression guard — suspending an org-member's account must ban
+# the specific user, not the org).
+
+
+ORG_FIXTURE = {
+    "id": "org_abc",
+    "slug": "acme",
+    "name": "Acme Co.",
+    "role": "org:admin",
+}
+
+
+@pytest.fixture
+def admin_env(app):
+    """Caller has an @isol8.co email — require_platform_admin admits them."""
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+
+
+@pytest.fixture
+def org_mode():
+    """Patch resolve_admin_owner_id to return ('org_abc', ORG_FIXTURE).
+
+    Patching at the router's import path (``routers.admin.resolve_admin_owner_id``)
+    is enough — that's the symbol the mutation handlers call. We avoid
+    patching ``clerk_admin.list_user_organizations`` directly so the test
+    stays tight: a future refactor that moves resolution elsewhere still fails
+    loudly if it stops calling the resolver.
+    """
+    with patch(
+        "routers.admin.resolve_admin_owner_id",
+        new=AsyncMock(return_value=("org_abc", ORG_FIXTURE)),
+    ) as mock:
+        yield mock
+
+
+@pytest.fixture
+def personal_mode():
+    """Patch resolve_admin_owner_id to return ('user_123', None) — personal mode."""
+    with patch(
+        "routers.admin.resolve_admin_owner_id",
+        new=AsyncMock(return_value=("user_123", None)),
+    ) as mock:
+        yield mock
+
+
+class TestAdminMutationOwnerResolution:
+    """Each admin mutation endpoint dispatches to the resolved owner_id, not
+    the raw URL path param."""
+
+    # -- Container mutations -------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_container_stop_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        ecs = MagicMock()
+        ecs.stop_user_service = AsyncMock(return_value={"status": "stopped"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
+        assert res.status_code == 200
+        ecs.stop_user_service.assert_awaited_once_with("org_abc")
+        org_mode.assert_awaited_once_with("user_123")
+
+    @pytest.mark.asyncio
+    async def test_container_stop_personal_mode_uses_user_id(self, async_client, admin_env, personal_mode):
+        """Negative test: personal-mode user (no orgs) → dispatch targets the
+        Clerk user_id unchanged."""
+        ecs = MagicMock()
+        ecs.stop_user_service = AsyncMock(return_value={"status": "stopped"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/stop")
+        assert res.status_code == 200
+        ecs.stop_user_service.assert_awaited_once_with("user_123")
+
+    @pytest.mark.asyncio
+    async def test_container_start_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        ecs = MagicMock()
+        ecs.start_user_service = AsyncMock(return_value={"status": "started"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/start")
+        assert res.status_code == 200
+        ecs.start_user_service.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_container_reprovision_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        ecs = MagicMock()
+        ecs.reprovision_for_user = AsyncMock(return_value={"status": "reprovisioned"})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post("/api/v1/admin/users/user_123/container/reprovision")
+        assert res.status_code == 200
+        ecs.reprovision_for_user.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_container_resize_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        ecs = MagicMock()
+        ecs.resize_for_user = AsyncMock(return_value={"task_def_arn": "arn:..."})
+        with patch("routers.admin.get_ecs_manager", return_value=ecs):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_123/container/resize",
+                json={"tier": "pro"},
+            )
+        assert res.status_code == 200
+        ecs.resize_for_user.assert_awaited_once_with("org_abc", "pro")
+
+    # -- Billing mutations ---------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_billing_cancel_subscription_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        billing = MagicMock()
+        billing.cancel_subscription_for_owner = AsyncMock(return_value={"status": "canceled"})
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post("/api/v1/admin/users/user_123/billing/cancel-subscription")
+        assert res.status_code == 200
+        billing.cancel_subscription_for_owner.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_billing_pause_subscription_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        billing = MagicMock()
+        billing.pause_subscription_for_owner = AsyncMock(return_value={"status": "paused"})
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post("/api/v1/admin/users/user_123/billing/pause-subscription")
+        assert res.status_code == 200
+        billing.pause_subscription_for_owner.assert_awaited_once_with("org_abc")
+
+    @pytest.mark.asyncio
+    async def test_billing_issue_credit_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        billing = MagicMock()
+        billing.issue_credit_for_owner = AsyncMock(return_value={"credit_id": "cn_1"})
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_123/billing/issue-credit",
+                json={"amount_cents": 500, "reason": "incident_comp"},
+            )
+        assert res.status_code == 200
+        billing.issue_credit_for_owner.assert_awaited_once_with(
+            "org_abc",
+            amount_cents=500,
+            reason="incident_comp",
+        )
+
+    @pytest.mark.asyncio
+    async def test_billing_mark_invoice_resolved_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        billing = MagicMock()
+        billing.mark_invoice_resolved = AsyncMock(return_value={"status": "resolved"})
+        with patch("routers.admin.billing_service", new=billing):
+            res = await async_client.post(
+                "/api/v1/admin/users/user_123/billing/mark-invoice-resolved",
+                json={"invoice_id": "in_1"},
+            )
+        assert res.status_code == 200
+        billing.mark_invoice_resolved.assert_awaited_once_with("org_abc", "in_1")
+
+    # -- Config + agent mutations -------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_config_patch_uses_org_owner_id(self, async_client, admin_env, org_mode):
+        with patch(
+            "routers.admin.patch_openclaw_config",
+            new=AsyncMock(return_value=None),
+        ) as mock_patch:
+            res = await async_client.patch(
+                "/api/v1/admin/users/user_123/config",
+                json={"patch": {"agents": {"defaults": {}}}},
+            )
+        assert res.status_code == 200
+        mock_patch.assert_awaited_once()
+        # owner_id keyword — patch_openclaw_config is called with kwargs.
+        assert mock_patch.await_args.kwargs.get("owner_id") == "org_abc"
+
+    @pytest.mark.asyncio
+    async def test_agent_delete_uses_org_owner_id_and_unique_req_id(self, async_client, admin_env, org_mode):
+        """Dispatch targets org_id AND the req_id carries a uuid4 nonce so
+        concurrent deletes on the same shared agent don't collide in the
+        gateway pending-RPC dict."""
+        import re
+
+        pool = MagicMock()
+        pool.send_rpc = AsyncMock(return_value={"deleted": True})
+        ecs = MagicMock()
+        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
+        with (
+            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_ecs_manager", return_value=ecs),
+        ):
+            res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
+
+        assert res.status_code == 200
+        # ECS container lookup uses org_id.
+        ecs.resolve_running_container.assert_awaited_once_with("org_abc")
+        # RPC user_id is org_id; req_id carries an 8-hex-char uuid nonce.
+        kwargs = pool.send_rpc.await_args.kwargs
+        assert kwargs["user_id"] == "org_abc"
+        assert re.fullmatch(r"admin-agent-delete-agt_42-[0-9a-f]{8}", kwargs["req_id"])
+
+    @pytest.mark.asyncio
+    async def test_agent_delete_req_ids_are_unique_across_calls(self, async_client, admin_env, org_mode):
+        """P1: two concurrent delete calls on the same agent must produce
+        different req_ids so the gateway's pending-RPC dict keyed by req_id
+        doesn't clobber one future with another."""
+        pool = MagicMock()
+        pool.send_rpc = AsyncMock(return_value={"deleted": True})
+        ecs = MagicMock()
+        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
+        with (
+            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_ecs_manager", return_value=ecs),
+        ):
+            r1 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
+            r2 = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/delete")
+        assert r1.status_code == r2.status_code == 200
+        req_ids = [c.kwargs["req_id"] for c in pool.send_rpc.await_args_list]
+        assert len(req_ids) == 2
+        assert req_ids[0] != req_ids[1]
+
+    @pytest.mark.asyncio
+    async def test_agent_clear_sessions_uses_org_owner_id_and_unique_req_id(self, async_client, admin_env, org_mode):
+        import re
+
+        pool = MagicMock()
+        pool.send_rpc = AsyncMock(return_value={"cleared": 3})
+        ecs = MagicMock()
+        ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok"}, "10.0.0.1"))
+        with (
+            patch("routers.admin.get_gateway_pool", return_value=pool),
+            patch("routers.admin.get_ecs_manager", return_value=ecs),
+        ):
+            res = await async_client.post("/api/v1/admin/users/user_123/agents/agt_42/clear-sessions")
+
+        assert res.status_code == 200
+        ecs.resolve_running_container.assert_awaited_once_with("org_abc")
+        kwargs = pool.send_rpc.await_args.kwargs
+        assert kwargs["user_id"] == "org_abc"
+        assert re.fullmatch(r"admin-agent-clear-agt_42-[0-9a-f]{8}", kwargs["req_id"])
+
+    # -- Account mutations MUST NOT resolve (regression guard) ---------------
+
+    @pytest.mark.asyncio
+    async def test_account_suspend_uses_raw_user_id_not_org(self, async_client, admin_env):
+        """Regression guard: account/* endpoints target the Clerk user
+        directly, not the org. If these ever start calling
+        resolve_admin_owner_id an admin would end up banning "org_abc" (which
+        Clerk would 404) instead of the actual misbehaving user.
+
+        We patch resolve_admin_owner_id so, if the handler DID call it, we'd
+        see ``org_abc`` land in the ban payload and fail the assertion.
+        """
+        with (
+            patch(
+                "routers.admin.resolve_admin_owner_id",
+                new=AsyncMock(return_value=("org_abc", ORG_FIXTURE)),
+            ) as mock_resolve,
+            patch(
+                "routers.admin.clerk_admin.ban_user",
+                new=AsyncMock(return_value={"banned": True}),
+            ) as mock_ban,
+        ):
+            res = await async_client.post("/api/v1/admin/users/user_123/account/suspend")
+
+        assert res.status_code == 200
+        mock_ban.assert_awaited_once_with("user_123")
+        mock_resolve.assert_not_awaited()

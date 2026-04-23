@@ -35,7 +35,7 @@ _PARALLEL_TIMEOUT_S = 2.0
 _GATEWAY_RPC_TIMEOUT_S = 3.0
 
 
-async def _resolve_owner_for_admin(user_id: str) -> tuple[str, dict | None]:
+async def resolve_admin_owner_id(user_id: str) -> tuple[str, dict | None]:
     """Return (owner_id, org_context) for a target user viewed by an admin.
 
     The DDB partition key ``owner_id`` is the Clerk org_id for org-member
@@ -44,6 +44,13 @@ async def _resolve_owner_for_admin(user_id: str) -> tuple[str, dict | None]:
     which org (if any) the user belongs to before querying repos — otherwise
     every org-member user renders as "no container provisioned" (CEO
     admin-org-owner-id bug).
+
+    This is the public helper used by both admin_service read composition and
+    the admin router's mutation handlers (container / billing / config /
+    agents) — org-member mutation targets ``openclaw-{org_id}-{hash}``, not
+    ``openclaw-{user_id}-{hash}``. Account mutations (suspend / reactivate /
+    force-signout / resend-verification) target the Clerk user directly and
+    MUST NOT call this resolver.
 
     Per ``project_single_org_per_user`` memory, users are assumed to be in at
     most one org. If Clerk returns multiple (shouldn't happen), pick the
@@ -67,13 +74,13 @@ async def _resolve_owner_for_admin(user_id: str) -> tuple[str, dict | None]:
         )
     except asyncio.TimeoutError:
         logger.warning(
-            "admin_service._resolve_owner_for_admin Clerk timeout for %s after %ss; falling back to personal-mode",
+            "admin_service.resolve_admin_owner_id Clerk timeout for %s after %ss; falling back to personal-mode",
             user_id,
             _PARALLEL_TIMEOUT_S,
         )
         return user_id, None
     except Exception as e:  # noqa: BLE001 — defensive, Clerk must never take the dashboard down
-        logger.warning("admin_service._resolve_owner_for_admin Clerk error for %s: %s", user_id, e)
+        logger.warning("admin_service.resolve_admin_owner_id Clerk error for %s: %s", user_id, e)
         return user_id, None
 
     if not orgs:
@@ -88,6 +95,15 @@ async def _resolve_owner_for_admin(user_id: str) -> tuple[str, dict | None]:
 
     org = orgs[0]
     return org["id"], org
+
+
+# Back-compat alias: the helper was previously private (``_resolve_owner_for_admin``)
+# and is still referenced by at least one regression test. Keep the alias so the
+# existing unit test in test_admin_org_resolution.py (``test_resolve_owner_falls_back_
+# to_personal_mode_on_clerk_timeout``) keeps working without churning the test
+# name alongside the rename. Safe to delete in a follow-up once the test is
+# migrated.
+_resolve_owner_for_admin = resolve_admin_owner_id
 
 
 async def _with_timeout(coro, label: str, timeout_s: float | None = None):
@@ -167,7 +183,7 @@ async def get_overview(user_id: str) -> dict:
     """
     period = "current"  # usage_repo uses "YYYY-MM" or "current"; current covers month-to-date
 
-    owner_id, org_context = await _resolve_owner_for_admin(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
 
     clerk, container, billing, usage = await asyncio.gather(
         _with_timeout(clerk_admin.get_user(user_id), "clerk"),
@@ -192,7 +208,7 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     org_id, not user_id. ``org`` in the response is null for personal-mode
     users and {id, slug, name, role} otherwise.
     """
-    owner_id, org_context = await _resolve_owner_for_admin(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
 
     container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":
@@ -262,7 +278,7 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     the response is null for personal-mode users and {id, slug, name, role}
     otherwise.
     """
-    owner_id, org_context = await _resolve_owner_for_admin(user_id)
+    owner_id, org_context = await resolve_admin_owner_id(user_id)
 
     container_row = await container_repo.get_by_owner_id(owner_id)
     if not container_row or container_row.get("status") != "running":
