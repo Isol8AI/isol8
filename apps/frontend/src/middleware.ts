@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 
 const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/onboarding", "/settings(.*)"]);
 
-const DEFAULT_ADMIN_HOSTS = "admin.isol8.co,admin-dev.isol8.co,admin.localhost:3000";
+const DEFAULT_ADMIN_HOSTS = "admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000";
 
 function parseAdminHosts(raw: string | undefined): Set<string> {
   const source = raw && raw.length > 0 ? raw : DEFAULT_ADMIN_HOSTS;

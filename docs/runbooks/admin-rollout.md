@@ -1,6 +1,6 @@
 # Admin dashboard rollout
 
-Operational runbook for `admin.isol8.co` (and `admin-dev.isol8.co`).
+Operational runbook for `admin.isol8.co` (and `admin.dev.isol8.co`).
 
 **Tracking issue:** [Isol8AI/isol8#351](https://github.com/Isol8AI/isol8/issues/351)
 **Spec:** [`docs/superpowers/specs/2026-04-21-admin-dashboard-design.md`](../superpowers/specs/2026-04-21-admin-dashboard-design.md)
@@ -16,7 +16,7 @@ Operational runbook for `admin.isol8.co` (and `admin-dev.isol8.co`).
 
 ## Prerequisites — one-time per environment
 
-1. **DNS + Vercel domain alias:** `admin-dev.isol8.co` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` → `isol8-frontend-prod`. Verify with `dig admin-dev.isol8.co CNAME`.
+1. **DNS + Vercel domain alias:** `admin.dev.isol8.co` → `isol8-frontend-dev` Vercel project; `admin.isol8.co` → `isol8-frontend-prod`. Verify with `dig admin.dev.isol8.co CNAME`.
 2. **Backend secrets** (one Secrets Manager entry per value, consistent with existing `isol8/{env}/clerk_issuer`, `isol8/{env}/stripe_secret_key`, etc.):
    - `isol8/{env}/platform_admin_user_ids` — comma-separated Clerk user IDs of the Isol8 team. Wired into the backend task as `PLATFORM_ADMIN_USER_IDS`.
    - `isol8/{env}/posthog_project_api_key` — PostHog personal API key with scopes `person:read`, `events:read`, `session_recording:read`. Wired as `POSTHOG_PROJECT_API_KEY`. Optional; the Activity tab stubs gracefully when absent.
@@ -93,7 +93,7 @@ PLATFORM_ADMIN_USER_IDS=user_<your dev Clerk id>
 Frontend env (`apps/frontend/.env.local`):
 
 ```
-NEXT_PUBLIC_ADMIN_HOSTS=admin.isol8.co,admin-dev.isol8.co,admin.localhost:3000
+NEXT_PUBLIC_ADMIN_HOSTS=admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000
 ```
 
 Then `pnpm dev` and visit `http://admin.localhost:3000/admin` (Chrome/Safari resolve `*.localhost` → 127.0.0.1 automatically — no `/etc/hosts` edit).
