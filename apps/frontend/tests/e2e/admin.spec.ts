@@ -11,7 +11,7 @@ import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
  * this from CI.
  *
  * TODO Phase F follow-ups (tracked in docs/runbooks/admin-rollout.md):
- *   1. DNS + Vercel domain alias for `admin-dev.isol8.co` -> `isol8-frontend-dev`.
+ *   1. DNS + Vercel domain alias for `admin.dev.isol8.co` -> `isol8-frontend-dev`.
  *   2. Cloudflare bypass + `VERCEL_AUTOMATION_BYPASS_SECRET` for the admin host.
  *   3. Seed a Clerk test user in `PLATFORM_ADMIN_USER_IDS` and surface its
  *      credentials via fixtures (similar to `personal.spec.ts`).
@@ -22,7 +22,7 @@ import { clerkSetup, setupClerkTestingToken } from '@clerk/testing/playwright';
 test.describe('admin dashboard golden path', () => {
   test.skip(
     ({ baseURL }) => !baseURL?.includes('admin'),
-    'Only runs against the admin host (BASE_URL=https://admin-dev.isol8.co).',
+    'Only runs against the admin host (BASE_URL=https://admin.dev.isol8.co).',
   );
 
   test('admin can sign in, view a user, fire a read-only action', async ({

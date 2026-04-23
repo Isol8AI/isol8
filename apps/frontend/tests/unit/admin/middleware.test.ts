@@ -3,7 +3,7 @@ import { decideAdminHostRouting } from '@/middleware';
 
 const ADMIN_HOSTS = new Set([
   'admin.isol8.co',
-  'admin-dev.isol8.co',
+  'admin.dev.isol8.co',
   'admin.localhost:3000',
 ]);
 
