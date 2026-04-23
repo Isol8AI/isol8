@@ -267,13 +267,19 @@ async def list_user_agents(user_id: str, *, cursor: str | None = None, limit: in
     # req_id. A deterministic id would let concurrent admin requests overwrite
     # each other's futures (intermittent timeouts / mismatched responses).
     nonce = uuid.uuid4().hex[:8]
+    # OpenClaw's agents.list schema rejects unknown keys (INVALID_REQUEST on
+    # cursor/limit). Match the main-app call site (useAgents.ts →
+    # useGatewayRpc("agents.list")) which passes no params and receives the
+    # full list. cursor/limit remain on the service signature / router query
+    # for forward compatibility but aren't forwarded upstream.
+    _ = (cursor, limit)
     try:
         result = await asyncio.wait_for(
             pool.send_rpc(
                 user_id=owner_id,
                 req_id=f"admin-agents-list-{owner_id}-{nonce}",
                 method="agents.list",
-                params={"cursor": cursor, "limit": limit},
+                params={},
                 ip=ip,
                 token=container["gateway_token"],
             ),

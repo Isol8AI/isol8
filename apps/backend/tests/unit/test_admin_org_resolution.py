@@ -297,6 +297,50 @@ async def test_list_user_agents_uses_unique_req_ids_per_call():
 
 
 @pytest.mark.asyncio
+async def test_list_user_agents_sends_empty_params_to_openclaw():
+    """Regression: OpenClaw's agents.list schema rejects unknown keys with
+    INVALID_REQUEST (observed in prod on cursor/limit). Match the main-app
+    call site (useAgents.ts) which passes no params. cursor/limit on the
+    service signature stay for forward compatibility but aren't forwarded.
+    """
+    from core.services import admin_service
+
+    captured_params: list[dict] = []
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        captured_params.append(params)
+        return {"agents": [{"id": "agt_1"}], "cursor": None}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        result = await admin_service.list_user_agents("user_abc", cursor="abc", limit=25)
+
+    assert len(captured_params) == 1
+    assert captured_params[0] == {}, (
+        f"agents.list params must be empty (OpenClaw rejects unknown keys); got {captured_params[0]}"
+    )
+    assert result["agents"] == [{"id": "agt_1"}]
+    assert result["container_status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_get_agent_detail_uses_unique_req_ids_per_call():
     """P1: _rpc in get_agent_detail issued 4 RPCs with deterministic
     admin-{suffix}-{agent_id} ids. Concurrent detail loads on the same agent
