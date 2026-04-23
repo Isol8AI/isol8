@@ -141,3 +141,67 @@ async def get_user(user_id: str) -> dict | None:
         logger.warning("clerk_admin.get_user HTTP %s", response.status_code)
         return None
     return response.json()
+
+
+async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict]:
+    """Return the orgs a Clerk user belongs to.
+
+    Each element: {"id": "org_...", "slug": "...", "name": "...", "role": "org:admin" | "org:member" | ...}
+    The role field comes from the membership, not the org itself.
+    Returns [] if the user is in no orgs, if the Clerk key is unset, or on
+    network / HTTP error (logged as warning).
+
+    Uses Clerk Backend API GET /v1/users/{user_id}/organization_memberships,
+    which returns an envelope {data: [...memberships], total_count: N}. Each
+    membership has shape {id, role, organization: {id, slug, name, ...}, ...}.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return []
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    params = {"limit": min(limit, 100)}
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(
+                f"{_CLERK_API_BASE}/users/{user_id}/organization_memberships",
+                headers=headers,
+                params=params,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.list_user_organizations network error: %s", e)
+        return []
+
+    if response.status_code == 404:
+        return []
+    if response.status_code >= 400:
+        logger.warning("clerk_admin.list_user_organizations HTTP %s", response.status_code)
+        return []
+
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+
+    # Clerk v1 wraps collection responses in {data, total_count}. Older/alt
+    # shapes may return a bare list — accept both defensively.
+    memberships = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(memberships, list):
+        return []
+
+    result: list[dict] = []
+    for m in memberships:
+        if not isinstance(m, dict):
+            continue
+        org = m.get("organization") or {}
+        org_id = org.get("id")
+        if not org_id:
+            continue
+        result.append(
+            {
+                "id": org_id,
+                "slug": org.get("slug") or "",
+                "name": org.get("name") or "",
+                "role": m.get("role") or "",
+            }
+        )
+    return result
