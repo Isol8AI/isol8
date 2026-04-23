@@ -26,9 +26,7 @@ export interface SecretNames {
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   encryptionKey: string;
-  /** Comma-separated Clerk user IDs for the admin dashboard allowlist. */
-  platformAdminUserIds: string;
-  /** PostHog personal API key for admin Activity tab (optional; stubs if unset). */
+  /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
 }
 
@@ -625,10 +623,11 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
-        // PostHog server-side reads (admin Activity tab). Host + project ID
-        // are public; the API key comes in via secrets block below. Leave
-        // POSTHOG_PROJECT_ID empty in environments where no PostHog project
-        // is attached yet — core/services/posthog_admin.py stubs gracefully.
+        // PostHog server-side reads for the admin Activity tab. Host is the
+        // same for every env; project ID is public (visible in every
+        // PostHog URL). The personal API key is sensitive — comes in via
+        // the secrets: block below. posthog_admin.py stubs when the key is
+        // empty, so leaving POSTHOG_PROJECT_ID unset here is also safe.
         POSTHOG_HOST: "https://app.posthog.com",
         POSTHOG_PROJECT_ID: "",
         // Observability: page topic ARN for backend-initiated SNS alerts.
@@ -657,17 +656,9 @@ export class ServiceStack extends cdk.Stack {
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
         ),
-        // Admin dashboard allowlist. Rotating an admin = updating this
-        // secret + forcing a new ECS deployment. No CDK redeploy required.
-        PLATFORM_ADMIN_USER_IDS: ecs.Secret.fromSecretsManager(
-          secretsmanager.Secret.fromSecretNameV2(
-            this,
-            "ImportPlatformAdminUserIds",
-            props.secretNames.platformAdminUserIds,
-          ),
-        ),
-        // PostHog personal API key for the admin Activity tab. Optional —
-        // posthog_admin.py stubs to {events: [], stubbed: true} when absent.
+        // PostHog personal API key for the admin Activity tab. Empty value
+        // → posthog_admin.py returns {stubbed: true}; populated value →
+        // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
         POSTHOG_PROJECT_API_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(
             this,

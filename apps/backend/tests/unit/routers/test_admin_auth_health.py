@@ -10,10 +10,11 @@ The 4 endpoints under test:
 - GET /api/v1/admin/actions?target_user_id=...
 - GET /api/v1/admin/actions?admin_user_id=...
 
-Auth model: `require_platform_admin` (already-merged, see core/auth.py:242)
-gates the router at the dependency level. The async_client fixture overrides
-`get_current_user` to return AuthContext(user_id="user_test_123"), so we
-toggle access by monkeypatching `settings.PLATFORM_ADMIN_USER_IDS`.
+Auth model: `require_platform_admin` (see core/auth.py) gates the router at
+the dependency level by checking the caller's email domain against
+`@isol8.co`. Tests toggle access by re-binding `get_current_user` in
+`app.dependency_overrides` to return an AuthContext with either an
+`@isol8.co` email (admit) or some other email (deny).
 """
 
 import os
@@ -21,7 +22,25 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.auth import AuthContext, get_current_user
+
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+# ---------------------------------------------------------------------------
+# Helpers — local to this file; override get_current_user so
+# require_platform_admin sees the email claim it needs.
+# ---------------------------------------------------------------------------
+
+
+def _admit_test_user(app, email: str = "admin@isol8.co"):
+    """Override auth so the caller looks like an Isol8 team member."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email=email)
+
+
+def _deny_all_admins(app):
+    """Override auth so the caller has a non-@isol8.co email => 403."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
 
 
 # ---------------------------------------------------------------------------
@@ -30,21 +49,21 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 class TestAdminAuthGate:
-    """The /admin/* surface returns 403 unless the caller's Clerk user_id is
-    in the PLATFORM_ADMIN_USER_IDS allowlist."""
+    """The /admin/* surface returns 403 unless the caller's Clerk email
+    ends with @isol8.co."""
 
     @pytest.mark.asyncio
-    async def test_admin_me_403_when_user_not_in_allowlist(self, async_client, monkeypatch):
-        """Empty allowlist => 403 with the require_platform_admin detail string."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "")
+    async def test_admin_me_403_when_user_not_in_allowlist(self, async_client, app):
+        """External email => 403 with the require_platform_admin detail string."""
+        _deny_all_admins(app)
         response = await async_client.get("/api/v1/admin/me")
         assert response.status_code == 403
         assert response.json()["detail"] == "Platform admin access required"
 
     @pytest.mark.asyncio
-    async def test_admin_me_200_for_allowlisted_user(self, async_client, monkeypatch):
-        """user_test_123 (mock_auth_context default) is in allowlist => 200 with profile."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+    async def test_admin_me_200_for_allowlisted_user(self, async_client, app):
+        """@isol8.co email => 200 with profile."""
+        _admit_test_user(app)
         response = await async_client.get("/api/v1/admin/me")
         assert response.status_code == 200
         body = response.json()
@@ -55,32 +74,25 @@ class TestAdminAuthGate:
         assert "email" in body
 
     @pytest.mark.asyncio
-    async def test_admin_system_health_403_for_non_admin(self, async_client, monkeypatch):
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_someone_else")
+    async def test_admin_system_health_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         response = await async_client.get("/api/v1/admin/system/health")
         assert response.status_code == 403
         assert response.json()["detail"] == "Platform admin access required"
 
     @pytest.mark.asyncio
-    async def test_admin_actions_403_for_non_admin(self, async_client, monkeypatch):
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "")
+    async def test_admin_actions_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         response = await async_client.get("/api/v1/admin/actions", params={"target_user_id": "u1"})
         assert response.status_code == 403
 
     @pytest.mark.asyncio
-    async def test_admin_me_includes_email_when_present(self, app, monkeypatch):
+    async def test_admin_me_includes_email_when_present(self, app):
         """When the JWT carried an email claim, /me echoes it back so the
         operator UI can show 'logged in as <email>'."""
         from httpx import ASGITransport, AsyncClient
 
-        from core.auth import AuthContext, get_current_user
-
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
-
-        async def _mock_user_with_email():
-            return AuthContext(user_id="user_test_123", email="admin@isol8.co")
-
-        app.dependency_overrides[get_current_user] = _mock_user_with_email
+        _admit_test_user(app, email="admin@isol8.co")
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 response = await client.get("/api/v1/admin/me")
@@ -102,9 +114,9 @@ class TestAdminSystemHealth:
 
     @pytest.mark.asyncio
     @patch("routers.admin.system_health")
-    async def test_system_health_returns_aggregator_result(self, mock_system_health, async_client, monkeypatch):
+    async def test_system_health_returns_aggregator_result(self, mock_system_health, async_client, app):
         """Aggregator result is returned verbatim as the JSON body."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         payload = {
             "upstreams": {"clerk": "ok", "stripe": "ok", "bedrock": "ok", "ddb": "ok"},
             "fleet": {"total": 12, "running": 11, "stopped": 1},
@@ -121,12 +133,12 @@ class TestAdminSystemHealth:
     @pytest.mark.asyncio
     @patch("routers.admin.system_health")
     async def test_system_health_never_500s_when_aggregator_returns_partial(
-        self, mock_system_health, async_client, monkeypatch
+        self, mock_system_health, async_client, app
     ):
         """If subsystem checks fail individually the aggregator returns a
         partial dict (with empty/error sections) — the endpoint must NOT
         500. This test pins that contract."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         partial = {
             "upstreams": {"clerk": "error", "stripe": "ok"},
             "fleet": {},
@@ -142,10 +154,10 @@ class TestAdminSystemHealth:
 
     @pytest.mark.asyncio
     @patch("routers.admin.system_health")
-    async def test_system_health_calls_aggregator_once_per_request(self, mock_system_health, async_client, monkeypatch):
+    async def test_system_health_calls_aggregator_once_per_request(self, mock_system_health, async_client, app):
         """Sanity check: one HTTP call -> one aggregator call (no fan-out, no
         accidental double-await)."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         mock_system_health.get_system_health = AsyncMock(return_value={})
 
         await async_client.get("/api/v1/admin/system/health")
@@ -164,10 +176,10 @@ class TestAdminActionsAuditViewer:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service")
-    async def test_actions_filters_by_target_user_id(self, mock_admin_service, async_client, monkeypatch):
+    async def test_actions_filters_by_target_user_id(self, mock_admin_service, async_client, app):
         """`?target_user_id=u1&limit=20` => service called with target_user_id="u1",
         limit=20, admin_user_id=None, cursor=None."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         mock_admin_service.get_actions_audit = AsyncMock(return_value={"items": [], "cursor": None})
 
         response = await async_client.get(
@@ -185,10 +197,10 @@ class TestAdminActionsAuditViewer:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service")
-    async def test_actions_filters_by_admin_user_id(self, mock_admin_service, async_client, monkeypatch):
+    async def test_actions_filters_by_admin_user_id(self, mock_admin_service, async_client, app):
         """`?admin_user_id=admin_x` routes to the admin_user_id kwarg, leaving
         target_user_id None."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         mock_admin_service.get_actions_audit = AsyncMock(return_value={"items": [{"id": "evt1"}], "cursor": None})
 
         response = await async_client.get("/api/v1/admin/actions", params={"admin_user_id": "admin_x"})
@@ -200,12 +212,10 @@ class TestAdminActionsAuditViewer:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service")
-    async def test_actions_returns_400_when_neither_filter_provided(
-        self, mock_admin_service, async_client, monkeypatch
-    ):
+    async def test_actions_returns_400_when_neither_filter_provided(self, mock_admin_service, async_client, app):
         """When the service raises ValueError (its way of signalling 'pick a
         filter'), the router translates to 400."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         mock_admin_service.get_actions_audit = AsyncMock(
             side_effect=ValueError("must filter by target_user_id or admin_user_id")
         )
@@ -216,10 +226,10 @@ class TestAdminActionsAuditViewer:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service")
-    async def test_actions_threads_cursor_for_pagination(self, mock_admin_service, async_client, monkeypatch):
+    async def test_actions_threads_cursor_for_pagination(self, mock_admin_service, async_client, app):
         """`?cursor=abc&limit=5` is passed through unchanged so the next page
         can be fetched."""
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+        _admit_test_user(app)
         mock_admin_service.get_actions_audit = AsyncMock(return_value={"items": [], "cursor": "next_cur"})
 
         response = await async_client.get(
@@ -254,8 +264,8 @@ class TestAdminEndpointsDoNotAuditThemselves:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_actions_repo")
-    async def test_admin_me_does_not_audit(self, mock_repo, async_client, monkeypatch):
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+    async def test_admin_me_does_not_audit(self, mock_repo, async_client, app):
+        _admit_test_user(app)
         mock_repo.create = AsyncMock()
 
         response = await async_client.get("/api/v1/admin/me")
@@ -266,8 +276,8 @@ class TestAdminEndpointsDoNotAuditThemselves:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_actions_repo")
     @patch("routers.admin.system_health")
-    async def test_system_health_does_not_audit(self, mock_system_health, mock_repo, async_client, monkeypatch):
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+    async def test_system_health_does_not_audit(self, mock_system_health, mock_repo, async_client, app):
+        _admit_test_user(app)
         mock_system_health.get_system_health = AsyncMock(return_value={})
         mock_repo.create = AsyncMock()
 
@@ -279,8 +289,8 @@ class TestAdminEndpointsDoNotAuditThemselves:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_actions_repo")
     @patch("routers.admin.admin_service")
-    async def test_actions_does_not_audit(self, mock_admin_service, mock_repo, async_client, monkeypatch):
-        monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+    async def test_actions_does_not_audit(self, mock_admin_service, mock_repo, async_client, app):
+        _admit_test_user(app)
         mock_admin_service.get_actions_audit = AsyncMock(return_value={"items": [], "cursor": None})
         mock_repo.create = AsyncMock()
 

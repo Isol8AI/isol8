@@ -57,14 +57,6 @@ class Settings(BaseSettings):
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
     AGENT_CATALOG_BUCKET: str = os.getenv("AGENT_CATALOG_BUCKET", "")
 
-    # --- Platform admin ---
-    # Comma-separated Clerk user IDs allowed to call /admin/catalog/publish
-    # AND every endpoint under /api/v1/admin/* (the admin dashboard).
-    # v1 is env-driven rather than org-role-driven because "platform admin"
-    # (Isol8 team) is distinct from "org admin" (customer admin of a
-    # customer org). See require_platform_admin in core/auth.py.
-    PLATFORM_ADMIN_USER_IDS: str = os.getenv("PLATFORM_ADMIN_USER_IDS", "")
-
     # --- PostHog (server-side, distinct from NEXT_PUBLIC_POSTHOG_KEY) ---
     # Used by core/services/posthog_admin.py to query the Persons API for the
     # admin dashboard's Activity tab. Empty defaults so the admin client

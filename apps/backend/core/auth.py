@@ -239,17 +239,24 @@ async def get_optional_user(
         return None
 
 
+# Email domain that identifies Isol8 team members. Any authenticated user whose
+# Clerk JWT carries an email ending with this suffix is a platform admin. No
+# env var, no Secrets Manager entry, no Clerk user IDs in git — Clerk itself
+# holds the list of who can sign in with an @isol8.co email, and this gate
+# just trusts the JWT claim.
+_PLATFORM_ADMIN_EMAIL_DOMAIN = "@isol8.co"
+
+
 def require_platform_admin(auth: AuthContext = Depends(get_current_user)) -> AuthContext:
     """
     Allow only platform admins (Isol8 team) — distinct from customer org admins.
 
-    Allowlist is driven by the PLATFORM_ADMIN_USER_IDS env var (comma-separated
-    Clerk user IDs). Returns 403 if the current user is not in the list.
+    Gate: the Clerk JWT's ``email`` claim must end with ``@isol8.co``. Clerk
+    populates the claim from the user's primary verified email. Removing
+    someone from the team = deleting their Clerk user (or deleting their
+    ``@isol8.co`` email from Clerk) — same workflow as any other SSO app.
     """
-    from core.config import settings
-
-    raw = settings.PLATFORM_ADMIN_USER_IDS or ""
-    allowed = {u.strip() for u in raw.split(",") if u.strip()}
-    if auth.user_id not in allowed:
+    email = (auth.email or "").lower()
+    if not email.endswith(_PLATFORM_ADMIN_EMAIL_DOMAIN):
         raise HTTPException(status_code=403, detail="Platform admin access required")
     return auth
