@@ -6,13 +6,12 @@ name: Desktop App Build
 # Both cut a draft GitHub release with DMGs attached; approve + publish
 # manually to make it visible.
 #
-# Build matrix: per-arch native builds instead of --target universal-apple-darwin.
-# Rationale:
-#   - tauri-apps/tauri#12160 closed as not-planned — universal DMG unsupported.
-#   - actions/runner-images#12482 — macos-latest (14) has a broken hdiutil
-#     flow since the Provisioner bump on 2025-06-19, causing DMG bundler to
-#     hang ~10min then fail. Pinning macos-15 (ARM) / macos-13 (Intel)
-#     sidesteps the regression.
+# Apple Silicon only. Rationale:
+#   - tauri-apps/tauri#12160: universal DMG unsupported, per-arch builds required.
+#   - actions/runner-images#12482: macos-latest (14) has a broken hdiutil
+#     flow since 2025-06-19 Provisioner bump. macos-15 dodges it.
+#   - macos-13 Intel runners are on GitHub's deprecation path; queue depths
+#     are in hours. Ship what works; revisit Intel via cross-compile later.
 on:
   push:
     tags:
@@ -22,23 +21,20 @@ on:
 
 jobs:
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runs-on: macos-15
-            rust-target: aarch64-apple-darwin
-          - runs-on: macos-13
-            rust-target: x86_64-apple-darwin
-
-    runs-on: ${{ matrix.runs-on }}
+    # Apple Silicon only for now. GitHub's macos-13 Intel runners are
+    # deprecation-path backlogged (queue depth hours on 2026-04-22).
+    # 90%+ of new Mac users are Apple Silicon; ship what works. When
+    # Intel demand surfaces, re-add an x86_64 leg — probably via
+    # cross-compile from macos-15 rather than another native runner
+    # (issue with GH Intel queue is systemic, not transient).
+    runs-on: macos-15
     # tauri-action creates a draft release + uploads artifacts via the
     # GitHub REST API using GITHUB_TOKEN. Default token is read-only
-    # for contents; grant write so create-release doesn't 403. The
-    # second job in the matrix uploads to the same draft release
-    # created by the first (tauri-action is idempotent on tagName).
+    # for contents; grant write so create-release doesn't 403.
     permissions:
       contents: write
+    env:
+      RUST_TARGET: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v4
 
@@ -55,7 +51,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.rust-target }}
+          targets: ${{ env.RUST_TARGET }}
 
       - name: Install dependencies
         run: pnpm install
@@ -112,10 +108,10 @@ jobs:
       # Vendor Node.js + pinned `openclaw` npm package for THIS arch only.
       # Previously vendored both arches for the universal build; with the
       # per-arch matrix each job only needs its own.
-      - name: Vendor browser sidecar (${{ matrix.rust-target }})
-        run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh ${{ matrix.rust-target }}
+      - name: Vendor browser sidecar (${{ env.RUST_TARGET }})
+        run: bash apps/desktop/src-tauri/scripts/vendor-sidecars.sh ${{ env.RUST_TARGET }}
 
-      - name: Build desktop app (${{ matrix.rust-target }})
+      - name: Build desktop app (${{ env.RUST_TARGET }})
         uses: tauri-apps/tauri-action@v0
         with:
           projectPath: apps/desktop
@@ -123,7 +119,7 @@ jobs:
           releaseName: ${{ steps.env.outputs.release_name }}
           releaseDraft: true
           prerelease: true
-          args: --target ${{ matrix.rust-target }}
+          args: --target ${{ env.RUST_TARGET }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
