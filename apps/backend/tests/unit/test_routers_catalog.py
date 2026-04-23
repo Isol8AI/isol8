@@ -30,9 +30,20 @@ def mock_service():
 
 
 @pytest.fixture
-def admin_env(monkeypatch):
-    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_admin_42")
-    yield
+def admin_env():
+    """Safety net so require_platform_admin admits user_admin_42.
+
+    Most tests in this file ALSO override require_platform_admin directly,
+    which bypasses the email gate entirely — this fixture is decorative in
+    that case. For tests that only rely on the email-domain gate, we bind
+    get_current_user so the downstream `require_platform_admin` sees an
+    AuthContext with an @isol8.co email.
+    """
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_admin_42", email="admin@isol8.co")
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 def test_list_returns_catalog_entries(client, mock_service):

@@ -13,15 +13,17 @@ Covers seven GET endpoints on the future ``routers/admin.py`` module:
 Each endpoint is a thin wrapper around an ``admin_service.*`` method, so we
 patch ``routers.admin.admin_service.<method>`` and assert the call args + that
 the response body mirrors the service result. Auth is gated by
-``Depends(require_platform_admin)``; tests flip the
-``PLATFORM_ADMIN_USER_IDS`` allowlist via monkeypatch so the conftest-mocked
-``user_test_123`` is admitted (or 403'd).
+``Depends(require_platform_admin)``; tests flip the email domain gate by
+re-binding ``get_current_user`` in ``app.dependency_overrides`` to return an
+AuthContext whose email does (or doesn't) end with ``@isol8.co``.
 """
 
 import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
+
+from core.auth import AuthContext, get_current_user
 
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
@@ -31,14 +33,14 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 # ---------------------------------------------------------------------------
 
 
-def _admit_test_user(monkeypatch):
-    """Add the conftest-mocked user_test_123 to the platform admin allowlist."""
-    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
+def _admit_test_user(app):
+    """Override get_current_user so the caller has an @isol8.co email."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
 
 
-def _deny_all_admins(monkeypatch):
-    """Empty allowlist → require_platform_admin returns 403 for every user."""
-    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "")
+def _deny_all_admins(app):
+    """Override get_current_user so the caller's email is NOT @isol8.co => 403."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
 
 
 # ---------------------------------------------------------------------------
@@ -49,8 +51,8 @@ def _deny_all_admins(monkeypatch):
 class TestListUsers:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_users", new_callable=AsyncMock)
-    async def test_users_calls_admin_service_with_query_params(self, mock_list, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_users_calls_admin_service_with_query_params(self, mock_list, async_client, app):
+        _admit_test_user(app)
         mock_list.return_value = {"users": [], "cursor": None, "stubbed": False}
 
         res = await async_client.get("/api/v1/admin/users", params={"q": "alice", "limit": 25, "cursor": "50"})
@@ -65,8 +67,8 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_users", new_callable=AsyncMock)
-    async def test_users_returns_service_result(self, mock_list, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_users_returns_service_result(self, mock_list, async_client, app):
+        _admit_test_user(app)
         payload = {
             "users": [
                 {
@@ -88,8 +90,8 @@ class TestListUsers:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_users", new_callable=AsyncMock)
-    async def test_users_default_query_params(self, mock_list, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_users_default_query_params(self, mock_list, async_client, app):
+        _admit_test_user(app)
         mock_list.return_value = {"users": [], "cursor": None, "stubbed": False}
 
         res = await async_client.get("/api/v1/admin/users")
@@ -101,15 +103,15 @@ class TestListUsers:
         assert kwargs.get("cursor") is None
 
     @pytest.mark.asyncio
-    async def test_users_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_users_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get("/api/v1/admin/users")
         assert res.status_code == 403
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_users", new_callable=AsyncMock)
-    async def test_users_passes_through_stubbed_flag(self, mock_list, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_users_passes_through_stubbed_flag(self, mock_list, async_client, app):
+        _admit_test_user(app)
         mock_list.return_value = {"users": [], "cursor": None, "stubbed": True}
 
         res = await async_client.get("/api/v1/admin/users")
@@ -126,8 +128,8 @@ class TestListUsers:
 class TestOverview:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_overview", new_callable=AsyncMock)
-    async def test_overview_calls_admin_service_with_user_id(self, mock_overview, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_overview_calls_admin_service_with_user_id(self, mock_overview, async_client, app):
+        _admit_test_user(app)
         mock_overview.return_value = {
             "identity": {"id": "user_abc"},
             "container": None,
@@ -146,11 +148,11 @@ class TestOverview:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_overview", new_callable=AsyncMock)
-    async def test_overview_returns_service_result_with_partial_errors(self, mock_overview, async_client, monkeypatch):
+    async def test_overview_returns_service_result_with_partial_errors(self, mock_overview, async_client, app):
         """Per-panel error slices (e.g. Stripe timed out) must NOT 500 — the
         endpoint surfaces 200 with the partial error embedded so the UI can
         render the other panels."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_overview.return_value = {
             "identity": {"id": "user_abc", "email": "abc@example.com"},
             "container": {"status": "running"},
@@ -167,25 +169,19 @@ class TestOverview:
         assert body["usage"]["used_usd"] == 0.42
 
     @pytest.mark.asyncio
-    async def test_overview_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_overview_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get("/api/v1/admin/users/user_abc/overview")
         assert res.status_code == 403
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_overview", new_callable=AsyncMock)
-    async def test_overview_writes_audit_row_when_ADMIN_AUDIT_VIEWS_true(
-        self, mock_overview, async_client, monkeypatch
-    ):
-        """When ADMIN_AUDIT_VIEWS is true the @audit_admin_action decorator
-        (or equivalent mechanism) must persist an admin_actions row tagged
-        action="user.view" with the target_user_id from the path. We don't
-        enforce the exact mechanism — only that a 200 is returned and that
-        IF admin_actions_repo.create is called, it carries the correct
-        target_user_id. Skipped assertion if the impl chooses a different
-        audit hook (test still asserts the happy-path 200)."""
-        _admit_test_user(monkeypatch)
-        monkeypatch.setattr("core.config.settings.ADMIN_AUDIT_VIEWS", True)
+    async def test_overview_writes_audit_row(self, mock_overview, async_client, app):
+        """Loading /admin/users/{id}/overview must persist an admin_actions
+        row tagged action starting with "user." and target_user_id from the
+        path. The test is loose: it accepts whichever audit mechanism the
+        endpoint uses, and only asserts the shape when one runs."""
+        _admit_test_user(app)
         mock_overview.return_value = {
             "identity": {"id": "user_abc"},
             "container": None,
@@ -215,8 +211,8 @@ class TestOverview:
 class TestListUserAgents:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_user_agents", new_callable=AsyncMock)
-    async def test_agents_returns_running_container_result(self, mock_agents, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_agents_returns_running_container_result(self, mock_agents, async_client, app):
+        _admit_test_user(app)
         mock_agents.return_value = {
             "agents": [{"agent_id": "agt_1", "name": "Researcher"}],
             "cursor": None,
@@ -233,11 +229,11 @@ class TestListUserAgents:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_user_agents", new_callable=AsyncMock)
-    async def test_agents_surfaces_container_stopped(self, mock_agents, async_client, monkeypatch):
+    async def test_agents_surfaces_container_stopped(self, mock_agents, async_client, app):
         """Stopped/scale-to-zero container is a normal state (free tier).
         Must 200 with empty agents + status="stopped" so the UI can show a
         "container is sleeping" hint instead of an error toast."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_agents.return_value = {
             "agents": [],
             "cursor": None,
@@ -253,8 +249,8 @@ class TestListUserAgents:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.list_user_agents", new_callable=AsyncMock)
-    async def test_agents_threads_cursor_and_limit_query_params(self, mock_agents, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_agents_threads_cursor_and_limit_query_params(self, mock_agents, async_client, app):
+        _admit_test_user(app)
         mock_agents.return_value = {
             "agents": [],
             "cursor": None,
@@ -276,8 +272,8 @@ class TestListUserAgents:
         assert passed_uid == "user_abc"
 
     @pytest.mark.asyncio
-    async def test_agents_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_agents_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get("/api/v1/admin/users/user_abc/agents")
         assert res.status_code == 403
 
@@ -290,11 +286,11 @@ class TestListUserAgents:
 class TestAgentDetail:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_agent_detail", new_callable=AsyncMock)
-    async def test_agent_detail_returns_redacted_config(self, mock_detail, async_client, monkeypatch):
+    async def test_agent_detail_returns_redacted_config(self, mock_detail, async_client, app):
         """CEO S3: the openclaw.json slice MUST be redacted before leaving
         the backend. We trust admin_service.get_agent_detail to apply
         redact_openclaw_config; the router just passes the value through."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_detail.return_value = {
             "agent": {"id": "agt_1", "name": "Researcher"},
             "sessions": [],
@@ -313,13 +309,13 @@ class TestAgentDetail:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_agent_detail", new_callable=AsyncMock)
-    async def test_agent_detail_409_when_container_not_running(self, mock_detail, async_client, monkeypatch):
+    async def test_agent_detail_409_when_container_not_running(self, mock_detail, async_client, app):
         """When admin_service signals "container_not_running" the router
         surfaces it as 409 Conflict — the resource exists but is in a state
         that prevents fetch. (Implementation note: returning 200 with the
         error embedded would also be defensible; this test pins the chosen
         behaviour as 409 so the frontend can branch on status.)"""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_detail.return_value = {
             "error": "container_not_running",
             "container_status": "stopped",
@@ -338,8 +334,8 @@ class TestAgentDetail:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_agent_detail", new_callable=AsyncMock)
-    async def test_agent_detail_threads_both_path_params(self, mock_detail, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_agent_detail_threads_both_path_params(self, mock_detail, async_client, app):
+        _admit_test_user(app)
         mock_detail.return_value = {
             "agent": {"id": "agt_1"},
             "sessions": [],
@@ -358,8 +354,8 @@ class TestAgentDetail:
         assert passed_aid == "agt_xyz"
 
     @pytest.mark.asyncio
-    async def test_agent_detail_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_agent_detail_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get("/api/v1/admin/users/user_abc/agents/agt_1")
         assert res.status_code == 403
 
@@ -372,8 +368,8 @@ class TestAgentDetail:
 class TestPostHogTimeline:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_posthog_timeline", new_callable=AsyncMock)
-    async def test_posthog_returns_events_when_present(self, mock_ph, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_posthog_returns_events_when_present(self, mock_ph, async_client, app):
+        _admit_test_user(app)
         mock_ph.return_value = {
             "events": [
                 {"event": "$pageview", "timestamp": "2026-04-17T12:00:00Z"},
@@ -393,11 +389,11 @@ class TestPostHogTimeline:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_posthog_timeline", new_callable=AsyncMock)
-    async def test_posthog_returns_missing_when_user_never_identified(self, mock_ph, async_client, monkeypatch):
+    async def test_posthog_returns_missing_when_user_never_identified(self, mock_ph, async_client, app):
         """Person never identified in PostHog → 200 with missing=True (NOT a
         404). The user exists in Clerk; they just never produced a tracked
         event. Frontend renders "no activity recorded" instead of erroring."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_ph.return_value = {
             "events": [],
             "stubbed": False,
@@ -414,11 +410,11 @@ class TestPostHogTimeline:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_posthog_timeline", new_callable=AsyncMock)
-    async def test_posthog_returns_stubbed_when_key_unset(self, mock_ph, async_client, monkeypatch):
+    async def test_posthog_returns_stubbed_when_key_unset(self, mock_ph, async_client, app):
         """Local dev / unconfigured POSTHOG_PROJECT_ID → service returns
         stubbed=True. Endpoint must surface that flag so the UI can show a
         "PostHog not configured for this environment" badge."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_ph.return_value = {
             "events": [],
             "stubbed": True,
@@ -434,8 +430,8 @@ class TestPostHogTimeline:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_posthog_timeline", new_callable=AsyncMock)
-    async def test_posthog_threads_limit_query_param(self, mock_ph, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_posthog_threads_limit_query_param(self, mock_ph, async_client, app):
+        _admit_test_user(app)
         mock_ph.return_value = {
             "events": [],
             "stubbed": False,
@@ -458,8 +454,8 @@ class TestPostHogTimeline:
 class TestUserLogs:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_logs", new_callable=AsyncMock)
-    async def test_logs_default_query_params(self, mock_logs, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_logs_default_query_params(self, mock_logs, async_client, app):
+        _admit_test_user(app)
         mock_logs.return_value = {"events": [], "cursor": None, "missing": False}
 
         res = await async_client.get("/api/v1/admin/users/user_abc/logs")
@@ -473,8 +469,8 @@ class TestUserLogs:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_logs", new_callable=AsyncMock)
-    async def test_logs_threads_all_query_params(self, mock_logs, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_logs_threads_all_query_params(self, mock_logs, async_client, app):
+        _admit_test_user(app)
         mock_logs.return_value = {"events": [], "cursor": None, "missing": False}
 
         res = await async_client.get(
@@ -491,8 +487,8 @@ class TestUserLogs:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_logs", new_callable=AsyncMock)
-    async def test_logs_returns_events_with_cursor_for_pagination(self, mock_logs, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_logs_returns_events_with_cursor_for_pagination(self, mock_logs, async_client, app):
+        _admit_test_user(app)
         mock_logs.return_value = {
             "events": [
                 {"timestamp": 1712345678000, "message": "ERROR: kaboom"},
@@ -512,10 +508,10 @@ class TestUserLogs:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_logs", new_callable=AsyncMock)
-    async def test_logs_returns_missing_when_log_group_not_found(self, mock_logs, async_client, monkeypatch):
+    async def test_logs_returns_missing_when_log_group_not_found(self, mock_logs, async_client, app):
         """Container never started or log group rotated away → service
         returns missing=True. Endpoint passes that through (no 404)."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_logs.return_value = {
             "events": [],
             "cursor": None,
@@ -530,8 +526,8 @@ class TestUserLogs:
         assert body["events"] == []
 
     @pytest.mark.asyncio
-    async def test_logs_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_logs_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get("/api/v1/admin/users/user_abc/logs")
         assert res.status_code == 403
 
@@ -544,11 +540,11 @@ class TestUserLogs:
 class TestCloudWatchUrl:
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_cloudwatch_url")
-    async def test_cwl_url_returns_url_object(self, mock_url, async_client, monkeypatch):
+    async def test_cwl_url_returns_url_object(self, mock_url, async_client, app):
         """get_cloudwatch_url is a SYNC method that returns a string. The
         router wraps it in a JSON object {url: "https://..."} so the
         frontend gets a stable shape."""
-        _admit_test_user(monkeypatch)
+        _admit_test_user(app)
         mock_url.return_value = "https://console.aws.amazon.com/cloudwatch/insights?foo=bar"
 
         res = await async_client.get(
@@ -565,8 +561,8 @@ class TestCloudWatchUrl:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_cloudwatch_url")
-    async def test_cwl_url_threads_start_end_level_params(self, mock_url, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_cwl_url_threads_start_end_level_params(self, mock_url, async_client, app):
+        _admit_test_user(app)
         mock_url.return_value = "https://example.test/url"
 
         res = await async_client.get(
@@ -590,8 +586,8 @@ class TestCloudWatchUrl:
 
     @pytest.mark.asyncio
     @patch("routers.admin.admin_service.get_cloudwatch_url")
-    async def test_cwl_url_default_level_is_error(self, mock_url, async_client, monkeypatch):
-        _admit_test_user(monkeypatch)
+    async def test_cwl_url_default_level_is_error(self, mock_url, async_client, app):
+        _admit_test_user(app)
         mock_url.return_value = "https://example.test/url"
 
         res = await async_client.get(
@@ -607,8 +603,8 @@ class TestCloudWatchUrl:
         assert kwargs.get("level") == "ERROR"
 
     @pytest.mark.asyncio
-    async def test_cwl_url_403_for_non_admin(self, async_client, monkeypatch):
-        _deny_all_admins(monkeypatch)
+    async def test_cwl_url_403_for_non_admin(self, async_client, app):
+        _deny_all_admins(app)
         res = await async_client.get(
             "/api/v1/admin/users/user_abc/cloudwatch-url",
             params={

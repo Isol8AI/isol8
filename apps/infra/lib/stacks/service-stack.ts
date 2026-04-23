@@ -26,6 +26,8 @@ export interface SecretNames {
   stripeSecretKey: string;
   stripeWebhookSecret: string;
   encryptionKey: string;
+  /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
+  posthogProjectApiKey: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -621,6 +623,13 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
+        // PostHog server-side reads for the admin Activity tab. Host is the
+        // same for every env; project ID is public (visible in every
+        // PostHog URL). The personal API key is sensitive — comes in via
+        // the secrets: block below. posthog_admin.py stubs when the key is
+        // empty, so leaving POSTHOG_PROJECT_ID unset here is also safe.
+        POSTHOG_HOST: "https://app.posthog.com",
+        POSTHOG_PROJECT_ID: "",
         // Observability: page topic ARN for backend-initiated SNS alerts.
         // Populated after first deploy via Fn.importValue from ObservabilityStack.
         ...(props.alertPageTopicArn
@@ -646,6 +655,16 @@ export class ServiceStack extends cdk.Stack {
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
+        ),
+        // PostHog personal API key for the admin Activity tab. Empty value
+        // → posthog_admin.py returns {stubbed: true}; populated value →
+        // real Persons API calls. Rotate via `aws secretsmanager update-secret`.
+        POSTHOG_PROJECT_API_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportPosthogProjectApiKey",
+            props.secretNames.posthogProjectApiKey,
+          ),
         ),
         // Task-def ARN comes from SSM rather than a cross-stack Fn::ImportValue.
         // The backend reads this env var and uses it as the base to clone per-user

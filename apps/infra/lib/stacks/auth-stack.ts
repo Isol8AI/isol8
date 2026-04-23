@@ -9,6 +9,7 @@ export interface AuthSecrets {
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
+  posthogProjectApiKey: secretsmanager.ISecret;
 }
 
 export interface AuthStackProps extends cdk.StackProps {
@@ -48,12 +49,32 @@ export class AuthStack extends cdk.Stack {
       });
     };
 
+    // PostHog personal API key for the admin Activity tab. Distinct from
+    // NEXT_PUBLIC_POSTHOG_KEY (which is the frontend ingest key). Defaults
+    // to empty string rather than a random value — an empty key makes
+    // posthog_admin.py short-circuit to {stubbed: true} so the backend
+    // starts cleanly before the operator populates the real key via
+    // `aws secretsmanager update-secret`.
+    const posthogProjectApiKey = new secretsmanager.Secret(
+      this,
+      "PosthogProjectApiKey",
+      {
+        secretName: `isol8/${env}/posthog_project_api_key`,
+        description: `Isol8 ${env} posthog_project_api_key`,
+        encryptionKey: this.kmsKey,
+        secretStringValue: cdk.SecretValue.unsafePlainText(
+          secretVals["posthog_project_api_key"] ?? "",
+        ),
+      },
+    );
+
     this.secrets = {
       clerkIssuer: createSecret("ClerkIssuer", "clerk_issuer"),
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
       encryptionKey: createSecret("EncryptionKey", "encryption_key"),
+      posthogProjectApiKey,
     };
   }
 }

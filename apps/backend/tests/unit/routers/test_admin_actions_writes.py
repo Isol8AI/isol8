@@ -43,6 +43,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.auth import AuthContext, get_current_user
+
 os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
@@ -52,17 +54,31 @@ os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
 
 
 @pytest.fixture
-def admin_env(monkeypatch):
-    """user_test_123 is in the platform-admin allowlist."""
-    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "user_test_123")
-    yield
+def admin_env(app):
+    """Caller has an @isol8.co email — require_platform_admin admits them.
+
+    The fixture overrides get_current_user in app.dependency_overrides so the
+    require_platform_admin check sees an AuthContext with email
+    "admin@isol8.co". The teardown pops the override to keep fixtures from
+    leaking across tests (the async_client fixture also clears overrides on
+    its own teardown, but we pop explicitly here as a safety net in case a
+    test uses admin_env without async_client).
+    """
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="admin@isol8.co")
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture
-def non_admin_env(monkeypatch):
-    """Empty allowlist — every admin endpoint must 403."""
-    monkeypatch.setattr("core.config.settings.PLATFORM_ADMIN_USER_IDS", "")
-    yield
+def non_admin_env(app):
+    """Caller's email does NOT end with @isol8.co — every admin endpoint 403s."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="user_test_123", email="user@example.com")
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture

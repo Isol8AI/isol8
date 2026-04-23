@@ -57,29 +57,6 @@ class Settings(BaseSettings):
     S3_CONFIG_BUCKET: str = os.getenv("S3_CONFIG_BUCKET", "")
     AGENT_CATALOG_BUCKET: str = os.getenv("AGENT_CATALOG_BUCKET", "")
 
-    # --- Platform admin ---
-    # Comma-separated Clerk user IDs allowed to call /admin/catalog/publish
-    # AND every endpoint under /api/v1/admin/* (the admin dashboard).
-    # v1 is env-driven rather than org-role-driven because "platform admin"
-    # (Isol8 team) is distinct from "org admin" (customer admin of a
-    # customer org). See require_platform_admin in core/auth.py.
-    PLATFORM_ADMIN_USER_IDS: str = os.getenv("PLATFORM_ADMIN_USER_IDS", "")
-
-    # --- Admin dashboard (v1, see #351) ---
-    # Master switch — false means /admin/* returns 404 from the Next.js
-    # middleware. Flip true on a per-environment basis to expose the surface.
-    ADMIN_UI_ENABLED: bool = os.getenv("ADMIN_UI_ENABLED", "false").lower() == "true"
-
-    # Per-user opt-in allowlist for staged rollout. When non-empty, only
-    # listed Clerk user IDs see the admin UI even when ADMIN_UI_ENABLED=true.
-    # Comma-separated. Empty string = open to every PLATFORM_ADMIN_USER_IDS member.
-    ADMIN_UI_ENABLED_USER_IDS: str = os.getenv("ADMIN_UI_ENABLED_USER_IDS", "")
-
-    # Whether to write an audit row for every read-only admin GET
-    # (e.g. /admin/users/{id}/overview). Default true so PII viewing
-    # leaves a trail. Disable to reduce DDB write volume in dev.
-    ADMIN_AUDIT_VIEWS: bool = os.getenv("ADMIN_AUDIT_VIEWS", "true").lower() == "true"
-
     # --- PostHog (server-side, distinct from NEXT_PUBLIC_POSTHOG_KEY) ---
     # Used by core/services/posthog_admin.py to query the Persons API for the
     # admin dashboard's Activity tab. Empty defaults so the admin client
@@ -88,12 +65,6 @@ class Settings(BaseSettings):
     POSTHOG_HOST: str = os.getenv("POSTHOG_HOST", "https://app.posthog.com")
     POSTHOG_PROJECT_ID: str = os.getenv("POSTHOG_PROJECT_ID", "")
     POSTHOG_PROJECT_API_KEY: str = os.getenv("POSTHOG_PROJECT_API_KEY", "")
-
-    @property
-    def admin_ui_enabled_user_ids(self) -> set[str]:
-        """Parsed allowlist for ADMIN_UI_ENABLED_USER_IDS."""
-        raw = self.ADMIN_UI_ENABLED_USER_IDS or ""
-        return {u.strip() for u in raw.split(",") if u.strip()}
 
     # --- IAM ---
     CONTAINER_EXECUTION_ROLE_ARN: str = os.getenv("CONTAINER_EXECUTION_ROLE_ARN", "")
