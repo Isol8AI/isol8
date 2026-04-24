@@ -170,14 +170,27 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
             org_by_uid[uid] = org_context
 
     # Dedupe owner_ids — two members of the same org share one owner_id and
-    # therefore one container row.
+    # therefore one container + billing row.
     unique_owner_ids = list({oid for oid in owner_by_uid.values()})
-    containers = await asyncio.gather(
-        *(container_repo.get_by_owner_id(oid) for oid in unique_owner_ids),
-        return_exceptions=True,
+    # plan_tier lives on the billing_accounts row (see billing_repo.put_billing
+    # line 62), NOT on the container row. Reading from the container row meant
+    # plan_tier was always the default "free" in the list view, misrepresenting
+    # every paid user. Fetch container + billing in parallel per owner.
+    containers, billings = await asyncio.gather(
+        asyncio.gather(
+            *(container_repo.get_by_owner_id(oid) for oid in unique_owner_ids),
+            return_exceptions=True,
+        ),
+        asyncio.gather(
+            *(billing_repo.get_by_owner_id(oid) for oid in unique_owner_ids),
+            return_exceptions=True,
+        ),
     )
     container_by_oid: dict[str, dict | None] = {
         oid: (c if not isinstance(c, BaseException) else None) for oid, c in zip(unique_owner_ids, containers)
+    }
+    billing_by_oid: dict[str, dict | None] = {
+        oid: (b if not isinstance(b, BaseException) else None) for oid, b in zip(unique_owner_ids, billings)
     }
 
     rows = []
@@ -185,6 +198,7 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
         uid = u["id"]
         owner_id = owner_by_uid.get(uid, uid)
         container = container_by_oid.get(owner_id) or {}
+        billing = billing_by_oid.get(owner_id) or {}
         emails = u.get("email_addresses", [])
         primary_email = emails[0].get("email_address") if emails else None
         rows.append(
@@ -195,7 +209,7 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
                 "last_sign_in_at": u.get("last_sign_in_at"),
                 "banned": u.get("banned", False),
                 "container_status": container.get("status", "none"),
-                "plan_tier": container.get("plan_tier", "free"),
+                "plan_tier": billing.get("plan_tier", "free"),
                 "org": org_by_uid.get(uid),
             }
         )
