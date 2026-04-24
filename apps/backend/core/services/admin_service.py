@@ -19,6 +19,7 @@ timeout via _with_timeout. Slow Stripe doesn't starve other panels.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -421,11 +422,26 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
     else:
         skills_list = []
 
+    # config.get returns either a plain config dict OR the envelope
+    # {raw: "<openclaw.json as string>", hash} used by ConfigPanel (see
+    # ConfigPanel.tsx lines 21-26). redact_openclaw_config only walks
+    # dict/list nodes and passes strings through, so a raw-envelope
+    # response would leak BYOK secrets verbatim in config_redacted.raw
+    # (Codex P1 on PR #379). Parse+redact the envelope before returning.
+    if isinstance(config, dict) and isinstance(config.get("raw"), str):
+        try:
+            config_to_redact = json.loads(config["raw"])
+        except json.JSONDecodeError:
+            # Malformed raw — drop rather than leak the unparseable blob.
+            config_to_redact = {"error": "malformed_config_raw"}
+    else:
+        config_to_redact = config
+
     return {
         "agent": identity,
         "sessions": agent_sessions,
         "skills": skills_list,
-        "config_redacted": redact_openclaw_config(config),
+        "config_redacted": redact_openclaw_config(config_to_redact),
         "org": org_context,
     }
 

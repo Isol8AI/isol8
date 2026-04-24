@@ -341,6 +341,109 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
 
 
 @pytest.mark.asyncio
+async def test_get_agent_detail_redacts_secrets_in_config_raw_envelope():
+    """Codex P1 on PR #379: config.get returns either a plain dict or the
+    ConfigPanel envelope {raw: "<openclaw.json as string>", hash}. The
+    redactor only walks dict/list nodes; strings pass through unchanged.
+    If we redact the envelope directly, config_redacted.raw still
+    contains BYOK secrets verbatim. Parse+redact the raw envelope.
+    """
+    import json as _json
+
+    from core.services import admin_service
+
+    secret_config = {
+        "providers": {
+            "anthropic_api_key": "sk-ant-REAL-SECRET-DO-NOT-LEAK",
+            "openai_api_key": "sk-openai-ALSO-SECRET",
+        },
+        "agents": {"list": [{"id": "agt_1", "name": "A"}]},
+    }
+    raw_envelope = {"raw": _json.dumps(secret_config), "hash": "abc123"}
+
+    rpc_results = {
+        "agent.identity.get": {"name": "A"},
+        "sessions.list": {"sessions": []},
+        "skills.status": {"skills": []},
+        "config.get": raw_envelope,  # envelope form — the bug path
+    }
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        return rpc_results[method]
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        result = await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    # Belt-and-suspenders: secrets must not appear anywhere in the response.
+    response_str = _json.dumps(result)
+    assert "sk-ant-REAL-SECRET-DO-NOT-LEAK" not in response_str, "anthropic key leaked"
+    assert "sk-openai-ALSO-SECRET" not in response_str, "openai key leaked"
+
+    # Structural check: envelope was parsed, so config_redacted is the parsed
+    # + redacted config (not a wrapper containing the raw string).
+    assert result["config_redacted"]["providers"]["anthropic_api_key"] == "***redacted***"
+    assert result["config_redacted"]["providers"]["openai_api_key"] == "***redacted***"
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_handles_malformed_config_raw_envelope():
+    """If config.get returns {raw: "not-json"}, don't crash and don't leak
+    the unparseable blob. Return an error marker instead."""
+    from core.services import admin_service
+
+    rpc_results = {
+        "agent.identity.get": {"name": "A"},
+        "sessions.list": {"sessions": []},
+        "skills.status": {"skills": []},
+        "config.get": {"raw": "not valid json {{{", "hash": "abc"},
+    }
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        return rpc_results[method]
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        result = await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    assert result["config_redacted"] == {"error": "malformed_config_raw"}
+
+
+@pytest.mark.asyncio
 async def test_get_agent_detail_normalizes_sessions_list_array_response():
     """Codex P2 (PR #379 follow-up): sessions.list returns either
     {sessions: [...]} or a raw array depending on OpenClaw version, same as
