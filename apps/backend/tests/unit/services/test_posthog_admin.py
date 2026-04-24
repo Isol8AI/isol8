@@ -1,11 +1,18 @@
-"""Tests for the PostHog Persons API admin client.
+"""Tests for the PostHog Events API admin client.
 
 Covers:
 - Stubbed mode when POSTHOG_PROJECT_API_KEY unset (CEO local-dev requirement).
-- Happy path: persons → events flattened, $session_id surfaced.
+- Happy path: /events/ results → flattened event dicts, $session_id surfaced.
+- Regression: requests hit /events/ (NOT /persons/) — the old code mistakenly
+  queried /persons/ which never returns events, yielding a perpetually empty
+  Activity tab.
+- distinct_id and limit are forwarded as query params.
 - 404 → missing=True (CEO E5).
-- 5xx / timeout → graceful error response.
-- Auth header sent (Bearer).
+- 403 with "scope" in body → error="insufficient_scope" (Events endpoint
+  requires `query:read` scope on the personal API key).
+- Other 4xx/5xx → error="http_{code}".
+- Timeout → error="timeout".
+- Generic network error → error populated with exception message.
 - session_replay_url helper.
 
 Mocks httpx.AsyncClient directly via unittest.mock — respx 0.20.2 has
@@ -47,17 +54,28 @@ async def _fake_client(response_or_exc):
     yield client
 
 
+def _apply_posthog_settings(monkeypatch, *, api_key="phc_xyz", project_id="12345", host="https://app.posthog.com"):
+    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", host)
+    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", project_id)
+    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", api_key)
+
+
 @pytest.mark.asyncio
-async def test_stubs_when_api_key_unset(monkeypatch):
+async def test_stub_when_no_api_key(monkeypatch):
     monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "")
     monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
 
-    from core.services.posthog_admin import get_person_events
+    # Ensure no HTTP call is even attempted.
+    with patch("core.services.posthog_admin.httpx.AsyncClient") as mock_client:
+        from core.services.posthog_admin import get_person_events
 
-    result = await get_person_events(distinct_id="user_test", limit=10)
+        result = await get_person_events(distinct_id="user_test", limit=10)
+
     assert result["stubbed"] is True
     assert result["events"] == []
     assert result["missing"] is False
+    assert result["error"] is None
+    mock_client.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -72,26 +90,29 @@ async def test_stubs_when_project_id_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_happy_path_flattens_persons_to_events(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "phc_xyz")
+async def test_parses_events_from_results(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
 
     body = {
+        "next": None,
         "results": [
             {
-                "events": [
-                    {
-                        "timestamp": "2026-04-21T10:00:00Z",
-                        "event": "$pageview",
-                        "properties": {"$current_url": "/chat", "$session_id": "sess_a"},
-                    },
-                    {
-                        "timestamp": "2026-04-21T10:01:00Z",
-                        "event": "agent_chat_started",
-                        "properties": {"agent_id": "agent_x", "$session_id": "sess_a"},
-                    },
-                ],
+                "id": "01HABC",
+                "distinct_id": "user_test",
+                "timestamp": "2026-04-24T12:34:56.789Z",
+                "event": "$pageview",
+                "properties": {
+                    "$session_id": "s1",
+                    "$current_url": "/chat",
+                    "$os": "Mac OS X",
+                },
+            },
+            {
+                "id": "01HDEF",
+                "distinct_id": "user_test",
+                "timestamp": "2026-04-24T12:35:00.000Z",
+                "event": "chat_sent",
+                "properties": {"$session_id": "s2", "agent_id": "agent_x"},
             },
         ],
     }
@@ -109,17 +130,108 @@ async def test_happy_path_flattens_persons_to_events(monkeypatch):
     assert result["missing"] is False
     assert result["error"] is None
     assert len(result["events"]) == 2
+
     e0 = result["events"][0]
     assert e0["event"] == "$pageview"
-    assert e0["session_id"] == "sess_a"
+    assert e0["timestamp"] == "2026-04-24T12:34:56.789Z"
+    assert e0["session_id"] == "s1"
     assert e0["properties"]["$current_url"] == "/chat"
+
+    e1 = result["events"][1]
+    assert e1["event"] == "chat_sent"
+    assert e1["timestamp"] == "2026-04-24T12:35:00.000Z"
+    assert e1["session_id"] == "s2"
 
 
 @pytest.mark.asyncio
-async def test_404_returns_missing(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "phc_xyz")
+async def test_hits_events_endpoint_not_persons(monkeypatch):
+    """Regression: the original bug hit /persons/ which never returns events."""
+    _apply_posthog_settings(monkeypatch)
+
+    captured = {}
+    response = _make_response(200, json_body={"results": []})
+
+    @asynccontextmanager
+    async def capturing_client(*args, **kwargs):
+        client = MagicMock()
+
+        async def get(url, headers=None, params=None, **kw):
+            captured["url"] = url
+            captured["headers"] = headers
+            captured["params"] = params
+            return response
+
+        client.get = get
+        yield client
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+        from core.services.posthog_admin import get_person_events
+
+        await get_person_events(distinct_id="user_test")
+
+    assert "/events/" in captured["url"]
+    assert "/persons/" not in captured["url"]
+    assert captured["url"].endswith("/api/projects/12345/events/")
+    # Auth header still a bearer personal API key.
+    assert captured["headers"]["Authorization"] == "Bearer phc_xyz"
+
+
+@pytest.mark.asyncio
+async def test_passes_distinct_id_and_limit(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+
+    captured = {}
+    response = _make_response(200, json_body={"results": []})
+
+    @asynccontextmanager
+    async def capturing_client(*args, **kwargs):
+        client = MagicMock()
+
+        async def get(url, headers=None, params=None, **kw):
+            captured["params"] = params
+            return response
+
+        client.get = get
+        yield client
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+        from core.services.posthog_admin import get_person_events
+
+        await get_person_events(distinct_id="user_xyz", limit=42)
+
+    assert captured["params"]["distinct_id"] == "user_xyz"
+    assert captured["params"]["limit"] == 42
+
+
+@pytest.mark.asyncio
+async def test_limit_capped_at_500(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+
+    captured = {}
+    response = _make_response(200, json_body={"results": []})
+
+    @asynccontextmanager
+    async def capturing_client(*args, **kwargs):
+        client = MagicMock()
+
+        async def get(url, headers=None, params=None, **kw):
+            captured["params"] = params
+            return response
+
+        client.get = get
+        yield client
+
+    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+        from core.services.posthog_admin import get_person_events
+
+        await get_person_events(distinct_id="user_xyz", limit=9999)
+
+    assert captured["params"]["limit"] == 500
+
+
+@pytest.mark.asyncio
+async def test_handles_404_as_missing(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
 
     response = _make_response(404, json_body={})
     with patch(
@@ -136,12 +248,19 @@ async def test_404_returns_missing(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_5xx_returns_error(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "phc_xyz")
+async def test_handles_403_scope_error(monkeypatch):
+    """Regression: /events/ requires query:read scope on the personal API key.
 
-    response = _make_response(503, text_body="upstream down")
+    Surface this as a distinct error so the frontend can render a
+    specific hint instead of generic http_403.
+    """
+    _apply_posthog_settings(monkeypatch)
+
+    response = _make_response(
+        403,
+        json_body={"detail": "API key missing required scope 'query:read'"},
+        text_body='{"detail":"API key missing required scope \'query:read\'"}',
+    )
     with patch(
         "core.services.posthog_admin.httpx.AsyncClient",
         new=lambda *a, **k: _fake_client(response),
@@ -150,16 +269,50 @@ async def test_5xx_returns_error(monkeypatch):
 
         result = await get_person_events(distinct_id="user_test")
 
-    assert result["error"] == "http_503"
+    assert result["error"] == "insufficient_scope"
+    assert result["events"] == []
+    assert result["missing"] is False
+    assert result["stubbed"] is False
+
+
+@pytest.mark.asyncio
+async def test_403_without_scope_falls_through_to_generic_error(monkeypatch):
+    """A 403 that isn't a scope problem stays as http_403."""
+    _apply_posthog_settings(monkeypatch)
+
+    response = _make_response(403, text_body="forbidden")
+    with patch(
+        "core.services.posthog_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        from core.services.posthog_admin import get_person_events
+
+        result = await get_person_events(distinct_id="user_test")
+
+    assert result["error"] == "http_403"
+
+
+@pytest.mark.asyncio
+async def test_handles_generic_5xx(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
+
+    response = _make_response(500, text_body="internal server error")
+    with patch(
+        "core.services.posthog_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(response),
+    ):
+        from core.services.posthog_admin import get_person_events
+
+        result = await get_person_events(distinct_id="user_test")
+
+    assert result["error"] == "http_500"
     assert result["events"] == []
     assert result["missing"] is False
 
 
 @pytest.mark.asyncio
-async def test_timeout_returns_error(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "phc_xyz")
+async def test_handles_timeout(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
 
     with patch(
         "core.services.posthog_admin.httpx.AsyncClient",
@@ -170,37 +323,24 @@ async def test_timeout_returns_error(monkeypatch):
         result = await get_person_events(distinct_id="user_test")
 
     assert result["error"] == "timeout"
+    assert result["events"] == []
 
 
 @pytest.mark.asyncio
-async def test_authorization_header_includes_bearer_token(monkeypatch):
-    monkeypatch.setattr("core.config.settings.POSTHOG_HOST", "https://app.posthog.com")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_ID", "12345")
-    monkeypatch.setattr("core.config.settings.POSTHOG_PROJECT_API_KEY", "phc_secret_value")
+async def test_handles_network_error(monkeypatch):
+    _apply_posthog_settings(monkeypatch)
 
-    captured_kwargs = {}
-    response = _make_response(200, json_body={"results": []})
-
-    @asynccontextmanager
-    async def capturing_client(*args, **kwargs):
-        client = MagicMock()
-
-        async def get(url, headers=None, params=None, **kw):
-            captured_kwargs["url"] = url
-            captured_kwargs["headers"] = headers
-            captured_kwargs["params"] = params
-            return response
-
-        client.get = get
-        yield client
-
-    with patch("core.services.posthog_admin.httpx.AsyncClient", new=capturing_client):
+    with patch(
+        "core.services.posthog_admin.httpx.AsyncClient",
+        new=lambda *a, **k: _fake_client(RuntimeError("dns boom")),
+    ):
         from core.services.posthog_admin import get_person_events
 
-        await get_person_events(distinct_id="user_test")
+        result = await get_person_events(distinct_id="user_test")
 
-    assert captured_kwargs["headers"]["Authorization"] == "Bearer phc_secret_value"
-    assert captured_kwargs["params"]["distinct_id"] == "user_test"
+    assert result["events"] == []
+    assert result["error"] is not None
+    assert "dns boom" in result["error"]
 
 
 def test_session_replay_url(monkeypatch):
