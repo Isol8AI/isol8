@@ -12,13 +12,16 @@
 Pivot Isol8 from a 4-tier pricing ladder with a Bedrock-only LLM stack to a flat-fee
 product with three signup paths:
 
-1. **Sign in with ChatGPT** — $40/mo flat, 14-day free trial. User's ChatGPT
+1. **Sign in with ChatGPT** — $50/mo flat, 14-day free trial. User's ChatGPT
    subscription powers all inference via OpenClaw's `openai-codex` provider (OAuth).
-2. **Bring your own API key** — $40/mo flat, 14-day free trial. User provides
+2. **Bring your own API key** — $50/mo flat, 14-day free trial. User provides
    their own OpenAI or Anthropic API key; we wire it into the container.
-3. **Powered by Claude** — $40/mo flat + prepaid Claude credits. We provide
+3. **Powered by Claude** — $50/mo flat + prepaid Claude credits. We provide
    Claude (Sonnet 4.6 + Opus 4.7) via AWS Bedrock with a 1.4x markup on raw
    inference cost. No trial — credits required day one.
+
+The $50 price covers the always-on container plus a bundle of included
+features (Paperclip + others — separately scoped, listed in §3.4).
 
 All three paths share the same hosted infrastructure: a per-user always-on
 ECS Fargate container running OpenClaw, accessed via the existing WebSocket
@@ -30,8 +33,8 @@ The change is justified by:
 - **Product-thesis alignment.** "It's not a good product if you don't use the
   frontier models" — kill MiniMax / Qwen, expose only frontier (GPT-5.5, Claude
   Sonnet 4.6, Claude Opus 4.7).
-- **Unit economics.** At ~$18/mo per always-on container COGS, $40 flat gives
-  ~50% gross margin without depending on any LLM markup.
+- **Unit economics.** At ~$18/mo per always-on container COGS, $50 flat gives
+  ~58% gross margin without depending on any LLM markup.
 - **Cleaner code.** Eliminates per-tier model gating, the unmerged scale-to-zero
   plan, and the tier-vs-tier billing branching.
 
@@ -57,8 +60,9 @@ The change is justified by:
   Opus 4.7 are the entire catalog.
 - **One container size, one price.** No tier decision. Pick how you want to
   pay for inference; everything else is the same.
-- **Clean separation of concerns.** $40 = container + product. LLM cost is
-  user's problem (cards 1, 2) or pass-through with markup (card 3).
+- **Clean separation of concerns.** $50 = container + product + bundled
+  features (Paperclip et al.). LLM cost is user's problem (cards 1, 2) or
+  pass-through with markup (card 3).
 - **Multiple acquisition wedges.** ChatGPT power-users, Claude power-users,
   and "I'll just pay you" all have a clear front door.
 
@@ -68,15 +72,15 @@ The change is justified by:
 
 ### 3.1 The three cards
 
-All cards: $40/mo, billed monthly via Stripe, single 0.5 vCPU / 1 GB always-on
+All cards: $50/mo, billed monthly via Stripe, single 0.5 vCPU / 1 GB always-on
 ECS Fargate container, multi-channel (Telegram / Discord / WhatsApp), persistent
-agent workspace on EFS.
+agent workspace on EFS, plus the bundled feature set in §3.4.
 
 | Card | Pitch | LLM source | Trial | Day-one charge |
 |------|-------|------------|-------|---------------|
 | 1. Sign in with ChatGPT | "Use your ChatGPT subscription. GPT-5.5 included." | `openai-codex` (OAuth → ChatGPT quota) | 14 days, card on file | $0 (charged day 15) |
-| 2. Bring your own API key | "Bring an OpenAI or Anthropic API key. Pay your provider direct, pay us $40 for hosting." | `openai` or `anthropic` (API key) | 14 days, card on file | $0 (charged day 15) |
-| 3. Powered by Claude | "We run Claude for you. Pre-pay credits, no provider account needed." | `amazon-bedrock` (we own AWS creds) | None | $40 (credit purchase strongly suggested but not required at signup) |
+| 2. Bring your own API key | "Bring an OpenAI or Anthropic API key. Pay your provider direct, pay us $50 for hosting." | `openai` or `anthropic` (API key) | 14 days, card on file | $0 (charged day 15) |
+| 3. Powered by Claude | "We run Claude for you. Pre-pay credits, no provider account needed." | `amazon-bedrock` (we own AWS creds) | None | $50 (credit purchase strongly suggested but not required at signup) |
 
 ### 3.2 Pricing rationale
 
@@ -88,12 +92,16 @@ agent workspace on EFS.
 | EFS storage (~50 MB) | $0.02 |
 | CloudWatch logs from container | $1.00 |
 | Per-user DynamoDB writes | $0.05 |
-| Stripe processing (~3% + $0.30 on $40) | $1.50 |
+| Stripe processing (~3% + $0.30 on $50) | $1.80 |
 | Amortized fixed infra (NAT, ALB, NLB, backend Fargate, etc.) at 2700 MAU | $0.10 |
-| **Total COGS** | **~$20.65** |
+| **Total COGS** | **~$20.95** |
 
-**Revenue:** $40 flat fee → **gross margin ~48%** before any credit-revenue from
+**Revenue:** $50 flat fee → **gross margin ~58%** before any credit-revenue from
 card 3.
+
+**At 2700 MAU goal:** $135k MRR from flat fees alone (2700 × $50). Gross
+profit ~$79k/mo (2700 × $29). Add credit-revenue from card-3 users on top
+(estimated $4-6k/mo at 30% adoption with average $20/mo of credits per buyer).
 
 **Cards 1, 2:** All margin is in the flat fee. We don't see a cent of LLM cost.
 
@@ -112,7 +120,22 @@ user, that's an extra $5.71/mo per credit-buying user.
 - Per-tier container sizing in `ecs_manager.py` → gone (single 0.5/1 size).
 - The "$2 lifetime free budget" enforcement → gone.
 
-### 3.4 What's out of scope
+### 3.4 Bundled features (the "+ extras" justifying $50 over $40)
+
+Every $50 subscription includes the following beyond the always-on container:
+
+- **Paperclip** — TBD scope; tracked separately. Listed here so the price
+  point makes sense in the spec.
+- **Other bundled features** — to be enumerated in a follow-up addendum
+  before launch. Anything in this list must already be in the codebase or
+  scoped for the same release window — we don't market features that aren't
+  ready.
+
+If the bundled-features list is not finalized by the start of phase 4
+(cutover), we either delay launch or ship at $40 with a planned price hike
+once the bundle is in.
+
+### 3.5 What's out of scope
 
 - Annual pricing / discount tiers → punt to v2.
 - Team / org billing (multiple seats per Stripe sub) → punt to v2. One user = one Stripe sub today.
@@ -482,7 +505,7 @@ When `balance_microcents == 0`:
 - Frontend banner shows persistently.
 - All other product surfaces (channels, cron, MCP) are also gated — no chat,
   no agent runs, no scheduled work.
-- Container stays running (we still pay $18/mo for it; covered by the $40 flat fee).
+- Container stays running (we still pay $18/mo for it; covered by the $50 flat fee).
 - User can top up at any time → instant unblock on next chat.
 
 ---
@@ -507,7 +530,7 @@ States stored on the user record in DynamoDB:
 ### 7.2 During trial
 
 - Same product as paid. No restrictions.
-- In-app banner: "Your free trial ends in N days. You'll be charged $40 on `<date>`."
+- In-app banner: "Your free trial ends in N days. You'll be charged $50 on `<date>`."
 - Email reminders: day 7, day 12, day 14.
 - User can cancel at any time via settings → container is torn down,
   `trial_status = cancelled`, no charge ever.
@@ -541,7 +564,7 @@ Cron job at 00:00 UTC daily scans for `trial_status = active AND trial_ends_at <
 | Stripe object | Purpose |
 |---------------|---------|
 | Product: "Isol8 Hosted Agent" | The product |
-| Price: `STRIPE_FLAT_PRICE_ID` ($40/mo recurring) | The flat fee, all 3 cards |
+| Price: `STRIPE_FLAT_PRICE_ID` ($50/mo recurring) | The flat fee, all 3 cards |
 | Product: "Isol8 Claude Credits" | The credit product |
 | (No price needed — credits use ad-hoc PaymentIntents.) | |
 
@@ -585,7 +608,7 @@ with a 3-card layout:
 │ Sign in with    │  │ Bring your own  │  │ Powered by      │
 │   ChatGPT       │  │    API key      │  │     Claude      │
 │                 │  │                 │  │                 │
-│   $40/month     │  │   $40/month     │  │   $40/month     │
+│   $50/month     │  │   $50/month     │  │   $50/month     │
 │ + your sub      │  │ + your API bill │  │ + Claude credits│
 │                 │  │                 │  │                 │
 │ 14-day free trial│  │14-day free trial│  │ Pay-as-you-go   │
@@ -630,7 +653,7 @@ For card 3, `UsagePanel.tsx` shows credit transaction history (top-ups, deductio
 ### 9.4 Trial banner
 
 New `<TrialBanner>` component shown above the chat UI when
-`trial_status == active`: "Your free trial ends in N days. You'll be charged $40 on `<date>`. [Cancel trial]"
+`trial_status == active`: "Your free trial ends in N days. You'll be charged $50 on `<date>`. [Cancel trial]"
 
 ### 9.5 Out-of-credits banner
 
