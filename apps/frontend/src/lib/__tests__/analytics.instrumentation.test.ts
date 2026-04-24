@@ -198,6 +198,47 @@ describe("instrumentation: useAgentChat", () => {
     expect(completedCall).toBeUndefined();
   });
 
+  it("does NOT fire chat_completed when scoped error fires before any chunk (unknown-run branch)", async () => {
+    // Codex P2 follow-up on PR #383: error before first chunk → run not in
+    // runsRef → unknown-run branch must also reset turn refs, otherwise a
+    // late `done` for a sibling run would emit a bogus chat_completed.
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-Z", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("trigger early error");
+    });
+
+    // Error fires for run-early WITHOUT a prior chunk — runsRef has no
+    // entry for run-early, hits the unknown-run else branch.
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "error",
+          agent_id: "agent-Z",
+          runId: "run-early",
+          message: "early failure",
+        } as ChatIncomingMessage),
+      );
+    });
+
+    // Now a stale `done` arrives for some other runId. With the fix, turn
+    // refs were reset by the unknown-run branch, so chat_completed is gated
+    // and does NOT fire.
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "done",
+          agent_id: "agent-Z",
+          runId: "run-stale",
+        } as ChatIncomingMessage),
+      );
+    });
+
+    const completedCall = captureMock.mock.calls.find((c) => c[0] === "chat_completed");
+    expect(completedCall).toBeUndefined();
+  });
+
   it("fires chat_aborted when cancelMessage runs during a streaming turn", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-Y", "session-1"));

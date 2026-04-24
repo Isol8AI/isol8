@@ -262,12 +262,16 @@ export function ProvisioningStepper({
     // First render has no "previous step" — nothing was completed yet.
     if (prev === null) return;
     // Only a forward transition counts as completing the prior step.
-    // The stepper is monotonically forward in practice, but be defensive
-    // against any re-render that re-evaluates phase to the same value.
+    // Codex P2 (PR #383): guard against backward transitions — billing
+    // state can settle late and bounce phase from "channels" back to
+    // "payment", which would falsely record "channels" as completed.
+    // Compare list indices and only emit when we move forward in the list.
     if (prev === phase) return;
     const stepList = isFree ? STEPS_FREE : STEPS_PAID;
     const prevIdx = stepList.findIndex((s) => s.phase === prev);
-    if (prevIdx < 0) return;
+    const currIdx = stepList.findIndex((s) => s.phase === phase);
+    if (prevIdx < 0 || currIdx < 0) return;
+    if (currIdx <= prevIdx) return;
     capture("onboarding_step_completed", {
       step_name: prev,
       step_index: prevIdx,

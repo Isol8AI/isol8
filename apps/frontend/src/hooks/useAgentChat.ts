@@ -486,6 +486,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
             if (runsRef.current.size === 0) {
               setIsStreaming(false);
+              // Codex P2 (PR #383 fix follow-up): the unknown-run error
+              // branch must also reset per-turn analytics counters. If a
+              // later `done` arrives for an unrelated late run, finalizeBubble
+              // would otherwise see runsRef.size===0 + a populated
+              // turnStartedAtRef and emit a bogus chat_completed for what
+              // was actually an errored turn.
+              turnStartedAtRef.current = null;
+              turnAssistantLenRef.current = 0;
             }
           }
           setError(displayError);
