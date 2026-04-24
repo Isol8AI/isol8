@@ -19,6 +19,7 @@ timeout via _with_timeout. Slow Stripe doesn't starve other panels.
 """
 
 import asyncio
+import json
 import logging
 import uuid
 from typing import Any
@@ -353,13 +354,35 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
             token=token,
         )
 
+    # RPC method names + param shapes are anchored to the main-app call sites
+    # so admin and main-app always speak the same wire contract to OpenClaw.
+    # Two gotchas that bit us in prod (OpenClaw returned
+    # `{"code":"INVALID_REQUEST","message":"unknown method: agents.get"}`):
+    #   1. Method names: the correct RPCs are `agent.identity.get` (NOT
+    #      `agents.get`) and `skills.status` (NOT `skills.list`). See
+    #      AgentOverviewTab.tsx:27 and SkillsPanel.tsx:219.
+    #   2. Wire format: OpenClaw's schemas use camelCase (`agentId`), not
+    #      snake_case. Main app always sends camelCase — we must too.
+    #   3. `sessions.list` isn't filterable by agent server-side; main app
+    #      fetches the full list and narrows client-side (SessionsPanel.tsx
+    #      :123-137). We replicate that below. `config.get` takes no params
+    #      (ConfigPanel.tsx:14).
     try:
-        agent, sessions, skills, config = await asyncio.wait_for(
+        identity, sessions_raw, skills, config = await asyncio.wait_for(
             asyncio.gather(
-                _rpc("agents.get", {"agent_id": agent_id}, "agent-get"),
-                _rpc("sessions.list", {"agent_id": agent_id, "limit": 20}, "sessions"),
-                _rpc("skills.list", {"agent_id": agent_id}, "skills"),
-                _rpc("config.get", {"agent_id": agent_id}, "config"),
+                _rpc("agent.identity.get", {"agentId": agent_id}, "identity"),
+                _rpc(
+                    "sessions.list",
+                    {
+                        "includeGlobal": True,
+                        "includeUnknown": True,
+                        "includeDerivedTitles": True,
+                        "includeLastMessage": True,
+                    },
+                    "sessions",
+                ),
+                _rpc("skills.status", {"agentId": agent_id}, "skills"),
+                _rpc("config.get", {}, "config"),
             ),
             timeout=_GATEWAY_RPC_TIMEOUT_S,  # read at call time so tests can monkeypatch
         )
@@ -369,11 +392,56 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         logger.warning("admin_service.get_agent_detail gateway error: %s", e)
         return {"error": str(e), "org": org_context}
 
+    # sessions.list is not agent-filterable; narrow client-side.
+    #
+    # Two shape normalizations, both mirroring main-app SessionsPanel:
+    # - envelope: response is either {sessions: [...]} or a raw array
+    #   (Session[] | {sessions: Session[]}) depending on OpenClaw version.
+    # - agent key: sessions may carry "agentId" (canonical) or "agent_id"
+    #   (older payload shapes) — accept either.
+    if isinstance(sessions_raw, dict):
+        all_sessions = sessions_raw.get("sessions", [])
+    elif isinstance(sessions_raw, list):
+        all_sessions = sessions_raw
+    else:
+        all_sessions = []
+    agent_sessions = [
+        s
+        for s in all_sessions
+        if isinstance(s, dict) and (s.get("agentId") == agent_id or s.get("agent_id") == agent_id)
+    ]
+
+    # OpenClaw's skills.status response is either {skills: [...]} or a raw
+    # array depending on version (the main-app SkillsPanel handles both
+    # shapes). Normalize so the admin detail page doesn't silently show "no
+    # skills" on array-returning environments.
+    if isinstance(skills, dict):
+        skills_list = skills.get("skills", [])
+    elif isinstance(skills, list):
+        skills_list = skills
+    else:
+        skills_list = []
+
+    # config.get returns either a plain config dict OR the envelope
+    # {raw: "<openclaw.json as string>", hash} used by ConfigPanel (see
+    # ConfigPanel.tsx lines 21-26). redact_openclaw_config only walks
+    # dict/list nodes and passes strings through, so a raw-envelope
+    # response would leak BYOK secrets verbatim in config_redacted.raw
+    # (Codex P1 on PR #379). Parse+redact the envelope before returning.
+    if isinstance(config, dict) and isinstance(config.get("raw"), str):
+        try:
+            config_to_redact = json.loads(config["raw"])
+        except json.JSONDecodeError:
+            # Malformed raw — drop rather than leak the unparseable blob.
+            config_to_redact = {"error": "malformed_config_raw"}
+    else:
+        config_to_redact = config
+
     return {
-        "agent": agent,
-        "sessions": sessions.get("sessions", []) if isinstance(sessions, dict) else [],
-        "skills": skills.get("skills", []) if isinstance(skills, dict) else [],
-        "config_redacted": redact_openclaw_config(config),
+        "agent": identity,
+        "sessions": agent_sessions,
+        "skills": skills_list,
+        "config_redacted": redact_openclaw_config(config_to_redact),
         "org": org_context,
     }
 
