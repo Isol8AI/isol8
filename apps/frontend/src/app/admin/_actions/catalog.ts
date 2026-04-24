@@ -100,4 +100,12 @@ export async function unpublishSlug(slug: string): Promise<ActionResult> {
   return adminPost(`/admin/catalog/${encodeURIComponent(slug)}/unpublish`);
 }
 
-export type { ActionResult };
+// NOTE: Do NOT add `export type { ActionResult }` (or any non-async-function
+// export) here. Next.js `"use server"` files may export ONLY async server
+// functions; anything else is invalid. Turbopack emits the type re-export
+// as a runtime value reference in the SSR chunk, which fails at module
+// evaluation with `ReferenceError: ActionResult is not defined` the first
+// time the Server Action runs — manifesting as a 500 on the first publish
+// click. No consumer currently imports ActionResult; if you ever need the
+// type, move the `interface ActionResult` declaration to a non-"use server"
+// module (e.g. `_actions/_types.ts`).
