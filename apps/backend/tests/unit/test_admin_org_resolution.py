@@ -341,6 +341,56 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
 
 
 @pytest.mark.asyncio
+async def test_get_agent_detail_normalizes_sessions_list_array_response():
+    """Codex P2 (PR #379 follow-up): sessions.list returns either
+    {sessions: [...]} or a raw array depending on OpenClaw version, same as
+    skills.status. Admin must surface both; previously only the dict form
+    was handled and array responses silently rendered 'no recent sessions'.
+    """
+    from core.services import admin_service
+
+    rpc_results = {
+        "agent.identity.get": {"name": "A"},
+        "sessions.list": [  # array form — the bug path
+            {"id": "s_keep", "agentId": "agt_1"},
+            {"id": "s_drop", "agentId": "agt_OTHER"},
+            {"id": "s_keep2", "agent_id": "agt_1"},
+        ],
+        "skills.status": {"skills": []},
+        "config.get": {},
+    }
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        return rpc_results[method]
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        result = await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    ids = [s["id"] for s in result["sessions"]]
+    assert ids == ["s_keep", "s_keep2"], (
+        f"array-shape sessions.list + agent filter must yield only agt_1 sessions; got {ids}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_get_agent_detail_normalizes_skills_status_array_response():
     """Codex P2 (PR #379): skills.status returns either {skills: [...]} or a
     raw array depending on OpenClaw version. Admin must surface both shapes;

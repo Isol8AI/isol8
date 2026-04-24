@@ -391,10 +391,19 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         logger.warning("admin_service.get_agent_detail gateway error: %s", e)
         return {"error": str(e), "org": org_context}
 
-    # sessions.list is not agent-filterable; narrow client-side. The agent
-    # key on a session may be "agentId" (OpenClaw canonical) or "agent_id"
-    # (older payload shapes) — accept either defensively.
-    all_sessions = sessions_raw.get("sessions", []) if isinstance(sessions_raw, dict) else []
+    # sessions.list is not agent-filterable; narrow client-side.
+    #
+    # Two shape normalizations, both mirroring main-app SessionsPanel:
+    # - envelope: response is either {sessions: [...]} or a raw array
+    #   (Session[] | {sessions: Session[]}) depending on OpenClaw version.
+    # - agent key: sessions may carry "agentId" (canonical) or "agent_id"
+    #   (older payload shapes) — accept either.
+    if isinstance(sessions_raw, dict):
+        all_sessions = sessions_raw.get("sessions", [])
+    elif isinstance(sessions_raw, list):
+        all_sessions = sessions_raw
+    else:
+        all_sessions = []
     agent_sessions = [
         s
         for s in all_sessions
