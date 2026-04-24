@@ -54,20 +54,25 @@ async def test_list_users_dedupes_container_lookup_for_same_org_members():
     async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
         return [ORG_FIXTURE]
 
-    container_mock = AsyncMock(return_value={"status": "running", "plan_tier": "pro"})
+    container_mock = AsyncMock(return_value={"status": "running"})
+    # plan_tier lives on billing_accounts, not containers (see fix-plan-tier PR).
+    billing_mock = AsyncMock(return_value={"plan_tier": "pro"})
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
         patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
         patch("core.services.admin_service.container_repo.get_by_owner_id", new=container_mock),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=billing_mock),
     ):
         result = await admin_service.list_users()
 
-    # Exactly one container lookup for the shared org_id — NOT two for each user.
+    # Exactly one container + one billing lookup for the shared org_id.
     assert container_mock.await_count == 1
     assert container_mock.await_args.args[0] == "org_abc"
+    assert billing_mock.await_count == 1
+    assert billing_mock.await_args.args[0] == "org_abc"
 
-    # Both rows report the org's container status.
+    # Both rows report the org's container status + plan tier.
     assert len(result["users"]) == 2
     for row in result["users"]:
         assert row["container_status"] == "running"
@@ -92,16 +97,19 @@ async def test_list_users_personal_mode_looks_up_container_by_user_id():
     async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
         return []
 
-    container_mock = AsyncMock(return_value={"status": "running", "plan_tier": "starter"})
+    container_mock = AsyncMock(return_value={"status": "running"})
+    billing_mock = AsyncMock(return_value={"plan_tier": "starter"})
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
         patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
         patch("core.services.admin_service.container_repo.get_by_owner_id", new=container_mock),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=billing_mock),
     ):
         result = await admin_service.list_users()
 
     container_mock.assert_awaited_once_with("user_solo")
+    billing_mock.assert_awaited_once_with("user_solo")
     assert len(result["users"]) == 1
     assert result["users"][0]["container_status"] == "running"
     assert result["users"][0]["plan_tier"] == "starter"
@@ -132,14 +140,21 @@ async def test_list_users_mixed_page_resolves_each_row_correctly():
 
     async def fake_container_lookup(owner_id):
         return {
-            "org_abc": {"status": "running", "plan_tier": "pro"},
-            "user_solo": {"status": "stopped", "plan_tier": "free"},
+            "org_abc": {"status": "running"},
+            "user_solo": {"status": "stopped"},
+        }.get(owner_id)
+
+    async def fake_billing_lookup(owner_id):
+        return {
+            "org_abc": {"plan_tier": "pro"},
+            "user_solo": {"plan_tier": "free"},
         }.get(owner_id)
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
         patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
         patch("core.services.admin_service.container_repo.get_by_owner_id", new=fake_container_lookup),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=fake_billing_lookup),
     ):
         result = await admin_service.list_users()
 
@@ -188,14 +203,21 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
 
     async def fake_container_lookup(owner_id):
         return {
-            "org_abc": {"status": "running", "plan_tier": "pro"},
-            "user_flaky": {"status": "stopped", "plan_tier": "free"},
+            "org_abc": {"status": "running"},
+            "user_flaky": {"status": "stopped"},
+        }.get(owner_id)
+
+    async def fake_billing_lookup(owner_id):
+        return {
+            "org_abc": {"plan_tier": "pro"},
+            "user_flaky": {"plan_tier": "free"},
         }.get(owner_id)
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
         patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
         patch("core.services.admin_service.container_repo.get_by_owner_id", new=fake_container_lookup),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=fake_billing_lookup),
     ):
         result = await admin_service.list_users()
 
@@ -210,3 +232,81 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
     # Flaky row fails open to personal mode: user_id used as owner_id, org None.
     assert flaky_row["container_status"] == "stopped"
     assert flaky_row["org"] is None
+
+
+@pytest.mark.asyncio
+async def test_list_users_reads_plan_tier_from_billing_not_container():
+    """Regression: plan_tier lives on the billing_accounts row (see
+    billing_repo.put_billing), NOT on the container row. Reading it from the
+    container row (the previous bug) caused every user in the list view to
+    render as "free" tier regardless of actual subscription, because container
+    rows never carry a plan_tier field.
+    """
+    from core.services import admin_service
+
+    async def fake_clerk_list(*, query, limit, offset):  # noqa: ARG001
+        return {
+            "users": [
+                {"id": "user_paying", "email_addresses": [{"email_address": "pay@example.com"}]},
+            ],
+            "next_offset": None,
+            "stubbed": False,
+        }
+
+    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+        return []
+
+    # Container row is deliberately WITHOUT plan_tier — which matches reality,
+    # since plan_tier is not a field on the containers table.
+    container_mock = AsyncMock(return_value={"status": "running", "service_name": "openclaw-x"})
+    # Billing row is the authoritative source for plan_tier.
+    billing_mock = AsyncMock(return_value={"plan_tier": "enterprise"})
+
+    with (
+        patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
+        patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
+        patch("core.services.admin_service.container_repo.get_by_owner_id", new=container_mock),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=billing_mock),
+    ):
+        result = await admin_service.list_users()
+
+    assert len(result["users"]) == 1
+    assert result["users"][0]["plan_tier"] == "enterprise", (
+        "plan_tier must come from billing_repo, not container_repo; "
+        "previously returned 'free' because containers never have plan_tier"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_users_plan_tier_defaults_to_free_when_no_billing_row():
+    """Users with no billing row (never subscribed, pre-provisioning, etc.)
+    should render as 'free' — the sensible default. Guards against the fix
+    regressing in the opposite direction (KeyError on missing billing row).
+    """
+    from core.services import admin_service
+
+    async def fake_clerk_list(*, query, limit, offset):  # noqa: ARG001
+        return {
+            "users": [
+                {"id": "user_new", "email_addresses": [{"email_address": "new@example.com"}]},
+            ],
+            "next_offset": None,
+            "stubbed": False,
+        }
+
+    async def fake_list_orgs(user_id, *, limit=25):  # noqa: ARG001
+        return []
+
+    container_mock = AsyncMock(return_value=None)
+    billing_mock = AsyncMock(return_value=None)  # no billing row
+
+    with (
+        patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
+        patch("core.services.admin_service.clerk_admin.list_user_organizations", new=fake_list_orgs),
+        patch("core.services.admin_service.container_repo.get_by_owner_id", new=container_mock),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=billing_mock),
+    ):
+        result = await admin_service.list_users()
+
+    assert result["users"][0]["plan_tier"] == "free"
+    assert result["users"][0]["container_status"] == "none"

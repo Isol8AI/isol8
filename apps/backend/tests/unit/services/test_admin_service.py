@@ -31,11 +31,16 @@ async def test_list_users_joins_clerk_with_container_status():
         }
 
     async def fake_container_lookup(uid):
-        return {"user_a": {"status": "running", "plan_tier": "starter"}}.get(uid)
+        return {"user_a": {"status": "running"}}.get(uid)
+
+    # plan_tier lives on billing_accounts, not containers.
+    async def fake_billing_lookup(uid):
+        return {"user_a": {"plan_tier": "starter"}}.get(uid)
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
         patch("core.services.admin_service.container_repo.get_by_owner_id", new=fake_container_lookup),
+        patch("core.services.admin_service.billing_repo.get_by_owner_id", new=fake_billing_lookup),
     ):
         result = await admin_service.list_users(q="", limit=10)
 
