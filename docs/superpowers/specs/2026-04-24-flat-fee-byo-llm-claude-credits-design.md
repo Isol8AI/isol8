@@ -135,50 +135,102 @@ Every $50 subscription includes the following beyond the always-on container:
   scoped for the same release window — we don't market features that aren't
   ready.
 
-#### Cost impact of bundling Paperclip
+#### Cost impact of bundling Paperclip — and how we solve it
 
 Paperclip is an ECS sidecar container. Per the existing Paperclip spec
 (§ "Tier Gating", lines 55–67), it adds **+0.5 vCPU + 1 GB** to each user's
-ECS task. Combined with the OpenClaw container's 0.5 vCPU + 1 GB, the
-single-tier task size becomes **1 vCPU + 2 GB** for every user.
+ECS task in its current form. The dominant cost inside that 1 GB is its
+**embedded Postgres + pgvector** process — Paperclip is hardcoded to
+PostgreSQL (no SQLite backend), and there is no multi-tenant Paperclip
+mode (one Paperclip instance per user is mandatory by Paperclip's
+authentication model).
 
-This rewrites the §3.2 unit economics:
+Naïvely bundling Paperclip-as-sidecar pushes per-user task size from
+512/1024 to 1024/2048 Fargate. Cost impact (us-east-1 on-demand,
+verified against actual April Cost Explorer data, not list-price scrapes):
 
-| Cost line | Without Paperclip | With Paperclip bundled |
+| Cost line | Without Paperclip | Naïve Paperclip sidecar |
 |-----------|-------------------|------------------------|
-| Fargate task | $18.00 | $36.00 |
+| Fargate task | $18.00 (512/1024) | $36.00 (1024/2048) |
 | Other (EFS, logs, DDB, Stripe fees, amortized fixed) | $2.95 | $2.95 |
 | **Total COGS** | **~$20.95** | **~$38.95** |
 | **Gross margin at $50** | **58%** | **22%** |
 
-**This is a real problem.** A 22% gross margin is thin for SaaS — industry
-benchmark for healthy SaaS is 70%+, and even infra-heavy SaaS aims for
-50%+. At 2700 MAU this is $11 × 2700 = $30k/mo gross profit, vs. $79k/mo
-without Paperclip bundled. We need to pick one of these:
+22% margin is unacceptable. The fix is to **strip the embedded Postgres
+out of every per-user Paperclip and centralize it.**
 
-- **A) Don't bundle Paperclip in the $50 price.** Keep the single-tier
-  task at 0.5/1, ship Paperclip as an opt-in $20/mo add-on. Margins stay
-  at 58% on the base, plus markup on Paperclip add-on (which costs us
-  $18/mo so $20 add-on is barely profitable — would want $25-30 to be
-  worth it).
-- **B) Bundle Paperclip, raise price to $65–75/mo.** Gets back to ~50%
-  margin. Risks pricing out the "ChatGPT power-user trying me out" persona.
-- **C) Bundle Paperclip at $50, accept 22% margin near-term.** Bet that
-  Paperclip drives conversion / retention enough that the lower margin is
-  worth it; raise prices later when there's pricing power.
-- **D) Reduce Paperclip's resource footprint** (e.g., 256 CPU / 512 MB
-  soft limits) before bundling. Worth investigating but Paperclip is
-  Postgres + a server runtime — unlikely to fit in 256/512 reliably.
+##### Proposed architecture: shared Aurora Serverless v2 + slimmer sidecar
 
-**Decision needed.** This is the most load-bearing remaining open question
-in the spec. The rest of the design is independent of which we pick — but
-the price displayed to users on the landing page (§9.1), the Stripe price
-ID (§8.1), and the trial-conversion charge amount (§7) all depend on the
-answer.
+1. **Provision a single shared Aurora Serverless v2 Postgres cluster**
+   (with `pgvector` extension) in the CDK `database-stack.ts`. Aurora
+   Serverless v2 scales from ~0.5 ACU minimum (~$45/mo base) up to
+   demand. At 2700 MAU this is **$0.02/user/mo** of database cost.
+2. **Patch Paperclip to take a `DATABASE_URL` env var** instead of
+   spinning up its embedded Postgres. The Paperclip codebase is at
+   `.worktrees/paperclip` — appears to be a Node + Python app already
+   using Postgres connection pooling, so this is a config change, not a
+   rewrite. Estimate: 2-3 days including testing.
+3. **Per-user isolation in shared Postgres:** one schema per user
+   (`paperclip_user_<user_id>`), set via `search_path` on connection.
+   Simpler than RLS, fits Paperclip's existing per-instance assumption.
+   Schema is created during user provisioning (one-time SQL).
+4. **Resize the sidecar:** without embedded Postgres, Paperclip needs
+   roughly 256 CPU / 512 MB. Combined with OpenClaw's 256/512 baseline,
+   the per-user Fargate task fits in **512 CPU / 2048 MB** (the next
+   discrete Fargate bucket up from 512/1024). Cost: **$21.27/mo**
+   (vs $18.00 baseline) — a **+$3.27/user/mo** increase, not +$18.
 
-If the bundled-features list is not finalized by the start of phase 4
-(cutover), we either delay launch or ship at $40 with a planned price hike
-once the bundle is in.
+##### Updated unit economics with shared Aurora + slim Paperclip
+
+| Cost line | Final |
+|-----------|-------|
+| Fargate task (512/2048) | $21.27 |
+| Aurora Serverless v2 cluster (amortized at 2700 MAU) | $0.02 |
+| EFS, logs, DDB, Stripe fees, amortized fixed | $2.95 |
+| **Total COGS** | **~$24.24** |
+| **Gross margin at $50** | **52%** |
+
+Margin holds above the 50% line. At 2700 MAU: $135k MRR, ~$70k/mo gross
+profit. Acceptable.
+
+##### Risks of the shared-Postgres approach
+
+- **Paperclip patch may be rejected upstream.** If their maintainers
+  don't accept the `DATABASE_URL` PR, we maintain a fork. Acceptable
+  cost — Paperclip isn't a fast-moving project per our worktree.
+- **Cross-tenant SQL injection** if schema isolation is bypassed. Mitigation:
+  use Postgres role-per-user with strict GRANT scoping, not `search_path`
+  alone. Pen-test before launch.
+- **Aurora "noisy neighbor" cost spikes.** A heavy Paperclip user could
+  push ACU higher than baseline. Acceptable risk at the start; revisit if
+  per-user database cost exceeds $1/mo at scale.
+- **Aurora Serverless v2 has a real ~$45/mo floor** that doesn't go to zero.
+  Below ~50 MAU we're paying $0.90/user just for the database, which is
+  worse than the original embedded approach. Only switch to Aurora once
+  we cross ~100 MAU.
+
+##### Implementation phasing
+
+This adds two work-items to §13 rollout that didn't exist before:
+
+- **New Phase 1.5 (between current Phase 1 and Phase 2):** Patch Paperclip
+  for `DATABASE_URL` mode. Provision Aurora Serverless v2 in CDK.
+  Per-user schema provisioning code in backend. Migration tests.
+- **Updated Phase 4:** Cutover includes deploying Paperclip-as-sidecar
+  to all users on the new task definition.
+
+##### What if the shared-Postgres path doesn't work?
+
+Fallback if Paperclip can't be patched cleanly OR Aurora costs spike OR
+schema isolation proves leaky: **don't bundle Paperclip in v1.** Ship
+the $50 pricing without Paperclip, justified by the "other bundled
+features" placeholder list in this section, and revisit Paperclip
+bundling in v2.
+
+In that case the spec's pricing math reverts to the $20.95 COGS / 58%
+margin from §3.2, and Paperclip is sold as an optional add-on at
+$25/mo (which still loses money on the embedded-Postgres footprint —
+or remains paid-tier-only as in the existing Paperclip spec).
 
 ### 3.5 What's out of scope
 
@@ -787,14 +839,32 @@ push a card-3 / Bedrock-Claude config).
    - Stripe products created in dashboard.
    - Deploys to dev, no user-visible change.
 
-2. **Phase 2 — Frontend onboarding wizard (week 2):**
+2. **Phase 1.5 — Paperclip slim mode (week 1-2, parallel with phase 2):**
+   - Patch Paperclip in `.worktrees/paperclip` to take `DATABASE_URL`
+     env var instead of embedded Postgres. Test against a local Postgres
+     container.
+   - Provision Aurora Serverless v2 cluster (with `pgvector` extension) in
+     `apps/infra/lib/stacks/database-stack.ts`. Min ACU 0.5, max ACU 16.
+   - Backend code: per-user Postgres role + schema creation during
+     provisioning. Add `paperclip_database_url` to user record in DDB.
+   - Resize the Paperclip ECS sidecar to 256 CPU / 512 MB soft limits.
+   - Resize the per-user task to 512 CPU / 2048 MB.
+   - Test: provision a user, confirm Paperclip starts, schema isolated,
+     no cross-user data leakage.
+   - Deploys to dev. Verify against the existing Paperclip integration
+     tests. Pen-test for SQL injection / schema escape.
+   - **Gate:** if Paperclip patch can't be made work-clean in 5 days,
+     escalate — drop Paperclip from v1 bundle and revisit (see §3.4
+     fallback).
+
+3. **Phase 2 — Frontend onboarding wizard (week 2):**
    - New 3-card landing page.
    - New onboarding for each provider choice.
    - New settings panels.
    - Behind a feature flag (`NEW_PRICING_FLOW=true` env var), default off in prod.
    - Deploys to dev, internal QA.
 
-3. **Phase 3 — Trial + credits wiring (week 3):**
+4. **Phase 3 — Trial + credits wiring (week 3):**
    - Trial state machine.
    - Stripe SetupIntent.
    - Credit deduction on chat (gated to `bedrock_claude` users).
@@ -802,7 +872,7 @@ push a card-3 / Bedrock-Claude config).
    - Out-of-credits hard stop.
    - Deploys to dev.
 
-4. **Phase 4 — Cutover (week 4):**
+5. **Phase 4 — Cutover (week 4):**
    - Tear down the 6 existing test containers.
    - Flip `NEW_PRICING_FLOW=true` in prod.
    - Old `/sign-up` flow stops working; redirects to new landing.
@@ -817,6 +887,16 @@ push a card-3 / Bedrock-Claude config).
 
 **Risks:**
 
+- **Paperclip patch may not be cleanly upstreamable.** We'd then maintain
+  a fork. Acceptable cost, but adds ongoing maintenance burden.
+- **Postgres schema isolation in shared Aurora could leak under attack.**
+  Mitigation: Postgres role-per-user with strict GRANT scoping (not just
+  `search_path`), pen-test before launch. If it leaks at launch, rotate
+  immediately and consider falling back to per-user RDS instances (more
+  expensive but isolated).
+- **Aurora Serverless v2 has a $45/mo floor** that's expensive at low MAU.
+  Don't switch to Aurora until ≥100 MAU; until then, accept the higher
+  per-user COGS or ship without Paperclip.
 - **ChatGPT OAuth is interactive and our container has no display.** Resolved
   by device-code flow. But device-code requires the OpenClaw CLI to support
   it — confirm during phase 1 that `openclaw models auth login --provider
@@ -885,11 +965,21 @@ push a card-3 / Bedrock-Claude config).
 
 **Infrastructure (CDK) changes:**
 - `apps/infra/lib/stacks/database-stack.ts` — add `isol8-{env}-credits` and
-  `isol8-{env}-credit-transactions` DynamoDB tables.
+  `isol8-{env}-credit-transactions` DynamoDB tables. Add Aurora Serverless
+  v2 cluster (`isol8-{env}-paperclip`) with `pgvector` extension, security
+  group only reachable from the per-user Fargate tasks' SG, secrets in
+  AWS Secrets Manager.
 - `apps/infra/lib/stacks/container-stack.ts` — collapse per-tier task
-  resource configs to a single `0.5 vCPU / 1024 MB` base.
+  resource configs to a single `512 CPU / 2048 MB` base (sized for
+  OpenClaw + slim Paperclip sidecar).
 - IAM policy for backend Fargate task: `secretsmanager:CreateSecret`,
   `PutSecretValue`, `DeleteSecret` scoped to `isol8/{env}/user-keys/*`.
+
+**Paperclip changes (in `.worktrees/paperclip` — to be upstreamed or maintained as a fork):**
+- Add `DATABASE_URL` env var support; bypass embedded Postgres bootstrap
+  when set.
+- Document the new mode in Paperclip README; offer the patch upstream.
+- Update Paperclip's docker-compose to support both modes for local dev.
 
 ---
 
