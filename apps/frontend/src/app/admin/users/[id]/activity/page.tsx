@@ -25,10 +25,22 @@ interface PosthogEvent {
   session_id?: string | null;
 }
 
-const POSTHOG_HOST_DEFAULT = "https://app.posthog.com";
+// The Watch-session link must target the PostHog UI host, NOT the
+// ingestion host. NEXT_PUBLIC_POSTHOG_HOST holds the ingestion URL
+// (e.g. `https://us.i.posthog.com`) because the frontend rewrites
+// `/ingest/*` → that host for capture. The replay UI lives at
+// `https://us.posthog.com` (strip the `.i.` subdomain). PostHogProvider.tsx
+// hardcodes `POSTHOG_UI_HOST = "https://us.posthog.com"` for the same
+// reason — we mirror that derivation here.
+const POSTHOG_UI_HOST_DEFAULT = "https://us.posthog.com";
 
-function posthogHost(): string {
-  return process.env.NEXT_PUBLIC_POSTHOG_HOST || POSTHOG_HOST_DEFAULT;
+function posthogUiHost(): string {
+  const ingest = process.env.NEXT_PUBLIC_POSTHOG_HOST;
+  if (!ingest) return POSTHOG_UI_HOST_DEFAULT;
+  // Recognize the PostHog-hosted ingestion pattern and derive the UI host.
+  // eu.i.posthog.com → eu.posthog.com ; us.i.posthog.com → us.posthog.com.
+  // Self-hosted / unknown shapes pass through unchanged.
+  return ingest.replace(/\.i\.posthog\.com(\/|$)/, ".posthog.com$1");
 }
 
 function asLogEntry(raw: unknown): LogEntry {
@@ -220,7 +232,7 @@ export default async function ActivityPage({ params }: ActivityPageProps) {
                   </span>
                   {evt.session_id ? (
                     <a
-                      href={`${posthogHost()}/replay/${encodeURIComponent(evt.session_id)}`}
+                      href={`${posthogUiHost()}/replay/${encodeURIComponent(evt.session_id)}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="ml-auto text-sky-300 hover:underline"
