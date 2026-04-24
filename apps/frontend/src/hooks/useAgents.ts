@@ -2,6 +2,7 @@
 
 import { useCallback } from "react";
 import { usePostHog } from "posthog-js/react";
+import { capture } from "@/lib/analytics";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 
 /**
@@ -62,6 +63,11 @@ export function useAgents() {
         .replace(/^-|-$/g, "");
       const workspace = params.workspace ?? `.openclaw/workspaces/${normalizedId}`;
       await callRpc("agents.create", { ...params, workspace });
+      capture("agent_created", {
+        agent_id: normalizedId,
+        agent_name: params.name,
+        workspace,
+      });
       mutate();
     },
     [callRpc, mutate],
@@ -70,6 +76,7 @@ export function useAgents() {
   const deleteAgent = useCallback(
     async (agentId: string) => {
       await callRpc("agents.delete", { agentId, deleteFiles: true });
+      capture("agent_deleted", { agent_id: agentId });
       mutate();
     },
     [callRpc, mutate],

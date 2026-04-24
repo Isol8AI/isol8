@@ -4,6 +4,7 @@ import { useCallback, useRef, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { BACKEND_URL } from "@/lib/api";
+import { capture } from "@/lib/analytics";
 
 // =============================================================================
 // Types matching new backend API response shapes
@@ -107,6 +108,17 @@ export function useBilling() {
     async (tier: "starter" | "pro") => {
       const token = await getToken();
       if (!token) throw new Error("No auth token");
+
+      // Analytics: fire user-intent event BEFORE the Stripe redirect so
+      // we capture drop-off on both the backend call and the redirect
+      // itself. `billing_period` is hard-coded "monthly" because that's
+      // the only billing cadence Isol8 offers today — leave the field in
+      // the event schema so adding annual later doesn't require a
+      // migration on the PostHog side.
+      capture("subscription_checkout_started", {
+        tier,
+        billing_period: "monthly",
+      });
 
       const res = await fetch(`${BACKEND_URL}/billing/checkout`, {
         method: "POST",

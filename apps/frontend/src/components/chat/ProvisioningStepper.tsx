@@ -19,6 +19,7 @@ import { useBilling } from "@/hooks/useBilling";
 import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+import { capture } from "@/lib/analytics";
 
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
@@ -248,6 +249,30 @@ export function ProvisioningStepper({
     // Settings → My Channels later if they want it.
     return memberLinkTarget !== null ? "channels" : "ready";
   }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget]);
+
+  // Analytics: fire `onboarding_step_completed` once per step transition,
+  // NOT on every render. The prev-phase ref reflects the LAST rendered
+  // phase; when it changes, the step the user just advanced past is the
+  // previous value. We use the step-list that matches the user's tier
+  // (free vs paid) so step_index is meaningful.
+  const prevPhaseRef = useRef<Phase | null>(null);
+  useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+    // First render has no "previous step" — nothing was completed yet.
+    if (prev === null) return;
+    // Only a forward transition counts as completing the prior step.
+    // The stepper is monotonically forward in practice, but be defensive
+    // against any re-render that re-evaluates phase to the same value.
+    if (prev === phase) return;
+    const stepList = isFree ? STEPS_FREE : STEPS_PAID;
+    const prevIdx = stepList.findIndex((s) => s.phase === prev);
+    if (prevIdx < 0) return;
+    capture("onboarding_step_completed", {
+      step_name: prev,
+      step_index: prevIdx,
+    });
+  }, [phase, isFree]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
   useEffect(() => {

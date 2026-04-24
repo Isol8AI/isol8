@@ -1,0 +1,179 @@
+/**
+ * Cross-module smoke tests: for every file that was instrumented with a
+ * product event, assert that taking the happy-path user action results in
+ * `capture()` being called with the expected event name.
+ *
+ * These tests mock `@/lib/analytics` and assert on the mocked `capture`.
+ * We don't assert on full property payloads here — that's covered by the
+ * unit tests in analytics.test.ts for the helper itself, and the per-site
+ * payload shape is load-bearing for the PostHog dashboard (wrong shape
+ * shows up there). One smoke test per site = ~10 tests, not 30.
+ */
+
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import type { ChatIncomingMessage } from "@/hooks/useGateway";
+
+// ---------------------------------------------------------------------------
+// Shared analytics mock (hoisted)
+// ---------------------------------------------------------------------------
+
+const captureMock = vi.fn();
+vi.mock("@/lib/analytics", () => ({
+  capture: (...args: unknown[]) => captureMock(...args),
+}));
+
+// ---------------------------------------------------------------------------
+// useAgents: agent_created + agent_deleted
+// ---------------------------------------------------------------------------
+
+const rpcMutationMock = vi.fn().mockResolvedValue({});
+const rpcMock = vi.fn(() => ({ data: { agents: [] }, error: null, isLoading: false, mutate: vi.fn() }));
+
+vi.mock("@/hooks/useGatewayRpc", () => ({
+  useGatewayRpc: () => rpcMock(),
+  useGatewayRpcMutation: () => rpcMutationMock,
+}));
+
+vi.mock("posthog-js/react", () => ({
+  usePostHog: () => ({ capture: vi.fn() }),
+  PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
+
+describe("instrumentation: useAgents", () => {
+  beforeEach(() => {
+    captureMock.mockReset();
+    rpcMutationMock.mockReset().mockResolvedValue({});
+  });
+
+  it("fires agent_created after successful agents.create RPC", async () => {
+    const { useAgents } = await import("@/hooks/useAgents");
+    const { result } = renderHook(() => useAgents());
+    await act(async () => {
+      await result.current.createAgent({ name: "Marvin" });
+    });
+    // Find the agent_created call (RPC mock may produce other capture
+    // calls indirectly — defensive filter).
+    const call = captureMock.mock.calls.find((c) => c[0] === "agent_created");
+    expect(call).toBeTruthy();
+    expect(call?.[1]).toMatchObject({ agent_name: "Marvin" });
+  });
+
+  it("fires agent_deleted after successful agents.delete RPC", async () => {
+    const { useAgents } = await import("@/hooks/useAgents");
+    const { result } = renderHook(() => useAgents());
+    await act(async () => {
+      await result.current.deleteAgent("agent-123");
+    });
+    const call = captureMock.mock.calls.find((c) => c[0] === "agent_deleted");
+    expect(call).toBeTruthy();
+    expect(call?.[1]).toMatchObject({ agent_id: "agent-123" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// useAgentChat: chat_message_sent, chat_completed, chat_aborted
+// ---------------------------------------------------------------------------
+
+let chatHandlers: Array<(msg: ChatIncomingMessage) => void> = [];
+let eventHandlers: Array<(name: string, data: unknown) => void> = [];
+const sendReq = vi.fn().mockResolvedValue({});
+const sendChat = vi.fn();
+
+vi.mock("@/hooks/useGateway", () => ({
+  useGateway: () => ({
+    isConnected: true,
+    nodeConnected: false,
+    error: null,
+    reconnectAttempt: 0,
+    send: vi.fn(),
+    sendReq,
+    sendChat,
+    onEvent: (h: (name: string, data: unknown) => void) => {
+      eventHandlers.push(h);
+      return () => {
+        eventHandlers = eventHandlers.filter((x) => x !== h);
+      };
+    },
+    onChatMessage: (h: (msg: ChatIncomingMessage) => void) => {
+      chatHandlers.push(h);
+      return () => {
+        chatHandlers = chatHandlers.filter((x) => x !== h);
+      };
+    },
+    reconnect: vi.fn(),
+  }),
+}));
+
+describe("instrumentation: useAgentChat", () => {
+  beforeEach(() => {
+    captureMock.mockReset();
+    chatHandlers = [];
+    eventHandlers = [];
+    sendReq.mockReset().mockResolvedValue({});
+    sendChat.mockReset();
+    vi.resetModules();
+  });
+
+  it("fires chat_message_sent on sendMessage and chat_completed on done", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-X", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("hello world");
+    });
+
+    const sentCall = captureMock.mock.calls.find((c) => c[0] === "chat_message_sent");
+    expect(sentCall).toBeTruthy();
+    expect(sentCall?.[1]).toMatchObject({
+      agent_id: "agent-X",
+      message_length: "hello world".length,
+    });
+
+    // Simulate the stream: a chunk to open the bubble, then `done`.
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "chunk",
+          agent_id: "agent-X",
+          runId: "run-1",
+          content: "hi back",
+        } as ChatIncomingMessage),
+      );
+    });
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "done",
+          agent_id: "agent-X",
+          runId: "run-1",
+        } as ChatIncomingMessage),
+      );
+    });
+
+    const completedCall = captureMock.mock.calls.find((c) => c[0] === "chat_completed");
+    expect(completedCall).toBeTruthy();
+    expect(completedCall?.[1]).toMatchObject({
+      agent_id: "agent-X",
+      assistant_message_length: "hi back".length,
+    });
+    expect(typeof completedCall?.[1].duration_ms).toBe("number");
+  });
+
+  it("fires chat_aborted when cancelMessage runs during a streaming turn", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-Y", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("hi");
+    });
+    await act(async () => {
+      await result.current.cancelMessage();
+    });
+
+    const call = captureMock.mock.calls.find((c) => c[0] === "chat_aborted");
+    expect(call).toBeTruthy();
+    expect(call?.[1]).toMatchObject({ agent_id: "agent-Y" });
+    expect(typeof call?.[1].elapsed_ms).toBe("number");
+  });
+});

@@ -8,6 +8,7 @@ import { ErrorBanner } from "@/components/admin/ErrorBanner";
 import { Button } from "@/components/ui/button";
 import { clearAgentSessions, deleteAgent } from "@/app/admin/_actions/agent";
 import { publishAgent } from "@/app/admin/_actions/catalog";
+import { capture } from "@/lib/analytics";
 
 export interface AgentActionsFooterProps {
   userId: string;
@@ -73,6 +74,10 @@ export function AgentActionsFooter({
       setError(result.error ?? "publish_failed");
       return;
     }
+    capture("catalog_agent_published", {
+      agent_id: agentId,
+      agent_name: agentName,
+    });
     setNotice("Agent published to catalog.");
     router.refresh();
   }

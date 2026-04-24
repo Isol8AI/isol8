@@ -6,6 +6,7 @@ import { AgentDetailPanel } from "@/components/chat/AgentDetailPanel";
 import { GalleryItemRow } from "@/components/chat/GalleryItemRow";
 import { useAgents } from "@/hooks/useAgents";
 import { useCatalog, type CatalogAgent, type DeployResult } from "@/hooks/useCatalog";
+import { capture } from "@/lib/analytics";
 
 interface GallerySectionProps {
   onAgentDeployed?: (result: DeployResult) => void;
@@ -21,6 +22,10 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
 
   const handleDeploy = async (slug: string) => {
     const result = await deploy(slug);
+    capture("catalog_agent_deployed", {
+      slug: result.slug,
+      version: result.version,
+    });
     await refreshAgents();
     onAgentDeployed?.(result);
     return result;
