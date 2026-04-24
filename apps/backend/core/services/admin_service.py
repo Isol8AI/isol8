@@ -401,10 +401,21 @@ async def get_agent_detail(user_id: str, agent_id: str) -> dict:
         if isinstance(s, dict) and (s.get("agentId") == agent_id or s.get("agent_id") == agent_id)
     ]
 
+    # OpenClaw's skills.status response is either {skills: [...]} or a raw
+    # array depending on version (the main-app SkillsPanel handles both
+    # shapes). Normalize so the admin detail page doesn't silently show "no
+    # skills" on array-returning environments.
+    if isinstance(skills, dict):
+        skills_list = skills.get("skills", [])
+    elif isinstance(skills, list):
+        skills_list = skills
+    else:
+        skills_list = []
+
     return {
         "agent": identity,
         "sessions": agent_sessions,
-        "skills": skills.get("skills", []) if isinstance(skills, dict) else [],
+        "skills": skills_list,
         "config_redacted": redact_openclaw_config(config),
         "org": org_context,
     }

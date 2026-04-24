@@ -341,6 +341,52 @@ async def test_list_user_agents_sends_empty_params_to_openclaw():
 
 
 @pytest.mark.asyncio
+async def test_get_agent_detail_normalizes_skills_status_array_response():
+    """Codex P2 (PR #379): skills.status returns either {skills: [...]} or a
+    raw array depending on OpenClaw version. Admin must surface both shapes;
+    previously `skills.get("skills", [])` returned [] for array responses,
+    silently showing "no skills" on environments returning the array form."""
+    from core.services import admin_service
+
+    rpc_results = {
+        "agent.identity.get": {"name": "A"},
+        "sessions.list": {"sessions": []},
+        "skills.status": [  # array form — the bug path
+            {"id": "skill_shell", "enabled": True},
+            {"id": "skill_browser", "enabled": False},
+        ],
+        "config.get": {},
+    }
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        return rpc_results[method]
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+    ):
+        result = await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    assert len(result["skills"]) == 2, f"array-shape skills.status must surface; got {result['skills']}"
+    assert result["skills"][0]["id"] == "skill_shell"
+
+
+@pytest.mark.asyncio
 async def test_get_agent_detail_uses_unique_req_ids_per_call():
     """P1: _rpc in get_agent_detail issued 4 RPCs with deterministic
     admin-{suffix}-{agent_id} ids. Concurrent detail loads on the same agent

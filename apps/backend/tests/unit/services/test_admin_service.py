@@ -272,10 +272,14 @@ async def test_get_agent_detail_redacts_config_secrets():
     """CEO S3: openclaw.json secrets stripped before return."""
     from core.services import admin_service
 
+    # RPC names match the main-app call sites (see get_agent_detail in
+    # admin_service.py): agent.identity.get / sessions.list / skills.status /
+    # config.get. sessions.list is unfiltered; the service filters by agentId
+    # client-side — seed s1 with a matching agentId so it survives the filter.
     rpc_results = {
-        "agents.get": {"agent_id": "a", "name": "Agent A"},
-        "sessions.list": {"sessions": [{"id": "s1"}]},
-        "skills.list": {"skills": [{"id": "x"}]},
+        "agent.identity.get": {"agent_id": "a", "name": "Agent A"},
+        "sessions.list": {"sessions": [{"id": "s1", "agentId": "a"}]},
+        "skills.status": {"skills": [{"id": "x"}]},
         "config.get": {"providers": {"anthropic_api_key": "sk-secret-shh"}},
     }
 
