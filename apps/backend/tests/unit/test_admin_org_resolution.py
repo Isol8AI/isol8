@@ -704,3 +704,189 @@ class TestAdminMutationOwnerResolution:
         assert res.status_code == 200
         mock_ban.assert_awaited_once_with("user_123")
         mock_resolve.assert_not_awaited()
+
+
+# =============================================================================
+# PR #379: get_agent_detail RPC method names + camelCase params
+# =============================================================================
+#
+# Background: prod returned `{"code":"INVALID_REQUEST","message":"unknown
+# method: agents.get"}` — admin_service was calling non-existent RPCs with
+# snake_case params. The correct OpenClaw RPCs, anchored to the main-app
+# call sites:
+#   agent.identity.get {agentId}            (AgentOverviewTab.tsx:27)
+#   sessions.list     {includeGlobal, ...} (SessionsPanel.tsx:123-137)
+#   skills.status     {agentId}            (SkillsPanel.tsx:219)
+#   config.get        {}                    (ConfigPanel.tsx:14)
+#
+# sessions.list isn't agent-filterable server-side — main app narrows
+# client-side and we must too.
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_uses_correct_rpc_methods():
+    """Regression: the four RPC method names must match OpenClaw's actual
+    handlers. `agents.get` and `skills.list` DO NOT EXIST — OpenClaw exposes
+    `agent.identity.get` and `skills.status`. This guards against a silent
+    rename regression in admin_service.get_agent_detail."""
+    from core.services import admin_service
+
+    captured_methods: list[str] = []
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        captured_methods.append(method)
+        return {"sessions": [], "skills": []}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch(
+            "core.services.admin_service.redact_openclaw_config",
+            side_effect=lambda x: x,
+        ),
+    ):
+        await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    # Order is gather-dependent but the set must be exact.
+    assert set(captured_methods) == {
+        "agent.identity.get",
+        "sessions.list",
+        "skills.status",
+        "config.get",
+    }, f"wrong RPC methods: {captured_methods}"
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_uses_camelcase_params():
+    """Regression: OpenClaw schemas use camelCase. Admin was sending
+    snake_case (`agent_id`) so every call 400'd. Each RPC's params shape
+    must match the main-app call site exactly."""
+    from core.services import admin_service
+
+    # method -> params, captured per-call.
+    captured: dict[str, dict] = {}
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        captured[method] = params
+        return {"sessions": [], "skills": []}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch(
+            "core.services.admin_service.redact_openclaw_config",
+            side_effect=lambda x: x,
+        ),
+    ):
+        await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    # agent.identity.get: only {agentId}.
+    assert captured["agent.identity.get"] == {"agentId": "agt_1"}
+    # skills.status: only {agentId}.
+    assert captured["skills.status"] == {"agentId": "agt_1"}
+    # config.get: no params (matches ConfigPanel.tsx:14).
+    assert captured["config.get"] == {}
+    # sessions.list: include-* flags, and NO agent filter of any form (main
+    # app filters client-side — OpenClaw's schema would reject agentId here).
+    sessions_params = captured["sessions.list"]
+    assert sessions_params.get("includeGlobal") is True
+    assert sessions_params.get("includeUnknown") is True
+    assert sessions_params.get("includeDerivedTitles") is True
+    assert sessions_params.get("includeLastMessage") is True
+    assert "agentId" not in sessions_params
+    assert "agent_id" not in sessions_params
+    assert "limit" not in sessions_params
+
+    # Blanket camelCase audit across ALL params: no snake_case agent key
+    # should have leaked through anywhere.
+    for method, params in captured.items():
+        assert "agent_id" not in params, f"{method} sent snake_case agent_id: {params}"
+
+
+@pytest.mark.asyncio
+async def test_get_agent_detail_filters_sessions_by_agent_client_side():
+    """OpenClaw's sessions.list returns all sessions regardless of agent;
+    admin_service must narrow to the target agent client-side. Both
+    `agentId` (canonical) and `agent_id` (legacy payloads) are accepted."""
+    from core.services import admin_service
+
+    seeded_sessions = {
+        "sessions": [
+            {"id": "s1", "agentId": "agt_1"},
+            {"id": "s2", "agentId": "agt_OTHER"},
+            {"id": "s3", "agent_id": "agt_1"},
+            {"id": "s4"},  # no agent key at all — must be filtered out
+        ]
+    }
+
+    async def fake_send_rpc(*, user_id, req_id, method, params, ip, token):  # noqa: ARG001
+        if method == "sessions.list":
+            return seeded_sessions
+        if method == "skills.status":
+            return {"skills": []}
+        if method == "config.get":
+            return {"raw": "{}"}
+        if method == "agent.identity.get":
+            return {"id": "agt_1", "name": "Test Agent"}
+        return {}
+
+    fake_pool = type("FakePool", (), {"send_rpc": staticmethod(fake_send_rpc)})()
+    fake_ecs = type(
+        "FakeECS",
+        (),
+        {"resolve_running_container": AsyncMock(return_value=({"gateway_token": "tok"}, "1.2.3.4"))},
+    )()
+
+    with (
+        patch(
+            "core.services.admin_service.clerk_admin.list_user_organizations",
+            new=AsyncMock(return_value=[]),
+        ),
+        patch(
+            "core.services.admin_service.container_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"status": "running"}),
+        ),
+        patch("core.services.admin_service.get_ecs_manager", return_value=fake_ecs),
+        patch("core.services.admin_service.get_gateway_pool", return_value=fake_pool),
+        patch(
+            "core.services.admin_service.redact_openclaw_config",
+            side_effect=lambda x: x,
+        ),
+    ):
+        result = await admin_service.get_agent_detail("user_abc", "agt_1")
+
+    ids = [s["id"] for s in result["sessions"]]
+    assert ids == ["s1", "s3"], f"expected only s1+s3 (both match forms); got {ids}"
+    # Sanity: the other payloads survived the filter pipeline.
+    assert result["agent"] == {"id": "agt_1", "name": "Test Agent"}
+    assert result["skills"] == []
