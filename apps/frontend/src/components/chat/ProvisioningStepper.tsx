@@ -20,6 +20,7 @@ import { useContainerStatus } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { capture } from "@/lib/analytics";
+import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 
 type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
 
@@ -259,23 +260,9 @@ export function ProvisioningStepper({
   useEffect(() => {
     const prev = prevPhaseRef.current;
     prevPhaseRef.current = phase;
-    // First render has no "previous step" — nothing was completed yet.
-    if (prev === null) return;
-    // Only a forward transition counts as completing the prior step.
-    // Codex P2 (PR #383): guard against backward transitions — billing
-    // state can settle late and bounce phase from "channels" back to
-    // "payment", which would falsely record "channels" as completed.
-    // Compare list indices and only emit when we move forward in the list.
-    if (prev === phase) return;
-    const stepList = isFree ? STEPS_FREE : STEPS_PAID;
-    const prevIdx = stepList.findIndex((s) => s.phase === prev);
-    const currIdx = stepList.findIndex((s) => s.phase === phase);
-    if (prevIdx < 0 || currIdx < 0) return;
-    if (currIdx <= prevIdx) return;
-    capture("onboarding_step_completed", {
-      step_name: prev,
-      step_index: prevIdx,
-    });
+    if (prev === null || prev === phase) return;
+    const completion = nextOnboardingCompletion(prev, phase, isFree ? STEPS_FREE : STEPS_PAID);
+    if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase, isFree]);
 
   // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
