@@ -24,6 +24,7 @@ import type {
   ExecApprovalDecision,
   ToolUse,
 } from "@/components/chat/MessageList";
+import { capture } from "@/lib/analytics";
 
 // Re-export ToolUse so existing consumers (AgentChatWindow) keep working
 // after this hook switched to the canonical MessageList definition.
@@ -187,6 +188,21 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
   // sendMessage.
   const pendingCancelRef = useRef<boolean>(false);
 
+  // Analytics: wall-clock when the user hit send (one per turn). Used to
+  // compute duration_ms for the `chat_completed` event. Cleared on the
+  // terminal event for the turn (all runs finalized, cancel, or error).
+  const turnStartedAtRef = useRef<number | null>(null);
+  // Accumulates assistant content length across all runs in the current
+  // turn — multiple runIds can stream in a single chat.send when the agent
+  // chains sub-turns. We sum the FINAL streamContent of each run when it
+  // finalizes so `assistant_message_length` reflects what the user saw.
+  const turnAssistantLenRef = useRef<number>(0);
+
+  // Hoisted above finalizeBubble so the turn-complete analytics capture
+  // can read the current agent id without TS "used before declaration"
+  // complaints. Kept in sync by the effect further down.
+  const agentIdRef = useRef(agentId);
+
   const getOrCreateBubble = useCallback((runId: string): string | null => {
     // Cancel-before-first-event race: if the user hit Stop/Clear BEFORE any
     // chunk/thinking/tool_start arrived for the in-flight turn, runsRef was
@@ -228,7 +244,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     return messageId;
   }, [setIsStreaming]);
 
-  const finalizeBubble = useCallback((runId: string) => {
+  const finalizeBubble = useCallback((runId: string, options?: { errored?: boolean }) => {
+    // Accumulate this run's final assistant content length into the
+    // per-turn counter before we drop the run — the streamContent on the
+    // RunState is the last chunk we received (chunks are replacements,
+    // not deltas), so its length is the final bubble size.
+    const run = runsRef.current.get(runId);
+    if (run) {
+      turnAssistantLenRef.current += run.streamContent.length;
+    }
     runsRef.current.delete(runId);
     finalizedRunsRef.current.add(runId);
     // Bounded LRU-ish: cap size to avoid unbounded growth on long sessions.
@@ -240,6 +264,28 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
     if (runsRef.current.size === 0) {
       setIsStreaming(false);
+      // Skip chat_completed on error paths (Codex P2 on PR #383): scoped
+      // errors call this to clear the bubble, but a failed turn should NOT
+      // be recorded as `chat_completed`. Reset the per-turn counters so a
+      // late successful `done` arriving after the error doesn't emit either.
+      if (options?.errored) {
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
+        return;
+      }
+      // Turn is fully complete — emit `chat_completed` exactly once per
+      // user-initiated turn. turnStartedAtRef is null for late-arriving
+      // events after cancel/clear, in which case we skip the event.
+      const startedAt = turnStartedAtRef.current;
+      if (startedAt !== null) {
+        capture("chat_completed", {
+          agent_id: agentIdRef.current ?? undefined,
+          duration_ms: Date.now() - startedAt,
+          assistant_message_length: turnAssistantLenRef.current,
+        });
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
+      }
     }
   }, [setIsStreaming]);
 
@@ -260,9 +306,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
     }
     runsRef.current.clear();
+    // Wipe the per-turn analytics state too. This path runs on terminal
+    // errors (global error, budget exceeded, cancel, clear) where
+    // `chat_completed` should NOT fire — clearing turnStartedAtRef here
+    // is belt-and-braces against a late `done` event sneaking in and
+    // firing a spurious completion capture.
+    turnStartedAtRef.current = null;
+    turnAssistantLenRef.current = 0;
   }, []);
 
-  const agentIdRef = useRef(agentId);
   useEffect(() => {
     agentIdRef.current = agentId;
   }, [agentId]);
@@ -411,7 +463,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
                 m.id === messageId ? { ...m, content: `Error: ${displayError}` } : m,
               ),
             );
-            finalizeBubble(msg.runId);
+            finalizeBubble(msg.runId, { errored: true });
           } else {
             // Unknown runId: the error fired before any chunk/thinking/
             // tool_start arrived, so no bubble exists yet. Append a visible
@@ -434,6 +486,14 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
             }
             if (runsRef.current.size === 0) {
               setIsStreaming(false);
+              // Codex P2 (PR #383 fix follow-up): the unknown-run error
+              // branch must also reset per-turn analytics counters. If a
+              // later `done` arrives for an unrelated late run, finalizeBubble
+              // would otherwise see runsRef.size===0 + a populated
+              // turnStartedAtRef and emit a bogus chat_completed for what
+              // was actually an errored turn.
+              turnStartedAtRef.current = null;
+              turnAssistantLenRef.current = 0;
             }
           }
           setError(displayError);
@@ -809,6 +869,16 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       ]);
       setIsStreaming(true);
 
+      // Analytics: stamp the turn start AFTER validation succeeds so we
+      // don't attribute duration to failed early-exit paths. Capture the
+      // user-intent event with length only — message content is PII.
+      turnStartedAtRef.current = Date.now();
+      turnAssistantLenRef.current = 0;
+      capture("chat_message_sent", {
+        agent_id: agentIdRef.current,
+        message_length: message.length,
+      });
+
       try {
         sendChat(agentIdRef.current, message);
       } catch (err) {
@@ -833,6 +903,19 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
 
   const cancelMessage = useCallback(async () => {
     if (!agentIdRef.current || !isStreaming) return;
+
+    // Analytics: emit `chat_aborted` on user intent (stop click / RPC).
+    // Compute elapsed from turn start; if we never got a turn start
+    // (shouldn't happen when isStreaming is true, but belt-and-braces)
+    // fall back to 0. Clear the turn refs so the terminal `done` from
+    // the backend doesn't also emit `chat_completed` for this same turn.
+    const startedAt = turnStartedAtRef.current;
+    capture("chat_aborted", {
+      agent_id: agentIdRef.current,
+      elapsed_ms: startedAt !== null ? Date.now() - startedAt : 0,
+    });
+    turnStartedAtRef.current = null;
+    turnAssistantLenRef.current = 0;
 
     const sessionKey = `agent:${agentIdRef.current}:${sessionName}`;
     try {

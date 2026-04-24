@@ -14,6 +14,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
+import { capture } from "@/lib/analytics";
 
 type Provider = "telegram" | "discord" | "slack";
 type Mode = "create" | "link-only";
@@ -309,6 +310,12 @@ export function BotSetupWizard({
 
     setBusy(true);
     clearError();
+    // Analytics: fire on user intent (submit button click) regardless of
+    // whether the bot ultimately comes up. This is the "the user tried
+    // to link a $provider bot" signal — drop-off between this and the
+    // existing `channel_connected` capture (fired from submitPairingCode
+    // on success) tells us where setup is breaking.
+    capture("channel_link_submitted", { channel_type: provider });
     // Move UI to the connecting state immediately so the user sees progress.
     setStepIndex(steps.indexOf("connecting"));
 
@@ -442,6 +449,13 @@ export function BotSetupWizard({
     }
     setBusy(true);
     clearError();
+    // Analytics: link-only flow (members pairing their identity to an
+    // already-configured bot) — mirror `submitTokenAndConnect` so the
+    // event fires once per "user hit submit" regardless of which flow
+    // they're in.
+    if (mode === "link-only") {
+      capture("channel_link_submitted", { channel_type: provider });
+    }
     try {
       const result = (await api.post(`/channels/link/${provider}/complete`, {
         agent_id: agentId,
