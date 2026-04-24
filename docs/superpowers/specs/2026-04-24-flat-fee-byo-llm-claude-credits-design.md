@@ -124,12 +124,57 @@ user, that's an extra $5.71/mo per credit-buying user.
 
 Every $50 subscription includes the following beyond the always-on container:
 
-- **Paperclip** — TBD scope; tracked separately. Listed here so the price
-  point makes sense in the spec.
+- **Paperclip** — agent team orchestration sidecar. Already designed in
+  `docs/superpowers/specs/2026-04-05-paperclip-integration-design.md`. The
+  existing Paperclip spec gates Paperclip to Pro/Enterprise tiers; under
+  this new model that gating goes away — Paperclip is universal. **The
+  Paperclip spec needs a follow-up edit to remove tier gating before
+  implementation.**
 - **Other bundled features** — to be enumerated in a follow-up addendum
   before launch. Anything in this list must already be in the codebase or
   scoped for the same release window — we don't market features that aren't
   ready.
+
+#### Cost impact of bundling Paperclip
+
+Paperclip is an ECS sidecar container. Per the existing Paperclip spec
+(§ "Tier Gating", lines 55–67), it adds **+0.5 vCPU + 1 GB** to each user's
+ECS task. Combined with the OpenClaw container's 0.5 vCPU + 1 GB, the
+single-tier task size becomes **1 vCPU + 2 GB** for every user.
+
+This rewrites the §3.2 unit economics:
+
+| Cost line | Without Paperclip | With Paperclip bundled |
+|-----------|-------------------|------------------------|
+| Fargate task | $18.00 | $36.00 |
+| Other (EFS, logs, DDB, Stripe fees, amortized fixed) | $2.95 | $2.95 |
+| **Total COGS** | **~$20.95** | **~$38.95** |
+| **Gross margin at $50** | **58%** | **22%** |
+
+**This is a real problem.** A 22% gross margin is thin for SaaS — industry
+benchmark for healthy SaaS is 70%+, and even infra-heavy SaaS aims for
+50%+. At 2700 MAU this is $11 × 2700 = $30k/mo gross profit, vs. $79k/mo
+without Paperclip bundled. We need to pick one of these:
+
+- **A) Don't bundle Paperclip in the $50 price.** Keep the single-tier
+  task at 0.5/1, ship Paperclip as an opt-in $20/mo add-on. Margins stay
+  at 58% on the base, plus markup on Paperclip add-on (which costs us
+  $18/mo so $20 add-on is barely profitable — would want $25-30 to be
+  worth it).
+- **B) Bundle Paperclip, raise price to $65–75/mo.** Gets back to ~50%
+  margin. Risks pricing out the "ChatGPT power-user trying me out" persona.
+- **C) Bundle Paperclip at $50, accept 22% margin near-term.** Bet that
+  Paperclip drives conversion / retention enough that the lower margin is
+  worth it; raise prices later when there's pricing power.
+- **D) Reduce Paperclip's resource footprint** (e.g., 256 CPU / 512 MB
+  soft limits) before bundling. Worth investigating but Paperclip is
+  Postgres + a server runtime — unlikely to fit in 256/512 reliably.
+
+**Decision needed.** This is the most load-bearing remaining open question
+in the spec. The rest of the design is independent of which we pick — but
+the price displayed to users on the landing page (§9.1), the Stripe price
+ID (§8.1), and the trial-conversion charge amount (§7) all depend on the
+answer.
 
 If the bundled-features list is not finalized by the start of phase 4
 (cutover), we either delay launch or ship at $40 with a planned price hike
