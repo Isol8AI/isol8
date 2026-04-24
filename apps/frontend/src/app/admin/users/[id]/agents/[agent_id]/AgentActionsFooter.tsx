@@ -78,7 +78,7 @@ export function AgentActionsFooter({
   }
 
   return (
-    <div className="space-y-3 rounded-md border border-white/10 bg-white/[0.02] p-4">
+    <div className="space-y-3 rounded-md border border-border bg-card p-4">
       <h2 className="text-sm font-medium uppercase tracking-wide text-zinc-400">
         Destructive actions
       </h2>
