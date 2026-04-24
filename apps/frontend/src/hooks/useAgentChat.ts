@@ -244,7 +244,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     return messageId;
   }, [setIsStreaming]);
 
-  const finalizeBubble = useCallback((runId: string) => {
+  const finalizeBubble = useCallback((runId: string, options?: { errored?: boolean }) => {
     // Accumulate this run's final assistant content length into the
     // per-turn counter before we drop the run — the streamContent on the
     // RunState is the last chunk we received (chunks are replacements,
@@ -264,6 +264,15 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     }
     if (runsRef.current.size === 0) {
       setIsStreaming(false);
+      // Skip chat_completed on error paths (Codex P2 on PR #383): scoped
+      // errors call this to clear the bubble, but a failed turn should NOT
+      // be recorded as `chat_completed`. Reset the per-turn counters so a
+      // late successful `done` arriving after the error doesn't emit either.
+      if (options?.errored) {
+        turnStartedAtRef.current = null;
+        turnAssistantLenRef.current = 0;
+        return;
+      }
       // Turn is fully complete — emit `chat_completed` exactly once per
       // user-initiated turn. turnStartedAtRef is null for late-arriving
       // events after cancel/clear, in which case we skip the event.
@@ -454,7 +463,7 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
                 m.id === messageId ? { ...m, content: `Error: ${displayError}` } : m,
               ),
             );
-            finalizeBubble(msg.runId);
+            finalizeBubble(msg.runId, { errored: true });
           } else {
             // Unknown runId: the error fired before any chunk/thinking/
             // tool_start arrived, so no bubble exists yet. Append a visible

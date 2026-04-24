@@ -160,6 +160,44 @@ describe("instrumentation: useAgentChat", () => {
     expect(typeof completedCall?.[1].duration_ms).toBe("number");
   });
 
+  it("does NOT fire chat_completed when a turn ends with a scoped error (Codex P2 on PR #383)", async () => {
+    const { useAgentChat } = await import("@/hooks/useAgentChat");
+    const { result } = renderHook(() => useAgentChat("agent-Z", "session-1"));
+
+    await act(async () => {
+      await result.current.sendMessage("trigger error");
+    });
+
+    // Open the bubble with a chunk so the run state exists.
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "chunk",
+          agent_id: "agent-Z",
+          runId: "run-err",
+          content: "partial",
+        } as ChatIncomingMessage),
+      );
+    });
+
+    // Now send a scoped error for that runId — finalizeBubble runs on
+    // the error path, runsRef goes empty, but chat_completed must NOT fire
+    // because the turn failed.
+    act(() => {
+      chatHandlers.forEach((h) =>
+        h({
+          type: "error",
+          agent_id: "agent-Z",
+          runId: "run-err",
+          message: "model died",
+        } as ChatIncomingMessage),
+      );
+    });
+
+    const completedCall = captureMock.mock.calls.find((c) => c[0] === "chat_completed");
+    expect(completedCall).toBeUndefined();
+  });
+
   it("fires chat_aborted when cancelMessage runs during a streaming turn", async () => {
     const { useAgentChat } = await import("@/hooks/useAgentChat");
     const { result } = renderHook(() => useAgentChat("agent-Y", "session-1"));
