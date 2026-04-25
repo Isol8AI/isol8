@@ -66,29 +66,31 @@ def test_extract_agent_slice_tolerates_non_dict_entries_in_agents_list():
 
 
 def test_extract_agent_slice_raises_when_agents_missing_or_malformed():
-    """Missing agents key, non-dict agents, or missing .list → treat as empty."""
+    """Missing agents key, non-dict/non-list agents, or missing .list → empty."""
     for cfg in [
         {"plugins": {}, "tools": {}},
         {"agents": None, "plugins": {}, "tools": {}},
-        {"agents": [], "plugins": {}, "tools": {}},  # legacy flat list — now ignored
+        {"agents": [], "plugins": {}, "tools": {}},  # empty flat list
         {"agents": {"defaults": {"workspace": "/x"}}, "plugins": {}, "tools": {}},
     ]:
         with pytest.raises(KeyError):
             extract_agent_slice(cfg, "agent_abc")
 
 
-def test_extract_agent_slice_legacy_flat_list_is_no_longer_read():
-    """Prod regression guard: if we ever see a config using the OLD flat-list
-    shape (``agents: [...]``) we must NOT silently read it — that shape isn't
-    OpenClaw's real schema and would produce a mutated deploy target on write.
-    Expect KeyError instead."""
+def test_extract_agent_slice_accepts_legacy_flat_list():
+    """Codex P2 regression: admins whose configs are still in the legacy flat
+    shape (``agents: [...]``) must still be able to publish. The write path
+    in config_patcher migrates the shape on deploy; the read path here
+    tolerates it so we don't regress working admins while they wait for a
+    migration write."""
     cfg = {
-        "agents": [{"id": "agent_abc", "name": "Pitch"}],
-        "plugins": {},
-        "tools": {},
+        "agents": [{"id": "agent_abc", "name": "Pitch", "skills": ["web-search"]}],
+        "plugins": {"memory": {"enabled": True}},
+        "tools": {"allowed": ["web-search"]},
     }
-    with pytest.raises(KeyError):
-        extract_agent_slice(cfg, "agent_abc")
+    slice_ = extract_agent_slice(cfg, "agent_abc")
+    assert slice_["agent"]["name"] == "Pitch"
+    assert slice_["plugins"] == {"memory": {"enabled": True}}
 
 
 def test_strip_user_specific_fields_removes_model():

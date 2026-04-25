@@ -27,7 +27,7 @@ def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:
 
 
 def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
-    """Return the ``agents.list`` array from an openclaw.json.
+    """Return the agent-entry array from an openclaw.json.
 
     OpenClaw's config schema (zod: ``openclaw/src/config/zod-schema.agents.ts``):
 
@@ -35,10 +35,14 @@ def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
 
     Early versions of the Isol8 catalog code read ``config["agents"]`` as if it
     were a flat list — that worked only for configs that didn't exist, which
-    is why it went unnoticed until the first real publish attempt. Real configs
-    nest the array under ``agents.list``.
+    is why it went unnoticed until the first real publish attempt. The write
+    path (``config_patcher.apply_deploy_mutation``) migrates flat-list configs
+    to the nested shape on deploy; this reader accepts BOTH so an admin with a
+    legacy config can still publish without first triggering a migration.
     """
     agents = openclaw_json.get("agents")
+    if isinstance(agents, list):
+        return agents  # legacy flat shape — tolerated for read/publish
     if not isinstance(agents, dict):
         return []
     lst = agents.get("list")
