@@ -669,40 +669,52 @@ as part of this pivot.
    the Subscription create call. Without this we're either (a) breaking
    the law or (b) eating tax out of margin.
 
-2. **Stripe Promotion Codes / Coupons** — required for any launch promo
-   ("FIRSTMONTH50", Product Hunt code, referral campaigns). Not in current
-   code at all. Add a `promotion_code` field to the trial-conversion
-   subscription create call and a frontend input on the signup page.
-   Keep the surface tiny: name + percent-off + redeem-by date.
-
-3. **Stripe Radar** — fraud and abuse rules beyond disposable-email
+2. **Stripe Radar** — fraud and abuse rules beyond disposable-email
    blocklists. Trial abuse with stolen cards / synthetic identities is the
    biggest risk in §7.4. Enable Radar's default rule set in the dashboard;
    add a custom rule blocking >2 trials per `payment_method_fingerprint`
    per quarter. Free with standard Stripe pricing.
 
-4. **Idempotency keys on every Stripe write** — current code has none. A
-   retried API call (network blip, our worker restart) can double-create
-   customers, double-charge cards, or double-refund. Add an
-   `idempotency_key` parameter to every `stripe.X.create/update/delete`
-   call, derived from the operation + a stable id (e.g.
-   `f"top_up:{payment_intent_id}"`). Trivial to add, prevents real bugs.
+3. **Idempotency keys on every Stripe write** — verified gap: 0 of the
+   ~14 `stripe.X.create/modify/delete` calls in `billing_service.py`
+   currently pass `idempotency_key=`. A retried API call (network blip,
+   worker restart, FastAPI request retry) can double-create customers,
+   double-charge cards, or double-refund. Fix: add an `idempotency_key`
+   parameter to every Stripe write, derived from the operation + a
+   stable id (e.g. `f"top_up:{payment_intent_id}"`,
+   `f"customer_create:{owner_id}"`).
 
-5. **Webhook idempotency** — Stripe replays webhooks. The current
-   handler doesn't dedupe by `event.id`. A replay of a top-up webhook
-   would credit the user twice. Add a `processed_stripe_events` DDB
-   table keyed by `event.id` with TTL, check-and-set before processing.
+   *Note: the existing `idempotency` decorator at
+   `core/services/idempotency.py` is HTTP-endpoint-level (in-memory
+   60s TTL, caller-provided `Idempotency-Key` header, used by admin
+   endpoints). It's not directly reusable here — Stripe needs the key
+   as an SDK kwarg, not an inbound HTTP header — but the existing
+   decorator stays in place for the admin surfaces it already protects.*
 
-6. **Customer email sync** — when a Clerk user changes email, update
+4. **Webhook event dedup** — verified gap: the handler at
+   `routers/billing.py:330-410` calls `stripe.Webhook.construct_event`
+   for signature verification but does NOT dedupe by `event.id`.
+   Stripe replays webhooks on any non-2xx, on internal retries, and
+   sometimes for at-least-once-delivery insurance. A replay of a
+   `payment_intent.succeeded` would credit the user's balance twice.
+   Fix: add a `processed_stripe_events` DDB table keyed by `event.id`
+   with 30-day TTL; conditional `PutItem` (attribute-not-exists) at
+   the top of the handler — if the put fails, return 200 immediately
+   (already processed). This is small, mechanical, and load-bearing.
+
+5. **Customer email sync** — when a Clerk user changes email, update
    the Stripe customer too (so receipts/invoices go to the right
    address). Hook into the Clerk `user.updated` webhook in
    `clerk_sync_service.py`, push to `stripe.Customer.modify(email=...)`.
 
-7. **Stripe Billing Customer Portal config** — by default the portal
+6. **Stripe Billing Customer Portal config** — by default the portal
    exposes EVERYTHING (sub change, cancel, payment update, invoice
    history). For the new flow we only want: update payment method,
    cancel sub, view invoice history. Configure in the dashboard; lock
    down what users can self-serve.
+
+**Explicitly deferred:** Stripe Promotion Codes / coupons. We can ship
+the pivot without them; add later if a launch campaign needs one.
 
 **Stripe surfaces we explicitly DON'T need (call out so future-us doesn't
 re-investigate):** Sigma, Revenue Recognition, Invoicing for B2B,
@@ -943,19 +955,18 @@ push a card-3 / Bedrock-Claude config).
 - `apps/backend/core/services/billing_service.py` (drop tier ladder; add idempotency keys + `automatic_tax` on every Stripe write)
 - `apps/backend/core/services/usage_service.py` (delete; replaced by credit_ledger)
 - `apps/backend/core/services/clerk_sync_service.py` (push email changes to `stripe.Customer.modify`)
-- `apps/backend/routers/billing.py` (credit endpoints; webhook event dedup; `promotion_code` accepted on conversion)
+- `apps/backend/routers/billing.py` (credit endpoints; webhook event dedup against `processed_stripe_events`)
 - `apps/backend/routers/settings_keys.py` (LLM key support)
 - `apps/backend/main.py` (register new routers)
 - `apps/backend/core/config.py` (delete tier configs, add flat price id)
 - `apps/frontend/src/components/landing/Pricing.tsx` → replaced by `PricingThreeCard.tsx`
-- `apps/frontend/src/components/chat/ProvisioningStepper.tsx` (branch on provider; promo code input)
+- `apps/frontend/src/components/chat/ProvisioningStepper.tsx` (branch on provider)
 - `apps/frontend/src/middleware.ts` (no change expected)
 
 **Stripe dashboard configuration (manual, before phase 4 cutover):**
 - Enable Stripe Tax; configure tax registrations for jurisdictions where MAU expected.
 - Enable Stripe Radar default ruleset; add custom rule "block >2 trials per `payment_method_fingerprint` per 90 days".
 - Configure Customer Portal: allow only "update payment method", "cancel subscription", "view invoice history". Disable plan-change UI.
-- Create launch promotion codes (e.g., `LAUNCH50` 50% off first month, redeem-by 30 days post-launch).
 
 **Deleted files:**
 - `apps/backend/core/services/usage_poller.py`
