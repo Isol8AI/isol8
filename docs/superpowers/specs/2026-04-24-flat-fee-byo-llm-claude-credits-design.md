@@ -550,17 +550,43 @@ When `balance_microcents == 0`:
 
 ## 7. Trial state machine (cards 1, 2)
 
-States stored on the user record in DynamoDB:
-`trial_status: none | active | converted | cancelled | expired_no_card`
+State lives on the Stripe Subscription (`status` field, values:
+`incomplete | trialing | active | past_due | canceled | unpaid`). The
+user record stores only `stripe_customer_id` and `stripe_subscription_id`
+— the rest is derived.
+
+**Design principle: Stripe owns the trial lifecycle. We listen.**
+
+Conversion, retry, expiry, and grace-period semantics all live in Stripe
+via the native `trial_period_days` parameter on Subscriptions. The backend
+runs no conversion cron, no daily DDB scan, no clock comparison. Our
+`subscription.status` field is *derived* from Stripe webhooks, not
+maintained independently — one source of truth.
 
 ### 7.1 Signup
 
 1. User picks card 1 or 2 on landing page.
 2. Sign up via Clerk (existing flow).
-3. Onboarding step: "Add a payment method." Stripe SetupIntent collects
-   card; no charge.
-4. Set `trial_status = active`, `trial_started_at = now`,
-   `trial_ends_at = now + 14 days`.
+3. Onboarding step: "Add a payment method." Stripe Elements collects a
+   payment method via SetupIntent (or PaymentElement equivalent); no charge.
+4. Backend creates the Stripe Subscription **immediately**:
+   ```python
+   stripe.Subscription.create(
+       customer=customer_id,
+       items=[{"price": STRIPE_FLAT_PRICE_ID}],
+       trial_period_days=14,
+       default_payment_method=pm_id,
+       automatic_tax={"enabled": True},
+       payment_behavior="default_incomplete",  # surface 3DS if required
+       payment_settings={
+           "save_default_payment_method": "on_subscription",
+           "payment_method_types": ["card"],
+       },
+       idempotency_key=f"trial_signup:{owner_id}",
+   )
+   ```
+   Subscription is born in `status: trialing` with `trial_end` 14 days out.
+   Backend stores `subscription_id` on the user record.
 5. Provision container (existing `ecs_manager` flow).
 6. Run the auth flow for the chosen card (OAuth or BYO key).
 7. User is in.
@@ -568,30 +594,61 @@ States stored on the user record in DynamoDB:
 ### 7.2 During trial
 
 - Same product as paid. No restrictions.
-- In-app banner: "Your free trial ends in N days. You'll be charged $50 on `<date>`."
-- Email reminders: day 7, day 12, day 14.
-- User can cancel at any time via settings → container is torn down,
-  `trial_status = cancelled`, no charge ever.
+- In-app trial banner reads its end date from `subscription.trial_end`
+  fetched from Stripe (cached locally), not from a duplicated DDB column.
+- **Stripe sends the trial-end reminder email automatically** (configurable
+  in dashboard, default ~7 days before end). For a branded reminder we
+  also subscribe to the `customer.subscription.trial_will_end` webhook,
+  which Stripe fires 3 days before the trial ends, and send our own email.
+  No "day 7, day 12, day 14" cron — Stripe + one webhook handler covers it.
+- User cancels via Customer Portal (or our settings UI calling the same
+  Stripe API) → `customer.subscription.deleted` webhook fires → backend
+  tears down container. No "no charge ever" bookkeeping needed; Stripe
+  handles it because the trial period was active at cancellation.
 
-### 7.3 Trial conversion (day 15)
+### 7.3 Trial conversion (day 15) — handled by Stripe, observed by us
 
-Cron job at 00:00 UTC daily scans for `trial_status = active AND trial_ends_at <= now`:
+- **Stripe handles the conversion.** On day 15, Stripe attempts the
+  first charge against the saved default payment method.
+- On success: Stripe fires `invoice.payment_succeeded` and updates the
+  subscription to `status: active`. The webhook handler updates the user's
+  derived status. Container keeps running, no UX change.
+- On failure: Stripe **Smart Retries** kick in (configurable in dashboard,
+  default schedule retries over up to 21 days). During this window the
+  subscription is in `status: past_due` — we surface a banner asking the
+  user to update their payment method via the Customer Portal. Container
+  stays running so an updating user can self-recover.
+- When retries exhaust, Stripe fires `customer.subscription.deleted`
+  (or transitions to `unpaid`, depending on dashboard config). Webhook
+  handler tears down the container.
 
-- Create a Stripe subscription on `STRIPE_FLAT_PRICE_ID` against the user's
-  saved payment method.
-- On success: `trial_status = converted`, `subscription_id = <stripe id>`.
-- On failure (card declined, etc.): retry with Stripe Smart Retries (built-in).
-  If still failing after 3 days, `trial_status = expired_no_card`, container
-  is torn down, user gets an email.
+This eliminates the "cron job at 00:00 UTC" / `trial_status =
+expired_no_card` / "3-day cliff" custom logic entirely. Stripe's
+behavior is more permissive than our prior design (21-day retry vs
+3-day cliff) — that's the user-friendly default and it's the right
+choice.
 
 ### 7.4 Anti-abuse
 
-- Block repeat trials per Stripe customer (Stripe customer dedup via email +
-  payment method fingerprint).
-- Block trials for users whose Clerk email is on a disposable-email blocklist
-  (use a maintained list, not a custom one).
-- Container is always-on during trial (no scale-to-zero) — abuse cost is
-  bounded by Fargate per-task cost (~$10 over 14 days).
+- Block repeat trials via **Stripe Radar custom rule** (see §8.4):
+  block when >2 trials per `payment_method_fingerprint` per 90 days.
+  Stripe enforces this at payment-method-attach time — we don't need
+  custom dedup code.
+- Block disposable emails at signup via a maintained blocklist
+  (frontend signup gate; cheaper than waiting for Stripe).
+- Container is always-on during trial (no scale-to-zero) — abuse cost
+  is bounded by Fargate per-task cost (~$10 over 14 days).
+
+### 7.5 Backend state minimization
+
+The user record stores **only** `stripe_customer_id` and
+`stripe_subscription_id`. Trial-window booleans (`trial_status`,
+`trial_ends_at`, `trial_started_at`) **do not** exist on our side — they
+were a symptom of the old design where we tried to duplicate Stripe's
+clock. Code that needs the current state queries the live subscription
+(cached for ~60s) and reads `subscription.status` and
+`subscription.trial_end`. This kills a class of "DDB and Stripe drifted"
+bugs at the source.
 
 ---
 
@@ -619,15 +676,18 @@ Existing webhook router (`POST /api/v1/billing/webhooks/stripe`) handles:
 - `invoice.payment_succeeded` / `.payment_failed` → update billing state.
 - **New:** `payment_intent.succeeded` for credit top-ups → call
   `credit_ledger.top_up(...)`.
-- **New:** `setup_intent.succeeded` for trial signups → store payment method id
-  on user.
+- **New:** `customer.subscription.trial_will_end` (fires 3 days before
+  trial end) → optional branded reminder email to the user.
 
 ### 8.3 Failure modes
 
-- Subscription payment fails after trial → Smart Retries → eventual cancel
-  → `trial_status = expired_no_card` → container torn down.
-- Subscription cancelled by user → container torn down at end of current period
-  (let them use what they paid for).
+- Subscription payment fails after trial → Stripe Smart Retries (default
+  4 retries over up to 21 days) → if all retries exhaust, Stripe fires
+  `customer.subscription.deleted` → backend tears down container. During
+  the retry window the subscription is `past_due` and we surface a banner
+  prompting the user to update their payment method via Customer Portal.
+- Subscription cancelled by user → Stripe fires `customer.subscription.deleted` →
+  container torn down at end of current period (let them use what they paid for).
 - Top-up fails → user sees error in modal, balance unchanged.
 - Auto-reload fails → email user, pause auto-reload, balance unchanged.
 - Refund: standard Stripe refund + balance adjustment.
@@ -780,7 +840,7 @@ For card 3, `UsagePanel.tsx` shows credit transaction history (top-ups, deductio
 ### 9.4 Trial banner
 
 New `<TrialBanner>` component shown above the chat UI when
-`trial_status == active`: "Your free trial ends in N days. You'll be charged $50 on `<date>`. [Cancel trial]"
+`subscription.status == "trialing"`: "Your free trial ends in N days. You'll be charged $50 on `<date>`. [Cancel trial]" (the date and N come from `subscription.trial_end`).
 
 ### 9.5 Out-of-credits banner
 
@@ -839,7 +899,9 @@ push a card-3 / Bedrock-Claude config).
 **Integration tests** (against LocalStack):
 - Full provisioning flow for each of the 4 paths (`chatgpt_oauth`,
   `openai_key`, `anthropic_key`, `bedrock_claude`).
-- Trial conversion cron: end-to-end through Stripe test mode.
+- Trial conversion: simulate Stripe trial-end via Stripe test clocks
+  (advance customer's clock past `trial_end`); confirm webhook handlers
+  drive the correct user-record state transitions and container teardown.
 - Top-up via Stripe test mode → balance updated.
 - Auto-reload trigger → second charge → balance updated.
 
