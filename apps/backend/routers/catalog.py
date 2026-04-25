@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.services.catalog_service import CatalogService, get_catalog_service
 
 
@@ -29,7 +29,7 @@ async def deploy(
     auth: AuthContext = Depends(get_current_user),
     service: CatalogService = Depends(get_catalog_service),
 ) -> dict:
-    return await service.deploy(user_id=auth.user_id, slug=req.slug)
+    return await service.deploy(owner_id=resolve_owner_id(auth), slug=req.slug)
 
 
 @router.get(
@@ -40,4 +40,4 @@ async def list_deployed(
     auth: AuthContext = Depends(get_current_user),
     service: CatalogService = Depends(get_catalog_service),
 ) -> dict:
-    return {"deployed": service.list_deployed_for_user(auth.user_id)}
+    return {"deployed": service.list_deployed_for_user(resolve_owner_id(auth))}

@@ -14,7 +14,6 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
-from core.services.admin_service import resolve_admin_owner_id
 from core.services.catalog_package import build_manifest, tar_directory
 from core.services.catalog_slice import extract_agent_slice
 
@@ -121,14 +120,13 @@ class CatalogService:
 
     # ---- deploy ----
 
-    async def deploy(self, *, user_id: str, slug: str) -> dict[str, Any]:
-        # Org-member end-users deploy into the org's EFS path, not their
-        # personal path — owner_id (org_id for org members, user_id for
-        # personal-mode) is the partition key for both DDB and EFS layout.
-        # user_id stays as the public param for provenance/audit; resolution
-        # happens internally (PR #376 admin-org-owner-id pattern).
-        owner_id, _ = await resolve_admin_owner_id(user_id)
-
+    async def deploy(self, *, owner_id: str, slug: str) -> dict[str, Any]:
+        # owner_id is the EFS/DDB partition key — org_id for org-context
+        # callers, user_id for personal-mode. Resolved by the router from the
+        # caller's JWT via core.auth.resolve_owner_id(auth). Doing the resolve
+        # at the router layer (not here) ensures the active auth context is
+        # respected — a user with an org membership but currently in personal
+        # mode lands in their personal partition, not the org's.
         catalog = self._s3.get_json("catalog.json", default={"agents": []})
         match = next((a for a in catalog.get("agents") or [] if a.get("slug") == slug), None)
         if not match:
@@ -199,16 +197,19 @@ class CatalogService:
 
     # ---- deployed ----
 
-    def list_deployed_for_user(self, user_id: str) -> list[dict[str, Any]]:
-        """Scan the user's workspaces for .template sidecars; return provenance.
+    def list_deployed_for_user(self, owner_id: str) -> list[dict[str, Any]]:
+        """Scan the owner's workspaces for .template sidecars; return provenance.
 
         Scans ``workspaces/`` (where sidecars live and where deploy writes
         immediately) rather than ``agents/`` (OpenClaw runtime state that
-        lags behind openclaw.json updates).
+        lags behind openclaw.json updates). Caller must pass the same
+        owner_id used during ``deploy()`` — the router resolves it via
+        ``core.auth.resolve_owner_id(auth)`` so deploy + list stay keyed
+        consistently for both personal and org-context callers.
         """
         deployed = []
-        for agent_id in self._workspace.list_workspace_agent_dirs(user_id):
-            sidecar = self._workspace.read_template_sidecar(user_id, agent_id)
+        for agent_id in self._workspace.list_workspace_agent_dirs(owner_id):
+            sidecar = self._workspace.read_template_sidecar(owner_id, agent_id)
             if sidecar:
                 deployed.append(
                     {
@@ -225,18 +226,21 @@ class CatalogService:
         self,
         *,
         admin_user_id: str,
+        owner_id: str,
         agent_id: str,
         slug_override: str | None = None,
         description_override: str | None = None,
     ) -> dict[str, Any]:
-        # For org-member admins the agent lives on the org's EFS path, not the
-        # admin's personal path. Resolve the effective owner_id the same way
-        # the admin detail views do (PR #376 admin-org-owner-id pattern).
-        # admin_user_id stays as the public param so the manifest's
-        # ``published_by`` and the audit row correctly attribute WHO clicked
-        # publish — only the EFS reads switch to owner_id.
-        owner_id, _ = await resolve_admin_owner_id(admin_user_id)
-
+        # admin_user_id and owner_id are intentionally separate:
+        #   - admin_user_id: the Clerk user who clicked publish; recorded as
+        #     the manifest's ``published_by`` and on the audit row
+        #     (preserves attribution).
+        #   - owner_id: the EFS/DDB partition the agent's openclaw.json +
+        #     workspace live on. For org-context admins this is org_id; for
+        #     personal-mode admins it equals admin_user_id. Router resolves
+        #     it via core.auth.resolve_owner_id(auth) — using the JWT's
+        #     active context, not Clerk membership lookups, so personal-mode
+        #     admins never accidentally write into an org partition.
         config = self._workspace.read_openclaw_config(owner_id)
         if not config:
             raise FileNotFoundError(f"admin {admin_user_id} (owner {owner_id}) has no openclaw.json")

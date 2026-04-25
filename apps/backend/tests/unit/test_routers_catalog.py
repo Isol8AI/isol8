@@ -83,7 +83,7 @@ def test_deploy_returns_new_agent_id(client, mock_service):
     r = client.post("/api/v1/catalog/deploy", json={"slug": "pitch"})
     assert r.status_code == 200
     assert r.json()["agent_id"] == "agent_xyz"
-    mock_service.deploy.assert_awaited_once_with(user_id="user_a", slug="pitch")
+    mock_service.deploy.assert_awaited_once_with(owner_id="user_a", slug="pitch")
     app.dependency_overrides.pop(get_current_user, None)
 
 
@@ -381,4 +381,103 @@ def test_admin_catalog_endpoints_require_platform_admin(client):
     assert client.get("/api/v1/admin/catalog").status_code == 403
     assert client.post("/api/v1/admin/catalog/pitch/unpublish").status_code == 403
     assert client.get("/api/v1/admin/catalog/pitch/versions").status_code == 403
+    app.dependency_overrides.pop(require_platform_admin, None)
+
+
+# ---- owner_id resolution at the router boundary ----
+#
+# Codex P1: deploy() must derive ownership from the caller's active JWT
+# context (resolve_owner_id(auth)) — NOT from a Clerk membership lookup —
+# so a user with org memberships but currently in personal context never
+# accidentally writes into the org partition.
+#
+# Codex P2: deploy and list_deployed must be keyed identically. Both
+# routers use resolve_owner_id(auth) so they always agree.
+
+
+def test_deploy_passes_org_owner_id_when_caller_is_in_org_context(client, mock_service):
+    """End-user in org context: router must pass owner_id=org_id to service."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_member",
+        org_id="org_abc",
+        org_role="org:member",
+    )
+    mock_service.deploy = AsyncMock(
+        return_value={
+            "slug": "pitch",
+            "version": 3,
+            "agent_id": "agent_xyz",
+            "name": "Pitch",
+            "skills_added": [],
+            "plugins_enabled": [],
+        }
+    )
+    r = client.post("/api/v1/catalog/deploy", json={"slug": "pitch"})
+    assert r.status_code == 200
+    mock_service.deploy.assert_awaited_once_with(owner_id="org_abc", slug="pitch")
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_deploy_passes_user_owner_id_when_caller_is_personal(client, mock_service):
+    """End-user in personal mode: owner_id == user_id, even if user has org memberships
+    elsewhere — the JWT's active context wins (Codex P1)."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_solo",
+        org_id=None,  # personal context
+    )
+    mock_service.deploy = AsyncMock(
+        return_value={
+            "slug": "pitch",
+            "version": 3,
+            "agent_id": "agent_xyz",
+            "name": "Pitch",
+            "skills_added": [],
+            "plugins_enabled": [],
+        }
+    )
+    r = client.post("/api/v1/catalog/deploy", json={"slug": "pitch"})
+    assert r.status_code == 200
+    mock_service.deploy.assert_awaited_once_with(owner_id="user_solo", slug="pitch")
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_list_deployed_keyed_by_owner_id_in_org_context(client, mock_service):
+    """Codex P2 regression: deploy + list must be keyed identically. Router
+    passes owner_id (not user_id) so org-context deploys remain visible."""
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(
+        user_id="user_member",
+        org_id="org_abc",
+        org_role="org:member",
+    )
+    mock_service.list_deployed_for_user = MagicMock(
+        return_value=[{"agent_id": "agent_xx", "template_slug": "pitch", "template_version": 3}]
+    )
+    r = client.get("/api/v1/catalog/deployed")
+    assert r.status_code == 200
+    mock_service.list_deployed_for_user.assert_called_once_with("org_abc")
+    app.dependency_overrides.pop(get_current_user, None)
+
+
+def test_publish_passes_org_owner_id_when_admin_in_org_context(client, mock_service):
+    """Admin publishing while in org context: owner_id=org_id (where the agent's
+    EFS lives), but admin_user_id stays as the raw user_id for published_by."""
+    app.dependency_overrides[require_platform_admin] = lambda: AuthContext(
+        user_id="user_admin",
+        email="admin@isol8.co",
+        org_id="org_abc",
+        org_role="org:admin",
+    )
+    mock_service.publish = AsyncMock(return_value={"slug": "pitch", "version": 1, "s3_prefix": "pitch/v1"})
+    r = client.post(
+        "/api/v1/admin/catalog/publish",
+        json={"agent_id": "agent_admin_pitch"},
+    )
+    assert r.status_code == 200
+    mock_service.publish.assert_awaited_once_with(
+        admin_user_id="user_admin",
+        owner_id="org_abc",
+        agent_id="agent_admin_pitch",
+        slug_override=None,
+        description_override=None,
+    )
     app.dependency_overrides.pop(require_platform_admin, None)
