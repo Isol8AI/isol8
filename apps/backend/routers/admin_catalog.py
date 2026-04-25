@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from core.auth import AuthContext, require_platform_admin
+from core.auth import AuthContext, require_platform_admin, resolve_owner_id
 from core.services.admin_audit import audit_admin_action
 from core.services.catalog_service import CatalogService, get_catalog_service
 from core.services.idempotency import idempotency
@@ -34,6 +34,7 @@ async def publish(
 ) -> dict:
     return await service.publish(
         admin_user_id=auth.user_id,
+        owner_id=resolve_owner_id(auth),
         agent_id=req.agent_id,
         slug_override=req.slug,
         description_override=req.description,

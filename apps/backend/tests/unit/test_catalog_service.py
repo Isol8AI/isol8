@@ -97,7 +97,7 @@ async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3
     mock_s3.get_json.side_effect = _get_json
     mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"name: Pitch\n"})
 
-    result = await service.deploy(user_id="user_u", slug="pitch")
+    result = await service.deploy(owner_id="user_u", slug="pitch")
 
     assert result["slug"] == "pitch"
     assert result["agent_id"]
@@ -122,7 +122,7 @@ async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3
 async def test_deploy_unknown_slug_raises(service, mock_s3):
     mock_s3.get_json.return_value = {"agents": []}
     with pytest.raises(KeyError):
-        await service.deploy(user_id="user_u", slug="ghost")
+        await service.deploy(owner_id="user_u", slug="ghost")
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_deploy_writes_template_sidecar(service, mock_s3, mock_workspace, 
 
     mock_workspace.write_template_sidecar = _write_sidecar
 
-    result = await service.deploy(user_id="user_u", slug="pitch")
+    result = await service.deploy(owner_id="user_u", slug="pitch")
     assert sidecar_written["user_id"] == "user_u"
     assert sidecar_written["agent_id"] == result["agent_id"]
     assert sidecar_written["content"]["template_slug"] == "pitch"
@@ -171,7 +171,7 @@ async def test_deploy_rolls_back_workspace_on_patch_failure(service, mock_s3, mo
     mock_apply_deploy.side_effect = RuntimeError("patch boom")
 
     with pytest.raises(RuntimeError, match="patch boom"):
-        await service.deploy(user_id="user_u", slug="pitch")
+        await service.deploy(owner_id="user_u", slug="pitch")
 
     # Tar was extracted, then the config patch failed — the extracted
     # workspace must be cleaned up so we don't leak an orphan dir.
@@ -214,6 +214,7 @@ async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, moc
 
     result = await service.publish(
         admin_user_id="user_admin",
+        owner_id="user_admin",
         agent_id="agent_admin_pitch",
         description_override=None,
     )
@@ -255,6 +256,7 @@ async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tm
     with pytest.raises(ValueError, match="invalid slug"):
         await service.publish(
             admin_user_id="admin",
+            owner_id="admin",
             agent_id="a1",
             slug_override="foo/bar",
         )
@@ -263,6 +265,7 @@ async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tm
     with pytest.raises(ValueError, match="invalid slug"):
         await service.publish(
             admin_user_id="admin",
+            owner_id="admin",
             agent_id="a1",
             slug_override="   ",
         )
@@ -271,6 +274,7 @@ async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tm
     with pytest.raises(ValueError, match="invalid slug"):
         await service.publish(
             admin_user_id="admin",
+            owner_id="admin",
             agent_id="a1",
             slug_override="-bad",
         )
@@ -294,7 +298,7 @@ async def test_publish_bumps_version_when_prior_exists(service, mock_s3, mock_wo
     mock_s3.list_versions.return_value = [1, 2, 5]
     mock_s3.get_json.return_value = {"agents": []}
 
-    result = await service.publish(admin_user_id="admin", agent_id="a1")
+    result = await service.publish(admin_user_id="admin", owner_id="admin", agent_id="a1")
     assert result["version"] == 6
 
 
@@ -397,7 +401,12 @@ async def test_publish_removes_retired_entry_when_republishing(service, mock_s3,
         ],
     }
 
-    result = await service.publish(admin_user_id="user_admin", agent_id="a1", slug_override="pitch")
+    result = await service.publish(
+        admin_user_id="user_admin",
+        owner_id="user_admin",
+        agent_id="a1",
+        slug_override="pitch",
+    )
     assert result["version"] == 3
 
     catalog_put = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "catalog.json")
@@ -529,3 +538,185 @@ def test_list_versions_skips_missing_manifest(service, mock_s3):
     )
     result = service.list_versions("pitch")
     assert [v["version"] for v in result] == [2]
+
+
+# ---- owner_id resolution (org-context callers) ----
+#
+# Regression for the live prod trace where publish() crashed with
+# FileNotFoundError: admin user_3CGsz7ain... has no openclaw.json because
+# the catalog service read EFS at /mnt/efs/users/{admin_user_id}/ for an
+# admin who is actually an org member — their config lives at
+# /mnt/efs/users/{org_id}/.
+#
+# Resolution lives at the ROUTER layer via core.auth.resolve_owner_id(auth)
+# (router tests assert this); the service just trusts the owner_id its caller
+# passes in and uses it for every EFS access.
+
+
+@pytest.mark.asyncio
+async def test_publish_uses_passed_owner_id_for_efs_reads(mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
+    """Org-context: caller passes owner_id=org_id; EFS reads use it; published_by stays admin_user_id."""
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [
+            {
+                "id": "agent_admin_pitch",
+                "workspace": ".openclaw/workspaces/agent_admin_pitch",
+                "name": "Pitch",
+                "skills": ["web-search"],
+            }
+        ],
+        "plugins": {"memory": {"enabled": True}},
+        "tools": {"allowed": ["web-search"]},
+    }
+    org_workspace = tmp_path / "org_ws"
+    org_workspace.mkdir()
+    (org_workspace / "IDENTITY.md").write_text("name: Pitch\n")
+    mock_workspace.agent_workspace_path.return_value = org_workspace
+    mock_s3.list_versions.return_value = []
+    mock_s3.get_json.return_value = {"agents": []}
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    result = await service.publish(
+        admin_user_id="user_admin",
+        owner_id="org_abc",
+        agent_id="agent_admin_pitch",
+    )
+
+    # EFS reads used the passed owner_id (org_id), NOT the raw admin_user_id.
+    mock_workspace.read_openclaw_config.assert_called_once_with("org_abc")
+    mock_workspace.agent_workspace_path.assert_called_once_with("org_abc", "agent_admin_pitch")
+
+    # Manifest's published_by attributes the admin who clicked publish, not
+    # the resolved org owner_id (audit + provenance).
+    manifest_call = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "pitch/v1/manifest.json")
+    assert manifest_call.args[1]["published_by"] == "user_admin"
+
+    assert result["slug"] == "pitch"
+    assert result["version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_publish_personal_mode_owner_equals_admin_user_id(mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
+    """Personal mode: caller passes owner_id == admin_user_id; everything keys off it."""
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "plugins": {},
+        "tools": {},
+    }
+    personal_workspace = tmp_path / "personal_ws"
+    personal_workspace.mkdir()
+    (personal_workspace / "IDENTITY.md").write_text("x")
+    mock_workspace.agent_workspace_path.return_value = personal_workspace
+    mock_s3.list_versions.return_value = []
+    mock_s3.get_json.return_value = {"agents": []}
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    result = await service.publish(
+        admin_user_id="user_solo",
+        owner_id="user_solo",
+        agent_id="a1",
+    )
+
+    mock_workspace.read_openclaw_config.assert_called_once_with("user_solo")
+    mock_workspace.agent_workspace_path.assert_called_once_with("user_solo", "a1")
+
+    manifest_call = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "pitch/v1/manifest.json")
+    assert manifest_call.args[1]["published_by"] == "user_solo"
+    assert result["version"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deploy_uses_passed_owner_id_for_all_efs_writes(mock_s3, mock_workspace, mock_apply_deploy):
+    """Org-context: every EFS write — extract, config patch, sidecar — uses owner_id, not user_id."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"}]}
+        if key == "pitch/v3/manifest.json":
+            return {"slug": "pitch", "version": 3, "name": "Pitch"}
+        if key == "pitch/v3/openclaw-slice.json":
+            return {
+                "agent": {"name": "Pitch", "skills": ["web-search"]},
+                "plugins": {"memory": {"enabled": True}},
+                "tools": {"allowed": ["web-search"]},
+            }
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    result = await service.deploy(owner_id="org_abc", slug="pitch")
+
+    _, extract_kwargs = mock_workspace.extract_tarball_to_workspace.call_args
+    assert extract_kwargs["user_id"] == "org_abc"
+
+    apply_args, _ = mock_apply_deploy.call_args
+    assert apply_args[0] == "org_abc"
+
+    _, sidecar_kwargs = mock_workspace.write_template_sidecar.call_args
+    assert sidecar_kwargs["user_id"] == "org_abc"
+    assert sidecar_kwargs["agent_id"] == result["agent_id"]
+
+
+@pytest.mark.asyncio
+async def test_deploy_personal_mode_owner_equals_user_id(mock_s3, mock_workspace, mock_apply_deploy):
+    """Personal mode: caller passes owner_id == user_id; identical behavior."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 3, "manifest_url": "pitch/v3/manifest.json"}]}
+        if key == "pitch/v3/manifest.json":
+            return {"slug": "pitch", "version": 3, "name": "Pitch"}
+        if key == "pitch/v3/openclaw-slice.json":
+            return {"agent": {"name": "Pitch"}, "plugins": {}, "tools": {}}
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    await service.deploy(owner_id="user_solo", slug="pitch")
+
+    _, extract_kwargs = mock_workspace.extract_tarball_to_workspace.call_args
+    assert extract_kwargs["user_id"] == "user_solo"
+    apply_args, _ = mock_apply_deploy.call_args
+    assert apply_args[0] == "user_solo"
+    _, sidecar_kwargs = mock_workspace.write_template_sidecar.call_args
+    assert sidecar_kwargs["user_id"] == "user_solo"
+
+
+def test_list_deployed_for_user_keyed_by_owner_id(service, mock_workspace):
+    """deploy + list must be keyed identically: when deploy writes under owner_id,
+    list_deployed_for_user must also read under owner_id, not user_id.
+
+    Codex P2 regression — earlier draft of this fix wrote sidecars under
+    owner_id but the listing path still scanned by user_id, so org-context
+    deploys silently disappeared from the deployed list."""
+    mock_workspace.list_workspace_agent_dirs.return_value = ["agent_xx"]
+    mock_workspace.read_template_sidecar.return_value = {
+        "template_slug": "pitch",
+        "template_version": 3,
+    }
+
+    deployed = service.list_deployed_for_user("org_abc")
+
+    mock_workspace.list_workspace_agent_dirs.assert_called_once_with("org_abc")
+    mock_workspace.read_template_sidecar.assert_called_once_with("org_abc", "agent_xx")
+    assert deployed == [{"agent_id": "agent_xx", "template_slug": "pitch", "template_version": 3}]

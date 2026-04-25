@@ -120,7 +120,13 @@ class CatalogService:
 
     # ---- deploy ----
 
-    async def deploy(self, *, user_id: str, slug: str) -> dict[str, Any]:
+    async def deploy(self, *, owner_id: str, slug: str) -> dict[str, Any]:
+        # owner_id is the EFS/DDB partition key — org_id for org-context
+        # callers, user_id for personal-mode. Resolved by the router from the
+        # caller's JWT via core.auth.resolve_owner_id(auth). Doing the resolve
+        # at the router layer (not here) ensures the active auth context is
+        # respected — a user with an org membership but currently in personal
+        # mode lands in their personal partition, not the org's.
         catalog = self._s3.get_json("catalog.json", default={"agents": []})
         match = next((a for a in catalog.get("agents") or [] if a.get("slug") == slug), None)
         if not match:
@@ -136,7 +142,7 @@ class CatalogService:
         new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
 
         self._workspace.extract_tarball_to_workspace(
-            user_id=user_id,
+            user_id=owner_id,
             agent_id=new_agent_id,
             tar_bytes=tar_bytes,
         )
@@ -156,14 +162,14 @@ class CatalogService:
             tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
 
             await self._apply_deploy(
-                user_id,
+                owner_id,
                 agent_entry,
                 plugins_patch,
                 tools_allowed,
             )
 
             self._workspace.write_template_sidecar(
-                user_id=user_id,
+                user_id=owner_id,
                 agent_id=new_agent_id,
                 content={
                     "template_slug": slug,
@@ -177,7 +183,7 @@ class CatalogService:
             # agents/{id}/ and workspaces/{id}/, and is best-effort +
             # idempotent — safe to call even if the config patch never
             # ran or already succeeded.
-            self._workspace.cleanup_agent_dirs(user_id, new_agent_id)
+            self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
             raise
 
         return {
@@ -191,16 +197,19 @@ class CatalogService:
 
     # ---- deployed ----
 
-    def list_deployed_for_user(self, user_id: str) -> list[dict[str, Any]]:
-        """Scan the user's workspaces for .template sidecars; return provenance.
+    def list_deployed_for_user(self, owner_id: str) -> list[dict[str, Any]]:
+        """Scan the owner's workspaces for .template sidecars; return provenance.
 
         Scans ``workspaces/`` (where sidecars live and where deploy writes
         immediately) rather than ``agents/`` (OpenClaw runtime state that
-        lags behind openclaw.json updates).
+        lags behind openclaw.json updates). Caller must pass the same
+        owner_id used during ``deploy()`` — the router resolves it via
+        ``core.auth.resolve_owner_id(auth)`` so deploy + list stay keyed
+        consistently for both personal and org-context callers.
         """
         deployed = []
-        for agent_id in self._workspace.list_workspace_agent_dirs(user_id):
-            sidecar = self._workspace.read_template_sidecar(user_id, agent_id)
+        for agent_id in self._workspace.list_workspace_agent_dirs(owner_id):
+            sidecar = self._workspace.read_template_sidecar(owner_id, agent_id)
             if sidecar:
                 deployed.append(
                     {
@@ -217,13 +226,24 @@ class CatalogService:
         self,
         *,
         admin_user_id: str,
+        owner_id: str,
         agent_id: str,
         slug_override: str | None = None,
         description_override: str | None = None,
     ) -> dict[str, Any]:
-        config = self._workspace.read_openclaw_config(admin_user_id)
+        # admin_user_id and owner_id are intentionally separate:
+        #   - admin_user_id: the Clerk user who clicked publish; recorded as
+        #     the manifest's ``published_by`` and on the audit row
+        #     (preserves attribution).
+        #   - owner_id: the EFS/DDB partition the agent's openclaw.json +
+        #     workspace live on. For org-context admins this is org_id; for
+        #     personal-mode admins it equals admin_user_id. Router resolves
+        #     it via core.auth.resolve_owner_id(auth) — using the JWT's
+        #     active context, not Clerk membership lookups, so personal-mode
+        #     admins never accidentally write into an org partition.
+        config = self._workspace.read_openclaw_config(owner_id)
         if not config:
-            raise FileNotFoundError(f"admin {admin_user_id} has no openclaw.json")
+            raise FileNotFoundError(f"admin {admin_user_id} (owner {owner_id}) has no openclaw.json")
 
         slice_ = extract_agent_slice(config, agent_id)
         agent_entry_raw = next(a for a in config["agents"] if a.get("id") == agent_id)
@@ -254,7 +274,7 @@ class CatalogService:
             published_by=admin_user_id,
         )
 
-        workspace_dir = self._workspace.agent_workspace_path(admin_user_id, agent_id)
+        workspace_dir = self._workspace.agent_workspace_path(owner_id, agent_id)
         tar_bytes = tar_directory(workspace_dir)
 
         prefix = f"{slug}/v{next_version}"
