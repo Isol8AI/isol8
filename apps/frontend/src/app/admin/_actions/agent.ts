@@ -91,4 +91,6 @@ export async function clearAgentSessions(
   );
 }
 
-export type { ActionResult };
+// NOTE: see catalog.ts — "use server" files must export ONLY async functions.
+// Turbopack turns `export type { ActionResult }` into a runtime ReferenceError
+// at SSR chunk load. No consumer imports ActionResult today.
