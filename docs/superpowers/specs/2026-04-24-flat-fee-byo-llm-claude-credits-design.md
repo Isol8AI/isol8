@@ -407,24 +407,61 @@ no machine-specific data. Verified in upstream OpenClaw at
 lines 16–48) and `openai-codex-auth-identity.ts` (lines 27–88) — the file
 is read cold at container start with no other prerequisites.
 
-**Flow (no container required):**
+**Flow (no container required, no localhost callback required):**
 
-1. **Onboarding step "Sign in with ChatGPT" clicked.** Frontend opens a
-   popup or new tab to `GET /api/v1/oauth/chatgpt/start`.
-2. **Backend redirects to OpenAI's authorize endpoint** (PKCE,
-   `code_challenge_method=S256`):
-   `https://auth.openai.com/oauth/authorize?client_id=<our_client>
-    &response_type=code&redirect_uri=<our_callback>&code_challenge=...&scope=...`
-3. **User completes login in their browser** (already signed into ChatGPT
-   in another tab is the happy path; otherwise standard OpenAI login).
-4. **OpenAI redirects to our callback** (`/api/v1/oauth/chatgpt/callback?code=...`).
-5. **Backend exchanges the auth code** for `{access_token, refresh_token,
-   account_id}` via `https://auth.openai.com/oauth/token`, server-side.
-6. **Backend stores the tokens encrypted** in DynamoDB
+We use the **device-code flow** — officially supported by OpenAI as
+`codex login --device-auth`, endpoint
+`https://auth.openai.com/codex/device`. This avoids the localhost-1455
+callback that pi-ai's library uses, which can't reach a Fargate
+container or our backend domain.
+
+1. **Onboarding step "Sign in with ChatGPT" clicked.** Frontend calls
+   `POST /api/v1/oauth/chatgpt/start`.
+2. **Backend POSTs to `https://auth.openai.com/codex/device`**
+   (PKCE-flavored device-code) with our `client_id` (see §5.1.1 below
+   for which client_id and why), receives `{device_code, user_code,
+   verification_uri, expires_in, interval}`.
+3. **Frontend displays the user code:** "Visit https://chatgpt.com/codex
+   and enter `ABCD-1234`." User completes login in their browser.
+4. **Backend polls** `https://auth.openai.com/oauth/token` every
+   `interval` seconds until OpenAI returns `{access_token, refresh_token,
+   account_id}` or the device_code expires.
+5. **Backend stores the tokens encrypted** in DynamoDB
    (`isol8-{env}-oauth-tokens`, Fernet-encrypted, keyed by `user_id`).
-7. **Onboarding wizard advances** to the next step (subscription /
+6. **Onboarding wizard advances** to the next step (subscription /
    container provisioning). At this point we have a verified
    ChatGPT-Plus-or-better account on file.
+
+#### 5.1.1 Which `client_id` do we use, and is it ours?
+
+**We use `client_id="app_EMoamEEZ73f0CkXaXp7hrann"` — the same OAuth
+client the official OpenAI Codex CLI uses, and the same one OpenClaw's
+upstream auth library (`@mariozechner/pi-ai`) hardcodes.** Verified at
+[`badlogic/pi-mono/packages/ai/src/utils/oauth/openai-codex.ts:25`](https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/utils/oauth/openai-codex.ts).
+
+**This `client_id` is shared across every install of OpenClaw, every
+install of pi-ai, and the official OpenAI Codex CLI.** That's by design
+— OpenAI's docs at https://developers.openai.com/codex/auth list
+"tools like OpenClaw" as supported third-party consumers of this OAuth
+flow. We're not registering our own — we're using the public OAuth
+client that the entire OpenClaw ecosystem already uses.
+
+Implications:
+- **No partner deal with OpenAI required.** This was previously listed
+  as the spec's load-bearing risk; it's resolved.
+- **No public secret stored on our side** — `client_id` is a public
+  identifier (PKCE flow doesn't use a `client_secret`).
+- **Risk if OpenAI ever revokes this `client_id`:** simultaneously breaks
+  Codex CLI, OpenClaw, dozens of derivative tools, and us. Realistically
+  OpenAI cannot revoke without breaking their own product, so the risk
+  approaches zero.
+- **Caveat for ChatGPT Enterprise users:** per OpenAI issue
+  [openai/codex#9253](https://github.com/openai/codex/issues/9253),
+  device-code login is gated by workspace-admin opt-in for Enterprise
+  workspaces. ChatGPT Plus/Pro/Free personal accounts are not affected.
+  We surface a clear error if the user hits this gate ("Your ChatGPT
+  Enterprise admin has not enabled Device Code login. Use a personal
+  ChatGPT account, or switch to BYO API key").
 
 When the container is later provisioned, `core/containers/workspace.py`
 writes the auth file to the user's EFS access point at
@@ -442,29 +479,17 @@ deletes the EFS auth file via the existing config-patch RPC, deletes
 the encrypted DDB row. User must re-OAuth or switch to a different
 card to keep using the product.
 
-**The load-bearing risk:** the OAuth `client_id` in upstream OpenClaw
-appears to be Codex-specific (`app_EMoamEEZ73f0CkXaXp7hrann` per
-GitHub references). OpenAI's docs at https://developers.openai.com/codex/auth
-describe the flow but **do not advertise public registration of new
-"Sign in with ChatGPT" OAuth clients.** Three paths:
+**Risk surface for card 1 — meaningfully smaller than originally thought:**
 
-- **A) Reach out to OpenAI for partner access** to register our own
-  `client_id`. Cleanest, but unknown timeline (could be days, could be
-  weeks). Ideal answer.
-- **B) Reuse Codex's `client_id`.** Technically works (the flow is
-  generic), but is almost certainly outside OpenAI's intended use and
-  risks revocation at any time. **Don't ship this.** Fine for early
-  internal testing only.
-- **C) Fall back to API-key flow only** for OpenAI users. Drop card 1
-  from launch, lean on card 2 (BYO key supports OpenAI keys). Less
-  appealing UX, but zero TOS risk.
-
-**Path forward:** initiate (A) immediately — file the OpenAI partner
-contact this week so we have an answer before phase 4 cutover. If (A)
-hasn't returned by phase 3, ship with (C) and add card 1 in a follow-up
-once the client_id lands. The whole rest of the spec stays the same;
-only the front door label changes from "Sign in with ChatGPT" to
-"Bring your OpenAI API key."
+- The `client_id` we use is shared with Codex CLI + every OpenClaw
+  install (see §5.1.1). Revocation by OpenAI would simultaneously break
+  their own product and the broader OpenClaw ecosystem; effectively
+  zero risk.
+- Device-code flow is officially documented by OpenAI as a supported
+  Codex auth path. No partner deal needed.
+- The remaining edge case: ChatGPT Enterprise users whose workspace
+  admin has disabled device-code login. We surface a clear error and
+  redirect them to card 2 (BYO API key) for the same OpenAI persona.
 
 ### 5.2 BYO API key (card 2) — no container required
 
@@ -1059,22 +1084,21 @@ push a card-3 / Bedrock-Claude config).
 
 **Risks:**
 
-- **OAuth `client_id` registration with OpenAI is the load-bearing
-  unknown for card 1** (see §5.1). OpenAI's "Sign in with ChatGPT" docs
-  describe the flow but don't advertise public client registration. We
-  must initiate partner contact with OpenAI immediately and have an
-  answer by phase 3. Fallback: drop card 1 from launch, ship cards 2 + 3
-  only, add card 1 in a follow-up release once we have a `client_id`.
-  This is the highest-priority external dependency in the plan.
+- **Shared OAuth `client_id` revocation.** We use the public Codex CLI
+  `client_id` (per §5.1.1). OpenAI revoking it would break their own
+  CLI and the OpenClaw ecosystem in addition to us; treat as
+  near-zero-probability, but not zero. Mitigation: card 2 (BYO API key)
+  covers the same OpenAI persona with no shared-client risk — users can
+  switch over in minutes.
+- **ChatGPT Enterprise device-code gate.** Per
+  [openai/codex#9253](https://github.com/openai/codex/issues/9253),
+  Enterprise workspaces require admin opt-in to allow device-code
+  login. Surface a clear error and route those users to card 2.
 - **OAuth tokens expire / get revoked from the ChatGPT side.** We need a
   user-facing notification ("Your ChatGPT connection expired, reconnect
   to resume"). Backend detects this from a 401 in the next chat attempt
   and surfaces it to the frontend. Re-OAuth uses the same backend flow
   from §5.1 — no container restart needed.
-- **OpenAI could change ToS for "Sign in with ChatGPT"** at any time
-  even after we get a `client_id`. If they revoke the program, card 1
-  is dead. Mitigation: card 2 (BYO API key) covers the same OpenAI
-  persona with no TOS risk — users can switch over.
 - **Credit ledger race conditions.** Atomic UpdateExpression with
   `ConditionExpression` is the right primitive; documented above. Load test
   in phase 3.
