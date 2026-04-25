@@ -349,15 +349,25 @@ AWS creds come from the ECS task role (existing setup). No per-user secret.
 
 ### 4.4 OpenClaw image
 
-No upstream version bump required. The `openai-codex`, `openai`, `anthropic`,
-and `amazon-bedrock` providers all ship in `alpine/openclaw:2026.4.5` (the
-currently pinned upstream).
+What we actually run in production is the **extended image** at
+`877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended:<env-tag>`,
+built from `alpine/openclaw:2026.4.5` (the pinned upstream) plus
+additional Linux skill binaries. Dockerfile lives at
+`apps/infra/openclaw/`, build/push pipeline is
+`.github/workflows/build-openclaw-image.yml`, tags pinned in
+`openclaw-version.json` at the repo root.
 
-The extended image at `apps/infra/openclaw/Dockerfile` may need a small change:
+No upstream version bump required for this pivot. The `openai-codex`,
+`openai`, `anthropic`, and `amazon-bedrock` providers all ship in upstream
+`alpine/openclaw:2026.4.5` and therefore in the extended image we run.
+
+The extended image may need a small change in `apps/infra/openclaw/Dockerfile`:
 verify that `openclaw models auth login --provider openai-codex` works in a
 non-interactive way (device code flow) inside the container. If not, we add a
 small wrapper script to the extended image that exposes a programmatic
-device-code login command.
+device-code login command. Any change here ships through the extended-image
+build pipeline (CI builds → ECR push → tag bump in `openclaw-version.json`
+→ next CDK deploy).
 
 ---
 
@@ -622,6 +632,83 @@ Existing webhook router (`POST /api/v1/billing/webhooks/stripe`) handles:
 - Auto-reload fails → email user, pause auto-reload, balance unchanged.
 - Refund: standard Stripe refund + balance adjustment.
 
+### 8.4 Stripe surface audit — what we use, what's missing
+
+Audit of every Stripe capability we either rely on today or should adopt
+as part of this pivot.
+
+**Already wired in the existing backend (keep, no change needed):**
+
+| Stripe surface | Where | Notes |
+|---|---|---|
+| Customer (create/delete with race-deletion) | `billing_service.py:71-95` | Reuse for new flow |
+| Checkout Session (subscription mode) | `billing.py:233` | Replace with SetupIntent for trial flow + direct subscription create on conversion (see §7) |
+| **Customer Portal** | `billing.py:270` (`POST /billing/portal`) | **Keep.** Self-serve cancel / update payment method / view invoices / download receipts. Don't re-build any of this UI ourselves. |
+| Subscription lifecycle webhooks | `billing.py:330-410` | Keep all 4 events |
+| Webhook signature verification | `billing.py:338` | Keep |
+| Smart Retries | Stripe-side, automatic | Keep |
+| `stripe.api.latency` + `stripe.webhook.*` CloudWatch metrics | `billing_service.py` (`with timing(...)`, `put_metric`) | Keep — wrap any new Stripe calls in the same pattern |
+
+**New surfaces this pivot adds (covered earlier in spec, listed for completeness):**
+
+| Stripe surface | Where in spec | Notes |
+|---|---|---|
+| SetupIntent (trial card-on-file) | §7.1 | Replaces Checkout for trial signups |
+| PaymentIntent (credit top-up) | §6.2 | One-shot, not subscription |
+| `payment_intent.succeeded` webhook | §8.2 | Drives credit ledger top-up |
+| `setup_intent.succeeded` webhook | §8.2 | Stores payment method id |
+| Off-session charge (auto-reload) | §6.4 | Uses saved payment method |
+| Refund API | §6.5 | Credit refunds within 30 days |
+
+**Stripe surfaces we're NOT currently using and SHOULD adopt as part of this pivot:**
+
+1. **Stripe Tax** — at $50/mo selling globally we owe sales tax in several
+   US states (TX, NY, WA, etc. tax digital services) and VAT in EU/UK.
+   Stripe Tax automates collection, registration tracking, and reporting.
+   Enable in Stripe dashboard, set `automatic_tax: { enabled: true }` on
+   the Subscription create call. Without this we're either (a) breaking
+   the law or (b) eating tax out of margin.
+
+2. **Stripe Promotion Codes / Coupons** — required for any launch promo
+   ("FIRSTMONTH50", Product Hunt code, referral campaigns). Not in current
+   code at all. Add a `promotion_code` field to the trial-conversion
+   subscription create call and a frontend input on the signup page.
+   Keep the surface tiny: name + percent-off + redeem-by date.
+
+3. **Stripe Radar** — fraud and abuse rules beyond disposable-email
+   blocklists. Trial abuse with stolen cards / synthetic identities is the
+   biggest risk in §7.4. Enable Radar's default rule set in the dashboard;
+   add a custom rule blocking >2 trials per `payment_method_fingerprint`
+   per quarter. Free with standard Stripe pricing.
+
+4. **Idempotency keys on every Stripe write** — current code has none. A
+   retried API call (network blip, our worker restart) can double-create
+   customers, double-charge cards, or double-refund. Add an
+   `idempotency_key` parameter to every `stripe.X.create/update/delete`
+   call, derived from the operation + a stable id (e.g.
+   `f"top_up:{payment_intent_id}"`). Trivial to add, prevents real bugs.
+
+5. **Webhook idempotency** — Stripe replays webhooks. The current
+   handler doesn't dedupe by `event.id`. A replay of a top-up webhook
+   would credit the user twice. Add a `processed_stripe_events` DDB
+   table keyed by `event.id` with TTL, check-and-set before processing.
+
+6. **Customer email sync** — when a Clerk user changes email, update
+   the Stripe customer too (so receipts/invoices go to the right
+   address). Hook into the Clerk `user.updated` webhook in
+   `clerk_sync_service.py`, push to `stripe.Customer.modify(email=...)`.
+
+7. **Stripe Billing Customer Portal config** — by default the portal
+   exposes EVERYTHING (sub change, cancel, payment update, invoice
+   history). For the new flow we only want: update payment method,
+   cancel sub, view invoice history. Configure in the dashboard; lock
+   down what users can self-serve.
+
+**Stripe surfaces we explicitly DON'T need (call out so future-us doesn't
+re-investigate):** Sigma, Revenue Recognition, Invoicing for B2B,
+Connect, Identity, Issuing, Treasury, Atlas, Climate. These are real
+products but irrelevant to a flat-fee consumer SaaS.
+
 ---
 
 ## 9. Frontend changes
@@ -839,6 +926,7 @@ push a card-3 / Bedrock-Claude config).
 - `apps/backend/core/billing/bedrock_pricing.py`
 - `apps/backend/routers/oauth.py`
 - `apps/backend/models/credit_ledger.py` (DDB schema)
+- `apps/backend/models/processed_stripe_events.py` (DDB schema for webhook idempotency)
 - `apps/frontend/src/components/landing/PricingThreeCard.tsx`
 - `apps/frontend/src/components/chat/ChatGPTOAuthStep.tsx`
 - `apps/frontend/src/components/chat/ByoKeyStep.tsx`
@@ -852,23 +940,31 @@ push a card-3 / Bedrock-Claude config).
 - `apps/backend/core/containers/config.py` (provider branch)
 - `apps/backend/core/containers/ecs_manager.py` (single size, secrets injection)
 - `apps/backend/core/services/key_service.py` (extend to LLM keys)
-- `apps/backend/core/services/billing_service.py` (drop tier ladder)
+- `apps/backend/core/services/billing_service.py` (drop tier ladder; add idempotency keys + `automatic_tax` on every Stripe write)
 - `apps/backend/core/services/usage_service.py` (delete; replaced by credit_ledger)
-- `apps/backend/routers/billing.py` (credit endpoints)
+- `apps/backend/core/services/clerk_sync_service.py` (push email changes to `stripe.Customer.modify`)
+- `apps/backend/routers/billing.py` (credit endpoints; webhook event dedup; `promotion_code` accepted on conversion)
 - `apps/backend/routers/settings_keys.py` (LLM key support)
 - `apps/backend/main.py` (register new routers)
 - `apps/backend/core/config.py` (delete tier configs, add flat price id)
 - `apps/frontend/src/components/landing/Pricing.tsx` → replaced by `PricingThreeCard.tsx`
-- `apps/frontend/src/components/chat/ProvisioningStepper.tsx` (branch on provider)
+- `apps/frontend/src/components/chat/ProvisioningStepper.tsx` (branch on provider; promo code input)
 - `apps/frontend/src/middleware.ts` (no change expected)
+
+**Stripe dashboard configuration (manual, before phase 4 cutover):**
+- Enable Stripe Tax; configure tax registrations for jurisdictions where MAU expected.
+- Enable Stripe Radar default ruleset; add custom rule "block >2 trials per `payment_method_fingerprint` per 90 days".
+- Configure Customer Portal: allow only "update payment method", "cancel subscription", "view invoice history". Disable plan-change UI.
+- Create launch promotion codes (e.g., `LAUNCH50` 50% off first month, redeem-by 30 days post-launch).
 
 **Deleted files:**
 - `apps/backend/core/services/usage_poller.py`
 - `apps/backend/models/billing.py` (`usage_event`, `usage_daily` tables)
 
 **Infrastructure (CDK) changes:**
-- `apps/infra/lib/stacks/database-stack.ts` — add `isol8-{env}-credits` and
-  `isol8-{env}-credit-transactions` DynamoDB tables.
+- `apps/infra/lib/stacks/database-stack.ts` — add `isol8-{env}-credits`,
+  `isol8-{env}-credit-transactions`, and `isol8-{env}-processed-stripe-events`
+  (TTL-enabled, 30 days) DynamoDB tables.
 - `apps/infra/lib/stacks/container-stack.ts` — collapse per-tier task
   resource configs to a single `512 CPU / 1024 MB` base.
 - IAM policy for backend Fargate task: `secretsmanager:CreateSecret`,
