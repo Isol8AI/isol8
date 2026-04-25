@@ -392,11 +392,14 @@ class TestOverageToggle:
         )
         assert response.status_code == 200
 
-        # Stripe: metered item ADDED to the existing subscription
-        mock_stripe.Subscription.modify.assert_called_once_with(
-            "sub_test_123",
-            items=[{"price": "price_metered_test"}],
-        )
+        # Stripe: metered item ADDED to the existing subscription.
+        # Partial-match assertion to tolerate the idempotency_key kwarg
+        # added in Stripe Hardening Task 4.
+        mock_stripe.Subscription.modify.assert_called_once()
+        modify_args, modify_kwargs = mock_stripe.Subscription.modify.call_args
+        assert modify_args == ("sub_test_123",)
+        assert modify_kwargs["items"] == [{"price": "price_metered_test"}]
+        assert modify_kwargs["idempotency_key"] == "sub_modify:sub_test_123:add_metered"
         # DynamoDB: flag flipped on
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", True, overage_limit=50_000_000)
 
@@ -434,11 +437,14 @@ class TestOverageToggle:
         )
         assert response.status_code == 200
 
-        # Stripe: metered item REMOVED via deleted=true on its item id
-        mock_stripe.Subscription.modify.assert_called_once_with(
-            "sub_test_123",
-            items=[{"id": "si_metered", "deleted": True}],
-        )
+        # Stripe: metered item REMOVED via deleted=true on its item id.
+        # Partial-match assertion to tolerate the idempotency_key kwarg
+        # added in Stripe Hardening Task 4.
+        mock_stripe.Subscription.modify.assert_called_once()
+        modify_args, modify_kwargs = mock_stripe.Subscription.modify.call_args
+        assert modify_args == ("sub_test_123",)
+        assert modify_kwargs["items"] == [{"id": "si_metered", "deleted": True}]
+        assert modify_kwargs["idempotency_key"] == "sub_modify:sub_test_123:remove_metered"
         # DynamoDB: flag flipped off
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", False, overage_limit=None)
 
