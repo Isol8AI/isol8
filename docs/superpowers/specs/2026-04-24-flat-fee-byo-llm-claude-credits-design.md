@@ -415,6 +415,22 @@ We use the **device-code flow** — officially supported by OpenAI as
 callback that pi-ai's library uses, which can't reach a Fargate
 container or our backend domain.
 
+**Multi-user concurrency note (important):** the OAuth `client_id`
+identifies *us as the app*, not any individual user — same way one
+Slack OAuth client handles millions of "Sign in with Google" flows.
+Each user signup triggers a fresh device-code request, gets a unique
+`user_code`, and ends up with that user's own tokens stored in DDB
+keyed by *our* `user_id`. Hundreds of concurrent OAuth flows with the
+same `client_id` is normal OAuth behavior, not a misuse.
+
+We do **not** install `@mariozechner/pi-ai` as a dependency. That
+library is CLI-shaped: it writes tokens to a single `~/.codex/auth.json`
+file and would clobber across users if run on a shared backend. We
+borrow only the *constants* (client_id, endpoints, scopes) from it and
+implement the device-code flow ourselves in `oauth_service.py` as raw
+HTTP — ~100 lines of Python orchestrating four OpenAI endpoints. Each
+user's flow is fully isolated.
+
 1. **Onboarding step "Sign in with ChatGPT" clicked.** Frontend calls
    `POST /api/v1/oauth/chatgpt/start`.
 2. **Backend POSTs to `https://auth.openai.com/codex/device`**
