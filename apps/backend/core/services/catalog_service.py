@@ -14,6 +14,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
+from core.services.admin_service import resolve_admin_owner_id
 from core.services.catalog_package import build_manifest, tar_directory
 from core.services.catalog_slice import extract_agent_slice
 
@@ -121,6 +122,13 @@ class CatalogService:
     # ---- deploy ----
 
     async def deploy(self, *, user_id: str, slug: str) -> dict[str, Any]:
+        # Org-member end-users deploy into the org's EFS path, not their
+        # personal path — owner_id (org_id for org members, user_id for
+        # personal-mode) is the partition key for both DDB and EFS layout.
+        # user_id stays as the public param for provenance/audit; resolution
+        # happens internally (PR #376 admin-org-owner-id pattern).
+        owner_id, _ = await resolve_admin_owner_id(user_id)
+
         catalog = self._s3.get_json("catalog.json", default={"agents": []})
         match = next((a for a in catalog.get("agents") or [] if a.get("slug") == slug), None)
         if not match:
@@ -136,7 +144,7 @@ class CatalogService:
         new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
 
         self._workspace.extract_tarball_to_workspace(
-            user_id=user_id,
+            user_id=owner_id,
             agent_id=new_agent_id,
             tar_bytes=tar_bytes,
         )
@@ -156,14 +164,14 @@ class CatalogService:
             tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
 
             await self._apply_deploy(
-                user_id,
+                owner_id,
                 agent_entry,
                 plugins_patch,
                 tools_allowed,
             )
 
             self._workspace.write_template_sidecar(
-                user_id=user_id,
+                user_id=owner_id,
                 agent_id=new_agent_id,
                 content={
                     "template_slug": slug,
@@ -177,7 +185,7 @@ class CatalogService:
             # agents/{id}/ and workspaces/{id}/, and is best-effort +
             # idempotent — safe to call even if the config patch never
             # ran or already succeeded.
-            self._workspace.cleanup_agent_dirs(user_id, new_agent_id)
+            self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
             raise
 
         return {
@@ -221,9 +229,17 @@ class CatalogService:
         slug_override: str | None = None,
         description_override: str | None = None,
     ) -> dict[str, Any]:
-        config = self._workspace.read_openclaw_config(admin_user_id)
+        # For org-member admins the agent lives on the org's EFS path, not the
+        # admin's personal path. Resolve the effective owner_id the same way
+        # the admin detail views do (PR #376 admin-org-owner-id pattern).
+        # admin_user_id stays as the public param so the manifest's
+        # ``published_by`` and the audit row correctly attribute WHO clicked
+        # publish — only the EFS reads switch to owner_id.
+        owner_id, _ = await resolve_admin_owner_id(admin_user_id)
+
+        config = self._workspace.read_openclaw_config(owner_id)
         if not config:
-            raise FileNotFoundError(f"admin {admin_user_id} has no openclaw.json")
+            raise FileNotFoundError(f"admin {admin_user_id} (owner {owner_id}) has no openclaw.json")
 
         slice_ = extract_agent_slice(config, agent_id)
         agent_entry_raw = next(a for a in config["agents"] if a.get("id") == agent_id)
@@ -254,7 +270,7 @@ class CatalogService:
             published_by=admin_user_id,
         )
 
-        workspace_dir = self._workspace.agent_workspace_path(admin_user_id, agent_id)
+        workspace_dir = self._workspace.agent_workspace_path(owner_id, agent_id)
         tar_bytes = tar_directory(workspace_dir)
 
         prefix = f"{slug}/v{next_version}"
