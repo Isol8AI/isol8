@@ -42,6 +42,31 @@ def test_extract_agent_slice_missing_agent_raises():
         extract_agent_slice(FULL_OPENCLAW_JSON, "agent_does_not_exist")
 
 
+def test_extract_agent_slice_tolerates_non_dict_entries_in_agents():
+    """Live prod regression: publish crashed with AttributeError when openclaw.json's
+    agents list had a bare string alongside the dict entries. Skip non-dicts
+    rather than calling .get() on them."""
+    cfg = {
+        "agents": [
+            "some-stray-string",  # malformed entry — should be skipped, not crash
+            {"id": "agent_abc", "name": "Pitch", "skills": ["web-search"]},
+            None,  # another malformed variant
+        ],
+        "plugins": {},
+        "tools": {},
+    }
+    slice_ = extract_agent_slice(cfg, "agent_abc")
+    assert slice_["agent"]["name"] == "Pitch"
+
+
+def test_extract_agent_slice_missing_raises_when_only_non_dicts_match():
+    """If the only 'matching' entries are non-dict strings, still raise KeyError —
+    the behavior should match 'agent not found' rather than silently succeeding."""
+    cfg = {"agents": ["agent_abc", None], "plugins": {}, "tools": {}}
+    with pytest.raises(KeyError):
+        extract_agent_slice(cfg, "agent_abc")
+
+
 def test_strip_user_specific_fields_removes_model():
     agent = dict(FULL_OPENCLAW_JSON["agents"][0])
     cleaned = strip_user_specific_fields(agent)
