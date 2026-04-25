@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 
 import stripe
 from fastapi import APIRouter, HTTPException, Request
@@ -115,14 +116,28 @@ async def handle_clerk_webhook(request: Request):
         if new_email and user_id:
             account = await billing_repo.get_by_owner_id(user_id)
             if account and account.get("stripe_customer_id"):
+                # Use the Clerk webhook's unique svix-id as the Stripe idempotency
+                # key. Each genuine Clerk event gets a unique id; a retry of the
+                # SAME event reuses it. Embedding user_id+email instead would let
+                # an A→B→A→B email flip within Stripe's 24h idempotency window
+                # collide with the first A→B and silently skip the modify.
+                svix_id = request.headers.get("svix-id")
+                if svix_id:
+                    idempotency_key = f"customer_email_sync:{svix_id}"
+                else:
+                    # Defensive fallback (shouldn't happen with real Clerk
+                    # traffic — _verify_svix_signature already requires it
+                    # when CLERK_WEBHOOK_SECRET is set). 1-min bucket bounds
+                    # the worst-case skipped writes.
+                    idempotency_key = f"customer_email_sync:{user_id}:{new_email}:{int(time.time() // 60)}"
                 try:
                     stripe.Customer.modify(
                         account["stripe_customer_id"],
                         email=new_email,
-                        idempotency_key=f"customer_email_sync:{user_id}:{new_email}",
+                        idempotency_key=idempotency_key,
                     )
                     put_metric("stripe.customer.email_sync", dimensions={"result": "ok"})
-                except stripe.error.StripeError as e:
+                except stripe.StripeError as e:
                     put_metric("stripe.customer.email_sync", dimensions={"result": "error"})
                     logger.warning(
                         "Stripe email sync failed for %s: %s",
