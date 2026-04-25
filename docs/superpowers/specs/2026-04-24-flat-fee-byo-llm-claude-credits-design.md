@@ -311,12 +311,13 @@ AWS creds come from the ECS task role (existing setup). No per-user secret.
   and `anthropic` LLM keys (currently only tool keys: ElevenLabs, OpenAI TTS,
   Perplexity, Firecrawl). Same Fernet encryption path. Push to Secrets
   Manager on save (new behavior — today they're DynamoDB only).
-- `apps/backend/core/services/oauth_service.py` (new) — handle the ChatGPT
-  device-code flow, store the OAuth refresh token encrypted in DynamoDB,
-  trigger the OpenClaw `auth login` command inside the user's container.
+- `apps/backend/core/services/oauth_service.py` (new) — drive the
+  backend OAuth handshake with `auth.openai.com` (PKCE authorization-code
+  flow, server-side code exchange), store tokens Fernet-encrypted in DDB,
+  refresh-on-demand. **No container involvement** (per §5.1).
 - `apps/backend/core/services/credit_ledger.py` (new) — DynamoDB-backed
-  balance tracking. `get_balance`, `deduct`, `top_up`, `refund`, `hard_stop_check`.
-  See §6.
+  balance tracking. `get_balance`, `deduct`, `top_up`, `hard_stop_check`,
+  `adjustment` (operator-only). See §6.
 - `apps/backend/core/services/billing_service.py` — drop tier-aware checkout.
   Add `provider_choice` to checkout. Replace per-tier price IDs with one
   flat `STRIPE_FLAT_PRICE_ID`. Remove `set_metered_overage_item` (overage no
@@ -373,37 +374,99 @@ build pipeline (CI builds → ECR push → tag bump in `openclaw-version.json`
 
 ## 5. Auth flows
 
-### 5.1 ChatGPT OAuth (card 1)
+**Design principle: configure provider FIRST, provision container SECOND.**
+The user completes their auth choice (OAuth, API key, or credits) before
+we spin up any Fargate task. This avoids paying for containers belonging
+to abandoned signups, eliminates the "container exists but no auth" failure
+state, and gives the user a faster first-paint (no waiting for ECS deploy).
 
-We use the device-code flow because the user's container has no display:
+When the container is finally provisioned (after trial Stripe Subscription
+is created in §7.1), the backend pre-stages the user's auth artifacts on
+their EFS access point and references any per-user secrets in the task
+definition. The container starts already authenticated.
 
-1. **Onboarding step "Sign in with ChatGPT" clicked.** Frontend calls
-   `POST /api/v1/oauth/chatgpt/start`.
-2. **Backend triggers OpenClaw inside the user's container** (via the existing
-   gateway WebSocket RPC) to start a device-code login. The container responds
-   with `user_code`, `verification_url`, `expires_in`, `interval`.
-3. **Frontend displays the user-code** ("Visit https://chat.openai.com/oauth/device
-   and enter `ABCD-1234`"). User completes the flow in their browser.
-4. **Backend polls the container** every `interval` seconds via
-   `POST /api/v1/oauth/chatgpt/poll` → RPC into container → checks for completion.
-5. **On success:** OpenClaw stores the OAuth profile in its container-local auth
-   dir (mounted on EFS at `/mnt/efs/users/{user_id}/openclaw-auth/` so it
-   survives task restarts). EFS is encrypted at rest (KMS) and reachable only
-   from the user's own Fargate task via a per-user EFS access point — no
-   cross-user read path. Refresh tokens are not duplicated into DynamoDB.
-   Backend marks the user as `oauth_connected: true` in DynamoDB.
-6. **`openclaw.json` is rewritten** with `model.primary: "openai-codex/gpt-5.5"`.
-   The chokidar watcher picks it up; agents start using ChatGPT-OAuth inference
-   on the next message.
+### 5.1 ChatGPT OAuth (card 1) — backend-driven, no container involved
 
-**Token refresh:** OpenClaw's `openai-codex` provider handles refresh internally
-using the refresh_token. No backend involvement.
+OpenClaw stores its OpenAI-Codex auth as a portable JSON file at
+`$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) with shape:
+
+```json
+{
+  "auth_mode": "chatgpt",
+  "tokens": {
+    "access_token": "<JWT>",
+    "refresh_token": "<opaque>",
+    "account_id": "<user>"
+  }
+}
+```
+
+The access token is a JWT with `exp` claim — no device binding, no DPoP,
+no machine-specific data. Verified in upstream OpenClaw at
+`extensions/openai/openai-codex-cli-auth.ts` (`readCodexCliAuthFile()`,
+lines 16–48) and `openai-codex-auth-identity.ts` (lines 27–88) — the file
+is read cold at container start with no other prerequisites.
+
+**Flow (no container required):**
+
+1. **Onboarding step "Sign in with ChatGPT" clicked.** Frontend opens a
+   popup or new tab to `GET /api/v1/oauth/chatgpt/start`.
+2. **Backend redirects to OpenAI's authorize endpoint** (PKCE,
+   `code_challenge_method=S256`):
+   `https://auth.openai.com/oauth/authorize?client_id=<our_client>
+    &response_type=code&redirect_uri=<our_callback>&code_challenge=...&scope=...`
+3. **User completes login in their browser** (already signed into ChatGPT
+   in another tab is the happy path; otherwise standard OpenAI login).
+4. **OpenAI redirects to our callback** (`/api/v1/oauth/chatgpt/callback?code=...`).
+5. **Backend exchanges the auth code** for `{access_token, refresh_token,
+   account_id}` via `https://auth.openai.com/oauth/token`, server-side.
+6. **Backend stores the tokens encrypted** in DynamoDB
+   (`isol8-{env}-oauth-tokens`, Fernet-encrypted, keyed by `user_id`).
+7. **Onboarding wizard advances** to the next step (subscription /
+   container provisioning). At this point we have a verified
+   ChatGPT-Plus-or-better account on file.
+
+When the container is later provisioned, `core/containers/workspace.py`
+writes the auth file to the user's EFS access point at
+`/mnt/efs/users/{user_id}/codex/auth.json` (which OpenClaw mounts as
+`$CODEX_HOME/auth.json`) — pre-staged and ready before OpenClaw boots.
+
+**Token refresh:** OpenClaw's `openai-codex` provider auto-refreshes
+in-container, using the `refresh_token` from the auth file and writing
+the rotated tokens back to the same path. Refresh requires no backend
+involvement once the file is staged. The backend's encrypted DDB copy
+is a one-time bootstrap; we do **not** keep it in sync after staging.
 
 **Disconnect / revoke:** `POST /api/v1/oauth/chatgpt/disconnect` →
-deletes the auth profile dir on EFS, sets `oauth_connected: false`.
-User must re-OAuth or switch to a different card to keep using the product.
+deletes the EFS auth file via the existing config-patch RPC, deletes
+the encrypted DDB row. User must re-OAuth or switch to a different
+card to keep using the product.
 
-### 5.2 BYO API key (card 2)
+**The load-bearing risk:** the OAuth `client_id` in upstream OpenClaw
+appears to be Codex-specific (`app_EMoamEEZ73f0CkXaXp7hrann` per
+GitHub references). OpenAI's docs at https://developers.openai.com/codex/auth
+describe the flow but **do not advertise public registration of new
+"Sign in with ChatGPT" OAuth clients.** Three paths:
+
+- **A) Reach out to OpenAI for partner access** to register our own
+  `client_id`. Cleanest, but unknown timeline (could be days, could be
+  weeks). Ideal answer.
+- **B) Reuse Codex's `client_id`.** Technically works (the flow is
+  generic), but is almost certainly outside OpenAI's intended use and
+  risks revocation at any time. **Don't ship this.** Fine for early
+  internal testing only.
+- **C) Fall back to API-key flow only** for OpenAI users. Drop card 1
+  from launch, lean on card 2 (BYO key supports OpenAI keys). Less
+  appealing UX, but zero TOS risk.
+
+**Path forward:** initiate (A) immediately — file the OpenAI partner
+contact this week so we have an answer before phase 4 cutover. If (A)
+hasn't returned by phase 3, ship with (C) and add card 1 in a follow-up
+once the client_id lands. The whole rest of the spec stays the same;
+only the front door label changes from "Sign in with ChatGPT" to
+"Bring your OpenAI API key."
+
+### 5.2 BYO API key (card 2) — no container required
 
 1. **Onboarding step "Bring your own API key" clicked.** Frontend shows
    a chooser: "OpenAI" or "Anthropic" radio + key input.
@@ -412,31 +475,35 @@ User must re-OAuth or switch to a different card to keep using the product.
 3. **Backend `key_service.py`:**
    - Validates the key with a 1-token test call to the provider's API.
      Reject on auth failure with a clear error.
-   - Encrypts with Fernet (existing pattern).
-   - Stores ciphertext in DynamoDB (`isol8-{env}-api-keys`).
-   - Pushes plaintext to AWS Secrets Manager at
-     `isol8/{env}/user-keys/{user_id}/{provider}`.
-4. **Backend `ecs_manager.py.update_task_definition(user_id)`** registers a
-   new task-def revision with the secret reference attached as an env var
-   secret (`secrets: [{ name: "OPENAI_API_KEY", valueFrom: "<arn>" }]` or
-   `ANTHROPIC_API_KEY`).
-5. **Service is updated** to the new task-def revision (rolling deploy, ~30s).
-6. **`openclaw.json` is rewritten** with `model.primary` pointing at the
-   chosen provider. Chokidar picks it up.
+   - Stores plaintext in AWS Secrets Manager at
+     `isol8/{env}/user-keys/{user_id}/{provider}`. (No double-storage in
+     DDB — Secrets Manager is the source of truth; DDB only stores the
+     secret ARN reference.)
+   - DDB stores `{ user_id, provider, secret_arn, created_at }` (no key
+     material).
+4. **Onboarding wizard advances** to the next step.
 
-**Key rotation:** User can replace the key any time via the same endpoint.
-We update the Secrets Manager secret in place; the running container picks
-up the new value on next task restart. For immediate effect we redeploy
-the service (rolling, ~30s).
+When the container is later provisioned, the backend registers a per-user
+ECS task definition revision that references the secret as an env-var
+`secret` (`secrets: [{ name: "OPENAI_API_KEY", valueFrom: "<arn>" }]` or
+`ANTHROPIC_API_KEY`). ECS pulls the secret at task-start and injects it
+into the container's environment — never seen by our backend.
 
-**Switching between OpenAI and Anthropic:** Same flow — re-submit with the
-new provider. Old secret is deleted.
+**Key rotation:** User can replace the key any time. Backend updates the
+Secrets Manager secret in place. The running container picks up the new
+value on next task restart; for immediate effect we redeploy the service
+(rolling, ~30s).
 
-### 5.3 Bedrock-Claude (card 3)
+**Switching between OpenAI and Anthropic:** Same flow — re-submit with
+the new provider. Old secret is deleted; backend re-registers the task
+def with the new secret reference.
 
-Nothing to do at user level. AWS creds come from the ECS task role,
-provisioned at infrastructure setup. The only auth-adjacent step is
-verifying the user has a positive credit balance before each chat (see §6.3).
+### 5.3 Bedrock-Claude (card 3) — no container required
+
+User-side: nothing to set up. Onboarding wizard advances to the credit
+top-up step (§6.2). When container is later provisioned, AWS creds come
+from the ECS task role (existing infra setup). The only auth-adjacent
+runtime step is the pre-chat balance check (§6.3).
 
 ---
 
@@ -462,8 +529,8 @@ New DynamoDB table `isol8-{env}-credit-transactions` (audit log, not load-bearin
 |-----------|------|-------|
 | `user_id` (PK) | string | |
 | `tx_id` (SK) | string | ULID |
-| `type` | string | `top_up | deduct | refund | adjustment` |
-| `amount_microcents` | number | Positive for top_up/refund, negative for deduct |
+| `type` | string | `top_up | deduct | adjustment` (refund handled as a manual `adjustment` per §6.5) |
+| `amount_microcents` | number | Positive for top_up/adjustment, negative for deduct |
 | `balance_after_microcents` | number | Balance after this tx |
 | `stripe_payment_intent_id` | string? | For `top_up` |
 | `chat_session_id` | string? | For `deduct` |
@@ -524,17 +591,18 @@ User toggles in settings: "When my balance drops below `$X`, charge `$Y`."
 - Hard cap: max one auto-reload per hour to prevent runaway charges if a
   bug causes rapid deduction.
 
-### 6.5 Refund
+### 6.5 Refunds — not offered
 
-`POST /api/v1/billing/credits/refund` (admin-only initially; user-facing
-self-serve in v2):
+Credit purchases are non-refundable. State this clearly at top-up
+("Credits are non-refundable. Auto-reload can be turned off at any
+time.") and in the receipt email. Matches industry norm (Anthropic,
+OpenAI, Twilio, Vercel credits all behave this way).
 
-- Within 30 days of the original top-up, refund the unused portion of that
-  specific top-up via Stripe.
-- Past 30 days: no refund.
-- On refund: deduct refunded amount from balance, append a `refund` row.
-- If user's balance is less than the refund amount (they used some credits),
-  refund only what's left — never let balance go negative.
+If a user reaches out with a legitimate complaint (wrong amount
+charged, double-billed via a Stripe replay we missed), an operator can
+issue a manual Stripe refund + a manual `refund`-type ledger
+adjustment. No self-serve UI, no public endpoint. Keep the operational
+surface small.
 
 ### 6.6 Hard stop on $0
 
@@ -851,22 +919,51 @@ For card 3 when balance ≤ 0: persistent banner blocking the chat input,
 
 ## 10. Container provisioning changes
 
+**Provisioning order:** auth setup (§5) and Stripe Subscription create
+(§7.1) happen FIRST; container provisioning is the last step of
+onboarding. By the time `provision_container` runs, the user already has:
+
+- A `stripe_customer_id` and `stripe_subscription_id` (status `trialing`
+  or `active`).
+- A `provider_choice` of `chatgpt_oauth | byo_key | bedrock_claude`.
+- For `chatgpt_oauth`: OAuth tokens stored encrypted in DDB
+  (`isol8-{env}-oauth-tokens`).
+- For `byo_key`: a Secrets Manager secret ARN for their OpenAI or
+  Anthropic key.
+- For `bedrock_claude`: nothing extra at user level.
+
 `apps/backend/core/containers/ecs_manager.py`:
 
 - Single task definition base, single CPU/memory (`512` / `1024`).
 - New parameter `provider_choice` to `provision_container`. Affects:
   - Which Secrets Manager `secrets` to attach (card 2 only).
   - Which `openclaw.json` to write (via `write_openclaw_config`).
-- For card 1 (OAuth), the container is provisioned without provider auth.
-  After provisioning, the OAuth flow runs via RPC into the container (see §5.1).
-- For card 3 (Bedrock), the existing AWS task role is sufficient.
+  - Whether to pre-stage an EFS auth file (card 1 only).
+
+`apps/backend/core/containers/workspace.py`:
+
+- New helper `pre_stage_codex_auth(user_id, oauth_tokens)` that writes
+  `/mnt/efs/users/{user_id}/codex/auth.json` with the Codex auth file
+  shape from §5.1. Called once during provisioning for card 1 users.
+  Token rotation post-provision is handled in-container by OpenClaw.
 
 `apps/backend/core/containers/config.py`:
 
-- `write_openclaw_config(provider_choice, ...)` emits one of four blocks per §4.2.
+- `write_openclaw_config(provider_choice, ...)` emits one of four blocks
+  per §4.2.
+- For card 1: sets `models.providers.openai-codex.codexHome` to the EFS
+  auth path so OpenClaw reads the pre-staged auth file at boot.
 - Delete the per-tier model whitelist and tier branching.
-- Keep the `ollama` branch for LocalStack dev (LocalStack still uses Ollama as
-  a local stand-in for Bedrock).
+- Keep the `ollama` branch for LocalStack dev (LocalStack still uses
+  Ollama as a local stand-in for Bedrock).
+
+**Why this matters for cost:** abandoned signups (user clicks "Sign in
+with ChatGPT," fails OAuth, leaves) cost us $0 in container time under
+this design. Under the old design (provision-then-OAuth) we'd have paid
+for ~30s+ of Fargate before knowing the user wasn't going to complete.
+At 2700 MAU funnel volume that's real money — and avoids the "ghost
+container" failure state where provisioning succeeds but OAuth never
+does.
 
 ---
 
@@ -892,7 +989,8 @@ push a card-3 / Bedrock-Claude config).
 - `credit_ledger`: top-up, deduct, refund, hard-stop, auto-reload,
   overdraft race condition.
 - `bedrock_pricing`: rate constants for each Claude model.
-- `oauth_service`: device-code start, poll, completion, expiry.
+- `oauth_service`: PKCE state generation, code exchange, token storage,
+  refresh-on-demand.
 - `key_service`: validate, encrypt, push to Secrets Manager.
 - `write_openclaw_config`: each provider branch produces correct JSON shape.
 
@@ -961,20 +1059,22 @@ push a card-3 / Bedrock-Claude config).
 
 **Risks:**
 
-- **ChatGPT OAuth is interactive and our container has no display.** Resolved
-  by device-code flow. But device-code requires the OpenClaw CLI to support
-  it — confirm during phase 1 that `openclaw models auth login --provider
-  openai-codex --device-code` works in non-TTY mode. If it doesn't, we add a
-  small wrapper to the extended image to expose a programmatic API.
+- **OAuth `client_id` registration with OpenAI is the load-bearing
+  unknown for card 1** (see §5.1). OpenAI's "Sign in with ChatGPT" docs
+  describe the flow but don't advertise public client registration. We
+  must initiate partner contact with OpenAI immediately and have an
+  answer by phase 3. Fallback: drop card 1 from launch, ship cards 2 + 3
+  only, add card 1 in a follow-up release once we have a `client_id`.
+  This is the highest-priority external dependency in the plan.
 - **OAuth tokens expire / get revoked from the ChatGPT side.** We need a
-  user-facing notification ("Your ChatGPT connection expired, reconnect to
-  resume"). Backend detects this from a 401 in the next chat attempt and
-  surfaces it to the frontend.
-- **OpenAI / Anthropic could change ToS for OAuth-via-third-party** at any
-  time. If OpenAI revokes the `openai-codex` provider's ability to broker
-  ChatGPT subscriptions, card 1 is dead. This is a real platform-risk. The
-  mitigation is that card 2 (BYO API key) covers the same persona with no
-  TOS risk — users can switch over.
+  user-facing notification ("Your ChatGPT connection expired, reconnect
+  to resume"). Backend detects this from a 401 in the next chat attempt
+  and surfaces it to the frontend. Re-OAuth uses the same backend flow
+  from §5.1 — no container restart needed.
+- **OpenAI could change ToS for "Sign in with ChatGPT"** at any time
+  even after we get a `client_id`. If they revoke the program, card 1
+  is dead. Mitigation: card 2 (BYO API key) covers the same OpenAI
+  persona with no TOS risk — users can switch over.
 - **Credit ledger race conditions.** Atomic UpdateExpression with
   `ConditionExpression` is the right primitive; documented above. Load test
   in phase 3.
@@ -1036,8 +1136,9 @@ push a card-3 / Bedrock-Claude config).
 
 **Infrastructure (CDK) changes:**
 - `apps/infra/lib/stacks/database-stack.ts` — add `isol8-{env}-credits`,
-  `isol8-{env}-credit-transactions`, and `isol8-{env}-processed-stripe-events`
-  (TTL-enabled, 30 days) DynamoDB tables.
+  `isol8-{env}-credit-transactions`, `isol8-{env}-processed-stripe-events`
+  (TTL-enabled, 30 days), and `isol8-{env}-oauth-tokens` (Fernet-encrypted
+  ChatGPT OAuth bootstrap tokens, keyed by user_id) DynamoDB tables.
 - `apps/infra/lib/stacks/container-stack.ts` — collapse per-tier task
   resource configs to a single `512 CPU / 1024 MB` base.
 - IAM policy for backend Fargate task: `secretsmanager:CreateSecret`,
