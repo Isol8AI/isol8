@@ -455,13 +455,6 @@ Implications:
   Codex CLI, OpenClaw, dozens of derivative tools, and us. Realistically
   OpenAI cannot revoke without breaking their own product, so the risk
   approaches zero.
-- **Caveat for ChatGPT Enterprise users:** per OpenAI issue
-  [openai/codex#9253](https://github.com/openai/codex/issues/9253),
-  device-code login is gated by workspace-admin opt-in for Enterprise
-  workspaces. ChatGPT Plus/Pro/Free personal accounts are not affected.
-  We surface a clear error if the user hits this gate ("Your ChatGPT
-  Enterprise admin has not enabled Device Code login. Use a personal
-  ChatGPT account, or switch to BYO API key").
 
 When the container is later provisioned, `core/containers/workspace.py`
 writes the auth file to the user's EFS access point at
@@ -487,9 +480,6 @@ card to keep using the product.
   zero risk.
 - Device-code flow is officially documented by OpenAI as a supported
   Codex auth path. No partner deal needed.
-- The remaining edge case: ChatGPT Enterprise users whose workspace
-  admin has disabled device-code login. We surface a clear error and
-  redirect them to card 2 (BYO API key) for the same OpenAI persona.
 
 ### 5.2 BYO API key (card 2) — no container required
 
@@ -1090,10 +1080,6 @@ push a card-3 / Bedrock-Claude config).
   near-zero-probability, but not zero. Mitigation: card 2 (BYO API key)
   covers the same OpenAI persona with no shared-client risk — users can
   switch over in minutes.
-- **ChatGPT Enterprise device-code gate.** Per
-  [openai/codex#9253](https://github.com/openai/codex/issues/9253),
-  Enterprise workspaces require admin opt-in to allow device-code
-  login. Surface a clear error and route those users to card 2.
 - **OAuth tokens expire / get revoked from the ChatGPT side.** We need a
   user-facing notification ("Your ChatGPT connection expired, reconnect
   to resume"). Backend detects this from a 401 in the next chat attempt
