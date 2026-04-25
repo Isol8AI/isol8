@@ -2,7 +2,30 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
+
+
+@pytest.fixture
+def dedup_table_and_settings(monkeypatch):
+    """Provision a moto-mocked dedup table and point the env var at it.
+
+    The Stripe webhook handler now invokes record_event_or_skip on every
+    request, which requires WEBHOOK_DEDUP_TABLE to point at a real DynamoDB
+    table. Apply this fixture to webhook tests so they don't blow up on the
+    dedup PutItem.
+    """
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="test-webhook-event-dedup",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+        yield
 
 
 class TestGetBillingAccount:
@@ -504,9 +527,10 @@ class TestStripeWebhook:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client, dedup_table_and_settings):
         """Should update billing account on subscription.created — NO container provisioning."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_created_test_1",
             "type": "customer.subscription.created",
             "data": {
                 "object": {
@@ -544,9 +568,10 @@ class TestStripeWebhook:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client, dedup_table_and_settings):
         """Should cancel subscription and disable overage — NO container stop."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_deleted_test_1",
             "type": "customer.subscription.deleted",
             "data": {
                 "object": {
