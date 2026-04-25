@@ -262,11 +262,22 @@ async def apply_deploy_mutation(
 
     def _mutate(current: dict) -> bool:
         # 1. Append agent entry (always mutates — each deploy gets a fresh id).
-        agents = current.get("agents")
-        if not isinstance(agents, list):
-            agents = []
-        agents.append(copy.deepcopy(agent_entry))
-        current["agents"] = agents
+        # OpenClaw schema: agents.list is the array; agents.defaults is its
+        # sibling. See openclaw/src/config/zod-schema.agents.ts.
+        agents_obj = current.get("agents")
+        if isinstance(agents_obj, list):
+            # Legacy flat-list shape from pre-schema-fix deploys: migrate by
+            # promoting the list under `agents.list` so existing entries
+            # survive rather than getting silently clobbered.
+            agents_obj = {"list": list(agents_obj)}
+        elif not isinstance(agents_obj, dict):
+            agents_obj = {}
+        agents_list = agents_obj.get("list")
+        if not isinstance(agents_list, list):
+            agents_list = []
+        agents_list.append(copy.deepcopy(agent_entry))
+        agents_obj["list"] = agents_list
+        current["agents"] = agents_obj
 
         # 2. Deep-merge plugins.
         if plugins_patch:

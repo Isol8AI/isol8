@@ -8,19 +8,24 @@ from core.services.catalog_slice import (
 
 FULL_OPENCLAW_JSON = {
     "defaultAgentId": "agent_abc",
-    "agents": [
-        {
-            "id": "agent_abc",
-            "workspace": ".openclaw/workspaces/agent_abc",
-            "name": "Pitch",
-            "model": "qwen/qwen3-vl-235b",
-            "thinkingDefault": True,
-            "skills": ["web-search", "email-send"],
-            "channels": {"telegram": {"bot_token": "SECRET"}},
-            "cron": [{"schedule": "0 8 * * *", "workflow": "morning-briefing"}],
-        },
-        {"id": "agent_zzz", "name": "Other"},
-    ],
+    # Matches upstream OpenClaw schema (openclaw/src/config/zod-schema.agents.ts):
+    # agents: { defaults?, list?: AgentEntry[] }
+    "agents": {
+        "defaults": {"workspace": "/workspace/root"},
+        "list": [
+            {
+                "id": "agent_abc",
+                "workspace": ".openclaw/workspaces/agent_abc",
+                "name": "Pitch",
+                "model": "qwen/qwen3-vl-235b",
+                "thinkingDefault": True,
+                "skills": ["web-search", "email-send"],
+                "channels": {"telegram": {"bot_token": "SECRET"}},
+                "cron": [{"schedule": "0 8 * * *", "workflow": "morning-briefing"}],
+            },
+            {"id": "agent_zzz", "name": "Other"},
+        ],
+    },
     "plugins": {"memory": {"enabled": True}},
     "tools": {"allowed": ["web-search", "email-send"]},
 }
@@ -42,16 +47,17 @@ def test_extract_agent_slice_missing_agent_raises():
         extract_agent_slice(FULL_OPENCLAW_JSON, "agent_does_not_exist")
 
 
-def test_extract_agent_slice_tolerates_non_dict_entries_in_agents():
-    """Live prod regression: publish crashed with AttributeError when openclaw.json's
-    agents list had a bare string alongside the dict entries. Skip non-dicts
-    rather than calling .get() on them."""
+def test_extract_agent_slice_tolerates_non_dict_entries_in_agents_list():
+    """Live prod regression: publish crashed with AttributeError when
+    ``agents.list`` had a bare string alongside the dict entries."""
     cfg = {
-        "agents": [
-            "some-stray-string",  # malformed entry — should be skipped, not crash
-            {"id": "agent_abc", "name": "Pitch", "skills": ["web-search"]},
-            None,  # another malformed variant
-        ],
+        "agents": {
+            "list": [
+                "some-stray-string",
+                {"id": "agent_abc", "name": "Pitch", "skills": ["web-search"]},
+                None,
+            ],
+        },
         "plugins": {},
         "tools": {},
     }
@@ -59,40 +65,60 @@ def test_extract_agent_slice_tolerates_non_dict_entries_in_agents():
     assert slice_["agent"]["name"] == "Pitch"
 
 
-def test_extract_agent_slice_missing_raises_when_only_non_dicts_match():
-    """If the only 'matching' entries are non-dict strings, still raise KeyError —
-    the behavior should match 'agent not found' rather than silently succeeding."""
-    cfg = {"agents": ["agent_abc", None], "plugins": {}, "tools": {}}
-    with pytest.raises(KeyError):
-        extract_agent_slice(cfg, "agent_abc")
+def test_extract_agent_slice_raises_when_agents_missing_or_malformed():
+    """Missing agents key, non-dict/non-list agents, or missing .list → empty."""
+    for cfg in [
+        {"plugins": {}, "tools": {}},
+        {"agents": None, "plugins": {}, "tools": {}},
+        {"agents": [], "plugins": {}, "tools": {}},  # empty flat list
+        {"agents": {"defaults": {"workspace": "/x"}}, "plugins": {}, "tools": {}},
+    ]:
+        with pytest.raises(KeyError):
+            extract_agent_slice(cfg, "agent_abc")
+
+
+def test_extract_agent_slice_accepts_legacy_flat_list():
+    """Codex P2 regression: admins whose configs are still in the legacy flat
+    shape (``agents: [...]``) must still be able to publish. The write path
+    in config_patcher migrates the shape on deploy; the read path here
+    tolerates it so we don't regress working admins while they wait for a
+    migration write."""
+    cfg = {
+        "agents": [{"id": "agent_abc", "name": "Pitch", "skills": ["web-search"]}],
+        "plugins": {"memory": {"enabled": True}},
+        "tools": {"allowed": ["web-search"]},
+    }
+    slice_ = extract_agent_slice(cfg, "agent_abc")
+    assert slice_["agent"]["name"] == "Pitch"
+    assert slice_["plugins"] == {"memory": {"enabled": True}}
 
 
 def test_strip_user_specific_fields_removes_model():
-    agent = dict(FULL_OPENCLAW_JSON["agents"][0])
+    agent = dict(FULL_OPENCLAW_JSON["agents"]["list"][0])
     cleaned = strip_user_specific_fields(agent)
     assert "model" not in cleaned
 
 
 def test_strip_user_specific_fields_removes_channels():
-    agent = dict(FULL_OPENCLAW_JSON["agents"][0])
+    agent = dict(FULL_OPENCLAW_JSON["agents"]["list"][0])
     cleaned = strip_user_specific_fields(agent)
     assert "channels" not in cleaned
 
 
 def test_strip_user_specific_fields_removes_workspace_path():
-    agent = dict(FULL_OPENCLAW_JSON["agents"][0])
+    agent = dict(FULL_OPENCLAW_JSON["agents"]["list"][0])
     cleaned = strip_user_specific_fields(agent)
     assert "workspace" not in cleaned
 
 
 def test_strip_user_specific_fields_removes_id():
-    agent = dict(FULL_OPENCLAW_JSON["agents"][0])
+    agent = dict(FULL_OPENCLAW_JSON["agents"]["list"][0])
     cleaned = strip_user_specific_fields(agent)
     assert "id" not in cleaned
 
 
 def test_strip_user_specific_fields_keeps_behavioral_flags():
-    agent = dict(FULL_OPENCLAW_JSON["agents"][0])
+    agent = dict(FULL_OPENCLAW_JSON["agents"]["list"][0])
     cleaned = strip_user_specific_fields(agent)
     assert cleaned["thinkingDefault"] is True
     assert cleaned["skills"] == ["web-search", "email-send"]

@@ -189,18 +189,20 @@ async def test_deploy_rolls_back_workspace_on_patch_failure(service, mock_s3, mo
 @pytest.mark.asyncio
 async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, mock_workspace, tmp_path):
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [
-            {
-                "id": "agent_admin_pitch",
-                "workspace": ".openclaw/workspaces/agent_admin_pitch",
-                "name": "Pitch",
-                "emoji": "🎯",
-                "vibe": "Direct",
-                "model": "qwen/qwen3-vl-235b",
-                "skills": ["web-search"],
-                "channels": {"telegram": {"bot_token": "SECRET"}},
-            }
-        ],
+        "agents": {
+            "list": [
+                {
+                    "id": "agent_admin_pitch",
+                    "workspace": ".openclaw/workspaces/agent_admin_pitch",
+                    "name": "Pitch",
+                    "emoji": "🎯",
+                    "vibe": "Direct",
+                    "model": "qwen/qwen3-vl-235b",
+                    "skills": ["web-search"],
+                    "channels": {"telegram": {"bot_token": "SECRET"}},
+                }
+            ]
+        },
         "plugins": {"memory": {"enabled": True}},
         "tools": {"allowed": ["web-search"]},
     }
@@ -241,7 +243,7 @@ async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, moc
 @pytest.mark.asyncio
 async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tmp_path):
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "agents": {"list": [{"id": "a1", "name": "Pitch", "skills": []}]},
         "plugins": {},
         "tools": {},
     }
@@ -287,7 +289,7 @@ async def test_publish_rejects_invalid_slug(service, mock_s3, mock_workspace, tm
 @pytest.mark.asyncio
 async def test_publish_bumps_version_when_prior_exists(service, mock_s3, mock_workspace, tmp_path):
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "agents": {"list": [{"id": "a1", "name": "Pitch", "skills": []}]},
         "plugins": {},
         "tools": {},
     }
@@ -379,7 +381,7 @@ async def test_unpublish_handles_missing_retired_key(service, mock_s3):
 async def test_publish_removes_retired_entry_when_republishing(service, mock_s3, mock_workspace, tmp_path):
     """Republishing a retired slug removes it from retired and adds it to agents."""
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "agents": {"list": [{"id": "a1", "name": "Pitch", "skills": []}]},
         "plugins": {},
         "tools": {},
     }
@@ -557,14 +559,16 @@ def test_list_versions_skips_missing_manifest(service, mock_s3):
 async def test_publish_uses_passed_owner_id_for_efs_reads(mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
     """Org-context: caller passes owner_id=org_id; EFS reads use it; published_by stays admin_user_id."""
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [
-            {
-                "id": "agent_admin_pitch",
-                "workspace": ".openclaw/workspaces/agent_admin_pitch",
-                "name": "Pitch",
-                "skills": ["web-search"],
-            }
-        ],
+        "agents": {
+            "list": [
+                {
+                    "id": "agent_admin_pitch",
+                    "workspace": ".openclaw/workspaces/agent_admin_pitch",
+                    "name": "Pitch",
+                    "skills": ["web-search"],
+                }
+            ]
+        },
         "plugins": {"memory": {"enabled": True}},
         "tools": {"allowed": ["web-search"]},
     }
@@ -603,7 +607,7 @@ async def test_publish_uses_passed_owner_id_for_efs_reads(mock_s3, mock_workspac
 async def test_publish_personal_mode_owner_equals_admin_user_id(mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
     """Personal mode: caller passes owner_id == admin_user_id; everything keys off it."""
     mock_workspace.read_openclaw_config.return_value = {
-        "agents": [{"id": "a1", "name": "Pitch", "skills": []}],
+        "agents": {"list": [{"id": "a1", "name": "Pitch", "skills": []}]},
         "plugins": {},
         "tools": {},
     }

@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.services.catalog_package import build_manifest, tar_directory
-from core.services.catalog_slice import extract_agent_slice
+from core.services.catalog_slice import _agents_list, extract_agent_slice
 
 # Catalog slugs become a single S3 key path segment (e.g. "pitch/v1/..."),
 # so reject anything that could inject additional segments, reserved
@@ -246,9 +246,8 @@ class CatalogService:
             raise FileNotFoundError(f"admin {admin_user_id} (owner {owner_id}) has no openclaw.json")
 
         slice_ = extract_agent_slice(config, agent_id)
-        # Same non-dict tolerance as extract_agent_slice() — if we got past
-        # that, the dict entry exists; just mirror its filter here too.
-        agent_entry_raw = next(a for a in config["agents"] if isinstance(a, dict) and a.get("id") == agent_id)
+        # Read from the nested agents.list the same way extract_agent_slice does.
+        agent_entry_raw = next(a for a in _agents_list(config) if isinstance(a, dict) and a.get("id") == agent_id)
 
         name = agent_entry_raw.get("name") or agent_id
         slug = (slug_override or name).strip().lower().replace(" ", "-")
