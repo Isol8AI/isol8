@@ -416,12 +416,13 @@ async def test_delete_path_missing_intermediate_is_noop(tmp_efs_with_multi_accou
 
 @pytest.fixture
 def catalog_efs_dir():
-    """EFS fixture where `agents` is a list (catalog publisher/deploy shape)."""
+    """EFS fixture with the real OpenClaw ``agents.list`` schema
+    (see openclaw/src/config/zod-schema.agents.ts)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         user_dir = os.path.join(tmpdir, "user_1")
         os.makedirs(user_dir)
         config = {
-            "agents": [{"id": "existing_agent", "name": "Existing"}],
+            "agents": {"list": [{"id": "existing_agent", "name": "Existing"}]},
             "plugins": {"memory": {"enabled": True}},
             "tools": {"allowed": ["web-search"]},
         }
@@ -443,8 +444,8 @@ async def test_apply_deploy_mutation_appends_agent_and_unions_tools(catalog_efs_
     with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
 
-    # Agent was appended, existing one preserved.
-    agent_ids = [a["id"] for a in result["agents"]]
+    # Agent was appended to agents.list, existing one preserved.
+    agent_ids = [a["id"] for a in result["agents"]["list"]]
     assert agent_ids == ["existing_agent", "new_agent"]
 
     # Plugins deep-merged.
@@ -457,8 +458,8 @@ async def test_apply_deploy_mutation_appends_agent_and_unions_tools(catalog_efs_
 
 @pytest.mark.asyncio
 async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir):
-    # Start with an empty-ish config to verify creation paths for
-    # missing agents / tools.allowed.
+    # Start with an empty config to verify creation paths for
+    # missing agents.list / tools.allowed.
     config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
     with open(config_path, "w") as f:
         json.dump({}, f)
@@ -472,7 +473,7 @@ async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir)
     with open(config_path) as f:
         result = json.load(f)
 
-    assert result["agents"] == [{"id": "first", "name": "First"}]
+    assert result["agents"] == {"list": [{"id": "first", "name": "First"}]}
     assert result["tools"]["allowed"] == ["skill-a"]
 
 
@@ -480,7 +481,7 @@ async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir)
 async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog_efs_dir):
     """Sequential deploys must both land without clobbering each other —
     this is what the deploy path actually exercises now that the
-    read-modify-write of the agents list happens inside the lock."""
+    read-modify-write of agents.list happens inside the lock."""
     await apply_deploy_mutation(
         "user_1",
         {"id": "agent_a", "name": "A"},
@@ -496,7 +497,36 @@ async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog
     with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
 
-    agent_ids = [a["id"] for a in result["agents"]]
+    agent_ids = [a["id"] for a in result["agents"]["list"]]
     assert agent_ids == ["existing_agent", "agent_a", "agent_b"]
     # Both tools survive — union not replace.
     assert set(result["tools"]["allowed"]) == {"tool-a", "tool-b", "web-search"}
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_preserves_agents_defaults(catalog_efs_dir):
+    """Adding an agent to agents.list must NOT drop agents.defaults — that's
+    where OpenClaw keeps shared workspace / model / hook config."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path, "w") as f:
+        json.dump(
+            {
+                "agents": {
+                    "defaults": {"workspace": "/workspace/root"},
+                    "list": [{"id": "existing_agent", "name": "Existing"}],
+                },
+            },
+            f,
+        )
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "new", "name": "N"},
+        {},
+        [],
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    assert result["agents"]["defaults"] == {"workspace": "/workspace/root"}
+    assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent", "new"]
