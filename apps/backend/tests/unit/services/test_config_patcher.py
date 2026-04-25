@@ -504,6 +504,40 @@ async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog
 
 
 @pytest.mark.asyncio
+async def test_apply_deploy_mutation_migrates_legacy_flat_list(catalog_efs_dir):
+    """Codex P1 regression: if a config exists with the old flat-list shape
+    (``agents: [...]``) from pre-schema-fix deploys, we must PROMOTE it into
+    ``agents.list`` — not silently drop the existing entries."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path, "w") as f:
+        json.dump(
+            {
+                "agents": [
+                    {"id": "legacy_a", "name": "Legacy A"},
+                    {"id": "legacy_b", "name": "Legacy B"},
+                ],
+                "plugins": {},
+                "tools": {"allowed": []},
+            },
+            f,
+        )
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "fresh", "name": "Fresh"},
+        {},
+        [],
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    # Legacy entries preserved + new entry appended, all under agents.list.
+    assert isinstance(result["agents"], dict)
+    agent_ids = [a["id"] for a in result["agents"]["list"]]
+    assert agent_ids == ["legacy_a", "legacy_b", "fresh"]
+
+
+@pytest.mark.asyncio
 async def test_apply_deploy_mutation_preserves_agents_defaults(catalog_efs_dir):
     """Adding an agent to agents.list must NOT drop agents.defaults — that's
     where OpenClaw keeps shared workspace / model / hook config."""
