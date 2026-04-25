@@ -29,9 +29,15 @@ def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:
 def extract_agent_slice(openclaw_json: dict[str, Any], agent_id: str) -> dict[str, Any]:
     """Return a dict with the sliced agent entry plus the required plugins/tools
     from the publisher's config. Raises KeyError if the agent_id isn't present.
+
+    Tolerates malformed entries in ``agents``. Live prod configs have been
+    observed with non-dict entries (e.g. bare strings) mixed in with the
+    full dict entries — probably from hand-editing or an OpenClaw runtime
+    write pattern we don't fully mirror. Skip anything that isn't a dict
+    rather than crashing the whole publish with AttributeError.
     """
     agents = openclaw_json.get("agents") or []
-    matching = [a for a in agents if a.get("id") == agent_id]
+    matching = [a for a in agents if isinstance(a, dict) and a.get("id") == agent_id]
     if not matching:
         raise KeyError(f"agent {agent_id!r} not found in openclaw.json")
     agent_entry = matching[0]
