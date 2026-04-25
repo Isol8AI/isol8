@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # and imported directly by the CDK container stack. No env var override
     # in production — bump the JSON file to upgrade.
 
+    # Webhook event-id dedup table (Stripe + Clerk). Conditional PutItem with
+    # attribute_not_exists drops replays at the edge. Wired via CDK service-stack.
+    WEBHOOK_DEDUP_TABLE: str = ""
+
     # WebSocket Configuration (API Gateway Management API)
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")  # Set by Terraform
