@@ -434,12 +434,11 @@ def catalog_efs_dir():
 
 
 @pytest.mark.asyncio
-async def test_apply_deploy_mutation_appends_agent_and_unions_tools(catalog_efs_dir):
+async def test_apply_deploy_mutation_appends_agent_and_merges_plugins(catalog_efs_dir):
     await apply_deploy_mutation(
         "user_1",
         {"id": "new_agent", "name": "New", "skills": ["browser"]},
-        {"browser": {"enabled": True}},
-        ["browser", "web-search"],  # includes existing entry — must dedupe
+        {"entries": {"browser": {"enabled": True}}},
     )
     with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
@@ -448,18 +447,19 @@ async def test_apply_deploy_mutation_appends_agent_and_unions_tools(catalog_efs_
     agent_ids = [a["id"] for a in result["agents"]["list"]]
     assert agent_ids == ["existing_agent", "new_agent"]
 
-    # Plugins deep-merged.
+    # Plugins deep-merged under entries.{name} (real OpenClaw schema).
     assert result["plugins"]["memory"]["enabled"] is True
-    assert result["plugins"]["browser"]["enabled"] is True
+    assert result["plugins"]["entries"]["browser"]["enabled"] is True
 
-    # Tools union, deduped, sorted.
-    assert result["tools"]["allowed"] == ["browser", "web-search"]
+    # Top-level tools left untouched. Crucially, no ``tools.allowed`` key
+    # is written — that's invalid under OpenClaw's strict ToolsSchema and
+    # was the root cause of the deploy-killer (Unrecognized key: "allowed").
+    assert "allowed" not in (result.get("tools") or {})
 
 
 @pytest.mark.asyncio
 async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir):
-    # Start with an empty config to verify creation paths for
-    # missing agents.list / tools.allowed.
+    # Start with an empty config to verify creation paths for missing agents.
     config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
     with open(config_path, "w") as f:
         json.dump({}, f)
@@ -468,13 +468,14 @@ async def test_apply_deploy_mutation_creates_missing_containers(catalog_efs_dir)
         "user_1",
         {"id": "first", "name": "First"},
         {},
-        ["skill-a"],
     )
     with open(config_path) as f:
         result = json.load(f)
 
     assert result["agents"] == {"list": [{"id": "first", "name": "First"}]}
-    assert result["tools"]["allowed"] == ["skill-a"]
+    # No top-level ``tools`` block synthesized — we only mutate it for
+    # the self-heal path (stripping a pre-existing invalid ``allowed`` key).
+    assert "tools" not in result or "allowed" not in result.get("tools") or {}
 
 
 @pytest.mark.asyncio
@@ -486,21 +487,17 @@ async def test_apply_deploy_mutation_sequential_deploys_keep_both_agents(catalog
         "user_1",
         {"id": "agent_a", "name": "A"},
         {},
-        ["tool-a"],
     )
     await apply_deploy_mutation(
         "user_1",
         {"id": "agent_b", "name": "B"},
         {},
-        ["tool-b"],
     )
     with open(os.path.join(catalog_efs_dir, "user_1", "openclaw.json")) as f:
         result = json.load(f)
 
     agent_ids = [a["id"] for a in result["agents"]["list"]]
     assert agent_ids == ["existing_agent", "agent_a", "agent_b"]
-    # Both tools survive — union not replace.
-    assert set(result["tools"]["allowed"]) == {"tool-a", "tool-b", "web-search"}
 
 
 @pytest.mark.asyncio
@@ -526,7 +523,6 @@ async def test_apply_deploy_mutation_migrates_legacy_flat_list(catalog_efs_dir):
         "user_1",
         {"id": "fresh", "name": "Fresh"},
         {},
-        [],
     )
     with open(config_path) as f:
         result = json.load(f)
@@ -535,6 +531,45 @@ async def test_apply_deploy_mutation_migrates_legacy_flat_list(catalog_efs_dir):
     assert isinstance(result["agents"], dict)
     agent_ids = [a["id"] for a in result["agents"]["list"]]
     assert agent_ids == ["legacy_a", "legacy_b", "fresh"]
+    # And the invalid ``tools.allowed`` left over from pre-fix deploys is
+    # stripped (self-heal) so OpenClaw's strict validator accepts the file.
+    assert "allowed" not in (result.get("tools") or {})
+
+
+@pytest.mark.asyncio
+async def test_apply_deploy_mutation_self_heals_invalid_tools_allowed(catalog_efs_dir):
+    """Pre-fix deploys wrote ``tools.allowed = []`` which OpenClaw's strict
+    ToolsSchema rejects. On the next deploy, that key must be stripped so
+    the file becomes valid again — without requiring a manual cleanup."""
+    config_path = os.path.join(catalog_efs_dir, "user_1", "openclaw.json")
+    with open(config_path, "w") as f:
+        json.dump(
+            {
+                "agents": {"list": [{"id": "existing_agent", "name": "E"}]},
+                "tools": {
+                    "profile": "full",
+                    "deny": ["canvas"],
+                    "allowed": [],  # invalid — pre-fix corruption
+                    "web": {"fetch": {"enabled": True}},
+                },
+            },
+            f,
+        )
+
+    await apply_deploy_mutation(
+        "user_1",
+        {"id": "fresh", "name": "Fresh"},
+        {},
+    )
+    with open(config_path) as f:
+        result = json.load(f)
+
+    tools = result.get("tools") or {}
+    assert "allowed" not in tools
+    # Other valid tool fields untouched.
+    assert tools.get("profile") == "full"
+    assert tools.get("deny") == ["canvas"]
+    assert tools.get("web") == {"fetch": {"enabled": True}}
 
 
 @pytest.mark.asyncio
@@ -557,7 +592,6 @@ async def test_apply_deploy_mutation_preserves_agents_defaults(catalog_efs_dir):
         "user_1",
         {"id": "new", "name": "N"},
         {},
-        [],
     )
     with open(config_path) as f:
         result = json.load(f)

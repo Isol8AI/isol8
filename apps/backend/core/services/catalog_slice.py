@@ -16,7 +16,17 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-_STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id"})
+_STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
+# ``agentDir`` is per-agent-id (NOT per-user — the path is in-container
+# uniform). Carrying the publisher's value into the slice means the deployed
+# agent inherits a path keyed to the publisher's agent id, which:
+#   - on self-deploy, collides with the publisher's existing agent and
+#     trips OpenClaw's ``DuplicateAgentDirError`` (zod-rejected config →
+#     hot-reload fails → new agent never appears in the running container);
+#   - on cross-user deploy, dumps the new agent's data into a directory
+#     keyed to the wrong id.
+# Stripping it lets OpenClaw auto-derive ``/home/node/.openclaw/agents/{id}/agent``
+# (see openclaw/src/config/agent-dirs.ts:60-79).
 
 
 def strip_user_specific_fields(agent_entry: dict[str, Any]) -> dict[str, Any]:

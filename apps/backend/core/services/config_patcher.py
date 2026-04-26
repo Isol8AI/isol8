@@ -244,26 +244,33 @@ async def apply_deploy_mutation(
     owner_id: str,
     agent_entry: dict,
     plugins_patch: dict,
-    tools_allowed_merge: list[str],
 ) -> None:
     """Atomically apply a catalog-deploy mutation to openclaw.json.
 
     Performed inside a single exclusive lock so concurrent deploys cannot
     race on the read-modify-write of the agents list:
-      1. Append `agent_entry` to `config["agents"]`.
+      1. Append `agent_entry` to `config["agents"]["list"]`.
       2. Deep-merge `plugins_patch` into `config["plugins"]`.
-      3. Union `tools_allowed_merge` into `config["tools"]["allowed"]`
-         (de-duplicated, sorted for determinism).
 
-    The tools allowlist is unioned — not replaced — so deploying a new
-    template does not revoke tools the user already allowed for other
-    agents.
+    NOTE: top-level ``tools`` is intentionally left alone. The catalog code
+    used to write ``tools.allowed = []``, which is not a valid key in
+    OpenClaw's ``ToolsSchema`` (``.strict()`` at
+    openclaw/src/config/zod-schema.agent-runtime.ts:911) — that wrote a junk
+    field that caused chokidar's hot-reload to reject the entire config with
+    ``Unrecognized key: "allowed"``, leaving every deployed agent invisible
+    in the running container. Per-agent tool policy lives on the agent entry
+    itself (``AgentToolsSchema``), which is already carried through the
+    slice. Top-level tools are global to the container and shouldn't be
+    silently mutated by a deploy.
+
+    Self-heals: if a stale ``tools.allowed`` is present from before this fix,
+    drop it on the next mutation so the file becomes valid again.
     """
 
     def _mutate(current: dict) -> bool:
-        # 1. Append agent entry (always mutates — each deploy gets a fresh id).
-        # OpenClaw schema: agents.list is the array; agents.defaults is its
-        # sibling. See openclaw/src/config/zod-schema.agents.ts.
+        # 1. Append agent entry to agents.list (always mutates — each deploy
+        # gets a fresh id). OpenClaw schema: agents = {defaults, list}. See
+        # openclaw/src/config/zod-schema.agents.ts.
         agents_obj = current.get("agents")
         if isinstance(agents_obj, list):
             # Legacy flat-list shape from pre-schema-fix deploys: migrate by
@@ -286,16 +293,12 @@ async def apply_deploy_mutation(
                 existing_plugins = {}
             current["plugins"] = _deep_merge(existing_plugins, plugins_patch)
 
-        # 3. Union tools.allowed.
+        # 3. Self-heal: strip the invalid ``tools.allowed`` key if present
+        # (left over from pre-fix deploys). Cleans up the bad on-disk state
+        # so OpenClaw's strict-schema validator accepts the file again.
         tools = current.get("tools")
-        if not isinstance(tools, dict):
-            tools = {}
-        existing_allowed = tools.get("allowed")
-        if not isinstance(existing_allowed, list):
-            existing_allowed = []
-        merged_allowed = sorted(set(existing_allowed) | set(tools_allowed_merge or []))
-        tools["allowed"] = merged_allowed
-        current["tools"] = tools
+        if isinstance(tools, dict) and "allowed" in tools:
+            del tools["allowed"]
 
         return True
 

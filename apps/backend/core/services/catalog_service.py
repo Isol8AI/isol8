@@ -30,7 +30,7 @@ class CatalogService:
         *,
         s3,
         workspace,
-        apply_deploy_mutation: Callable[[str, dict, dict, list[str]], Awaitable[None]],
+        apply_deploy_mutation: Callable[[str, dict, dict], Awaitable[None]],
     ):
         self._s3 = s3
         self._workspace = workspace
@@ -156,16 +156,13 @@ class CatalogService:
             agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
 
             # Apply the mutation atomically inside the config file lock so two
-            # concurrent deploys cannot drop each other's agent entries or wipe
-            # each other's tool allowlist.
+            # concurrent deploys cannot drop each other's agent entries.
             plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
-            tools_allowed = list((slice_.get("tools") or {}).get("allowed") or [])
 
             await self._apply_deploy(
                 owner_id,
                 agent_entry,
                 plugins_patch,
-                tools_allowed,
             )
 
             self._workspace.write_template_sidecar(
@@ -192,7 +189,10 @@ class CatalogService:
             "agent_id": new_agent_id,
             "name": manifest.get("name", slug),
             "skills_added": list(agent_entry.get("skills") or []),
-            "plugins_enabled": list((slice_.get("plugins") or {}).keys()),
+            # OpenClaw plugin entries live at ``plugins.entries.{name}``;
+            # the top-level keys (``slots``/``entries``) are structural
+            # containers, not plugin names.
+            "plugins_enabled": list(((slice_.get("plugins") or {}).get("entries") or {}).keys()),
         }
 
     # ---- deployed ----
@@ -260,18 +260,31 @@ class CatalogService:
         prior_versions = self._s3.list_versions(slug)
         next_version = (max(prior_versions) + 1) if prior_versions else 1
 
+        # Read manifest fields from the OpenClaw schema's actual paths
+        # (see openclaw/src/config/zod-schema.agent-runtime.ts +
+        # zod-schema.core.ts):
+        #   emoji   → agent.identity.emoji   (NOT agent.emoji)
+        #   plugins → plugins.entries.{name} (top-level keys are structural)
+        #   tools   → tools.{profile,allow,alsoAllow,deny,...}
+        #             (no ``allowed`` field exists; ``required_tools`` left
+        #             empty until we model a proper effective-tools resolver)
+        # ``vibe`` and ``description`` are not OpenClaw fields — kept in the
+        # manifest schema for future use, populated only from the publish-time
+        # ``description_override`` argument when supplied by the admin.
+        identity = agent_entry_raw.get("identity") or {}
+        plugin_entries = (slice_.get("plugins") or {}).get("entries") or {}
         manifest = build_manifest(
             slug=slug,
             version=next_version,
             name=name,
-            emoji=agent_entry_raw.get("emoji", ""),
-            vibe=agent_entry_raw.get("vibe", ""),
-            description=description_override or agent_entry_raw.get("description", ""),
+            emoji=identity.get("emoji") or "",
+            vibe="",
+            description=description_override or "",
             suggested_model=agent_entry_raw.get("model", ""),
             suggested_channels=list((agent_entry_raw.get("channels") or {}).keys()),
             required_skills=list(agent_entry_raw.get("skills") or []),
-            required_plugins=list((slice_.get("plugins") or {}).keys()),
-            required_tools=list((slice_.get("tools") or {}).get("allowed") or []),
+            required_plugins=list(plugin_entries.keys()),
+            required_tools=[],
             published_by=admin_user_id,
         )
 
