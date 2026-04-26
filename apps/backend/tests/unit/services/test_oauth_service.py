@@ -132,6 +132,43 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
 
 
 @pytest.mark.asyncio
+async def test_request_device_code_refuses_to_clobber_active_session(oauth_table):
+    """Once a user has an active OAuth session, request_device_code
+    raises OAuthAlreadyActiveError instead of overwriting tokens."""
+    from core.services.oauth_service import OAuthAlreadyActiveError
+
+    seed_resp = {
+        "device_code": "dev_x",
+        "user_code": "OK-9",
+        "verification_uri": "https://chatgpt.com/codex",
+        "expires_in": 900,
+        "interval": 5,
+    }
+    success_resp = {
+        "access_token": "eyJ.x.y",
+        "refresh_token": "rt",
+        "id_token": "eyJ.z",
+        "account_id": "acc",
+    }
+
+    async def fake_seed(self, url, **kwargs):
+        return httpx.Response(200, json=seed_resp, request=httpx.Request("POST", url))
+
+    async def fake_success(self, url, **kwargs):
+        return httpx.Response(200, json=success_resp, request=httpx.Request("POST", url))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        await request_device_code(user_id="u_1")
+    with patch.object(httpx.AsyncClient, "post", new=fake_success):
+        await poll_device_code(user_id="u_1")
+
+    # User now has state=active. A second request_device_code must refuse.
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        with pytest.raises(OAuthAlreadyActiveError):
+            await request_device_code(user_id="u_1")
+
+
+@pytest.mark.asyncio
 async def test_revoke_deletes_oauth_row(oauth_table):
     """revoke_user_oauth removes the persisted token row."""
 
