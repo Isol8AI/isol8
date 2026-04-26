@@ -165,11 +165,27 @@ class KeyService:
                 await api_key_repo.set_secret_arn(user_id, tool_id, arn)
                 item["secret_arn"] = arn
             except Exception:
-                # Roll back the DDB row so we don't leave a row without an ARN
-                # claiming the key is configured.
+                # Roll back the DDB row so a re-attempt isn't blocked.
+                # Wrap the rollback itself: if it raises, the original Secrets
+                # Manager exception is what the caller needs to see, and the
+                # phantom DDB row becomes an operator-sweep concern surfaced
+                # via the rollback_failed metric.
                 logger.exception("Failed to push LLM key to Secrets Manager; rolling back DDB row")
-                await api_key_repo.delete_key(user_id, tool_id)
-                raise
+                try:
+                    await api_key_repo.delete_key(user_id, tool_id)
+                except Exception:
+                    logger.exception(
+                        "key_service rollback failed for %s/%s",
+                        user_id,
+                        tool_id,
+                    )
+                    from core.observability.metrics import put_metric
+
+                    put_metric(
+                        "key_service.rollback_failed",
+                        dimensions={"tool_id": tool_id},
+                    )
+                raise  # Re-raise the original Secrets Manager exception
 
         return item
 
@@ -180,12 +196,18 @@ class KeyService:
                 _delete_user_secret(user_id, tool_id)
             except Exception:
                 # Don't fail the user-facing delete — the DDB row is already
-                # gone, so the key won't be used. The orphan secret will be
-                # picked up by a sweep job.
+                # gone, so the key won't be used. Emit a metric so the orphan
+                # secret can be swept up by an operator job.
                 logger.exception(
                     "Failed to delete Secrets Manager secret for user=%s provider=%s",
                     user_id,
                     tool_id,
+                )
+                from core.observability.metrics import put_metric
+
+                put_metric(
+                    "key_service.secret_delete_orphan",
+                    dimensions={"tool_id": tool_id},
                 )
         return deleted
 
