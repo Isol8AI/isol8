@@ -12,8 +12,13 @@ microcents.
 from __future__ import annotations
 
 
-class UnknownModelError(KeyError):
-    """Raised when a model id has no entry in the rate table."""
+class UnknownModelError(Exception):
+    """Raised when a model id has no entry in the rate table.
+
+    Deliberately NOT a KeyError subclass — pricing failures should never
+    be silently swallowed by upstream `except KeyError:` clauses around
+    dict access.
+    """
 
 
 # (input_per_mtok_usd, output_per_mtok_usd)
