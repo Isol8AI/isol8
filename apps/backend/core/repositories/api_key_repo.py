@@ -46,6 +46,25 @@ async def list_keys(user_id: str) -> list[dict]:
     return response.get("Items", [])
 
 
+async def set_secret_arn(user_id: str, tool_id: str, secret_arn: str) -> None:
+    """Persist the AWS Secrets Manager ARN alongside an existing key row.
+
+    Used by ``key_service`` for LLM-provider keys (OpenAI/Anthropic) where the
+    plaintext is mirrored into Secrets Manager so the per-user ECS task can
+    reference it via ``secrets:[{name, valueFrom}]``.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"user_id": user_id, "tool_id": tool_id},
+        UpdateExpression="SET secret_arn = :a, updated_at = :t",
+        ExpressionAttributeValues={
+            ":a": secret_arn,
+            ":t": utc_now_iso(),
+        },
+    )
+
+
 async def delete_key(user_id: str, tool_id: str) -> bool:
     """Delete a key. Returns True if the key existed, False otherwise."""
     existing = await get_key(user_id, tool_id)
