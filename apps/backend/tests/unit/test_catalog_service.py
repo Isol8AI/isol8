@@ -109,13 +109,12 @@ async def test_deploy_extracts_tar_merges_config_writes_sidecar(service, mock_s3
 
     mock_apply_deploy.assert_awaited_once()
     args, _ = mock_apply_deploy.call_args
-    owner_id, agent_entry, plugins_patch, tools_allowed = args
+    owner_id, agent_entry, plugins_patch = args
     assert owner_id == "user_u"
     assert agent_entry["name"] == "Pitch"
     assert agent_entry["id"] == result["agent_id"]
     assert agent_entry["workspace"] == f".openclaw/workspaces/{result['agent_id']}"
     assert plugins_patch == {"memory": {"enabled": True}}
-    assert tools_allowed == ["web-search"]
 
 
 @pytest.mark.asyncio
@@ -188,6 +187,8 @@ async def test_deploy_rolls_back_workspace_on_patch_failure(service, mock_s3, mo
 
 @pytest.mark.asyncio
 async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, mock_workspace, tmp_path):
+    # OpenClaw agent schema: emoji lives under ``identity``;
+    # plugins are nested under ``plugins.entries.{name}``.
     mock_workspace.read_openclaw_config.return_value = {
         "agents": {
             "list": [
@@ -195,20 +196,19 @@ async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, moc
                     "id": "agent_admin_pitch",
                     "workspace": ".openclaw/workspaces/agent_admin_pitch",
                     "name": "Pitch",
-                    "emoji": "🎯",
-                    "vibe": "Direct",
+                    "identity": {"emoji": "🎯"},
                     "model": "qwen/qwen3-vl-235b",
                     "skills": ["web-search"],
                     "channels": {"telegram": {"bot_token": "SECRET"}},
                 }
             ]
         },
-        "plugins": {"memory": {"enabled": True}},
-        "tools": {"allowed": ["web-search"]},
+        "plugins": {"entries": {"memory": {"enabled": True}}},
+        "tools": {"profile": "full", "deny": ["canvas"]},
     }
     admin_workspace = tmp_path / "admin_ws"
     admin_workspace.mkdir()
-    (admin_workspace / "IDENTITY.md").write_text("name: Pitch\nemoji: 🎯\nvibe: Direct\n")
+    (admin_workspace / "IDENTITY.md").write_text("name: Pitch\nemoji: 🎯\n")
     mock_workspace.agent_workspace_path.return_value = admin_workspace
 
     mock_s3.list_versions.return_value = []
@@ -223,6 +223,14 @@ async def test_publish_reads_admin_efs_and_uploads_package(service, mock_s3, moc
 
     assert result["slug"] == "pitch"
     assert result["version"] == 1
+
+    # Manifest reads emoji from agent.identity.emoji and required_plugins from
+    # plugins.entries.* keys (NOT the top-level structural keys).
+    manifest_call = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "pitch/v1/manifest.json")
+    manifest = manifest_call.args[1]
+    assert manifest["emoji"] == "🎯"
+    assert manifest["required_plugins"] == ["memory"]
+    assert manifest["required_tools"] == []
 
     put_json_keys = [c.args[0] for c in mock_s3.put_json.call_args_list]
     assert "pitch/v1/manifest.json" in put_json_keys

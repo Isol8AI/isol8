@@ -123,3 +123,18 @@ def test_strip_user_specific_fields_keeps_behavioral_flags():
     assert cleaned["thinkingDefault"] is True
     assert cleaned["skills"] == ["web-search", "email-send"]
     assert cleaned["cron"] == [{"schedule": "0 8 * * *", "workflow": "morning-briefing"}]
+
+
+def test_strip_user_specific_fields_removes_agentDir():
+    """agentDir is keyed to the publisher's agent id. If carried into the slice,
+    a self-deploy collides with the publisher's existing agent and trips
+    OpenClaw's ``DuplicateAgentDirError`` (config rejected, deploy invisible)."""
+    agent = {
+        "id": "pulse",
+        "name": "Pulse",
+        "agentDir": "/home/node/.openclaw/agents/pulse/agent",
+        "skills": ["web-search"],
+    }
+    cleaned = strip_user_specific_fields(agent)
+    assert "agentDir" not in cleaned
+    assert cleaned["skills"] == ["web-search"]
