@@ -23,6 +23,7 @@ from typing import Final
 
 import boto3
 import httpx
+from botocore.exceptions import ClientError
 from cryptography.fernet import Fernet
 
 from core.config import settings
@@ -36,6 +37,12 @@ CLIENT_ID: Final = "app_EMoamEEZ73f0CkXaXp7hrann"
 DEVICE_CODE_URL: Final = "https://auth.openai.com/codex/device"
 TOKEN_URL: Final = "https://auth.openai.com/oauth/token"
 SCOPE: Final = "openid profile email offline_access"
+
+
+class OAuthAlreadyActiveError(Exception):
+    """Raised when request_device_code is called for a user who already
+    has an active OAuth session. Callers should either reuse the existing
+    session or call revoke_user_oauth before starting a new flow."""
 
 
 @dataclass(frozen=True)
@@ -90,18 +97,36 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
             DEVICE_CODE_URL,
             data={"client_id": CLIENT_ID, "scope": SCOPE},
         )
+    if resp.status_code >= 400:
+        body_preview = resp.text[:300] if resp.text else ""
+        logger.warning(
+            "OAuth call to %s returned %d: %s",
+            resp.url,
+            resp.status_code,
+            body_preview,
+        )
     resp.raise_for_status()
     body = resp.json()
 
-    _table().put_item(
-        Item={
-            "user_id": user_id,
-            "state": "pending",
-            "device_code": body["device_code"],
-            "user_code": body["user_code"],
-            "interval": int(body.get("interval", 5)),
-        }
-    )
+    try:
+        _table().put_item(
+            Item={
+                "user_id": user_id,
+                "state": "pending",
+                "device_code": body["device_code"],
+                "user_code": body["user_code"],
+                "interval": int(body.get("interval", 5)),
+            },
+            ConditionExpression="attribute_not_exists(user_id) OR #s <> :active",
+            ExpressionAttributeNames={"#s": "state"},
+            ExpressionAttributeValues={":active": "active"},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise OAuthAlreadyActiveError(
+                f"User {user_id} already has an active OAuth session — use revoke_user_oauth first to start over"
+            ) from None
+        raise
     return DeviceCodeResponse(
         user_code=body["user_code"],
         verification_uri=body["verification_uri"],
@@ -122,7 +147,7 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
         raise RuntimeError(f"No pending device-code session for user {user_id}")
 
     device_code = row["device_code"]
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             TOKEN_URL,
             data={
@@ -140,7 +165,22 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
             # Per OAuth device-code spec — caller should back off; we
             # treat as pending. Optional: bump interval in DDB.
             return DevicePollPending
+        body_preview = resp.text[:300]
+        logger.warning(
+            "OAuth poll for user %s returned 400/%s: %s",
+            user_id,
+            err,
+            body_preview,
+        )
         raise RuntimeError(f"OpenAI device-code poll failed: {err}")
+    if resp.status_code >= 400:
+        body_preview = resp.text[:300] if resp.text else ""
+        logger.warning(
+            "OAuth poll for user %s returned %d: %s",
+            user_id,
+            resp.status_code,
+            body_preview,
+        )
     resp.raise_for_status()
 
     body = resp.json()
