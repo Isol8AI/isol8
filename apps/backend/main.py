@@ -42,6 +42,7 @@ from routers import (
     debug,
     desktop_auth,
     integrations,
+    oauth,
     settings_keys,
     updates,
     users,
@@ -299,6 +300,9 @@ app.include_router(workspace_files.router, prefix="/api/v1/container", tags=["co
 app.include_router(debug.router, prefix="/api/v1/debug", tags=["debug"])
 
 app.include_router(desktop_auth.router, prefix="/api/v1/auth", tags=["desktop"])
+
+# ChatGPT OAuth (device-code flow for BYO ChatGPT-token billing)
+app.include_router(oauth.router, prefix="/api/v1")
 
 # Agent catalog (user-facing list/deploy/deployed + admin publish)
 app.include_router(catalog.router, prefix="/api/v1")
