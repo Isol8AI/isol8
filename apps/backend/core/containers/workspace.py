@@ -622,3 +622,49 @@ class Workspace:
 
     def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
         return self.user_path(user_id) / "workspaces" / agent_id
+
+
+async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
+    """Write the user's ChatGPT OAuth profile to EFS before container start.
+
+    The file shape is what OpenClaw's openai-codex provider reads at boot
+    via $CODEX_HOME/auth.json (default ~/.codex/auth.json). Container
+    config sets CODEX_HOME to /mnt/efs/users/{user_id}/codex so this file
+    is found cold. Per spec §5.1.
+
+    Re-OAuth callers can re-invoke this helper; the file is overwritten,
+    not merged.
+
+    Args:
+        user_id: our internal user_id.
+        oauth_tokens: dict with keys access_token, refresh_token, and
+            (optional) account_id. Sourced from oauth_service.poll_device_code.
+    """
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
+
+    base = Path(efs_root) / user_id / "codex"
+    base.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": oauth_tokens["access_token"],
+            "refresh_token": oauth_tokens["refresh_token"],
+        },
+    }
+    if oauth_tokens.get("account_id"):
+        payload["tokens"]["account_id"] = oauth_tokens["account_id"]
+
+    auth_path = base / "auth.json"
+    auth_path.write_text(json.dumps(payload, indent=2))
+
+    # OpenClaw container runs as UID 1000 — match ownership so the
+    # in-container token-refresh logic can rotate the file. Best-effort;
+    # ignore failures (e.g. local dev without root, test tmp_path).
+    try:
+        os.chown(str(auth_path), 1000, 1000)
+        os.chown(str(base), 1000, 1000)
+    except (PermissionError, OSError):
+        pass
