@@ -580,6 +580,88 @@ class TestStripeWebhook:
         mock_billing_svc.cancel_subscription.assert_called_once()
 
     @pytest.mark.asyncio
+    @patch("routers.billing.put_metric")
+    @patch("routers.billing.billing_repo")
+    @patch("routers.billing.stripe")
+    async def test_trial_will_end_emits_metric(self, mock_stripe, mock_repo, mock_put_metric, async_client):
+        """Plan 3 §7.2: trial_will_end fires 3 days before trial_end. We
+        emit `trial.will_end_3day` so we can see how often it fires."""
+        mock_stripe.Webhook.construct_event.return_value = {
+            "type": "customer.subscription.trial_will_end",
+            "data": {
+                "object": {
+                    "id": "sub_trial_x",
+                    "customer": "cus_trial_x",
+                    "trial_end": 1700000000,
+                    "status": "trialing",
+                }
+            },
+        }
+        mock_repo.get_by_stripe_customer_id = AsyncMock(
+            return_value={"owner_id": "user_trial_x", "stripe_customer_id": "cus_trial_x"}
+        )
+
+        response = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=b'{"test": true}',
+            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
+        )
+
+        assert response.status_code == 200
+        metric_names = [c.args[0] for c in mock_put_metric.call_args_list]
+        assert "trial.will_end_3day" in metric_names
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.queue_tier_change", new_callable=AsyncMock)
+    @patch("routers.billing.billing_repo")
+    @patch("routers.billing.stripe")
+    async def test_subscription_updated_persists_status_and_trial_end(
+        self, mock_stripe, mock_repo, _mock_queue, async_client
+    ):
+        """Plan 3 §7.2 + §8.2: subscription.updated must call set_subscription
+        with status + trial_end so the frontend trial banner can read fresh
+        state without a Stripe round-trip."""
+        mock_stripe.Webhook.construct_event.return_value = {
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_update_x",
+                    "customer": "cus_update_x",
+                    "status": "trialing",
+                    "trial_end": 1700000000,
+                    "metadata": {"plan_tier": "starter"},
+                }
+            },
+        }
+        mock_repo.get_by_stripe_customer_id = AsyncMock(
+            return_value={
+                "owner_id": "user_update_x",
+                "stripe_customer_id": "cus_update_x",
+                "plan_tier": "starter",
+            }
+        )
+        mock_repo.set_subscription = AsyncMock()
+        mock_repo.update_subscription = AsyncMock()
+
+        with patch("routers.billing.BillingService") as mock_billing_cls:
+            mock_billing_svc = AsyncMock()
+            mock_billing_cls.return_value = mock_billing_svc
+
+            response = await async_client.post(
+                "/api/v1/billing/webhooks/stripe",
+                content=b'{"test": true}',
+                headers={"stripe-signature": "test_sig", "content-type": "application/json"},
+            )
+
+        assert response.status_code == 200
+        mock_repo.set_subscription.assert_awaited_once()
+        kwargs = mock_repo.set_subscription.await_args.kwargs
+        assert kwargs.get("owner_id") == "user_update_x"
+        assert kwargs.get("subscription_id") == "sub_update_x"
+        assert kwargs.get("status") == "trialing"
+        assert kwargs.get("trial_end") == 1700000000
+
+    @pytest.mark.asyncio
     @patch("routers.billing.stripe")
     async def test_webhook_invalid_signature(self, mock_stripe, async_client):
         """Should return 400 on invalid signature."""

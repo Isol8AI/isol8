@@ -454,7 +454,10 @@ async def handle_stripe_webhook(
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.updated":
-        put_metric("stripe.subscription", dimensions={"event": "updated"})
+        put_metric(
+            "stripe.subscription",
+            dimensions={"event": "updated", "status": event_data.get("status", "unknown")},
+        )
         customer_id = event_data["customer"]
         tier = event_data.get("metadata", {}).get("plan_tier", "starter")
 
@@ -462,6 +465,16 @@ async def handle_stripe_webhook(
         if account:
             old_tier = account.get("plan_tier", "free")
             await billing_service.update_subscription(account, event_data["id"], tier)
+            # Plan 3 §7.2 + §8.2: also persist Stripe-owned trial state
+            # (status + trial_end) so the frontend can render trial banners
+            # without a Stripe round-trip. Distinct from update_subscription —
+            # see billing_repo.set_subscription docstring.
+            await billing_repo.set_subscription(
+                owner_id=account["owner_id"],
+                subscription_id=event_data["id"],
+                status=event_data.get("status", "active"),
+                trial_end=event_data.get("trial_end"),
+            )
             try:
                 await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier=tier)
             except ConfigPatchError:
@@ -470,6 +483,21 @@ async def handle_stripe_webhook(
                 )
             except Exception:
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
+
+    elif event_type == "customer.subscription.trial_will_end":
+        # Plan 3 §7.2 + §8.2: Stripe fires this 3 days before trial_end. We
+        # just emit a metric so we can see how often it fires; Stripe sends
+        # its own default reminder email regardless. A branded reminder
+        # email via SES is a follow-up.
+        put_metric("trial.will_end_3day")
+        customer_id = event_data["customer"]
+        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        if account:
+            logger.info(
+                "Trial will end in 3 days for owner %s (trial_end=%s)",
+                account["owner_id"],
+                event_data.get("trial_end"),
+            )
 
     elif event_type == "customer.subscription.deleted":
         put_metric("stripe.subscription", dimensions={"event": "deleted"})
@@ -488,6 +516,19 @@ async def handle_stripe_webhook(
                 )
             except Exception:
                 logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
+
+            # Plan 3 §7.2: tear down the user's container — they no longer
+            # have an active subscription. Best-effort; log and continue on
+            # failure so we don't 500 the webhook back to Stripe.
+            try:
+                from core.containers import get_ecs_manager
+
+                await get_ecs_manager().delete_user_service(account["owner_id"])
+            except Exception:
+                logger.exception(
+                    "Container teardown on subscription.deleted failed for owner %s",
+                    account["owner_id"],
+                )
 
     elif event_type == "invoice.payment_failed":
         put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
