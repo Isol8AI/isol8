@@ -78,10 +78,16 @@ class Settings(BaseSettings):
     WS_CONNECTIONS_TABLE: str = os.getenv("WS_CONNECTIONS_TABLE", "isol8-websocket-connections")
     WS_MANAGEMENT_API_URL: str = os.getenv("WS_MANAGEMENT_API_URL", "")  # Set by Terraform
 
+    # Credit ledger + OAuth tables (set by CDK)
+    CREDITS_TABLE: str = ""
+    CREDIT_TRANSACTIONS_TABLE: str = ""
+    OAUTH_TOKENS_TABLE: str = ""
+
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_METER_ID: str = os.getenv("STRIPE_METER_ID", "")
+    STRIPE_FLAT_PRICE_ID: str = ""
     BILLING_MARKUP: float = float(os.getenv("BILLING_MARKUP", "1.4"))
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
