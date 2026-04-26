@@ -66,3 +66,35 @@ async def test_pre_stage_omits_account_id_when_missing(fake_efs_root):
     )
     written = json.loads((fake_efs_root / "u_no_acc" / "codex" / "auth.json").read_text())
     assert "account_id" not in written["tokens"]
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_chown_failure_is_non_fatal(fake_efs_root, monkeypatch):
+    """If the runtime can't chown to UID 1000 (e.g. local dev without root),
+    the helper still writes the file and returns successfully."""
+
+    def raising_chown(*args, **kwargs):
+        raise PermissionError("can't chown in test env")
+
+    monkeypatch.setattr("os.chown", raising_chown)
+
+    await pre_stage_codex_auth(
+        user_id="u_perm",
+        oauth_tokens={"access_token": "x", "refresh_token": "y"},
+    )
+
+    written = json.loads((fake_efs_root / "u_perm" / "codex" / "auth.json").read_text())
+    assert written["tokens"]["access_token"] == "x"
+
+
+@pytest.mark.asyncio
+async def test_pre_stage_rejects_path_traversal_user_id(fake_efs_root):
+    """Defense-in-depth: a user_id with path-traversal chars is rejected."""
+    with pytest.raises(ValueError, match="invalid characters"):
+        await pre_stage_codex_auth(
+            user_id="../etc/passwd",
+            oauth_tokens={"access_token": "x", "refresh_token": "y"},
+        )
+
+    # Confirm no file was created at the malicious path.
+    assert not (fake_efs_root / "etc" / "passwd").exists()
