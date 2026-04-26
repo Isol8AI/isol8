@@ -23,6 +23,9 @@ export class DatabaseStack extends cdk.Stack {
   public readonly channelLinksTable: dynamodb.Table;
   public readonly webhookDedupTable: dynamodb.Table;
   public readonly adminActionsTable: dynamodb.Table;
+  public readonly creditsTable: dynamodb.Table;
+  public readonly creditTransactionsTable: dynamodb.Table;
+  public readonly oauthTokensTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -174,6 +177,58 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "AdminActionsTableName", {
       value: this.adminActionsTable.tableName,
       exportName: `${this.stackName}-admin-actions-table`,
+    });
+
+    // Credits balance per user — atomic counter, deducted per Bedrock chat
+    // (card 3 only). Single-key, plain item; per spec §6.1.
+    this.creditsTable = new dynamodb.Table(this, "CreditsTable", {
+      tableName: `isol8-${env}-credits`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    // Credit transactions audit log — immutable history of top-ups, deducts,
+    // adjustments. PK user_id + SK tx_id (ULID, sortable by time).
+    // Per spec §6.1.
+    this.creditTransactionsTable = new dynamodb.Table(this, "CreditTxnsTable", {
+      tableName: `isol8-${env}-credit-transactions`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    // ChatGPT OAuth bootstrap tokens — Fernet-encrypted access + refresh
+    // tokens captured during signup, used once when staging the user's EFS
+    // codex/auth.json file at container provision. Per spec §5.1.
+    this.oauthTokensTable = new dynamodb.Table(this, "OAuthTokensTable", {
+      tableName: `isol8-${env}-oauth-tokens`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    new cdk.CfnOutput(this, "CreditsTableName", {
+      value: this.creditsTable.tableName,
+      exportName: `${this.stackName}-credits-table`,
+    });
+    new cdk.CfnOutput(this, "CreditTxnsTableName", {
+      value: this.creditTransactionsTable.tableName,
+      exportName: `${this.stackName}-credit-txns-table`,
+    });
+    new cdk.CfnOutput(this, "OAuthTokensTableName", {
+      value: this.oauthTokensTable.tableName,
+      exportName: `${this.stackName}-oauth-tokens-table`,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
