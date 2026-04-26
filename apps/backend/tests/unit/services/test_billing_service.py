@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from core.services import billing_service
 from core.services.billing_service import (
     AlreadySubscribedError,
     BillingService,
@@ -357,3 +358,51 @@ class TestBillingServiceSubscription:
             plan_tier="free",
         )
         mock_repo.set_overage_enabled.assert_called_once_with("user_sub", False)
+
+
+class TestCreateFlatFeeCheckout:
+    """Tests for the flat-fee Checkout helper used by the post-pivot onboarding
+    wizard (single $50/mo price, no per-tier branching)."""
+
+    @pytest.mark.asyncio
+    async def test_create_flat_fee_checkout_uses_flat_price_and_tax(self, monkeypatch):
+        """create_flat_fee_checkout passes STRIPE_FLAT_PRICE_ID and automatic_tax."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        fake_session = MagicMock(url="https://checkout/x", id="cs_test")
+        with (
+            patch.object(billing_service.stripe.checkout.Session, "create", return_value=fake_session) as mock_create,
+            patch.object(
+                billing_service.billing_repo,
+                "get_by_owner_id",
+                new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
+            ),
+        ):
+            result = await billing_service.create_flat_fee_checkout(owner_id="u_1")
+
+        assert result is fake_session
+        _, kwargs = mock_create.call_args
+        assert kwargs["line_items"] == [{"price": "price_flat_test", "quantity": 1}]
+        assert kwargs["automatic_tax"] == {"enabled": True}
+        assert kwargs["customer_update"] == {"address": "auto"}
+        assert kwargs["customer"] == "cus_test"
+        assert kwargs["mode"] == "subscription"
+        assert kwargs["idempotency_key"].startswith("flat_checkout:u_1:")
+
+    @pytest.mark.asyncio
+    async def test_create_flat_fee_checkout_raises_without_flat_price_id(self, monkeypatch):
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "")
+        with pytest.raises(BillingServiceError, match="STRIPE_FLAT_PRICE_ID not configured"):
+            await billing_service.create_flat_fee_checkout(owner_id="u_1")
+
+    @pytest.mark.asyncio
+    async def test_create_flat_fee_checkout_raises_without_stripe_customer(self, monkeypatch):
+        """If the billing account row is missing or has no Stripe customer id,
+        the helper must refuse rather than create an orphan Checkout."""
+        monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
+        with patch.object(
+            billing_service.billing_repo,
+            "get_by_owner_id",
+            new=AsyncMock(return_value=None),
+        ):
+            with pytest.raises(BillingServiceError, match="No Stripe customer"):
+                await billing_service.create_flat_fee_checkout(owner_id="u_missing")
