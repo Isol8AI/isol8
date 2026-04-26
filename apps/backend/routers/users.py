@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import get_current_user, AuthContext
 from core.repositories import user_repo
-from schemas.user_schemas import SyncUserResponse
+from schemas.user_schemas import SyncUserRequest, SyncUserResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -19,11 +19,15 @@ router = APIRouter()
     description="Creates or returns the user record based on the authenticated Clerk user. Idempotent.",
     operation_id="sync_user",
     responses={
+        400: {"description": "Invalid provider_choice / byo_provider combination"},
         401: {"description": "Missing or invalid Clerk JWT token"},
         500: {"description": "Database error"},
     },
 )
-async def sync_user(auth: AuthContext = Depends(get_current_user)):
+async def sync_user(
+    body: SyncUserRequest | None = None,
+    auth: AuthContext = Depends(get_current_user),
+):
     user_id = auth.user_id
 
     existing = await user_repo.get(user_id)
@@ -37,6 +41,26 @@ async def sync_user(auth: AuthContext = Depends(get_current_user)):
             raise HTTPException(status_code=500, detail="Database operation failed")
     else:
         status = "exists"
+
+    # Plan 3 Task 3: persist provider_choice (+ byo_provider when applicable)
+    # so the gateway can branch on it. The body is fully optional -- legacy
+    # callers (ChatLayout mount before Plan 3 onboarding ran) just get a
+    # plain user-record sync.
+    if body is not None and body.provider_choice is not None:
+        if body.provider_choice == "byo_key" and body.byo_provider is None:
+            raise HTTPException(
+                status_code=400,
+                detail="byo_provider is required when provider_choice is 'byo_key'",
+            )
+        try:
+            await user_repo.set_provider_choice(
+                user_id,
+                provider_choice=body.provider_choice,
+                byo_provider=body.byo_provider,
+            )
+        except Exception as e:
+            logger.error("Database error persisting provider_choice for %s: %s", user_id, e)
+            raise HTTPException(status_code=500, detail="Database operation failed")
 
     # Note: no billing-account creation here. /users/sync fires from multiple
     # places (ChatLayout mount, onboarding, settings), and the caller's JWT

@@ -60,3 +60,102 @@ class TestSyncUser:
         """Sync requires authentication."""
         response = await unauthenticated_async_client.post("/api/v1/users/sync")
         assert response.status_code in [401, 403]
+
+
+class TestSyncUserProviderChoice:
+    """Tests for Plan 3 Task 3: provider_choice persistence on /users/sync."""
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_persists_provider_choice(self, mock_repo, async_client):
+        """POST /users/sync with provider_choice persists via user_repo."""
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post(
+            "/api/v1/users/sync",
+            json={"provider_choice": "bedrock_claude"},
+        )
+
+        assert response.status_code == 200
+        mock_repo.set_provider_choice.assert_awaited_once()
+        _, kwargs = mock_repo.set_provider_choice.call_args
+        assert kwargs["provider_choice"] == "bedrock_claude"
+        assert kwargs.get("byo_provider") is None
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_persists_byo_key_with_provider(self, mock_repo, async_client):
+        """byo_key + byo_provider together persist both values."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "created_at": "2026-01-01T00:00:00Z"})
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post(
+            "/api/v1/users/sync",
+            json={"provider_choice": "byo_key", "byo_provider": "openai"},
+        )
+
+        assert response.status_code == 200
+        mock_repo.set_provider_choice.assert_awaited_once()
+        _, kwargs = mock_repo.set_provider_choice.call_args
+        assert kwargs["provider_choice"] == "byo_key"
+        assert kwargs["byo_provider"] == "openai"
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_byo_key_without_provider_rejected(self, mock_repo, async_client):
+        """byo_key without byo_provider is a 400 (or 422 if pydantic catches it)."""
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post(
+            "/api/v1/users/sync",
+            json={"provider_choice": "byo_key"},
+        )
+
+        assert response.status_code in (400, 422)
+        mock_repo.set_provider_choice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_without_provider_choice_unchanged(self, mock_repo, async_client):
+        """Existing callers (no body / empty body) bypass set_provider_choice."""
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post("/api/v1/users/sync", json={})
+
+        assert response.status_code == 200
+        mock_repo.set_provider_choice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_no_body_unchanged(self, mock_repo, async_client):
+        """No body at all (legacy contract) still works."""
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post("/api/v1/users/sync")
+
+        assert response.status_code == 200
+        mock_repo.set_provider_choice.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("routers.users.user_repo")
+    async def test_sync_invalid_provider_choice_rejected(self, mock_repo, async_client):
+        """Unknown provider_choice value is 422 (pydantic Literal)."""
+        mock_repo.get = AsyncMock(return_value=None)
+        mock_repo.put = AsyncMock(return_value=None)
+        mock_repo.set_provider_choice = AsyncMock(return_value=None)
+
+        response = await async_client.post(
+            "/api/v1/users/sync",
+            json={"provider_choice": "wat"},
+        )
+
+        assert response.status_code == 422
+        mock_repo.set_provider_choice.assert_not_called()
