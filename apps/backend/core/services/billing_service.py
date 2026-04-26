@@ -263,6 +263,62 @@ async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
     return session
 
 
+async def create_trial_subscription(*, owner_id: str, payment_method_id: str) -> stripe.Subscription:
+    """Create a Stripe Subscription with a 14-day trial.
+
+    Per spec §7.1 / §7.3: backend creates the Subscription IMMEDIATELY at
+    signup against the saved payment method. Stripe handles conversion on
+    day 15 (Smart Retries on failure). Backend just listens to the
+    resulting webhooks (Plan 3 Task 2).
+
+    The subscription is born in ``status: trialing`` with ``trial_end`` 14
+    days out. Subscription id + initial status are persisted via
+    :func:`billing_repo.set_subscription` so the rest of the system can
+    read trial state without re-querying Stripe.
+
+    Conventions:
+      - ``automatic_tax={"enabled": True}`` — same Stripe Tax setup as
+        :func:`create_flat_fee_checkout`.
+      - ``payment_behavior="default_incomplete"`` — surfaces 3DS challenges
+        to the frontend instead of auto-failing the create call.
+      - ``payment_settings.save_default_payment_method=on_subscription``
+        means a successful first charge persists the PM as the default
+        for future invoices (no re-prompt at trial conversion).
+      - ``idempotency_key=f"trial_signup:{owner_id}"`` — deterministic per
+        user. A retry of the same trial-create call returns the same
+        Stripe subscription, never duplicates.
+    """
+    if not settings.STRIPE_FLAT_PRICE_ID:
+        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
+
+    with timing("stripe.api.latency", {"op": "subscription.create"}):
+        sub = stripe.Subscription.create(
+            customer=account["stripe_customer_id"],
+            items=[{"price": settings.STRIPE_FLAT_PRICE_ID}],
+            trial_period_days=14,
+            default_payment_method=payment_method_id,
+            automatic_tax={"enabled": True},
+            payment_behavior="default_incomplete",
+            payment_settings={
+                "save_default_payment_method": "on_subscription",
+                "payment_method_types": ["card"],
+            },
+            idempotency_key=f"trial_signup:{owner_id}",
+        )
+
+    await billing_repo.set_subscription(
+        owner_id=owner_id,
+        subscription_id=sub.id,
+        status=sub.status,
+        trial_end=getattr(sub, "trial_end", None),
+    )
+    return sub
+
+
 # ---------------------------------------------------------------------------
 # Module-level admin wrappers
 # ---------------------------------------------------------------------------

@@ -95,6 +95,41 @@ async def update_subscription(
     return existing
 
 
+async def set_subscription(
+    *,
+    owner_id: str,
+    subscription_id: str,
+    status: str,
+    trial_end: int | None = None,
+) -> dict | None:
+    """Persist Stripe subscription identity + status onto the billing account.
+
+    Used by the trial-create path (Plan 3 §7.1): after Stripe returns the
+    new sub, we record ``subscription_id`` + ``status`` (and the optional
+    ``trial_end`` epoch) so the rest of the system can read trial state
+    without re-querying Stripe. Webhook handlers (Plan 3 Task 2) refresh
+    the same fields on subscription.updated / customer.subscription.deleted.
+
+    Distinct from :func:`update_subscription`, which is the legacy per-tier
+    cancel/upgrade helper that also rewrites ``plan_tier``. Trial flow has
+    a single flat price, so plan_tier is irrelevant here — keep them apart
+    so neither helper accidentally clobbers the other's fields.
+    """
+    existing = await get_by_owner_id(owner_id)
+    if existing is None:
+        return None
+
+    existing["stripe_subscription_id"] = subscription_id
+    existing["subscription_status"] = status
+    if trial_end is not None:
+        existing["trial_end"] = trial_end
+    existing["updated_at"] = utc_now_iso()
+
+    table = _get_table()
+    await run_in_thread(table.put_item, Item=existing)
+    return existing
+
+
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
