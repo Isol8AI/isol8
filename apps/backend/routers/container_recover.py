@@ -184,7 +184,10 @@ async def container_recover(
             reason = container.get("last_error", f"Container is {status}")
             logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
             try:
-                await ecs_manager.provision_user_container(owner_id)
+                # Plan 2 Task 13 shim: provider_choice defaults to
+                # bedrock_claude until Plan 3 cutover wires the user's saved
+                # choice through.
+                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
             except Exception as e:
                 logger.error("Recovery reprovision failed for %s: %s", owner_id, e)
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
@@ -199,7 +202,10 @@ async def container_recover(
         if not ip:
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
-                await ecs_manager.provision_user_container(owner_id)
+                # Plan 2 Task 13 shim: provider_choice defaults to
+                # bedrock_claude until Plan 3 cutover wires the user's saved
+                # choice through.
+                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
             except Exception:
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
             return {
@@ -233,7 +239,10 @@ async def container_recover(
             logger.warning("Owner %s: gateway restart failed, escalating to reprovision", owner_id)
             await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
             try:
-                await ecs_manager.provision_user_container(owner_id)
+                # Plan 2 Task 13 shim: provider_choice defaults to
+                # bedrock_claude until Plan 3 cutover wires the user's saved
+                # choice through.
+                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
             except Exception:
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
             return {

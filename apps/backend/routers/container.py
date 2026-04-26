@@ -30,7 +30,10 @@ async def _owner_has_subscription(owner_id: str) -> bool:
 async def _background_provision(user_id: str) -> None:
     """Run provisioning in the background."""
     try:
-        await get_ecs_manager().provision_user_container(user_id)
+        await get_ecs_manager().provision_user_container(
+            user_id,
+            provider_choice="bedrock_claude",
+        )
     except Exception:
         logger.exception("Background provisioning failed for user %s", user_id)
 
@@ -133,7 +136,14 @@ async def container_provision(
 
     # Provision new container
     try:
-        service_name = await get_ecs_manager().provision_user_container(owner_id)
+        # NOTE (Plan 2 Task 13): provider_choice plumb-through. The router does
+        # not yet read the user's saved choice from user_repo — Plan 3 cutover
+        # wires that in. For now we fall back to bedrock_claude so the existing
+        # routes preserve behavior (Bedrock-hosted Claude on the task IAM role).
+        service_name = await get_ecs_manager().provision_user_container(
+            owner_id,
+            provider_choice="bedrock_claude",
+        )
         logger.info("Provisioned container %s for owner %s", service_name, owner_id)
         return {
             "status": "provisioning",
@@ -177,7 +187,10 @@ async def container_retry(
         )
 
     try:
-        service_name = await ecs_manager.provision_user_container(owner_id)
+        service_name = await ecs_manager.provision_user_container(
+            owner_id,
+            provider_choice="bedrock_claude",
+        )
     except EcsManagerError as e:
         logger.error("Retry provisioning failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=502, detail="Provisioning failed")
