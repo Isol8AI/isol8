@@ -194,7 +194,7 @@ export class DatabaseStack extends cdk.Stack {
     // Credit transactions audit log — immutable history of top-ups, deducts,
     // adjustments. PK user_id + SK tx_id (ULID, sortable by time).
     // Per spec §6.1.
-    this.creditTransactionsTable = new dynamodb.Table(this, "CreditTxnsTable", {
+    this.creditTransactionsTable = new dynamodb.Table(this, "CreditTransactionsTable", {
       tableName: `isol8-${env}-credit-transactions`,
       partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "tx_id", type: dynamodb.AttributeType.STRING },
@@ -222,9 +222,9 @@ export class DatabaseStack extends cdk.Stack {
       value: this.creditsTable.tableName,
       exportName: `${this.stackName}-credits-table`,
     });
-    new cdk.CfnOutput(this, "CreditTxnsTableName", {
+    new cdk.CfnOutput(this, "CreditTransactionsTableName", {
       value: this.creditTransactionsTable.tableName,
-      exportName: `${this.stackName}-credit-txns-table`,
+      exportName: `${this.stackName}-credit-transactions-table`,
     });
     new cdk.CfnOutput(this, "OAuthTokensTableName", {
       value: this.oauthTokensTable.tableName,
