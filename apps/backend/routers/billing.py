@@ -338,14 +338,25 @@ class AutoReloadRequest(BaseModel):
     amount_cents: int | None = Field(default=None, ge=500)
 
 
-@router.get("/credits/balance", summary="Get the user's prepaid credit balance")
+@router.get(
+    "/credits/balance",
+    summary="Get the user's prepaid credit balance",
+    description=("Returns the user's current prepaid Claude credit balance in microcents and dollars (formatted)."),
+)
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
     balance_uc = await credit_ledger.get_balance(ctx.user_id)
     dollars = f"{balance_uc / 1_000_000:.2f}"
     return {"balance_microcents": balance_uc, "balance_dollars": dollars}
 
 
-@router.post("/credits/top_up", summary="Buy credits via Stripe PaymentIntent")
+@router.post(
+    "/credits/top_up",
+    summary="Buy credits via Stripe PaymentIntent",
+    description=(
+        "Creates a Stripe PaymentIntent for one-time credit purchase. "
+        "Returns client_secret for Stripe.js confirmation. Minimum $5."
+    ),
+)
 async def top_up_credits(
     body: TopUpRequest,
     ctx: AuthContext = Depends(get_current_user),
@@ -371,7 +382,12 @@ async def top_up_credits(
     return {"client_secret": pi.client_secret, "payment_intent_id": pi.id}
 
 
-@router.put("/credits/auto_reload", status_code=204, summary="Configure auto-reload")
+@router.put(
+    "/credits/auto_reload",
+    status_code=204,
+    summary="Configure auto-reload",
+    description=("Configure auto-reload: when balance drops below threshold_cents, charge amount_cents off-session."),
+)
 async def set_auto_reload(
     body: AutoReloadRequest,
     ctx: AuthContext = Depends(get_current_user),
