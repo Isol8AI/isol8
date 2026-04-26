@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 
 from core.containers.config import (
     write_openclaw_config,
@@ -11,6 +13,17 @@ from core.containers.config import (
 )
 
 
+@pytest.mark.xfail(
+    reason=(
+        "Obsolete after the flat-fee pivot (Plan 2). write_openclaw_config "
+        "now takes provider_choice= instead of tier=/region=/etc., and the "
+        "MiniMax/Qwen catalog + per-tier whitelist were deleted. The new "
+        "shape is covered by test_config_provider_routing.py. Caller "
+        "(ecs_manager.write_user_configs) is rewired in Plan 2 Task 13; "
+        "build_backend_policy_patch is removed by Task 16."
+    ),
+    strict=False,
+)
 class TestWriteOpenclawConfig:
     """Test openclaw.json generation."""
 

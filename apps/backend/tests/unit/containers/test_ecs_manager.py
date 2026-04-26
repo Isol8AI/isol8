@@ -2094,6 +2094,15 @@ class TestProvisionUserContainer:
             # Explicit tier should bypass the billing lookup entirely.
             mock_billing.get_by_owner_id.assert_not_called()
 
+    @pytest.mark.xfail(
+        reason=(
+            "Obsolete after the flat-fee pivot (Plan 2). Tier-based model "
+            "routing is gone — write_openclaw_config now branches on "
+            "provider_choice. Replacement coverage lands when "
+            "ecs_manager.provision_user_container is rewired in Task 13."
+        ),
+        strict=False,
+    )
     @pytest.mark.asyncio
     async def test_provision_produces_paid_tier_openclaw_config_for_starter(
         self, manager, mock_ecs_client, mock_efs_client
