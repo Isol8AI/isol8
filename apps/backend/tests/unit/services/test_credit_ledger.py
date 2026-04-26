@@ -1,5 +1,7 @@
 """Unit tests for the credit ledger: balance, top-up, deduct, auto-reload."""
 
+from decimal import Decimal
+
 import boto3
 import pytest
 from moto import mock_aws
@@ -100,7 +102,7 @@ class TestDeduct:
         assert int(deduct_row["amount_microcents"]["N"]) == -2_000_000
         assert int(deduct_row["raw_cost_microcents"]["N"]) == 1_428_571
         # DDB stores Decimal — moto roundtrips as string.
-        assert float(deduct_row["markup_multiplier"]["N"]) == 1.4
+        assert Decimal(deduct_row["markup_multiplier"]["N"]) == Decimal("1.4")
         assert deduct_row["chat_session_id"]["S"] == "sess_1"
 
     @pytest.mark.asyncio
