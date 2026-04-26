@@ -83,7 +83,13 @@ async def provision_container(
         # the combined devices/paired.json (with BOTH the node and the
         # operator device entries, KMS-encrypted operator seed persisted to
         # the DynamoDB containers row).
-        await ecs_manager.write_user_configs(owner_id, gateway_token, tier="starter")
+        # Plan 2 Task 13 shim: provider_choice defaults to bedrock_claude for
+        # dev provisioning until Plan 3 wires the user's saved choice through.
+        await ecs_manager.write_user_configs(
+            owner_id,
+            gateway_token,
+            provider_choice="bedrock_claude",
+        )
 
         # Step 3: Now start the container — configs are on EFS.
         await ecs_manager.start_user_service(owner_id)
@@ -125,36 +131,17 @@ async def redeploy_container(
         raise HTTPException(status_code=404, detail="No container found")
 
     try:
-        # Look up billing tier for this owner
-        from core.repositories import billing_repo
-
-        account = await billing_repo.get_by_owner_id(owner_id)
-        tier = account.get("plan_tier", "free") if account else "free"
-
-        # Deep-merge only the backend-controlled slice (preserves OpenClaw's
-        # runtime additions AND user-owned fields like tools.deny, which
-        # node_proxy.py manipulates at runtime). The helper lives next to
-        # write_openclaw_config so both paths stay in lock-step.
-        from core.services.config_patcher import patch_openclaw_config, ConfigPatchError
-        from core.containers.config import build_backend_policy_patch
-
-        patch = build_backend_policy_patch(tier, region=settings.AWS_REGION)
-
+        # Plan 2 Task 13 shim: under the flat-fee pivot, openclaw.json is
+        # generated wholly from provider_choice (Task 12) — there is no longer
+        # a per-tier "backend policy patch" to deep-merge. The dev redeploy
+        # path now just rewrites the file via write_user_configs and bumps the
+        # service. Plan 3 will wire the user's saved provider_choice in.
         ecs_manager = get_ecs_manager()
-        try:
-            await patch_openclaw_config(owner_id, patch)
-        except ConfigPatchError:
-            # No existing config — fall back to full write (first provision).
-            # write_user_configs handles openclaw.json + mcporter.json + node
-            # device PEM + combined devices/paired.json (node + operator),
-            # and persists the KMS-encrypted operator seed to DynamoDB.
-            await ecs_manager.write_user_configs(owner_id, container["gateway_token"], tier=tier)
-        else:
-            # Patch succeeded — openclaw.json was updated in place via deep
-            # merge. We still need to ensure device trust store is current
-            # (e.g. a newly-added operator entry after the OpenClaw 4.5
-            # upgrade), without rewriting openclaw.json.
-            await ecs_manager.ensure_device_identities(owner_id, container["gateway_token"])
+        await ecs_manager.write_user_configs(
+            owner_id,
+            container["gateway_token"],
+            provider_choice="bedrock_claude",
+        )
 
         await ecs_manager.start_user_service(owner_id)
 
@@ -163,7 +150,6 @@ async def redeploy_container(
             "service_name": container["service_name"],
             "owner_id": owner_id,
             "owner_type": owner_type,
-            "tier": tier,
         }
     except EcsManagerError as e:
         logger.error("Dev redeploy failed for owner %s: %s", owner_id, e)
