@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 
 import stripe
 
@@ -217,6 +218,49 @@ class BillingService:
         )
         # Disable overage on cancellation
         await billing_repo.set_overage_enabled(billing_account["owner_id"], False)
+
+
+async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
+    """Create a Stripe Checkout session on the single flat-fee price.
+
+    Used by the flat-fee onboarding wizard (frontend cards 1, 2, 3 — all three
+    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). The trial flow
+    (Plan 3) bypasses Checkout entirely in favor of SetupIntent + Subscription
+    create with ``trial_period_days``; this helper exists for the no-trial
+    path (e.g. card 3 if the user opts to skip trial and pay immediately).
+
+    Coexists with :meth:`BillingService.create_checkout_session` (per-tier);
+    Plan 3 cutover removes the per-tier helper once the flat-fee wizard is
+    wired in.
+
+    Conventions (mirrors Plan 1 Stripe Tax setup):
+      - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.
+      - ``customer_update={"address": "auto"}`` — required when automatic_tax
+        is enabled so Checkout can persist the collected billing address back
+        onto the existing Stripe customer.
+      - ``idempotency_key`` bucketed to a 5-minute window so duplicate
+        button-clicks within the same session collapse to one Checkout but a
+        deliberate retry minutes later still succeeds.
+    """
+    if not settings.STRIPE_FLAT_PRICE_ID:
+        raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
+
+    account = await billing_repo.get_by_owner_id(owner_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
+
+    with timing("stripe.api.latency", {"op": "checkout.session.create"}):
+        session = stripe.checkout.Session.create(
+            customer=account["stripe_customer_id"],
+            mode="subscription",
+            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+            success_url=f"{FRONTEND_URL}/chat?checkout=success",
+            cancel_url=f"{FRONTEND_URL}/onboarding?checkout=cancel",
+            automatic_tax={"enabled": True},
+            customer_update={"address": "auto"},
+            idempotency_key=f"flat_checkout:{owner_id}:{int(time.time() // 300)}",
+        )
+    return session
 
 
 # ---------------------------------------------------------------------------
