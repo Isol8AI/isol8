@@ -65,6 +65,27 @@ def _new_tx_id() -> str:
     return f"{int(time.time() * 1000):013d}-{uuid.uuid4().hex[:8]}"
 
 
+def _put_txn(item: dict) -> None:
+    """Write a transaction row with collision-retry. Audit log is immutable;
+    we never silently overwrite. Two collisions in a row → raise."""
+    for attempt in range(2):
+        try:
+            _txns_table().put_item(
+                Item=item,
+                ConditionExpression="attribute_not_exists(tx_id)",
+            )
+            return
+        except ClientError as e:
+            if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            if attempt == 0:
+                # Regenerate tx_id and retry once.
+                item["tx_id"] = _new_tx_id()
+                continue
+            raise
+    raise RuntimeError("credit_ledger._put_txn: 2 tx_id collisions in a row")
+
+
 async def get_balance(user_id: str, *, consistent: bool = False) -> int:
     """Returns balance in microcents. 0 if the user has no row yet."""
     resp = _credits_table().get_item(Key={"user_id": user_id}, ConsistentRead=consistent)
@@ -100,8 +121,8 @@ async def top_up(
     )
     new_balance = int(resp["Attributes"]["balance_microcents"])
 
-    _txns_table().put_item(
-        Item={
+    _put_txn(
+        {
             "user_id": user_id,
             "tx_id": _new_tx_id(),
             "type": "top_up",
@@ -175,7 +196,7 @@ async def deduct(
     }
     if bedrock_invocation_id:
         txn_item["bedrock_invocation_id"] = bedrock_invocation_id
-    _txns_table().put_item(Item=txn_item)
+    _put_txn(txn_item)
     return new_balance
 
 
@@ -197,8 +218,8 @@ async def adjustment(
         UpdateExpression="SET balance_microcents = :bal, updated_at = :now",
         ExpressionAttributeValues={":bal": new_balance, ":now": _now_iso()},
     )
-    _txns_table().put_item(
-        Item={
+    _put_txn(
+        {
             "user_id": user_id,
             "tx_id": _new_tx_id(),
             "type": "adjustment",
