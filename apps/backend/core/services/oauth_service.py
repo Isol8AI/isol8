@@ -34,7 +34,13 @@ logger = logging.getLogger(__name__)
 
 # Constants borrowed from pi-ai (see module docstring).
 CLIENT_ID: Final = "app_EMoamEEZ73f0CkXaXp7hrann"
-DEVICE_CODE_URL: Final = "https://auth.openai.com/codex/device"
+# OpenAI moved the device-code endpoint from /codex/device to
+# /api/accounts/deviceauth/authorize (~2026-04). The old URL now
+# 302-redirects to the new one, and httpx defaults to NOT following
+# redirects on POST — we'd choke on the 302 with a 5xx. Pin the new URL
+# AND pass follow_redirects=True at the call site so a future move
+# (e.g. /v2/...) doesn't break onboarding again.
+DEVICE_CODE_URL: Final = "https://auth.openai.com/api/accounts/deviceauth/authorize"
 TOKEN_URL: Final = "https://auth.openai.com/oauth/token"
 SCOPE: Final = "openid profile email offline_access"
 
@@ -92,7 +98,7 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
     Each call is independent — many users can have device-code sessions
     in flight concurrently against the same client_id (per spec §5.1).
     """
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.post(
             DEVICE_CODE_URL,
             data={"client_id": CLIENT_ID, "scope": SCOPE},
@@ -147,7 +153,7 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
         raise RuntimeError(f"No pending device-code session for user {user_id}")
 
     device_code = row["device_code"]
-    async with httpx.AsyncClient(timeout=15) as client:
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         resp = await client.post(
             TOKEN_URL,
             data={
