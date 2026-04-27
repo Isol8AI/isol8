@@ -195,6 +195,28 @@ async def test_poll_propagates_exchange_failure(oauth_table):
 
 
 @pytest.mark.asyncio
+async def test_poll_legacy_row_raises_clean_error(oauth_table):
+    """A pending row from the pre-Codex-CLI flow has `device_code` in
+    place of `device_auth_id`. We must NOT KeyError on it — instead
+    raise OAuthExchangeFailedError so the router returns 502 and the
+    user can click Try Again to restart. Codex P1 on PR #402."""
+    # Manually write a legacy-shape pending row (no device_auth_id).
+    client = boto3.client("dynamodb", region_name="us-east-1")
+    client.put_item(
+        TableName="test-oauth-tokens",
+        Item={
+            "user_id": {"S": "u_legacy"},
+            "state": {"S": "pending"},
+            "device_code": {"S": "old-style-code"},
+            "user_code": {"S": "LEGACY-1"},
+            "interval": {"N": "5"},
+        },
+    )
+    with pytest.raises(OAuthExchangeFailedError, match="Stale OAuth session"):
+        await poll_device_code(user_id="u_legacy")
+
+
+@pytest.mark.asyncio
 async def test_request_device_code_refuses_to_clobber_active_session(oauth_table):
     """Once a user has active tokens, request_device_code refuses to
     overwrite them — caller must revoke first."""

@@ -171,8 +171,19 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "pending":
         raise OAuthExchangeFailedError(f"No pending device-code session for user {user_id}")
-    device_auth_id = row["device_auth_id"]
-    user_code = row["user_code"]
+    # Legacy pending rows (from the pre-Codex-CLI flow) store `device_code`
+    # instead of `device_auth_id`. Same for any partially-written row that
+    # doesn't have user_code. Treat both as stale — the new flow can't
+    # resume them. Caller surfaces this as a clean error; user clicks
+    # "Try again" which calls /start, which overwrites the pending row
+    # with a fresh device_auth_id (the put_item ConditionExpression only
+    # blocks state=active, not state=pending).
+    device_auth_id = row.get("device_auth_id")
+    user_code = row.get("user_code")
+    if not device_auth_id or not user_code:
+        raise OAuthExchangeFailedError(
+            f"Stale OAuth session for user {user_id} (legacy row format) — click Connect ChatGPT again to restart"
+        )
 
     # Step 1: ask OpenAI's deviceauth/token whether the user has
     # completed sign-in. While pending, OpenAI returns 403 or 404 per
