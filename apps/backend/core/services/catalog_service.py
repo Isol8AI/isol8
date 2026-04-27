@@ -282,6 +282,16 @@ class CatalogService:
                 )
             except Exception:
                 pass
+            # Known limitation (Codex P2): the plugins deep-merge from
+            # apply_deploy_mutation isn't rolled back. Plugin code is
+            # bundled in the OpenClaw image, so leaving extra plugins
+            # enabled in config has no install side-effect — the merge
+            # is also idempotent on retry. Inverting a deep-merge
+            # cleanly requires a pre-mutation snapshot, which adds
+            # complexity that isn't matched by the equivalent
+            # ``patch_openclaw_config`` path (channel binding deep-merges
+            # are likewise not reversible). Accepted as the same risk
+            # posture as the rest of the codebase.
             raise
 
         return {
