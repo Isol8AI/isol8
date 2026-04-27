@@ -341,3 +341,90 @@ async def delete_openclaw_config_path(
         return True
 
     await _locked_rmw(owner_id, _mutate, f"delete path={path}")
+
+
+async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
+    """Atomically append cron jobs to ``{owner_id}/cron/jobs.json``.
+
+    Lives in a separate file from openclaw.json (see ``config.cron.store``
+    in OpenClaw's schema, default ``~/.openclaw/cron/jobs.json``), so it
+    needs its own ``fcntl.lockf`` rather than reusing the openclaw.json
+    lock. Same atomic-write pattern as ``_locked_rmw``: open the data
+    file, take an exclusive lock, read + modify, tempfile-rename, chown.
+
+    No-op if ``new_jobs`` is empty.
+
+    Concurrency caveat: this matches the existing ``_locked_rmw`` pattern
+    used for ``openclaw.json``, which has two known races (also untreated
+    upstream) — the lock is held on the data file's inode, but the
+    atomic ``os.rename`` swaps the inode out, and ``fcntl.lockf`` is
+    process-wide on Linux/macOS so threads in the same process don't
+    contend. In practice both races have a narrow window and the failure
+    mode is "one concurrent writer's changes lost; user retries", which
+    is the same posture we accept for openclaw.json today. A future PR
+    should fix both with a shared lock-file helper rather than
+    half-fixing only this path. Tracked separately.
+    """
+    if not new_jobs:
+        return
+
+    cron_dir = os.path.join(_efs_mount_path, owner_id, "cron")
+    jobs_path = os.path.join(cron_dir, "jobs.json")
+
+    def _do():
+        os.makedirs(cron_dir, exist_ok=True)
+        if os.getuid() == 0:
+            try:
+                os.chown(cron_dir, 1000, 1000)
+            except OSError:
+                pass
+        if not os.path.exists(jobs_path):
+            with open(jobs_path, "w") as f:
+                json.dump({"version": 1, "jobs": []}, f)
+            if os.getuid() == 0:
+                try:
+                    os.chown(jobs_path, 1000, 1000)
+                except OSError:
+                    pass
+
+        lock_fd = open(jobs_path, "r+")
+        try:
+            fcntl.lockf(lock_fd, fcntl.LOCK_EX)
+            lock_fd.seek(0)
+            try:
+                data = json.load(lock_fd)
+            except json.JSONDecodeError:
+                data = {"version": 1, "jobs": []}
+            if not isinstance(data, dict):
+                data = {"version": 1, "jobs": []}
+            jobs = data.get("jobs")
+            if not isinstance(jobs, list):
+                jobs = []
+            jobs.extend(copy.deepcopy(j) for j in new_jobs)
+            data["jobs"] = jobs
+            data.setdefault("version", 1)
+
+            json.dumps(data)  # validate serializability before writing
+
+            fd, tmp_path = tempfile.mkstemp(dir=cron_dir, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w") as f:
+                    json.dump(data, f, indent=2)
+                if os.getuid() == 0:
+                    os.chown(tmp_path, 1000, 1000)
+                os.rename(tmp_path, jobs_path)
+            except Exception:
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
+
+            logger.info(
+                "cron/jobs.json for owner %s: appended %d job(s)",
+                owner_id,
+                len(new_jobs),
+            )
+        finally:
+            fcntl.lockf(lock_fd, fcntl.LOCK_UN)
+            lock_fd.close()
+
+    await asyncio.to_thread(_do)

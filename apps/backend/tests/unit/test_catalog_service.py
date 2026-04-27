@@ -1,6 +1,6 @@
 import io
 import tarfile
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -31,6 +31,9 @@ def mock_s3():
 def mock_workspace():
     m = MagicMock()
     m.read_openclaw_config.return_value = {}
+    # Default: no cron jobs to carry. Tests that exercise the cron-carry
+    # path override this explicitly.
+    m.read_cron_jobs.return_value = []
     return m
 
 
@@ -732,3 +735,339 @@ def test_list_deployed_for_user_keyed_by_owner_id(service, mock_workspace):
     mock_workspace.list_workspace_agent_dirs.assert_called_once_with("org_abc")
     mock_workspace.read_template_sidecar.assert_called_once_with("org_abc", "agent_xx")
     assert deployed == [{"agent_id": "agent_xx", "template_slug": "pitch", "template_version": 3}]
+
+
+# ---- cron-jobs carry through publish + deploy ----
+#
+# Cron jobs live in {owner_id}/cron/jobs.json (separate from openclaw.json),
+# so the catalog service threads them through:
+#   publish: workspace.read_cron_jobs() → filter_cron_jobs_for_agent →
+#            slice["cron_jobs"]
+#   deploy:  slice["cron_jobs"] → _remap_cron_jobs_for_deploy → append
+
+
+@pytest.mark.asyncio
+async def test_publish_carries_filtered_cron_jobs_in_slice(mock_s3, mock_workspace, mock_apply_deploy, tmp_path):
+    mock_workspace.read_openclaw_config.return_value = {
+        "agents": {"list": [{"id": "pitch", "name": "Pitch"}]},
+        "plugins": {"entries": {"memory": {"enabled": True}}},
+        "tools": {"profile": "full"},
+    }
+    # Publisher has cron jobs for two agents; only pitch's should ride along.
+    mock_workspace.read_cron_jobs.return_value = [
+        {
+            "id": "j1",
+            "agentId": "pitch",
+            "name": "Daily morning brief",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+            "payload": {"kind": "agentTurn", "message": "Run brief"},
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "sessionKey": "agent:pitch:user_publisher",
+            "createdAtMs": 1700000000000,
+            "state": {"nextRunAtMs": 1700000060000},
+        },
+        {"id": "j2", "agentId": "other_agent", "name": "Should not carry"},
+    ]
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "IDENTITY.md").write_text("x")
+    mock_workspace.agent_workspace_path.return_value = workspace
+    mock_s3.list_versions.return_value = []
+    mock_s3.get_json.return_value = {"agents": [], "retired": []}
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    await service.publish(
+        admin_user_id="user_admin",
+        owner_id="user_admin",
+        agent_id="pitch",
+    )
+
+    slice_call = next(c for c in mock_s3.put_json.call_args_list if c.args[0] == "pitch/v1/openclaw-slice.json")
+    slice_json = slice_call.args[1]
+    assert "cron_jobs" in slice_json
+    assert len(slice_json["cron_jobs"]) == 1
+    [job] = slice_json["cron_jobs"]
+    # Stripped fields.
+    for k in ("id", "sessionKey", "state", "createdAtMs", "updatedAtMs"):
+        assert k not in job
+    # Behavioral fields preserved.
+    assert job["agentId"] == "pitch"
+    assert job["name"] == "Daily morning brief"
+    assert job["schedule"]["expr"] == "0 9 * * *"
+    assert job["delivery"] == {"mode": "announce", "channel": "telegram"}
+
+
+@pytest.mark.asyncio
+async def test_deploy_carries_cron_jobs_with_remapped_id_and_agent(mock_s3, mock_workspace, mock_apply_deploy):
+    """Deploy reads slice.cron_jobs, regenerates id/sessionKey/timestamps,
+    rewrites agentId to the new agent, and appends to the deployer's
+    cron/jobs.json via append_cron_jobs."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"}]}
+        if key == "pitch/v1/manifest.json":
+            return {"slug": "pitch", "version": 1, "name": "Pitch"}
+        if key == "pitch/v1/openclaw-slice.json":
+            return {
+                "agent": {"name": "Pitch", "skills": []},
+                "plugins": {},
+                "tools": {},
+                "cron_jobs": [
+                    {
+                        "agentId": "pitch",  # publisher's id
+                        "name": "Daily brief",
+                        "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+                        "payload": {"kind": "agentTurn", "message": "go"},
+                    },
+                    {
+                        "agentId": "pitch",
+                        "name": "Weekly digest",
+                        "schedule": {"kind": "cron", "expr": "0 7 * * 1", "tz": "UTC"},
+                        "payload": {"kind": "agentTurn", "message": "weekly"},
+                    },
+                ],
+            }
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    appended: list[tuple[str, list[dict]]] = []
+
+    async def _fake_append(owner_id, jobs):
+        appended.append((owner_id, jobs))
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    with patch("core.services.config_patcher.append_cron_jobs", new=_fake_append):
+        result = await service.deploy(owner_id="org_xyz", slug="pitch")
+
+    assert result["cron_jobs_added"] == 2
+    assert len(appended) == 1
+    captured_owner, captured_jobs = appended[0]
+    assert captured_owner == "org_xyz"
+    assert len(captured_jobs) == 2
+
+    # Both jobs carry the new agent_id (not the publisher's "pitch") and
+    # have fresh ids / sessionKeys derived from owner_id.
+    new_agent_id = result["agent_id"]
+    for j in captured_jobs:
+        assert j["agentId"] == new_agent_id
+        assert j["sessionKey"] == f"agent:{new_agent_id}:org_xyz"
+        assert "id" in j and j["id"]  # uuid populated
+        assert "createdAtMs" in j
+        assert "updatedAtMs" in j
+        assert "state" not in j
+
+    # Schedule + payload preserved verbatim.
+    by_name = {j["name"]: j for j in captured_jobs}
+    assert by_name["Daily brief"]["schedule"]["expr"] == "0 9 * * *"
+    assert by_name["Weekly digest"]["schedule"]["expr"] == "0 7 * * 1"
+
+
+@pytest.mark.asyncio
+async def test_deploy_with_no_cron_jobs_skips_append(mock_s3, mock_workspace, mock_apply_deploy):
+    """A slice with no cron_jobs (or an empty list) doesn't call append_cron_jobs.
+    Backward-compat: existing slices in S3 published before this change have
+    no ``cron_jobs`` key — deploy must still work."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"}]}
+        if key == "pitch/v1/manifest.json":
+            return {"slug": "pitch", "version": 1, "name": "Pitch"}
+        if key == "pitch/v1/openclaw-slice.json":
+            # No cron_jobs key at all (legacy slice).
+            return {"agent": {"name": "Pitch"}, "plugins": {}, "tools": {}}
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    appended: list = []
+
+    async def _fake_append(owner_id, jobs):
+        appended.append((owner_id, jobs))
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    with patch("core.services.config_patcher.append_cron_jobs", new=_fake_append):
+        result = await service.deploy(owner_id="user_solo", slug="pitch")
+
+    assert result["cron_jobs_added"] == 0
+    assert appended == []  # never called
+
+
+# ---- Codex P1 + P2 follow-ups (cron carry hardening) ----
+
+
+@pytest.mark.asyncio
+async def test_deploy_remaps_delivery_account_id_on_carried_cron_jobs(mock_s3, mock_workspace, mock_apply_deploy):
+    """Codex P1: per-agent channel bindings pair accountId 1:1 with agentId
+    (see ``_ensure_channel_bindings_for_patch`` in config_patcher). When the
+    publisher's cron job has ``delivery.accountId == publisher_agent_id``,
+    the deploy must rewrite it to the new agent id, otherwise the cron
+    routes to the wrong (or non-existent) per-agent channel binding on the
+    deployer's container."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"}]}
+        if key == "pitch/v1/manifest.json":
+            return {"slug": "pitch", "version": 1, "name": "Pitch"}
+        if key == "pitch/v1/openclaw-slice.json":
+            return {
+                "agent": {"name": "Pitch"},
+                "plugins": {},
+                "tools": {},
+                "cron_jobs": [
+                    {
+                        "agentId": "pitch",
+                        "name": "Daily",
+                        "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+                        "payload": {"kind": "agentTurn", "message": "go"},
+                        "delivery": {
+                            "mode": "announce",
+                            "channel": "telegram",
+                            "accountId": "pitch",  # publisher's per-agent account
+                        },
+                    },
+                    {
+                        "agentId": "pitch",
+                        "name": "No accountId",
+                        "schedule": {"kind": "cron", "expr": "0 10 * * *"},
+                        "payload": {"kind": "agentTurn", "message": "go"},
+                        # No delivery — must not crash the remap.
+                    },
+                ],
+            }
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    appended: list = []
+
+    async def _fake_append(owner_id, jobs):
+        appended.append((owner_id, jobs))
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    with patch("core.services.config_patcher.append_cron_jobs", new=_fake_append):
+        result = await service.deploy(owner_id="user_d", slug="pitch")
+
+    new_agent_id = result["agent_id"]
+    captured_jobs = appended[0][1]
+    by_name = {j["name"]: j for j in captured_jobs}
+
+    # Job with delivery: accountId rewritten, channel/mode preserved.
+    assert by_name["Daily"]["delivery"]["accountId"] == new_agent_id
+    assert by_name["Daily"]["delivery"]["channel"] == "telegram"
+    assert by_name["Daily"]["delivery"]["mode"] == "announce"
+    # Job without delivery: still landed, no synthetic delivery added.
+    assert "delivery" not in by_name["No accountId"] or by_name["No accountId"].get("delivery") is None
+
+
+@pytest.mark.asyncio
+async def test_deploy_rolls_back_agent_entry_when_post_mutation_step_fails(mock_s3, mock_workspace, mock_apply_deploy):
+    """Codex P2: if a post-``apply_deploy_mutation`` step (sidecar write,
+    cron append) raises, the agent entry already committed to openclaw.json
+    must be removed so the deploy is fully rolled back. Without this,
+    retries accumulate dangling agent entries that have no workspace dir
+    or sidecar."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"}]}
+        if key == "pitch/v1/manifest.json":
+            return {"slug": "pitch", "version": 1, "name": "Pitch"}
+        if key == "pitch/v1/openclaw-slice.json":
+            return {"agent": {"name": "Pitch"}, "plugins": {}, "tools": {}}
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+
+    # apply_deploy_mutation succeeds; sidecar write fails (post-commit).
+    mock_workspace.write_template_sidecar.side_effect = OSError("disk full")
+
+    removed: list = []
+
+    async def _fake_remove(owner_id, path, predicate):
+        # Capture (owner_id, path, predicate-result-on-fake-entry) so we can
+        # assert the rollback targeted the right entry.
+        removed.append((owner_id, list(path), predicate))
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    with (
+        pytest.raises(OSError, match="disk full"),
+        patch("core.services.config_patcher.remove_from_openclaw_config_list", new=_fake_remove),
+    ):
+        await service.deploy(owner_id="user_d", slug="pitch")
+
+    # Workspace dirs cleaned up.
+    mock_workspace.cleanup_agent_dirs.assert_called_once()
+    # Agent entry removal attempted at agents.list.
+    assert len(removed) == 1
+    owner, path, predicate = removed[0]
+    assert owner == "user_d"
+    assert path == ["agents", "list"]
+    # Predicate matches the just-attempted agent id (not other agents).
+    extracted_args, _ = mock_workspace.cleanup_agent_dirs.call_args
+    failed_agent_id = extracted_args[1]
+    assert predicate({"id": failed_agent_id}) is True
+    assert predicate({"id": "some_other_agent"}) is False
+    assert predicate("not-a-dict") is False  # defensive guard
+
+
+@pytest.mark.asyncio
+async def test_deploy_rollback_swallows_remove_failure(mock_s3, mock_workspace, mock_apply_deploy):
+    """Codex P2: rollback is best-effort. If remove_from_openclaw_config_list
+    itself raises (e.g. file-lock contention from a concurrent operation),
+    the original exception must still propagate — we don't want to mask
+    the user-facing 'disk full' with a noisy 'lock unavailable'."""
+
+    def _get_json(key, default=None):
+        if key == "catalog.json":
+            return {"agents": [{"slug": "pitch", "current_version": 1, "manifest_url": "pitch/v1/manifest.json"}]}
+        if key == "pitch/v1/manifest.json":
+            return {"slug": "pitch", "version": 1, "name": "Pitch"}
+        if key == "pitch/v1/openclaw-slice.json":
+            return {"agent": {"name": "Pitch"}, "plugins": {}, "tools": {}}
+        return default
+
+    mock_s3.get_json.side_effect = _get_json
+    mock_s3.get_bytes.return_value = _tar_with({"./IDENTITY.md": b"hi"})
+    mock_workspace.write_template_sidecar.side_effect = OSError("disk full")
+
+    async def _failing_remove(owner_id, path, predicate):
+        raise RuntimeError("rollback also failed")
+
+    service = CatalogService(
+        s3=mock_s3,
+        workspace=mock_workspace,
+        apply_deploy_mutation=mock_apply_deploy,
+    )
+    with (
+        pytest.raises(OSError, match="disk full"),  # original error surfaces
+        patch("core.services.config_patcher.remove_from_openclaw_config_list", new=_failing_remove),
+    ):
+        await service.deploy(owner_id="user_d", slug="pitch")

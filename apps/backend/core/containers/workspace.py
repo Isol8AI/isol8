@@ -620,5 +620,25 @@ class Workspace:
         except (json.JSONDecodeError, OSError):
             return None
 
+    def read_cron_jobs(self, user_id: str) -> list[dict]:
+        """Return the user's cron job entries from ``cron/jobs.json``, or [].
+
+        Schema: ``{"version": 1, "jobs": [{...}, ...]}`` — see
+        ``openclaw/src/config/types.cron.ts`` for the run-time shape.
+        Missing file or corrupt JSON degrades to ``[]`` (callers treat empty
+        as "no cron jobs to carry").
+        """
+        path = self.user_path(user_id) / "cron" / "jobs.json"
+        if not path.exists():
+            return []
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return []
+        if not isinstance(data, dict):
+            return []
+        jobs = data.get("jobs")
+        return list(jobs) if isinstance(jobs, list) else []
+
     def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
         return self.user_path(user_id) / "workspaces" / agent_id
