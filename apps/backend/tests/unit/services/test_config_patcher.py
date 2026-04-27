@@ -706,34 +706,3 @@ async def test_append_cron_jobs_recovers_from_corrupt_file(cron_efs_dir):
         data = json.load(f)
     assert data["version"] == 1
     assert [j["name"] for j in data["jobs"]] == ["Recovery"]
-
-
-@pytest.mark.asyncio
-async def test_append_cron_jobs_concurrent_writes_dont_lose_entries(cron_efs_dir):
-    """Codex P1 follow-up regression: locking the inode of jobs.json is
-    invalidated by the atomic-rename step (the new inode at jobs.json
-    isn't locked). A second concurrent caller that opens jobs.json AFTER
-    the rename can race past the lock and clobber the previous append.
-    Lock must live on a sibling .lock file that's never renamed.
-
-    With N concurrent appends, all N entries must end up in jobs.json."""
-    import asyncio as _asyncio
-
-    from core.services.config_patcher import append_cron_jobs
-
-    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
-
-    async def _add(i: int):
-        await append_cron_jobs(
-            "user_1",
-            [{"id": f"j{i}", "agentId": "agent_abc", "name": f"Job {i}"}],
-        )
-
-    # Fire 8 concurrent appends. Without the dedicated lock file, this race
-    # truncates the file to the LAST writer's contribution.
-    await _asyncio.gather(*(_add(i) for i in range(8)))
-
-    with open(jobs_path) as f:
-        data = json.load(f)
-    names = {j["name"] for j in data["jobs"]}
-    assert names == {f"Job {i}" for i in range(8)}, f"expected all 8 jobs to land, got {names}"

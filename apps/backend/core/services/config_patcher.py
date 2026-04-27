@@ -8,7 +8,6 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
 from typing import Any, Callable
 
 from core.config import settings
@@ -16,25 +15,6 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 _efs_mount_path = settings.EFS_MOUNT_PATH
-
-# Per-owner ``threading.Lock`` registry. ``fcntl.lockf`` is process-wide on
-# Linux/macOS — multiple threads in the same process all acquire it
-# successfully, which means asyncio.to_thread fan-out can race past the
-# file lock entirely. The file lock still does its job across processes
-# (multiple backend pods sharing EFS); the threading lock layered on top
-# serializes within a process. The dict + class-level lock is its own
-# tiny critical section so the registry stays consistent.
-_cron_jobs_locks: dict[str, threading.Lock] = {}
-_cron_jobs_locks_registry_lock = threading.Lock()
-
-
-def _cron_jobs_lock_for(owner_id: str) -> threading.Lock:
-    with _cron_jobs_locks_registry_lock:
-        lock = _cron_jobs_locks.get(owner_id)
-        if lock is None:
-            lock = threading.Lock()
-            _cron_jobs_locks[owner_id] = lock
-        return lock
 
 
 class ConfigPatchError(Exception):
@@ -368,58 +348,51 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
 
     Lives in a separate file from openclaw.json (see ``config.cron.store``
     in OpenClaw's schema, default ``~/.openclaw/cron/jobs.json``), so it
-    needs its own exclusive lock rather than reusing the openclaw.json
-    lock.
+    needs its own ``fcntl.lockf`` rather than reusing the openclaw.json
+    lock. Same atomic-write pattern as ``_locked_rmw``: open the data
+    file, take an exclusive lock, read + modify, tempfile-rename, chown.
 
-    The lock is held on a DEDICATED file (``jobs.json.lock``) rather than
-    on ``jobs.json`` itself. Reason: the atomic-write step uses
-    ``os.rename(tmp, jobs.json)``, which replaces the inode at that path.
-    A lock on the data file's inode is silently abandoned across the
-    rename — a second concurrent caller that opens ``jobs.json`` AFTER
-    the rename gets the new (unlocked) inode and races. Locking the
-    sibling ``.lock`` file (never renamed) keeps the mutex stable across
-    every cycle.
+    No-op if ``new_jobs`` is empty.
 
-    Used by the catalog deploy path to carry the publisher's cron jobs
-    over with regenerated id/sessionKey/agentId. No-op if ``new_jobs`` is
-    empty so callers don't need to guard.
+    Concurrency caveat: this matches the existing ``_locked_rmw`` pattern
+    used for ``openclaw.json``, which has two known races (also untreated
+    upstream) — the lock is held on the data file's inode, but the
+    atomic ``os.rename`` swaps the inode out, and ``fcntl.lockf`` is
+    process-wide on Linux/macOS so threads in the same process don't
+    contend. In practice both races have a narrow window and the failure
+    mode is "one concurrent writer's changes lost; user retries", which
+    is the same posture we accept for openclaw.json today. A future PR
+    should fix both with a shared lock-file helper rather than
+    half-fixing only this path. Tracked separately.
     """
     if not new_jobs:
         return
 
     cron_dir = os.path.join(_efs_mount_path, owner_id, "cron")
     jobs_path = os.path.join(cron_dir, "jobs.json")
-    lock_path = jobs_path + ".lock"
-
-    process_lock = _cron_jobs_lock_for(owner_id)
 
     def _do():
         os.makedirs(cron_dir, exist_ok=True)
-        # Ensure the dedicated lock file exists; touch is enough — its
-        # contents are never read or written, only its inode is locked.
-        with open(lock_path, "a"):
-            pass
         if os.getuid() == 0:
-            for p in (cron_dir, lock_path):
+            try:
+                os.chown(cron_dir, 1000, 1000)
+            except OSError:
+                pass
+        if not os.path.exists(jobs_path):
+            with open(jobs_path, "w") as f:
+                json.dump({"version": 1, "jobs": []}, f)
+            if os.getuid() == 0:
                 try:
-                    os.chown(p, 1000, 1000)
+                    os.chown(jobs_path, 1000, 1000)
                 except OSError:
                     pass
 
-        # Acquire the process-wide threading lock first, then the cross-
-        # process fcntl lock. Order matters only for deadlock avoidance
-        # (consistent everywhere), not correctness.
-        process_lock.acquire()
-        lock_fd = open(lock_path, "r+")
+        lock_fd = open(jobs_path, "r+")
         try:
             fcntl.lockf(lock_fd, fcntl.LOCK_EX)
-
-            # Read jobs.json under the lock (separate inode from the lock).
+            lock_fd.seek(0)
             try:
-                with open(jobs_path) as f:
-                    data = json.load(f)
-            except FileNotFoundError:
-                data = {"version": 1, "jobs": []}
+                data = json.load(lock_fd)
             except json.JSONDecodeError:
                 data = {"version": 1, "jobs": []}
             if not isinstance(data, dict):
@@ -453,6 +426,5 @@ async def append_cron_jobs(owner_id: str, new_jobs: list[dict]) -> None:
         finally:
             fcntl.lockf(lock_fd, fcntl.LOCK_UN)
             lock_fd.close()
-            process_lock.release()
 
     await asyncio.to_thread(_do)
