@@ -2240,6 +2240,88 @@ class TestProvisionUserContainerProviderChoice:
 
             assert not mock_ecs_client.create_service.called
 
+    @pytest.mark.asyncio
+    async def test_provision_byo_key_restart_from_zero_re_registers_task_def_with_secrets(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """When a BYOK user's container is at desired=0 and re-provisions,
+        the restart path MUST register a fresh task def carrying the per-user
+        OPENAI_API_KEY/ANTHROPIC_API_KEY secret entry. Without this, the
+        service comes back on the prior task definition (which may not have
+        the secret, e.g. user just switched provider while the container was
+        scaled to zero) and the container fails provider auth on cold start.
+        """
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                }
+            ]
+        }
+        old_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:5"
+        new_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:6"
+        mock_ecs_client.register_task_definition.return_value = {"taskDefinition": {"taskDefinitionArn": new_arn}}
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    access_point_id="fsap-user-restart",
+                    task_definition_arn=old_arn,
+                )
+            )
+            mock_repo.update_fields = AsyncMock()
+            mock_get_key.return_value = {
+                "user_id": "user_test_123",
+                "tool_id": "openai",
+                "secret_arn": secret_arn,
+            }
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="byo_key",
+                byo_provider="openai",
+            )
+
+            # A fresh task def was registered carrying the BYO secret.
+            assert mock_ecs_client.register_task_definition.called, (
+                "Restart-from-zero must register a new task definition so the "
+                "BYO secrets get applied; otherwise the cold-started task "
+                "boots on a stale revision without OPENAI_API_KEY."
+            )
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            secret_names = {s["name"] for s in container_def.get("secrets", [])}
+            assert "OPENAI_API_KEY" in secret_names, (
+                f"Expected OPENAI_API_KEY in restart-path task-def secrets, got {secret_names}"
+            )
+
+            # update_service was called with the new ARN + desiredCount=1.
+            update_calls = [
+                c for c in mock_ecs_client.update_service.call_args_list if c.kwargs.get("desiredCount") == 1
+            ]
+            assert update_calls, "Expected an update_service call to scale up to 1"
+            kw = update_calls[-1].kwargs
+            assert kw.get("taskDefinition") == new_arn, (
+                "update_service must point at the freshly-registered task def; "
+                "without taskDefinition= the service stays pinned to the prior revision."
+            )
+
+            # Old task def was deregistered.
+            assert any(
+                c.kwargs.get("taskDefinition") == old_arn
+                for c in mock_ecs_client.deregister_task_definition.call_args_list
+            ), "Expected the prior per-user task def to be deregistered after refresh"
+
 
 class TestPerUserTaskSize:
     """Plan 2 Task 13 / Task 2: every per-user task def is registered with
