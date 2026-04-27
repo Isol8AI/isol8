@@ -29,6 +29,14 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
       "npm ci",
       "npx cdk synth",
     ],
+    // Stripe flat-fee Price IDs are baked into the per-env ECS task env at
+    // synth time by service-stack.ts. Empty string is tolerated (the backend
+    // surfaces "STRIPE_FLAT_PRICE_ID not configured" at the trial-checkout
+    // call site) but onboarding will fail until both secrets are populated.
+    env: {
+      STRIPE_FLAT_PRICE_ID_DEV: "${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}",
+      STRIPE_FLAT_PRICE_ID_PROD: "${{ secrets.STRIPE_FLAT_PRICE_ID_PROD }}",
+    },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),
   awsCreds: AwsCredentials.fromOpenIdConnect({

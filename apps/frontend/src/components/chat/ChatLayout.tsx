@@ -65,7 +65,7 @@ export function ChatLayout({
   const router = useRouter();
   const api = useApi();
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
-  const { refresh: refreshBilling, account } = useBilling();
+  const { refresh: refreshBilling, account, isSubscribed } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
 
@@ -224,8 +224,13 @@ export function ChatLayout({
             </div>
           </div>
 
-          {/* Health Indicator */}
-          <HealthIndicator onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+          {/* Health Indicator — hidden until the user has a subscription. The
+              indicator reports the state of an existing per-user container; if
+              the user hasn't subscribed there's no container to indicate, and
+              "Starting..." is misleading. */}
+          {isSubscribed && (
+            <HealthIndicator onRecoveryReprovision={() => setRecoveryTriggered(true)} />
+          )}
 
           {/* Node Status */}
           {nodeConnected && (
