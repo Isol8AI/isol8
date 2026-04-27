@@ -33,8 +33,8 @@ export function GallerySection({ onAgentDeployed }: GallerySectionProps) {
 
   return (
     <>
-      <div className="mt-4 border-t border-neutral-800 pt-3">
-        <h3 className="px-2 text-xs uppercase tracking-wide text-neutral-500 mb-1">
+      <div className="mt-4 border-t border-[#e0dbd0] pt-3">
+        <h3 className="px-2 text-xs uppercase tracking-wide text-[#8a8578] mb-1">
           Gallery
         </h3>
         <div className="space-y-0.5">
