@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
 import {
@@ -21,8 +22,17 @@ import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { capture } from "@/lib/analytics";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
+import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
+import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
+import { CreditsStep } from "@/components/chat/CreditsStep";
 
-type Phase = "payment" | "container" | "gateway" | "channels" | "ready";
+type Phase = "payment" | "provider" | "container" | "gateway" | "channels" | "ready";
+
+type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
+
+function isProviderChoice(v: string | null): v is ProviderChoice {
+  return v === "chatgpt_oauth" || v === "byo_key" || v === "bedrock_claude";
+}
 
 type Provider = "telegram" | "discord" | "slack";
 const PROVIDER_PRIORITY: readonly Provider[] = ["telegram", "discord", "slack"];
@@ -158,6 +168,23 @@ export function ProvisioningStepper({
   // hides the wizard for the current session; next mount re-checks the data.
   const [onboardingComplete, setOnboardingComplete] = useState(false);
 
+  // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
+  // (/sign-up?provider=chatgpt_oauth|byo_key|bedrock_claude) and preserved
+  // through Clerk's signup redirect to /onboarding -> /chat. When present,
+  // we render a provider-specific step BEFORE container provisioning so the
+  // user's provider_choice is on file when the gateway first looks at it
+  // (Plan 3 Tasks 4 + 5 gate card-3 chats on credit balance).
+  //
+  // When `?provider=` is absent (e.g. the user navigated directly to
+  // /onboarding, or the URL was scrubbed), the provider step is skipped
+  // entirely and the legacy flow takes over. Plan 3 cutover (Task 16)
+  // removes the legacy path.
+  const searchParams = useSearchParams();
+  const rawProvider = searchParams.get("provider");
+  const providerChoice: ProviderChoice | null = isProviderChoice(rawProvider) ? rawProvider : null;
+  const [providerStepDone, setProviderStepDone] = useState(false);
+  const needsProviderStep = providerChoice !== null && !providerStepDone;
+
   // Poll container status every 3s once subscribed or on free tier (auto-provisioned)
   const shouldPollContainer = isSubscribed || isFree;
   const { container, refresh: refreshContainer } = useContainerStatus({
@@ -176,6 +203,11 @@ export function ProvisioningStepper({
     // can't accidentally fire /container/provision with a still-loading JWT
     // and get a personal container when an org was expected.
     if (!orgLoaded) return;
+    // Plan 3: hold off on provisioning until the user has completed the
+    // provider-specific step. Otherwise the container would spin up before
+    // /users/sync has recorded provider_choice, and the gateway's first
+    // pre-chat balance check (Plan 3 Task 4) would see no record.
+    if (needsProviderStep) return;
     if (needsProvision && shouldPollContainer && !provisionRequestedRef.current) {
       provisionRequestedRef.current = true;
       api.post("/container/provision", {}).catch((err: unknown) => {
@@ -186,7 +218,7 @@ export function ProvisioningStepper({
     if (container && container.status !== "stopped") {
       provisionRequestedRef.current = false;
     }
-  }, [needsProvision, orgLoaded, container, shouldPollContainer, api]);
+  }, [needsProvision, orgLoaded, container, shouldPollContainer, api, needsProviderStep]);
 
   const containerReady = container?.status === "running" || container?.substatus === "gateway_healthy";
 
@@ -220,6 +252,9 @@ export function ProvisioningStepper({
     // Free tier auto-provisions; paid tiers need subscription first.
     // Recovery flow skips billing — the user already has a plan.
     if (trigger !== "recovery" && !isSubscribed && !isFree) return "payment";
+    // Plan 3: provider-specific signup step runs before container provision.
+    // No-op when ?provider= is absent (legacy flow).
+    if (needsProviderStep) return "provider";
     if (!container || (container.status === "provisioning" && !containerReady)) return "container";
     if (container.status === "error") return "container";
     if (!containerReady || !gatewayHealth) return "gateway";
@@ -249,7 +284,7 @@ export function ProvisioningStepper({
     // skip channel onboarding entirely — they'll see the linking UX in
     // Settings → My Channels later if they want it.
     return memberLinkTarget !== null ? "channels" : "ready";
-  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget]);
+  }, [trigger, isSubscribed, isFree, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition,
   // NOT on every render. The prev-phase ref reflects the LAST rendered
@@ -305,6 +340,45 @@ export function ProvisioningStepper({
             onComplete={() => { posthog?.capture("onboarding_completed"); setOnboardingComplete(true); }}
             onCancel={() => setOnboardingComplete(true)}
           />
+        </div>
+      </div>
+    );
+  }
+
+  // Plan 3: provider-specific signup step. Renders the right component
+  // based on `?provider=` and advances the wizard once the user finishes.
+  // ChatGPTOAuthStep / CreditsStep don't have a sub-choice, so the wizard
+  // posts /users/sync here. ByoKeyStep posts its own (it knows the chosen
+  // openai|anthropic sub-provider).
+  if (phase === "provider" && providerChoice !== null) {
+    const handleProviderComplete = async () => {
+      try {
+        if (providerChoice !== "byo_key") {
+          await api.post("/users/sync", { provider_choice: providerChoice });
+        }
+        posthog?.capture("onboarding_provider_completed", {
+          provider_choice: providerChoice,
+        });
+      } catch (err) {
+        // Don't block the wizard on a sync failure — the user already
+        // completed their provider step locally; we'll retry on next
+        // chat message via the gateway's lazy /users/sync.
+        console.error("Provider /users/sync failed:", err);
+      }
+      setProviderStepDone(true);
+    };
+    return (
+      <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
+        <div className="w-full max-w-md">
+          {providerChoice === "chatgpt_oauth" && (
+            <ChatGPTOAuthStep onComplete={handleProviderComplete} />
+          )}
+          {providerChoice === "byo_key" && (
+            <ByoKeyStep onComplete={handleProviderComplete} />
+          )}
+          {providerChoice === "bedrock_claude" && (
+            <CreditsStep onComplete={handleProviderComplete} />
+          )}
         </div>
       </div>
     );

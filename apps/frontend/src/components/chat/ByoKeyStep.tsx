@@ -20,6 +20,15 @@ export function ByoKeyStep({ onComplete }: Props) {
       // Backend route: PUT /settings/keys/{tool_id} with {api_key}
       // (See routers/settings_keys.py.)
       await api.put(`/settings/keys/${provider}`, { api_key: apiKey });
+      // Persist the user's provider choice so the gateway knows this is a
+      // card-2 user (BYO-key cards never get gated on credits — Plan 3
+      // Tasks 4 + 5). ByoKeyStep is the only step that knows the chosen
+      // sub-provider (openai vs anthropic), so the wizard delegates the
+      // /users/sync call here rather than passing byo_provider up.
+      await api.post("/users/sync", {
+        provider_choice: "byo_key",
+        byo_provider: provider,
+      });
       onComplete();
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to save key");
