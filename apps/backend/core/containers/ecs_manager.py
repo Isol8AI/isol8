@@ -1463,6 +1463,7 @@ class EcsManager:
         config_path = Path(settings.EFS_MOUNT_PATH) / user_id / "openclaw.json"
         await write_openclaw_config(
             config_path=config_path,
+            gateway_token=gateway_token,
             provider_choice=provider_choice,
             user_id=user_id,
             byo_provider=byo_provider,
