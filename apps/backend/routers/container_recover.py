@@ -200,7 +200,7 @@ async def container_recover(
             try:
                 # Read user's saved provider_choice so recovery rebuilds
                 # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,
@@ -222,7 +222,7 @@ async def container_recover(
             try:
                 # Read user's saved provider_choice so recovery rebuilds
                 # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,
@@ -263,7 +263,7 @@ async def container_recover(
             try:
                 # Read user's saved provider_choice so recovery rebuilds
                 # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,

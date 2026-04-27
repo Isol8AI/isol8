@@ -2,6 +2,7 @@
 
 import "./settings.css";
 import React, { useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import Link from "next/link";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
@@ -246,7 +247,15 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
 // =============================================================================
 
 export default function SettingsPage() {
-  const [activePanel, setActivePanel] = useState<Panel>("profile");
+  // ?panel=billing|profile|channels preselects the tab. Used by deep
+  // links from the chat banners (TrialBanner "Manage" CTA, etc.) so they
+  // land on the right pane. Codex P2 on PR #393 — the prior /settings/
+  // billing href was a 404.
+  const searchParams = useSearchParams();
+  const initialPanelParam = searchParams.get("panel");
+  const initialPanel: Panel =
+    initialPanelParam === "billing" || initialPanelParam === "channels" ? initialPanelParam : "profile";
+  const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
   const allNavItems = NAV_SECTIONS.flatMap((s) => s.items);

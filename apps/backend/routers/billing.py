@@ -291,16 +291,36 @@ async def create_trial_checkout(
     # idempotency-bucket window would charge the customer twice. Codex P1
     # on PR #393.
     existing_status = account.get("subscription_status")
-    if existing_status in ("active", "trialing", "past_due") or account.get("stripe_subscription_id"):
-        # Allow retries when the existing row is canceled / incomplete /
-        # incomplete_expired — those don't bill, and the user genuinely
-        # needs to be able to start a fresh trial. Match the criteria used
-        # by the legacy create_checkout_session guard (see PR #389).
-        if existing_status in ("active", "trialing", "past_due"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"already_subscribed:{existing_status}",
+    has_legacy_sub = bool(account.get("stripe_subscription_id"))
+    if existing_status in ("active", "trialing", "past_due"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"already_subscribed:{existing_status}",
+        )
+    # Legacy rows: stripe_subscription_id is set but subscription_status
+    # hasn't been backfilled. Verify the live Stripe state instead of
+    # creating a parallel subscription. Codex P1 round-4 on PR #393.
+    if has_legacy_sub:
+        sub_id = account["stripe_subscription_id"]
+        try:
+            with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
+                live_sub = stripe.Subscription.retrieve(sub_id)
+        except stripe.error.InvalidRequestError as e:
+            # "resource_missing" → Stripe forgot the sub (lost cancel
+            # webhook); the local row is stale. Allow the new checkout.
+            if getattr(e, "code", None) != "resource_missing":
+                raise
+            logger.info(
+                "Stored sub %s not found in Stripe for owner %s — allowing fresh trial",
+                sub_id,
+                owner_id,
             )
+        else:
+            if live_sub.get("status") in ("active", "trialing", "past_due"):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"already_subscribed:{live_sub.get('status')}",
+                )
 
     try:
         session = await create_flat_fee_checkout(

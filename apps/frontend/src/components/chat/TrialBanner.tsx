@@ -68,7 +68,7 @@ export function TrialBanner() {
         </strong>
         . You&apos;ll be charged $50 on {chargeDate}.
       </span>
-      <Link href="/settings/billing" className="text-primary underline">
+      <Link href="/settings?panel=billing" className="text-primary underline">
         Manage
       </Link>
     </div>
