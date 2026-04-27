@@ -6,7 +6,7 @@ import { usePostHog } from "posthog-js/react";
 import { ChatInput } from "./ChatInput";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
-import { useAgents } from "@/hooks/useAgents";
+import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
 import { useAuth, useOrganization } from "@clerk/nextjs";
@@ -534,7 +534,9 @@ export function AgentChatWindow({
               <span style={{ fontFamily: "var(--font-lora), serif", fontStyle: "italic", fontWeight: 400, fontSize: "56px", color: "#1a1a1a", lineHeight: 1 }}>8</span>
             </div>
             <h1 className="text-3xl mb-3 text-[#1a1a1a] tracking-tight font-lora">
-              {agentId ?? "Select an agent"}
+              {agentId
+                ? agentDisplayName(activeAgent ?? { id: agentId })
+                : "Select an agent"}
             </h1>
             <p className="text-[#8a8578] text-base">
               Start a conversation with your agent

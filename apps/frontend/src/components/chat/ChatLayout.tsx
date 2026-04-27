@@ -14,7 +14,7 @@ import { HealthIndicator } from "@/components/chat/HealthIndicator";
 import { useGateway } from "@/hooks/useGateway";
 import { useActivityPing } from "@/hooks/useActivityPing";
 import { useApi } from "@/lib/api";
-import { useAgents, getAgentModelString, type Agent } from "@/hooks/useAgents";
+import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
 import { ControlSidebar } from "@/components/control/ControlSidebar";
 import { FileViewer } from "@/components/chat/FileViewer";
@@ -36,10 +36,6 @@ function dispatchSelectAgentEvent(agentId: string): void {
   window.dispatchEvent(
     new CustomEvent("selectAgent", { detail: { agentId } }),
   );
-}
-
-function agentDisplayName(agent: Agent): string {
-  return agent.identity?.name || agent.name || agent.id;
 }
 
 export function ChatLayout({
