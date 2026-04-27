@@ -1,8 +1,12 @@
 """ChatGPT OAuth endpoints.
 
-Per spec §5.1: backend-driven device-code flow. Frontend POSTs /start,
-shows the user_code + verification_uri to the user, then polls /poll
-until status flips from "pending" to "completed".
+Per spec §5.1: backend-driven device-code flow. Uses OpenAI's actual
+Codex CLI endpoints (see core/services/oauth_service.py).
+
+Frontend POSTs /start, shows the user_code + verification_uri to the
+user, then polls /poll until status flips from "pending" to
+"completed". On completion the backend has already pre-staged the
+auth.json on EFS via the provision flow.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
     OAuthAlreadyActiveError,
+    OAuthExchangeFailedError,
     poll_device_code,
     request_device_code,
     revoke_user_oauth,
@@ -38,6 +43,8 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
         result = await request_device_code(user_id=ctx.user_id)
     except OAuthAlreadyActiveError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     return {
         "user_code": result.user_code,
         "verification_uri": result.verification_uri,
@@ -56,7 +63,10 @@ async def start(ctx: AuthContext = Depends(get_current_user)):
     ),
 )
 async def poll(ctx: AuthContext = Depends(get_current_user)):
-    result = await poll_device_code(user_id=ctx.user_id)
+    try:
+        result = await poll_device_code(user_id=ctx.user_id)
+    except OAuthExchangeFailedError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
     if result is DevicePollPending:
         return {"status": "pending"}
     assert isinstance(result, DevicePollResult)

@@ -1,16 +1,26 @@
 """ChatGPT OAuth — device-code flow orchestration.
 
-We use the public Codex CLI client_id verified at
-https://github.com/badlogic/pi-mono/blob/main/packages/ai/src/utils/oauth/openai-codex.ts
-The device-code endpoint is officially supported by OpenAI per
-https://developers.openai.com/codex/auth.
+We use the public Codex CLI client_id `app_EMoamEEZ73f0CkXaXp7hrann`,
+verified at github.com/openai/codex/blob/main/codex-rs/login/src/device_code_auth.rs.
 
-We do NOT install @mariozechner/pi-ai — that's a CLI library that writes
-tokens to ~/.codex/auth.json (single-file pattern, would clobber on a
-shared backend). We borrow only the constants here and orchestrate the
-device-code flow ourselves with isolated per-user storage in DDB.
+OpenAI's actual `codex login --device-auth` flow:
+  1. POST {base}/api/accounts/deviceauth/usercode {client_id} →
+     returns {device_auth_id, user_code, interval}
+  2. User opens {base}/codex/device in browser, signs in, enters user_code
+  3. Backend polls POST {base}/api/accounts/deviceauth/token
+     {device_auth_id, user_code} until it returns
+     {authorization_code, code_challenge, code_verifier}
+  4. Backend exchanges with POST {base}/oauth/token
+     (grant_type=authorization_code, code, code_verifier,
+      redirect_uri={base}/deviceauth/callback) → access + refresh tokens
 
-Per spec §5.1 + §5.1.1.
+base = https://auth.openai.com.
+
+Spec §5.1 originally specified a generic OAuth 2.0 device-code flow at
+/codex/device, which OpenAI deprecated for this client_id (~2026-04).
+This module pins the actual endpoints the OpenAI CLI uses today.
+
+auth.json shape on EFS is unchanged — only the orchestration changed.
 """
 
 from __future__ import annotations
@@ -32,32 +42,31 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 
-# Constants borrowed from pi-ai (see module docstring).
+# Constants borrowed from OpenAI's Codex CLI (see module docstring).
 CLIENT_ID: Final = "app_EMoamEEZ73f0CkXaXp7hrann"
-# OpenAI moved the device-code endpoint from /codex/device to
-# /api/accounts/deviceauth/authorize (~2026-04). The old URL now
-# 302-redirects to the new one, and httpx defaults to NOT following
-# redirects on POST — we'd choke on the 302 with a 5xx. Pin the new URL
-# AND pass follow_redirects=True at the call site so a future move
-# (e.g. /v2/...) doesn't break onboarding again.
-DEVICE_CODE_URL: Final = "https://auth.openai.com/api/accounts/deviceauth/authorize"
-TOKEN_URL: Final = "https://auth.openai.com/oauth/token"
-SCOPE: Final = "openid profile email offline_access"
+AUTH_BASE_URL: Final = "https://auth.openai.com"
+USER_CODE_URL: Final = f"{AUTH_BASE_URL}/api/accounts/deviceauth/usercode"
+TOKEN_POLL_URL: Final = f"{AUTH_BASE_URL}/api/accounts/deviceauth/token"
+OAUTH_TOKEN_URL: Final = f"{AUTH_BASE_URL}/oauth/token"
+VERIFICATION_URL: Final = f"{AUTH_BASE_URL}/codex/device"
+EXCHANGE_REDIRECT_URI: Final = f"{AUTH_BASE_URL}/deviceauth/callback"
 
 
 class OAuthAlreadyActiveError(Exception):
-    """Raised when request_device_code is called for a user who already
-    has an active OAuth session. Callers should either reuse the existing
-    session or call revoke_user_oauth before starting a new flow."""
+    """Raised when start is called for a user who already has active
+    tokens. Callers should reuse or revoke before starting a new flow."""
+
+
+class OAuthExchangeFailedError(Exception):
+    """Raised when OpenAI rejects the code exchange or device-code call."""
 
 
 @dataclass(frozen=True)
 class DeviceCodeResponse:
     """User-facing fields shown in our UI to drive completion.
 
-    Note: the server-side `device_code` is intentionally NOT exposed —
-    it stays in DDB and is only used by `poll_device_code` server-side.
-    """
+    The backend-side device_auth_id is intentionally NOT exposed —
+    it stays in DDB and is used by `poll_device_code` server-side."""
 
     user_code: str
     verification_uri: str
@@ -67,8 +76,7 @@ class DeviceCodeResponse:
 
 @dataclass(frozen=True)
 class DevicePollResult:
-    """Returned on successful poll. Tokens are persisted internally;
-    callers receive only an opaque marker that auth completed."""
+    """Returned on successful poll. Tokens persisted internally."""
 
     account_id: str | None
 
@@ -92,36 +100,43 @@ def _fernet() -> Fernet:
 
 
 async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
-    """Start a device-code session for this user. Persists the device_code
+    """Start a device-code session. Persists `device_auth_id` + `user_code`
     in DDB so the subsequent poll knows what to ask OpenAI about.
 
-    Each call is independent — many users can have device-code sessions
-    in flight concurrently against the same client_id (per spec §5.1).
+    Raises OAuthAlreadyActiveError if the user already has active tokens.
     """
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.post(
-            DEVICE_CODE_URL,
-            data={"client_id": CLIENT_ID, "scope": SCOPE},
+            USER_CODE_URL,
+            headers={"Content-Type": "application/json"},
+            content=json.dumps({"client_id": CLIENT_ID}),
         )
     if resp.status_code >= 400:
         body_preview = resp.text[:300] if resp.text else ""
         logger.warning(
-            "OAuth call to %s returned %d: %s",
-            resp.url,
+            "Device-code usercode request returned %d for user %s: %s",
             resp.status_code,
+            user_id,
             body_preview,
         )
-    resp.raise_for_status()
+        raise OAuthExchangeFailedError(f"OpenAI device-code usercode request failed: {resp.status_code}")
+
     body = resp.json()
+    device_auth_id = body.get("device_auth_id")
+    user_code = body.get("user_code") or body.get("usercode")
+    interval = int(body.get("interval", 5))
+    if not device_auth_id or not user_code:
+        logger.warning("Usercode response missing fields for user %s: %s", user_id, body.keys())
+        raise OAuthExchangeFailedError("OpenAI usercode response missing required fields")
 
     try:
         _table().put_item(
             Item={
                 "user_id": user_id,
                 "state": "pending",
-                "device_code": body["device_code"],
-                "user_code": body["user_code"],
-                "interval": int(body.get("interval", 5)),
+                "device_auth_id": device_auth_id,
+                "user_code": user_code,
+                "interval": interval,
             },
             ConditionExpression="attribute_not_exists(user_id) OR #s <> :active",
             ExpressionAttributeNames={"#s": "state"},
@@ -130,87 +145,166 @@ async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise OAuthAlreadyActiveError(
-                f"User {user_id} already has an active OAuth session — use revoke_user_oauth first to start over"
+                f"User {user_id} already has active OAuth tokens — revoke before starting again"
             ) from None
         raise
+
     return DeviceCodeResponse(
-        user_code=body["user_code"],
-        verification_uri=body["verification_uri"],
-        expires_in=int(body["expires_in"]),
-        interval=int(body.get("interval", 5)),
+        user_code=user_code,
+        verification_uri=VERIFICATION_URL,
+        # OpenAI's device-code spec gives a 15-minute window per the CLI
+        # source. Body doesn't echo this back so we hardcode the same
+        # value the CLI prints to the user.
+        expires_in=15 * 60,
+        interval=interval,
     )
 
 
 async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
-    """Poll OpenAI's token endpoint for this user's device-code session.
+    """Poll OpenAI's deviceauth/token endpoint for this user's session.
 
-    Returns DevicePollPending while OpenAI says authorization_pending.
-    Returns DevicePollResult on success, after Fernet-encrypting the
-    tokens into DDB. Raises if the session is unknown / expired / errored.
+    Returns DevicePollPending while the user hasn't completed sign-in
+    (OpenAI returns 403/404 in that case). Returns DevicePollResult on
+    success after Fernet-encrypting access+refresh tokens into DDB.
+    Raises OAuthExchangeFailedError on terminal errors.
     """
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
-    if not row or row.get("state") not in ("pending",):
-        raise RuntimeError(f"No pending device-code session for user {user_id}")
+    if not row or row.get("state") != "pending":
+        raise OAuthExchangeFailedError(f"No pending device-code session for user {user_id}")
+    # Legacy pending rows (from the pre-Codex-CLI flow) store `device_code`
+    # instead of `device_auth_id`. Same for any partially-written row that
+    # doesn't have user_code. Treat both as stale — the new flow can't
+    # resume them. Caller surfaces this as a clean error; user clicks
+    # "Try again" which calls /start, which overwrites the pending row
+    # with a fresh device_auth_id (the put_item ConditionExpression only
+    # blocks state=active, not state=pending).
+    device_auth_id = row.get("device_auth_id")
+    user_code = row.get("user_code")
+    if not device_auth_id or not user_code:
+        raise OAuthExchangeFailedError(
+            f"Stale OAuth session for user {user_id} (legacy row format) — click Connect ChatGPT again to restart"
+        )
 
-    device_code = row["device_code"]
+    # Step 1: ask OpenAI's deviceauth/token whether the user has
+    # completed sign-in. While pending, OpenAI returns 403 or 404 per
+    # the CLI source.
     async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
         resp = await client.post(
-            TOKEN_URL,
-            data={
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                "client_id": CLIENT_ID,
-                "device_code": device_code,
-            },
+            TOKEN_POLL_URL,
+            headers={"Content-Type": "application/json"},
+            content=json.dumps(
+                {
+                    "device_auth_id": device_auth_id,
+                    "user_code": user_code,
+                }
+            ),
         )
 
-    if resp.status_code == 400:
-        err = resp.json().get("error")
-        if err == "authorization_pending":
-            return DevicePollPending
-        if err == "slow_down":
-            # Per OAuth device-code spec — caller should back off; we
-            # treat as pending. Optional: bump interval in DDB.
-            return DevicePollPending
-        body_preview = resp.text[:300]
-        logger.warning(
-            "OAuth poll for user %s returned 400/%s: %s",
-            user_id,
-            err,
-            body_preview,
-        )
-        raise RuntimeError(f"OpenAI device-code poll failed: {err}")
+    if resp.status_code in (403, 404):
+        return DevicePollPending
     if resp.status_code >= 400:
         body_preview = resp.text[:300] if resp.text else ""
         logger.warning(
-            "OAuth poll for user %s returned %d: %s",
+            "Device-code token poll for user %s returned %d: %s",
             user_id,
             resp.status_code,
             body_preview,
         )
-    resp.raise_for_status()
+        raise OAuthExchangeFailedError(f"OpenAI device-code token poll failed: {resp.status_code}")
 
-    body = resp.json()
+    code_resp = resp.json()
+    auth_code = code_resp.get("authorization_code")
+    verifier = code_resp.get("code_verifier")
+    if not auth_code or not verifier:
+        logger.warning("Token poll response missing fields for user %s: %s", user_id, code_resp.keys())
+        raise OAuthExchangeFailedError("OpenAI token poll response missing required fields")
+
+    # Step 2: exchange the authorization_code for access+refresh tokens
+    # against the standard OAuth /oauth/token endpoint, using the
+    # PKCE verifier OpenAI just gave us.
+    async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+        token_resp = await client.post(
+            OAUTH_TOKEN_URL,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "authorization_code",
+                "client_id": CLIENT_ID,
+                "code": auth_code,
+                "code_verifier": verifier,
+                "redirect_uri": EXCHANGE_REDIRECT_URI,
+            },
+        )
+
+    if token_resp.status_code >= 400:
+        body_preview = token_resp.text[:300] if token_resp.text else ""
+        logger.warning(
+            "OAuth token exchange for user %s returned %d: %s",
+            user_id,
+            token_resp.status_code,
+            body_preview,
+        )
+        raise OAuthExchangeFailedError(f"OpenAI token exchange failed: {token_resp.status_code}")
+
+    body = token_resp.json()
+    access_token = body.get("access_token")
+    refresh_token = body.get("refresh_token")
+    if not access_token or not refresh_token:
+        logger.warning("Token response missing fields for user %s: %s", user_id, body.keys())
+        raise OAuthExchangeFailedError("OpenAI token response missing required fields")
+
+    # account_id can be in the body OR encoded in the JWT id_token. Try
+    # both — pi-mono and the CLI both decode the JWT for the
+    # chatgpt_account_id claim under https://api.openai.com/auth.
+    account_id = body.get("account_id") or _extract_account_id(access_token)
+
     tokens_plain = json.dumps(
         {
-            "access_token": body["access_token"],
-            "refresh_token": body["refresh_token"],
+            "access_token": access_token,
+            "refresh_token": refresh_token,
             "id_token": body.get("id_token"),
-            "account_id": body.get("account_id"),
+            "account_id": account_id,
         }
     ).encode()
     encrypted = _fernet().encrypt(tokens_plain)
 
     _table().update_item(
         Key={"user_id": user_id},
-        UpdateExpression=("SET #s = :ok, encrypted_tokens = :tok, account_id = :acc REMOVE device_code, user_code, #i"),
+        UpdateExpression=(
+            "SET #s = :ok, encrypted_tokens = :tok, account_id = :acc REMOVE device_auth_id, user_code, #i"
+        ),
         ExpressionAttributeNames={"#s": "state", "#i": "interval"},
         ExpressionAttributeValues={
             ":ok": "active",
             ":tok": encrypted,
-            ":acc": body.get("account_id") or "",
+            ":acc": account_id or "",
         },
     )
-    return DevicePollResult(account_id=body.get("account_id"))
+    return DevicePollResult(account_id=account_id)
+
+
+def _extract_account_id(access_token: str) -> str | None:
+    """Decode the JWT and pull chatgpt_account_id from the auth claim.
+
+    Mirrors the CLI's logic. JWT validation isn't done here — OpenAI
+    just issued this token to us via TLS, so we trust it for the
+    purpose of pulling out an opaque identifier.
+    """
+    import base64
+
+    try:
+        parts = access_token.split(".")
+        if len(parts) != 3:
+            return None
+        # Pad payload to a multiple of 4 for base64 decode
+        payload = parts[1] + "=" * (-len(parts[1]) % 4)
+        decoded = base64.urlsafe_b64decode(payload).decode("utf-8")
+        claims = json.loads(decoded)
+        auth = claims.get("https://api.openai.com/auth") or {}
+        account_id = auth.get("chatgpt_account_id")
+        return str(account_id) if account_id else None
+    except Exception:
+        logger.debug("Failed to extract account_id from JWT", exc_info=True)
+        return None
 
 
 async def get_decrypted_tokens(*, user_id: str) -> dict | None:

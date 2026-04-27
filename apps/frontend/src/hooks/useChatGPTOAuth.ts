@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApi } from "@/lib/api";
 
+/**
+ * ChatGPT OAuth — device-code flow.
+ *
+ * 1. start() → backend requests user_code + verification_uri from OpenAI.
+ * 2. UI shows user the URL + code. User opens URL, signs in, enters code.
+ * 3. We poll /poll every `interval` seconds. While the user hasn't
+ *    completed sign-in, OpenAI returns "pending"; once they have,
+ *    backend exchanges for tokens and stores them. /poll then returns
+ *    "completed".
+ * 4. disconnect() → revoke + clear EFS auth.json.
+ */
 export type OAuthState =
   | { status: "idle" }
   | {
@@ -69,8 +80,8 @@ export function useChatGPTOAuth() {
     }
   }, [api, stopPolling]);
 
-  // Poll while in pending state. The interval comes from /start's response
-  // (defaults to 5s) and stops once we transition to completed/error.
+  // Poll while in pending state. Interval comes from /start's response
+  // (defaults to 5s). Stops once we transition to completed/error.
   useEffect(() => {
     if (state.status !== "pending") return;
     intervalRef.current = setInterval(async () => {
