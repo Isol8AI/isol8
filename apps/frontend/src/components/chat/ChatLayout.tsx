@@ -166,16 +166,25 @@ export function ChatLayout({
     }
   }, [currentAgentId]);
 
-  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss
+  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss.
+  // Strip ONLY ?checkout / ?subscription, preserving ?provider= so the
+  // ProvisioningStepper can still render the provider-specific step
+  // (ChatGPTOAuthStep / ByoKeyStep / CreditsStep) — without this, the
+  // OAuth + BYO paths break because the wizard never gets to the step
+  // that collects the user's credentials.
   useEffect(() => {
     if (!showSubscriptionSuccess) return;
 
     refreshBilling();
-    router.replace("/chat", { scroll: false });
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("checkout");
+    params.delete("subscription");
+    const remaining = params.toString();
+    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
 
     const timer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
     return () => clearTimeout(timer);
-  }, [showSubscriptionSuccess, refreshBilling, router]);
+  }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
 
   function handleSelectAgent(agentId: string): void {
     posthog?.capture("agent_selected", { agent_id: agentId });
