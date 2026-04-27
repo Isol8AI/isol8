@@ -1,4 +1,10 @@
-"""Unit tests for the ChatGPT device-code OAuth orchestration."""
+"""Unit tests for the ChatGPT device-code OAuth orchestration.
+
+Covers OpenAI's actual Codex CLI device-code flow:
+  POST /api/accounts/deviceauth/usercode  →  device_auth_id + user_code
+  POST /api/accounts/deviceauth/token     →  authorization_code + code_verifier
+  POST /oauth/token                       →  access_token + refresh_token
+"""
 
 from unittest.mock import patch
 
@@ -11,9 +17,12 @@ from moto import mock_aws
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
+    OAuthAlreadyActiveError,
+    OAuthExchangeFailedError,
     poll_device_code,
     request_device_code,
     revoke_user_oauth,
+    VERIFICATION_URL,
 )
 
 
@@ -32,96 +41,116 @@ def oauth_table(monkeypatch):
         yield
 
 
+def _ok(json_body: dict, url: str = "https://example.test/x") -> httpx.Response:
+    return httpx.Response(200, json=json_body, request=httpx.Request("POST", url))
+
+
 @pytest.mark.asyncio
 async def test_request_device_code_returns_user_facing_fields(oauth_table):
-    """Backend POST to OpenAI device endpoint returns the user-code + URL."""
-
-    fake_resp = {
-        "device_code": "dev_abc",
-        "user_code": "ABCD-1234",
-        "verification_uri": "https://chatgpt.com/codex",
-        "expires_in": 900,
-        "interval": 5,
-    }
+    """Backend POST to /api/accounts/deviceauth/usercode returns the
+    user-code that will go on screen + the verification URL we display."""
 
     async def fake_post(self, url, **kwargs):
-        return httpx.Response(200, json=fake_resp, request=httpx.Request("POST", url))
+        return _ok(
+            {
+                "device_auth_id": "dev_abc",
+                "user_code": "ABCD-1234",
+                "interval": 5,
+            },
+            url=str(url),
+        )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_post):
         result = await request_device_code(user_id="u_1")
 
     assert result.user_code == "ABCD-1234"
-    assert result.verification_uri == "https://chatgpt.com/codex"
+    assert result.verification_uri == VERIFICATION_URL
     assert result.interval == 5
-    # Server-side device_code is NOT returned to the caller — kept in DDB.
-    assert not hasattr(result, "device_code")
+    # Server-side device_auth_id is NOT returned to the caller — kept in DDB.
+    assert not hasattr(result, "device_auth_id")
 
 
 @pytest.mark.asyncio
 async def test_poll_pending_returns_pending(oauth_table):
-    """OpenAI 'authorization_pending' translates to DevicePollPending."""
-
-    # First seed a device-code session.
-    seed_resp = {
-        "device_code": "dev_pending",
-        "user_code": "WAIT-0001",
-        "verification_uri": "https://chatgpt.com/codex",
-        "expires_in": 900,
-        "interval": 5,
-    }
+    """While the user hasn't entered the code, OpenAI returns 403/404 —
+    we translate to DevicePollPending."""
 
     async def fake_seed(self, url, **kwargs):
-        return httpx.Response(200, json=seed_resp, request=httpx.Request("POST", url))
+        return _ok(
+            {
+                "device_auth_id": "dev_pending",
+                "user_code": "WAIT-0001",
+                "interval": 5,
+            },
+            url=str(url),
+        )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
 
-    # Then poll while still pending.
     async def fake_poll(self, url, **kwargs):
-        return httpx.Response(
-            400,
-            json={"error": "authorization_pending"},
-            request=httpx.Request("POST", url),
-        )
+        return httpx.Response(403, request=httpx.Request("POST", str(url)))
 
     with patch.object(httpx.AsyncClient, "post", new=fake_poll):
         result = await poll_device_code(user_id="u_1")
-
     assert result is DevicePollPending
 
 
 @pytest.mark.asyncio
 async def test_poll_success_persists_encrypted_tokens(oauth_table):
-    """Successful poll: tokens are Fernet-encrypted into the DDB row."""
-
-    seed_resp = {
-        "device_code": "dev_success",
-        "user_code": "OKAY-9999",
-        "verification_uri": "https://chatgpt.com/codex",
-        "expires_in": 900,
-        "interval": 5,
-    }
+    """Successful poll: deviceauth/token returns authorization_code +
+    code_verifier; we exchange those at /oauth/token for the real
+    access+refresh tokens, which we Fernet-encrypt into DDB."""
 
     async def fake_seed(self, url, **kwargs):
-        return httpx.Response(200, json=seed_resp, request=httpx.Request("POST", url))
+        return _ok(
+            {
+                "device_auth_id": "dev_ok",
+                "user_code": "OKAY-9999",
+                "interval": 5,
+            },
+            url=str(url),
+        )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
 
-    success_resp = {
-        "access_token": "eyJ.fake-jwt.access",
-        "refresh_token": "rt_opaque_1",
-        "id_token": "eyJ.id-token.x",
-        "account_id": "chatgpt-account-1",
-    }
+    # Two-stage success:
+    #   1st call: deviceauth/token → returns authorization_code + verifier
+    #   2nd call: /oauth/token      → returns access + refresh tokens
+    call_count = {"n": 0}
 
-    async def fake_success(self, url, **kwargs):
-        return httpx.Response(200, json=success_resp, request=httpx.Request("POST", url))
+    async def fake_poll_then_exchange(self, url, **kwargs):
+        call_count["n"] += 1
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok(
+                {
+                    "authorization_code": "auth_code_xyz",
+                    "code_verifier": "verifier_xyz",
+                    "code_challenge": "challenge_xyz",
+                },
+                url=url_str,
+            )
+        if "/oauth/token" in url_str:
+            return _ok(
+                {
+                    "access_token": "eyJ.fake-jwt.access",
+                    "refresh_token": "rt_opaque_1",
+                    "id_token": "eyJ.id-token.x",
+                    "account_id": "chatgpt-account-1",
+                },
+                url=url_str,
+            )
+        raise AssertionError(f"unexpected URL: {url_str}")
 
-    with patch.object(httpx.AsyncClient, "post", new=fake_success):
+    with patch.object(httpx.AsyncClient, "post", new=fake_poll_then_exchange):
         result = await poll_device_code(user_id="u_1")
 
     assert isinstance(result, DevicePollResult)
+    assert result.account_id == "chatgpt-account-1"
+    assert call_count["n"] == 2  # poll + exchange
+
     # Tokens are stored encrypted, so the raw DDB row should NOT contain them
     # in plaintext.
     client = boto3.client("dynamodb", region_name="us-east-1")
@@ -132,34 +161,71 @@ async def test_poll_success_persists_encrypted_tokens(oauth_table):
 
 
 @pytest.mark.asyncio
-async def test_request_device_code_refuses_to_clobber_active_session(oauth_table):
-    """Once a user has an active OAuth session, request_device_code
-    raises OAuthAlreadyActiveError instead of overwriting tokens."""
-    from core.services.oauth_service import OAuthAlreadyActiveError
-
-    seed_resp = {
-        "device_code": "dev_x",
-        "user_code": "OK-9",
-        "verification_uri": "https://chatgpt.com/codex",
-        "expires_in": 900,
-        "interval": 5,
-    }
-    success_resp = {
-        "access_token": "eyJ.x.y",
-        "refresh_token": "rt",
-        "id_token": "eyJ.z",
-        "account_id": "acc",
-    }
+async def test_poll_propagates_exchange_failure(oauth_table):
+    """If /oauth/token rejects the exchange, we surface a clean error."""
 
     async def fake_seed(self, url, **kwargs):
-        return httpx.Response(200, json=seed_resp, request=httpx.Request("POST", url))
-
-    async def fake_success(self, url, **kwargs):
-        return httpx.Response(200, json=success_resp, request=httpx.Request("POST", url))
+        return _ok(
+            {
+                "device_auth_id": "dev_fail",
+                "user_code": "FAIL-0001",
+                "interval": 5,
+            },
+            url=str(url),
+        )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
-    with patch.object(httpx.AsyncClient, "post", new=fake_success):
+
+    async def fake_poll_exchange_400(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok(
+                {
+                    "authorization_code": "ac",
+                    "code_verifier": "v",
+                },
+                url=url_str,
+            )
+        return httpx.Response(400, json={"error": "invalid_grant"}, request=httpx.Request("POST", url_str))
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_poll_exchange_400):
+        with pytest.raises(OAuthExchangeFailedError):
+            await poll_device_code(user_id="u_1")
+
+
+@pytest.mark.asyncio
+async def test_request_device_code_refuses_to_clobber_active_session(oauth_table):
+    """Once a user has active tokens, request_device_code refuses to
+    overwrite them — caller must revoke first."""
+
+    async def fake_seed(self, url, **kwargs):
+        return _ok(
+            {
+                "device_auth_id": "dev_x",
+                "user_code": "OK-9",
+                "interval": 5,
+            },
+            url=str(url),
+        )
+
+    async def fake_complete(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, url=url_str)
+        return _ok(
+            {
+                "access_token": "eyJ.x.y",
+                "refresh_token": "rt",
+                "id_token": "eyJ.z",
+                "account_id": "acc",
+            },
+            url=url_str,
+        )
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_seed):
+        await request_device_code(user_id="u_1")
+    with patch.object(httpx.AsyncClient, "post", new=fake_complete):
         await poll_device_code(user_id="u_1")
 
     # User now has state=active. A second request_device_code must refuse.
@@ -172,29 +238,33 @@ async def test_request_device_code_refuses_to_clobber_active_session(oauth_table
 async def test_revoke_deletes_oauth_row(oauth_table):
     """revoke_user_oauth removes the persisted token row."""
 
-    seed_resp = {
-        "device_code": "dev_revoke",
-        "user_code": "BYE-0001",
-        "verification_uri": "https://chatgpt.com/codex",
-        "expires_in": 900,
-        "interval": 5,
-    }
-    success_resp = {
-        "access_token": "eyJ.x.y",
-        "refresh_token": "rt",
-        "id_token": "eyJ.z",
-        "account_id": "acc",
-    }
-
     async def fake_seed(self, url, **kwargs):
-        return httpx.Response(200, json=seed_resp, request=httpx.Request("POST", url))
+        return _ok(
+            {
+                "device_auth_id": "dev_rev",
+                "user_code": "BYE-0001",
+                "interval": 5,
+            },
+            url=str(url),
+        )
 
-    async def fake_success(self, url, **kwargs):
-        return httpx.Response(200, json=success_resp, request=httpx.Request("POST", url))
+    async def fake_complete(self, url, **kwargs):
+        url_str = str(url)
+        if "deviceauth/token" in url_str:
+            return _ok({"authorization_code": "ac", "code_verifier": "v"}, url=url_str)
+        return _ok(
+            {
+                "access_token": "eyJ.x.y",
+                "refresh_token": "rt",
+                "id_token": "eyJ.z",
+                "account_id": "acc",
+            },
+            url=url_str,
+        )
 
     with patch.object(httpx.AsyncClient, "post", new=fake_seed):
         await request_device_code(user_id="u_1")
-    with patch.object(httpx.AsyncClient, "post", new=fake_success):
+    with patch.object(httpx.AsyncClient, "post", new=fake_complete):
         await poll_device_code(user_id="u_1")
 
     await revoke_user_oauth(user_id="u_1")

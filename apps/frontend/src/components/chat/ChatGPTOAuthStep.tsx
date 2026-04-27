@@ -18,8 +18,8 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
       <div className="flex flex-col items-center gap-4 py-8">
         <h3 className="text-xl font-semibold">Sign in with ChatGPT</h3>
         <p className="text-sm text-muted-foreground text-center max-w-md">
-          We&apos;ll connect to your ChatGPT account so your agent can use
-          GPT-5.5 with your existing subscription. No keys to copy.
+          Use your existing ChatGPT Plus/Pro subscription for inference. No
+          keys to copy.
         </p>
         <button
           onClick={start}
@@ -33,9 +33,9 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
 
   if (state.status === "pending") {
     return (
-      <div className="flex flex-col items-center gap-4 py-8">
+      <div className="flex flex-col items-center gap-4 py-8 max-w-md">
         <h3 className="text-xl font-semibold">Almost there</h3>
-        <ol className="text-sm space-y-2 list-decimal list-inside max-w-md">
+        <ol className="text-sm space-y-3 list-decimal list-inside">
           <li>
             Open{" "}
             <a
@@ -45,13 +45,16 @@ export function ChatGPTOAuthStep({ onComplete }: Props) {
               className="text-primary underline"
             >
               {state.verificationUri}
-            </a>
+            </a>{" "}
+            and sign in to your ChatGPT account.
           </li>
           <li>
-            Enter this code:{" "}
-            <code className="bg-muted px-2 py-1 rounded font-mono text-base">
-              {state.userCode}
-            </code>
+            Enter this code:
+            <div className="mt-2">
+              <code className="bg-muted px-3 py-2 rounded font-mono text-lg tracking-widest">
+                {state.userCode}
+              </code>
+            </div>
           </li>
         </ol>
         <p className="text-xs text-muted-foreground">

@@ -49,13 +49,15 @@ def _mock_oauth_external_deps(monkeypatch):
 
         # Pre-seed a pending device-code session for the contract test user
         # so /poll has a row to look up. /start would normally create this
-        # row, but schemathesis hits each endpoint independently.
+        # row, but schemathesis hits each endpoint independently. Field
+        # names match the new OpenAI Codex CLI flow (device_auth_id, not
+        # the old OAuth-spec device_code).
         client.put_item(
             TableName="contract-test-oauth-tokens",
             Item={
                 "user_id": {"S": "contract_test_user"},
                 "state": {"S": "pending"},
-                "device_code": {"S": "ct_dev_code"},
+                "device_auth_id": {"S": "ct_device_auth_id"},
                 "user_code": {"S": "CONT-RACT"},
                 "interval": {"N": "5"},
             },
@@ -79,27 +81,34 @@ def _mock_oauth_external_deps(monkeypatch):
 
             async def post(self, url, **kwargs):
                 url_str = str(url)
-                # Match the OpenAI device-code endpoint by either the
-                # legacy /codex/device path OR the current
-                # /api/accounts/deviceauth path. OpenAI moved the URL
-                # ~2026-04; keep both forms recognized so the contract
-                # test passes regardless of which is pinned in
-                # oauth_service.DEVICE_CODE_URL.
-                if "/codex/device" in url_str or "/deviceauth" in url_str:
+                # OpenAI's actual Codex CLI flow:
+                #   /api/accounts/deviceauth/usercode → returns
+                #     {device_auth_id, user_code, interval}
+                #   /api/accounts/deviceauth/token   → returns 403/404
+                #     while pending; success returns
+                #     {authorization_code, code_verifier}
+                #   /oauth/token                    → exchanges PKCE
+                #     pair for access+refresh
+                if "/deviceauth/usercode" in url_str:
                     return httpx.Response(
                         200,
                         json={
-                            "device_code": "ct_dev_code",
+                            "device_auth_id": "ct_device_auth_id",
                             "user_code": "CONT-RACT",
-                            "verification_uri": "https://chatgpt.com/codex",
-                            "expires_in": 900,
                             "interval": 5,
                         },
                         request=httpx.Request("POST", url),
                     )
+                if "/deviceauth/token" in url_str:
+                    # Pretend the user is still pending so /poll returns
+                    # 200 with status=pending instead of erroring.
+                    return httpx.Response(
+                        403,
+                        request=httpx.Request("POST", url),
+                    )
                 if "/oauth/token" in url_str:
-                    # Pretend the user is still pending so /poll returns 200
-                    # with status=pending instead of erroring.
+                    # Shouldn't be reached in pending state, but stub
+                    # for completeness.
                     return httpx.Response(
                         400,
                         json={"error": "authorization_pending"},
