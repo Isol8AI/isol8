@@ -155,15 +155,11 @@ class BillingService:
                 line_items=line_items,
                 subscription_data={"metadata": {"plan_tier": tier}},
                 allow_promotion_codes=True,
-                # Stripe Tax: collect VAT/sales tax in jurisdictions where we're
-                # registered (TX/NY/WA + EU/UK). Dashboard-side enablement
-                # (registrations, tax categories) is tracked in the plan's
-                # manual-config section.
-                automatic_tax={"enabled": True},
-                # Required when automatic_tax is enabled and the customer has no
-                # address on file — lets Stripe collect billing address during
-                # checkout. Without this kwarg, Stripe rejects the API call.
-                customer_update={"address": "auto"},
+                # Stripe Tax (automatic_tax + customer_update={"address": "auto"})
+                # is intentionally OFF for v1. Re-enable both kwargs together once
+                # we hit nexus-threshold revenue per jurisdiction (and have
+                # registered for sales tax / VAT in those jurisdictions via the
+                # Stripe dashboard). See PR #389 for the original wiring.
                 success_url=f"{FRONTEND_URL}/chat?subscription=success",
                 cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
                 idempotency_key=f"checkout:{owner_id}:{bucket}",
