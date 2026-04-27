@@ -1,4 +1,4 @@
-"""Service for Stripe billing operations — hybrid tier model."""
+"""Service for Stripe billing operations — flat-fee model."""
 
 import hashlib
 import logging
@@ -15,14 +15,6 @@ logger = logging.getLogger(__name__)
 
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
-METERED_PRICE_ID = os.getenv("STRIPE_METERED_PRICE_ID", "")
-
-TIER_PRICES = {
-    "starter": os.getenv("STRIPE_STARTER_PRICE_ID", ""),
-    "pro": os.getenv("STRIPE_PRO_PRICE_ID", ""),
-    "enterprise": os.getenv("STRIPE_ENTERPRISE_PRICE_ID", ""),
-}
-
 FRONTEND_URL = os.getenv(
     "FRONTEND_URL", settings.cors_origins_list[0] if settings.cors_origins_list else "http://localhost:3000"
 )
@@ -30,27 +22,6 @@ FRONTEND_URL = os.getenv(
 
 class BillingServiceError(Exception):
     pass
-
-
-class AlreadySubscribedError(BillingServiceError):
-    """Raised when a checkout is attempted while an active Stripe sub exists.
-
-    Why: each successful Stripe Checkout in subscription mode creates a fresh
-    sub on the customer. Without this guard, repeated Subscribe clicks pile up
-    duplicate subs that all keep billing — incident 2026-04-17.
-    """
-
-
-# Stripe sub statuses that should block a new checkout — i.e. the customer
-# already has a sub that is currently being served or in active dunning.
-#
-# Intentionally NOT in this set:
-#   - `incomplete` / `incomplete_expired`: initial payment never completed,
-#      so user must be allowed to retry — blocking would strand conversion.
-#   - `unpaid`: terminal dunning, sub is suspended; user retry should be
-#      permitted so they can re-subscribe without first canceling the dead row.
-#   - `canceled`: explicit cancellation, retry is the intent.
-_BLOCKING_SUB_STATUSES = frozenset({"active", "trialing", "past_due"})
 
 
 class BillingService:
@@ -102,118 +73,6 @@ class BillingService:
                 logger.warning("Failed to delete orphan Stripe customer %s", customer.id)
             return await billing_repo.get_by_owner_id(owner_id)
 
-    async def create_checkout_session(self, billing_account: dict, tier: str) -> str:
-        fixed_price = TIER_PRICES.get(tier)
-        if not fixed_price:
-            raise BillingServiceError(f"Unknown tier: {tier}")
-
-        # Refuse to create a second sub when one is already active.
-        # Self-heal: if DDB's stored sub_id no longer exists in Stripe (lost
-        # cancellation webhook), proceed and let the new sub take over.
-        sub_id = billing_account.get("stripe_subscription_id")
-        if sub_id:
-            try:
-                with timing("stripe.api.latency", {"op": "subscription.retrieve"}):
-                    sub = stripe.Subscription.retrieve(sub_id)
-            except stripe.error.InvalidRequestError as e:
-                # Only treat "resource missing" as self-heal — other invalid-request
-                # errors (malformed id, account mismatch, etc.) shouldn't bypass
-                # the duplicate-sub guard.
-                if getattr(e, "code", None) != "resource_missing":
-                    raise
-                logger.info(
-                    "Stored sub %s not found in Stripe for owner %s — proceeding with new checkout",
-                    sub_id,
-                    billing_account.get("owner_id"),
-                )
-            else:
-                if sub.get("status") in _BLOCKING_SUB_STATUSES:
-                    raise AlreadySubscribedError(
-                        f"Customer already has subscription {sub_id} (status={sub.get('status')})"
-                    )
-
-        # Initial subscription includes ONLY the fixed-price tier line item.
-        # The metered overage line item (STRIPE_METERED_PRICE_ID) is attached
-        # later, and only if the user explicitly opts in via PUT /billing/overage.
-        # See `set_metered_overage_item` below.
-        #
-        # This keeps the Stripe Checkout page clean (one line item, one price)
-        # and prevents the confusing "you're subscribing to Starter AND 1 more"
-        # display where the metered item appears as a second product.
-        line_items = [{"price": fixed_price, "quantity": 1}]
-
-        owner_id = billing_account["owner_id"]
-        # 5-minute time bucket: a user re-clicking Subscribe within the same
-        # 5-minute window collapses to the same Checkout Session on Stripe's
-        # side. Different windows (e.g. clicking 10 minutes later) produce a
-        # fresh session — so users aren't permanently stuck on a stale URL.
-        bucket = int(time.time() // 300)
-        with timing("stripe.api.latency", {"op": "checkout.session.create"}):
-            session = stripe.checkout.Session.create(
-                customer=billing_account["stripe_customer_id"],
-                mode="subscription",
-                line_items=line_items,
-                subscription_data={"metadata": {"plan_tier": tier}},
-                allow_promotion_codes=True,
-                # Stripe Tax (automatic_tax + customer_update={"address": "auto"})
-                # is intentionally OFF for v1. Re-enable both kwargs together once
-                # we hit nexus-threshold revenue per jurisdiction (and have
-                # registered for sales tax / VAT in those jurisdictions via the
-                # Stripe dashboard). See PR #389 for the original wiring.
-                success_url=f"{FRONTEND_URL}/chat?subscription=success",
-                cancel_url=f"{FRONTEND_URL}/chat?subscription=canceled",
-                idempotency_key=f"checkout:{owner_id}:{bucket}",
-            )
-        return session.url
-
-    async def set_metered_overage_item(self, billing_account: dict, enabled: bool) -> None:
-        """Attach or detach the metered overage line item on the user's active
-        Stripe subscription.
-
-        Called from PUT /billing/overage when the user toggles the overage
-        setting. Idempotent — if the line item is already in the desired state,
-        no Stripe write happens beyond the lookup.
-
-        Raises:
-            BillingServiceError: when the account has no active subscription
-                (free tier or canceled), or when STRIPE_METERED_PRICE_ID is
-                unconfigured. Caller is expected to surface this as a 400.
-        """
-        if not METERED_PRICE_ID:
-            raise BillingServiceError("Metered price ID not configured")
-
-        sub_id = billing_account.get("stripe_subscription_id")
-        if not sub_id:
-            raise BillingServiceError("No active subscription to modify")
-
-        subscription = stripe.Subscription.retrieve(sub_id)
-        existing_metered_item = None
-        for item in subscription["items"]["data"]:
-            if item["price"]["id"] == METERED_PRICE_ID:
-                existing_metered_item = item
-                break
-
-        if enabled and existing_metered_item is None:
-            # Add the metered line item to the existing subscription. The
-            # user's card auth from initial checkout covers this — Stripe
-            # doesn't require a new authorization to add a metered usage
-            # component.
-            stripe.Subscription.modify(
-                sub_id,
-                items=[{"price": METERED_PRICE_ID}],
-                idempotency_key=f"sub_modify:{sub_id}:add_metered",
-            )
-        elif not enabled and existing_metered_item is not None:
-            # Remove the metered line item. Stripe's `deleted: true` flag on
-            # an existing item id removes that item without affecting the
-            # rest of the subscription.
-            stripe.Subscription.modify(
-                sub_id,
-                items=[{"id": existing_metered_item["id"], "deleted": True}],
-                idempotency_key=f"sub_modify:{sub_id}:remove_metered",
-            )
-        # else: already in the desired state — no-op.
-
     async def create_portal_session(self, billing_account: dict) -> str:
         owner_id = billing_account["owner_id"]
         # 5-minute time bucket — same retry-collapsing intent as checkout.
@@ -226,21 +85,13 @@ class BillingService:
             )
         return session.url
 
-    async def update_subscription(self, billing_account: dict, subscription_id: str, tier: str) -> None:
-        await billing_repo.update_subscription(
-            owner_id=billing_account["owner_id"],
-            stripe_subscription_id=subscription_id,
-            plan_tier=tier,
-        )
-
     async def cancel_subscription(self, billing_account: dict) -> None:
-        await billing_repo.update_subscription(
+        await billing_repo.set_subscription(
             owner_id=billing_account["owner_id"],
-            stripe_subscription_id=None,
-            plan_tier="free",
+            subscription_id=None,
+            status="canceled",
+            trial_end=None,
         )
-        # Disable overage on cancellation
-        await billing_repo.set_overage_enabled(billing_account["owner_id"], False)
 
 
 async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
@@ -251,10 +102,6 @@ async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
     (Plan 3) bypasses Checkout entirely in favor of SetupIntent + Subscription
     create with ``trial_period_days``; this helper exists for the no-trial
     path (e.g. card 3 if the user opts to skip trial and pay immediately).
-
-    Coexists with :meth:`BillingService.create_checkout_session` (per-tier);
-    Plan 3 cutover removes the per-tier helper once the flat-fee wizard is
-    wired in.
 
     Conventions (mirrors Plan 1 Stripe Tax setup):
       - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.

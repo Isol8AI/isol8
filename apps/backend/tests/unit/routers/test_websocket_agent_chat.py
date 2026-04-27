@@ -68,19 +68,10 @@ def connected_user(mock_connection_service):
 
 @pytest.fixture
 def mock_check_budget_allowed():
-    """Mock check_budget to return an allowed result."""
-    with patch("core.services.usage_service.check_budget", new_callable=AsyncMock) as mock_cb:
-        mock_cb.return_value = {
-            "allowed": True,
-            "within_included": True,
-            "overage_available": False,
-            "overage_enabled": False,
-            "current_spend": 0,
-            "included_budget": 2_000_000,
-            "is_subscribed": False,
-            "tier": "free",
-        }
-        yield mock_cb
+    """No-op fixture retained for test arg compatibility — the per-tier budget
+    pre-gate was deleted in the flat-fee cutover (gating now happens in the
+    gateway connection_pool.gate_chat for card-3 users)."""
+    yield None
 
 
 class TestAgentChatMessageRouting:

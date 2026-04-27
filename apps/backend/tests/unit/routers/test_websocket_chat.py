@@ -10,8 +10,6 @@ These tests use httpx AsyncClient with ASGITransport for testing HTTP endpoints.
 Services are mocked to isolate route logic.
 """
 
-import asyncio
-
 import pytest
 from unittest.mock import MagicMock, patch
 from fastapi import FastAPI
@@ -97,57 +95,6 @@ class TestConnectEndpoint:
             user_id="test-user-456",
             org_id="test-org-789",
         )
-
-    @pytest.mark.asyncio
-    async def test_connect_records_activity_for_personal_owner(
-        self, test_app, mock_connection_service, mock_gateway_pool
-    ):
-        """Connect must call record_activity(owner_id) so the scale-to-zero
-        idle reaper sees a fresh last_active_at immediately after login.
-
-        Without this, there is a 0-65 second window before the frontend's
-        first user_active heartbeat lands where the reaper can fire on a
-        stale timestamp from a prior session and stop the user's container
-        right after they connect.
-
-        For personal users, owner_id == user_id (no org).
-        """
-        mock_gateway_pool.record_activity = MagicMock(return_value=asyncio.sleep(0))
-
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/connect",
-                headers={
-                    "x-connection-id": "test-conn-123",
-                    "x-user-id": "test-user-456",
-                },
-            )
-        # Yield once so the asyncio.create_task fires inside the event loop.
-        await asyncio.sleep(0)
-
-        assert response.status_code == 200
-        mock_gateway_pool.record_activity.assert_called_once_with("test-user-456")
-
-    @pytest.mark.asyncio
-    async def test_connect_records_activity_for_org_owner(self, test_app, mock_connection_service, mock_gateway_pool):
-        """Same activity recording for org-context connects, but routed by
-        org_id (which is the owner_id) rather than user_id.
-        """
-        mock_gateway_pool.record_activity = MagicMock(return_value=asyncio.sleep(0))
-
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/connect",
-                headers={
-                    "x-connection-id": "test-conn-123",
-                    "x-user-id": "test-user-456",
-                    "x-org-id": "test-org-789",
-                },
-            )
-        await asyncio.sleep(0)
-
-        assert response.status_code == 200
-        mock_gateway_pool.record_activity.assert_called_once_with("test-org-789")
 
     @pytest.mark.asyncio
     async def test_connect_without_connection_id_fails(self, test_app, mock_connection_service):
@@ -455,21 +402,17 @@ class TestReqMessageRouting:
         assert sent_msg["ok"] is False
 
 
-class TestActivityTracking:
-    """Tests for activity tracking dispatch (scale-to-zero idle detection)."""
+class TestUserActiveLegacy:
+    """The user_active heartbeat used to drive scale-to-zero idle detection;
+    post flat-fee cutover the path is a no-op 200 — we only keep the test to
+    confirm the endpoint doesn't 4xx if a stale client still sends the ping."""
 
     @pytest.mark.asyncio
-    async def test_user_active_dispatch_calls_record_activity(
-        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
-    ):
-        """user_active message should call pool.record_activity(owner_id) exactly once and return 200."""
-        from unittest.mock import AsyncMock
-
+    async def test_user_active_returns_200_no_op(self, test_app, mock_connection_service, mock_management_api):
         mock_connection_service.get_connection.return_value = {
             "user_id": "test-user",
             "org_id": None,
         }
-        mock_gateway_pool.record_activity = AsyncMock()
 
         async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
             response = await client.post(
@@ -479,66 +422,4 @@ class TestActivityTracking:
             )
 
         assert response.status_code == 200
-        # record_activity is scheduled fire-and-forget via asyncio.create_task
-        # so the handler can return before DDB latency. Drain pending tasks.
-        await asyncio.sleep(0)
-        mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")
         mock_management_api.send_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_user_active_dispatch_uses_org_owner_id(
-        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
-    ):
-        """user_active should record activity under org_id when connection has one."""
-        from unittest.mock import AsyncMock
-
-        mock_connection_service.get_connection.return_value = {
-            "user_id": "test-user",
-            "org_id": "test-org-789",
-        }
-        mock_gateway_pool.record_activity = AsyncMock()
-
-        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-            response = await client.post(
-                "/ws/message",
-                headers={"x-connection-id": "conn-abc"},
-                json={"type": "user_active"},
-            )
-
-        assert response.status_code == 200
-        await asyncio.sleep(0)  # drain the fire-and-forget task
-        mock_gateway_pool.record_activity.assert_awaited_once_with("test-org-789")
-
-    @pytest.mark.asyncio
-    async def test_agent_chat_dispatch_calls_record_activity(
-        self, test_app, mock_connection_service, mock_management_api, mock_gateway_pool
-    ):
-        """agent_chat should route through record_activity (not touch_activity)."""
-        from unittest.mock import AsyncMock
-
-        mock_connection_service.get_connection.return_value = {
-            "user_id": "test-user",
-            "org_id": None,
-        }
-        mock_gateway_pool.record_activity = AsyncMock()
-        # Guard: if agent_chat still calls touch_activity, fail loudly (None is not callable).
-        mock_gateway_pool.touch_activity = None
-
-        with (
-            patch(
-                "core.services.usage_service.check_budget",
-                new_callable=AsyncMock,
-                return_value={"allowed": True},
-            ),
-            patch("routers.websocket_chat._process_agent_chat_background"),
-        ):
-            async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
-                response = await client.post(
-                    "/ws/message",
-                    headers={"x-connection-id": "conn-abc"},
-                    json={"type": "agent_chat", "agent_id": "a1", "message": "hello"},
-                )
-
-        assert response.status_code == 200
-        await asyncio.sleep(0)  # drain the fire-and-forget task
-        mock_gateway_pool.record_activity.assert_awaited_once_with("test-user")

@@ -1,7 +1,6 @@
 """Tests for billing account DynamoDB repository."""
 
 import os
-from decimal import Decimal
 from unittest.mock import patch
 
 import boto3
@@ -48,8 +47,6 @@ async def test_create_and_get(dynamodb_table):
     result = await billing_repo.create_if_not_exists("user_1", "cus_abc")
     assert result["owner_id"] == "user_1"
     assert result["stripe_customer_id"] == "cus_abc"
-    assert result["plan_tier"] == "free"
-    assert result["markup_multiplier"] == Decimal("1.4")
     assert "id" in result
 
     item = await billing_repo.get_by_owner_id("user_1")
@@ -94,21 +91,27 @@ async def test_create_if_not_exists_rejects_duplicate(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_update_subscription(dynamodb_table):
+async def test_set_subscription_persists_status_and_trial_end(dynamodb_table):
     from core.repositories import billing_repo
 
     await billing_repo.create_if_not_exists("user_4", "cus_jkl")
-    result = await billing_repo.update_subscription("user_4", "sub_xyz", "starter")
+    result = await billing_repo.set_subscription(
+        owner_id="user_4",
+        subscription_id="sub_xyz",
+        status="trialing",
+        trial_end=1700000000,
+    )
     assert result is not None
     assert result["stripe_subscription_id"] == "sub_xyz"
-    assert result["plan_tier"] == "starter"
+    assert result["subscription_status"] == "trialing"
+    assert result["trial_end"] == 1700000000
 
 
 @pytest.mark.asyncio
-async def test_update_subscription_nonexistent(dynamodb_table):
+async def test_set_subscription_nonexistent(dynamodb_table):
     from core.repositories import billing_repo
 
-    result = await billing_repo.update_subscription("ghost", "sub_x", "pro")
+    result = await billing_repo.set_subscription(owner_id="ghost", subscription_id="sub_x", status="active")
     assert result is None
 
 

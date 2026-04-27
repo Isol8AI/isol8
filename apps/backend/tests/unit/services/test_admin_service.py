@@ -33,9 +33,9 @@ async def test_list_users_joins_clerk_with_container_status():
     async def fake_container_lookup(uid):
         return {"user_a": {"status": "running"}}.get(uid)
 
-    # plan_tier lives on billing_accounts, not containers.
+    # subscription_status lives on billing_accounts, not containers.
     async def fake_billing_lookup(uid):
-        return {"user_a": {"plan_tier": "starter"}}.get(uid)
+        return {"user_a": {"subscription_status": "active"}}.get(uid)
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
@@ -49,9 +49,9 @@ async def test_list_users_joins_clerk_with_container_status():
     b = next(r for r in result["users"] if r["clerk_id"] == "user_b")
     assert a["email"] == "a@x.com"
     assert a["container_status"] == "running"
-    assert a["plan_tier"] == "starter"
+    assert a["subscription_status"] == "active"
     assert b["container_status"] == "none"  # no container → "none" sentinel
-    assert b["plan_tier"] == "free"
+    assert b["subscription_status"] is None
 
 
 @pytest.mark.asyncio

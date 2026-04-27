@@ -40,10 +40,10 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
     )
 
     # Spy on the underlying repo write that the handler triggers via
-    # BillingService.update_subscription -> billing_repo.update_subscription.
+    # billing_repo.set_subscription on customer.subscription.updated.
     with (
         patch(
-            "core.repositories.billing_repo.update_subscription",
+            "core.repositories.billing_repo.set_subscription",
             new=AsyncMock(return_value={}),
         ) as mock_write,
         patch(
@@ -52,11 +52,9 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
                 return_value={
                     "owner_id": "user_replay_test",
                     "stripe_customer_id": "cus_x",
-                    "plan_tier": "free",
                 }
             ),
         ),
-        patch("routers.billing.queue_tier_change", new=AsyncMock()),
     ):
         body = json.dumps(fake_event)
         first = await async_client.post(

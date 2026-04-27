@@ -139,25 +139,6 @@ async def ws_connect(
     except Exception as e:
         logger.warning("Failed to register frontend connection with pool: %s", e)
 
-    # Record activity on connect so the scale-to-zero idle reaper sees a
-    # fresh `last_active_at` immediately after a user logs in. Without this,
-    # there is a 0-65 second window before the frontend's first user_active
-    # heartbeat arrives where the reaper can fire on a stale timestamp from
-    # a prior session and stop the user's container right after they
-    # connect (paired with the `start_user_service` change that no longer
-    # passes `forceNewDeployment=True`, this kills the cascade that caused
-    # the post-login outage in the post-incident review of the 47h-uptime
-    # container). `record_activity` itself is throttled to 1 DDB write per
-    # 30s per owner, so multiple WS connects in a short window don't hammer
-    # DDB.
-    try:
-        owner_id_for_activity = x_org_id or x_user_id
-        asyncio.create_task(get_gateway_pool().record_activity(owner_id_for_activity))
-    except Exception:
-        # Pool may not be initialized in tests / extreme edge cases. Don't
-        # fail connect for a best-effort activity ping.
-        pass
-
     # Send OpenClaw connect.challenge so the control UI SPA can complete
     # its handshake.  The chat frontend silently ignores this message.
     background_tasks.add_task(_send_connect_challenge, x_connection_id)
@@ -365,12 +346,9 @@ async def ws_message(
         return Response(status_code=200)
 
     if msg_type == "user_active":
-        # Fire-and-forget: the ping is best-effort activity tracking. Awaiting
-        # would let DDB slowness stall /ws/message and risk API Gateway timeouts.
-        try:
-            asyncio.create_task(get_gateway_pool().record_activity(owner_id))
-        except Exception:
-            pass  # Pool may not be initialized in tests
+        # Legacy heartbeat from useActivityPing (frontend hook is deleted in
+        # the flat-fee cutover but a stray client may still send this). 200 OK
+        # so we don't 4xx old browsers; the ping does nothing post-cutover.
         return Response(status_code=200)
 
     if msg_type == "agent_chat":
@@ -388,42 +366,10 @@ async def ws_message(
             )
             return Response(status_code=200)
 
-        # Track chat activity for idle detection (scale-to-zero). Fire-and-forget
-        # so DDB latency can't stall the chat request and trigger an API Gateway
-        # timeout.
-        try:
-            asyncio.create_task(get_gateway_pool().record_activity(owner_id))
-        except Exception:
-            pass  # Pool may not be initialized in tests
-
-        # Budget check before forwarding to gateway
-        from core.services.usage_service import check_budget
-
-        budget = await check_budget(owner_id)
-        if not budget["allowed"]:
-            management_api = await get_management_api_client()
-            management_api.send_message(
-                x_connection_id,
-                {
-                    "type": "error",
-                    "agent_id": agent_id,
-                    "code": "BUDGET_EXCEEDED",
-                    "message": (
-                        "You've used your included LLM budget for this month."
-                        if budget["is_subscribed"]
-                        else "You've reached your free tier limit."
-                    ),
-                    "current_spend": budget["current_spend"],
-                    "included_budget": budget["included_budget"],
-                    "within_included": budget["within_included"],
-                    "overage_available": budget["overage_available"],
-                    "overage_enabled": budget["overage_enabled"],
-                    "is_subscribed": budget["is_subscribed"],
-                    "tier": budget["tier"],
-                },
-            )
-            return Response(status_code=200)
-
+        # The gateway connection pool's gate_chat (called inside the
+        # forwarder) is the authoritative pre-chat budget gate for card-3
+        # (bedrock_claude) users; cards 1 + 2 carry their own provider
+        # auth and don't need a backend gate.
         background_tasks.add_task(
             _process_agent_chat_background,
             connection_id=x_connection_id,

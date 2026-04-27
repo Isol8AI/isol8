@@ -1,107 +1,13 @@
-"""Update service -- orchestrates tier changes, image updates, and scheduled worker.
-
-Plan 2 (flat-fee pivot) deletes tier-based model routing. The legacy
-``_build_tier_config_patch`` helper still exists below so callers
-(billing.py webhook + tests) keep importing cleanly, but its model
-list is empty pending the full removal in Task 16. Behavior on a
-post-pivot deploy: a tier change emits a no-op patch — harmless,
-since plan_tier itself is going away. Tests for this flow are
-xfailed pending Task 16.
-"""
+"""Update service -- image-update queue + scheduled worker."""
 
 import asyncio
 import logging
 
-from core.config import TIER_CONFIG
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
-
-
-def _build_tier_config_patch(tier_config: dict, tier: str) -> dict:
-    """Build the openclaw.json patch dict for a given tier config.
-
-    Stubbed for the flat-fee pivot — emits an empty Bedrock model
-    list rather than the deleted ``_models_for_tier`` lookup. Will
-    be removed entirely by Task 16 along with ``queue_tier_change``.
-    """
-    return {
-        "models": {
-            "providers": {
-                "amazon-bedrock": {
-                    "models": [],
-                },
-            },
-        },
-        "plugins": {
-            "entries": {
-                # OpenClaw 4.5: discovery moved here from `models.bedrockDiscovery`.
-                # Disabled because we manage the catalog explicitly per tier.
-                "amazon-bedrock": {
-                    "config": {
-                        "discovery": {"enabled": False},
-                    },
-                },
-            },
-        },
-        "agents": {
-            "defaults": {
-                "model": {"primary": tier_config["primary_model"]},
-                "models": tier_config.get("model_aliases", {}),
-                "subagents": {"model": {"primary": tier_config["subagent_model"]}},
-            }
-        },
-    }
-
-
-async def queue_tier_change(owner_id: str, old_tier: str, new_tier: str) -> dict | None:
-    """Handle a tier change for an owner.
-
-    Track 1 (always): Patch openclaw.json with new model config.
-    Track 2 (if size differs): Create a pending container_resize update.
-
-    Returns the pending update item if a resize was queued, else None.
-    """
-    new_config = TIER_CONFIG.get(new_tier)
-    if not new_config:
-        raise ValueError(f"Unknown tier: {new_tier}")
-
-    old_config = TIER_CONFIG.get(old_tier)
-    if not old_config:
-        raise ValueError(f"Unknown tier: {old_tier}")
-
-    # Track 1: always patch config (agent models + provider catalog)
-    patch = _build_tier_config_patch(new_config, new_tier)
-    await patch_openclaw_config(owner_id, patch)
-    logger.info("Patched openclaw.json for tier change %s -> %s (owner=%s)", old_tier, new_tier, owner_id)
-
-    # Track 2: queue resize if container size changed
-    pending_update = None
-    old_cpu, old_mem = old_config["container_cpu"], old_config["container_memory"]
-    new_cpu, new_mem = new_config["container_cpu"], new_config["container_memory"]
-
-    if old_cpu != new_cpu or old_mem != new_mem:
-        pending_update = await update_repo.create(
-            owner_id=owner_id,
-            update_type="container_resize",
-            description=f"Resize container for tier change {old_tier} -> {new_tier}",
-            changes={
-                "new_cpu": new_cpu,
-                "new_memory": new_mem,
-            },
-        )
-        logger.info(
-            "Queued container resize %s -> %s cpu=%s mem=%s (owner=%s)",
-            old_tier,
-            new_tier,
-            new_cpu,
-            new_mem,
-            owner_id,
-        )
-
-    return pending_update
 
 
 async def queue_image_update(owner_id: str, new_image: str, description: str | None = None) -> dict:

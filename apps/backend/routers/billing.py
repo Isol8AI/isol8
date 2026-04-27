@@ -1,4 +1,4 @@
-"""Billing API endpoints — hybrid tier model with usage-based billing."""
+"""Billing API endpoints — flat-fee model with credit ledger."""
 
 import asyncio
 import logging
@@ -9,26 +9,17 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
-from core.config import settings, TIER_CONFIG
+from core.auth import AuthContext, get_current_user, resolve_owner_id, require_org_admin
+from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
 from core.services import credit_ledger
-from core.services.billing_service import (
-    AlreadySubscribedError,
-    BillingService,
-    BillingServiceError,
-)
-from core.services.usage_service import check_budget, get_usage_summary
+from core.services.billing_service import BillingService
+from core.services.usage_service import get_usage_summary
 from core.services.bedrock_pricing import get_all_prices
-from core.services.update_service import queue_tier_change
-from core.services.config_patcher import ConfigPatchError
 from schemas.billing import (
     BillingAccountResponse,
-    CheckoutRequest,
-    CheckoutResponse,
     PortalResponse,
-    OverageToggleRequest,
     UsageSummary,
     MemberUsage,
     MyUsageResponse,
@@ -78,44 +69,30 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
 async def get_billing_account(
     auth: AuthContext = Depends(get_current_user),
 ):
-    # Read-only endpoint. We intentionally do NOT auto-create a billing row
-    # when the caller has no account — check_budget handles `None` by falling
-    # through to free-tier defaults (see core/services/usage_service.py:128),
-    # and the response shape is identical to a free-tier real account.
-    # Billing rows are only written by POST /billing/checkout (explicit
-    # subscribe intent, admin-gated for orgs).
+    # Read-only endpoint. We do not auto-create a billing row when the caller
+    # has no account — billing rows are written by the trial-subscription
+    # signup flow (Plan 3 §7.1). Callers without an account are pre-signup
+    # users; the response just reflects "no subscription" defaults.
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
 
-    budget = await check_budget(owner_id)
+    # Current-period spend for analytics. Counter-only — the credit ledger
+    # is the authoritative billing surface for card-3 users.
+    summary = await get_usage_summary(owner_id)
+    current_spend = summary["total_spend"]
+    lifetime_spend = summary["lifetime_spend"]
 
-    # Lifetime spend
-    lifetime_usage = await usage_repo.get_period_usage(owner_id, "lifetime")
-    lifetime_spend = (lifetime_usage["total_spend_microdollars"] if lifetime_usage else 0) / 1_000_000
-
-    budget_percent = (budget["current_spend"] / budget["included_budget"] * 100) if budget["included_budget"] > 0 else 0
-
-    # overage_limit only exists on real paid-tier rows; synthetic free-tier
-    # response (account is None) always reports None.
-    overage_limit = float(account["overage_limit"]) / 1_000_000 if account and account.get("overage_limit") else None
-
-    # Stripe-native trial state for Plan 3 TrialBanner. Both fields
-    # come from billing_repo.set_subscription (set on subscription create
-    # + refreshed by customer.subscription.updated webhook). Account is
-    # None for synthetic free-tier responses → both fields stay None.
+    # Stripe-native subscription state. Both fields come from billing_repo
+    # .set_subscription (set on subscription create + refreshed by the
+    # customer.subscription.updated webhook). Account is None for pre-signup
+    # responses → both fields stay None.
     subscription_status = account.get("subscription_status") if account else None
     trial_end = account.get("trial_end") if account else None
 
     return BillingAccountResponse(
-        tier=budget["tier"],
-        is_subscribed=budget["is_subscribed"],
-        current_spend=budget["current_spend"],
-        included_budget=budget["included_budget"],
-        budget_percent=round(budget_percent, 1),
+        is_subscribed=subscription_status in ("active", "trialing"),
+        current_spend=current_spend,
         lifetime_spend=lifetime_spend,
-        overage_enabled=budget["overage_enabled"],
-        overage_limit=overage_limit,
-        within_included=budget["within_included"],
         subscription_status=subscription_status,
         trial_end=int(trial_end) if trial_end is not None else None,
     )
@@ -203,76 +180,27 @@ async def get_my_usage(
     "/pricing",
     response_model=PricingResponse,
     summary="Get model pricing",
-    description="Returns per-token model pricing with markup.",
+    description=(
+        "Returns per-token Bedrock Claude pricing for the credit-ledger UI. "
+        "Card-3 (bedrock_claude) users pay raw Bedrock prices times the credit-ledger "
+        "markup (applied on deduct, not surfaced here)."
+    ),
     operation_id="get_pricing",
 )
 async def get_pricing(
     auth: AuthContext = Depends(get_current_user),
 ):
-    owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    tier = account.get("plan_tier", "free") if account else "free"
-    tier_config = TIER_CONFIG.get(tier, TIER_CONFIG["free"])
-
     all_prices = get_all_prices()
-    markup = settings.BILLING_MARKUP
-
-    models = {}
-    for model_id, price in all_prices.items():
-        models[model_id] = ModelPriceResponse(
-            input=price["input"] * markup,
-            output=price["output"] * markup,
-            cache_read=price["cache_read"] * markup,
-            cache_write=price["cache_write"] * markup,
+    models = {
+        model_id: ModelPriceResponse(
+            input=price["input"],
+            output=price["output"],
+            cache_read=price["cache_read"],
+            cache_write=price["cache_write"],
         )
-
-    # Strip the amazon-bedrock/ prefix from tier model IDs for response
-    primary = tier_config["primary_model"].replace("amazon-bedrock/", "")
-    subagent = tier_config["subagent_model"].replace("amazon-bedrock/", "")
-
-    return PricingResponse(
-        models=models,
-        markup=markup,
-        tier_model=primary,
-        subagent_model=subagent,
-    )
-
-
-@router.post(
-    "/checkout",
-    response_model=CheckoutResponse,
-    summary="Create checkout session",
-    description="Creates a Stripe Checkout session to subscribe to a plan.",
-    operation_id="create_checkout",
-)
-async def create_checkout(
-    request: CheckoutRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    if auth.is_org_context:
-        require_org_admin(auth)
-
-    billing_service = BillingService()
-    account = await _get_billing_account(auth)
-    if not account:
-        owner_id = resolve_owner_id(auth)
-        owner_type = get_owner_type(auth)
-        # Pass the caller's email so the new Stripe customer is born
-        # identifiable. For org context this is the admin who clicked
-        # Subscribe (the org's first paying admin); for personal context
-        # it's the user themselves. Requires the Clerk session token
-        # template to include `"email": "{{user.primary_email_address}}"`.
-        account = await billing_service.create_customer_for_owner(
-            owner_id=owner_id,
-            owner_type=owner_type,
-            email=auth.email,
-        )
-
-    try:
-        url = await billing_service.create_checkout_session(account, request.tier.value)
-    except AlreadySubscribedError as e:
-        raise HTTPException(status_code=409, detail=str(e))
-    return CheckoutResponse(checkout_url=url)
+        for model_id, price in all_prices.items()
+    }
+    return PricingResponse(models=models)
 
 
 @router.post(
@@ -295,41 +223,6 @@ async def create_portal(
     billing_service = BillingService()
     url = await billing_service.create_portal_session(account)
     return PortalResponse(portal_url=url)
-
-
-@router.put(
-    "/overage",
-    summary="Toggle overage",
-    description="Enable or disable overage billing for the account.",
-    operation_id="toggle_overage",
-)
-async def toggle_overage(
-    request: OverageToggleRequest,
-    auth: AuthContext = Depends(get_current_user),
-):
-    if auth.is_org_context:
-        require_org_admin(auth)
-
-    owner_id = resolve_owner_id(auth)
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account:
-        raise HTTPException(status_code=404, detail="Billing account not found")
-
-    # Attach or detach the metered line item on the live Stripe subscription
-    # FIRST. We only flip the DynamoDB flag if the Stripe write succeeds —
-    # otherwise the two diverge and `record_usage` could try to report meter
-    # events against a subscription that doesn't have the metered item
-    # (Stripe would silently drop them and the customer would never be billed
-    # for usage they actually consumed).
-    billing_service = BillingService()
-    try:
-        await billing_service.set_metered_overage_item(account, request.enabled)
-    except BillingServiceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-    limit_microdollars = int(request.limit_dollars * 1_000_000) if request.limit_dollars is not None else None
-    await billing_repo.set_overage_enabled(owner_id, request.enabled, overage_limit=limit_microdollars)
-    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -458,56 +351,25 @@ async def handle_stripe_webhook(
 
     billing_service = BillingService()
 
-    if event_type == "customer.subscription.created":
-        put_metric("stripe.subscription", dimensions={"event": "created"})
-        customer_id = event_data["customer"]
-        subscription_id = event_data["id"]
-        tier = event_data.get("metadata", {}).get("plan_tier", "starter")
-
-        account = await billing_repo.get_by_stripe_customer_id(customer_id)
-        if account:
-            old_tier = account.get("plan_tier", "free")
-            await billing_service.update_subscription(account, subscription_id, tier)
-            logger.info("Subscription created for owner %s (tier=%s)", account["owner_id"], tier)
-            try:
-                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier=tier)
-            except ConfigPatchError:
-                logger.warning(
-                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
-                )
-            except Exception:
-                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
-
-    elif event_type == "customer.subscription.updated":
+    if event_type == "customer.subscription.updated":
+        # Single source of truth for subscription-state sync. Fires on trial
+        # start, payment-method updates, status transitions (trialing →
+        # active, active → past_due, etc.), and cancellation-at-period-end.
+        # We just persist the Stripe-side state so the frontend can render
+        # trial banners + access gates without a Stripe round-trip.
         put_metric(
             "stripe.subscription",
             dimensions={"event": "updated", "status": event_data.get("status", "unknown")},
         )
         customer_id = event_data["customer"]
-        tier = event_data.get("metadata", {}).get("plan_tier", "starter")
-
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
         if account:
-            old_tier = account.get("plan_tier", "free")
-            await billing_service.update_subscription(account, event_data["id"], tier)
-            # Plan 3 §7.2 + §8.2: also persist Stripe-owned trial state
-            # (status + trial_end) so the frontend can render trial banners
-            # without a Stripe round-trip. Distinct from update_subscription —
-            # see billing_repo.set_subscription docstring.
             await billing_repo.set_subscription(
                 owner_id=account["owner_id"],
                 subscription_id=event_data["id"],
                 status=event_data.get("status", "active"),
                 trial_end=event_data.get("trial_end"),
             )
-            try:
-                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier=tier)
-            except ConfigPatchError:
-                logger.warning(
-                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
-                )
-            except Exception:
-                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
     elif event_type == "customer.subscription.trial_will_end":
         # Plan 3 §7.2 + §8.2: Stripe fires this 3 days before trial_end. We
@@ -530,21 +392,12 @@ async def handle_stripe_webhook(
 
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
         if account:
-            old_tier = account.get("plan_tier", "free")
             await billing_service.cancel_subscription(account)
             logger.info("Subscription cancelled for owner %s", account["owner_id"])
-            try:
-                await queue_tier_change(account["owner_id"], old_tier=old_tier, new_tier="free")
-            except ConfigPatchError:
-                logger.warning(
-                    "Could not patch config for owner %s (container may not be provisioned yet)", account["owner_id"]
-                )
-            except Exception:
-                logger.exception("Failed to queue tier change for owner %s", account["owner_id"])
 
-            # Plan 3 §7.2: tear down the user's container — they no longer
-            # have an active subscription. Best-effort; log and continue on
-            # failure so we don't 500 the webhook back to Stripe.
+            # Tear down the user's container — they no longer have an active
+            # subscription. Best-effort; log and continue on failure so we
+            # don't 500 the webhook back to Stripe.
             try:
                 from core.containers import get_ecs_manager
 

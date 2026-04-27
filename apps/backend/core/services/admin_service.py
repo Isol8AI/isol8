@@ -172,10 +172,9 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
     # Dedupe owner_ids — two members of the same org share one owner_id and
     # therefore one container + billing row.
     unique_owner_ids = list({oid for oid in owner_by_uid.values()})
-    # plan_tier lives on the billing_accounts row (see billing_repo.put_billing
-    # line 62), NOT on the container row. Reading from the container row meant
-    # plan_tier was always the default "free" in the list view, misrepresenting
-    # every paid user. Fetch container + billing in parallel per owner.
+    # subscription_status lives on the billing_accounts row (set by
+    # billing_repo.set_subscription on signup + every webhook). Fetch
+    # container + billing in parallel per owner.
     containers, billings = await asyncio.gather(
         asyncio.gather(
             *(container_repo.get_by_owner_id(oid) for oid in unique_owner_ids),
@@ -209,7 +208,7 @@ async def list_users(*, q: str = "", limit: int = 50, cursor: str | None = None)
                 "last_sign_in_at": u.get("last_sign_in_at"),
                 "banned": u.get("banned", False),
                 "container_status": container.get("status", "none"),
-                "plan_tier": billing.get("plan_tier", "free"),
+                "subscription_status": billing.get("subscription_status"),
                 "org": org_by_uid.get(uid),
             }
         )

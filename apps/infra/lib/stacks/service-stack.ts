@@ -604,33 +604,12 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
-        FREE_TIER_MODEL: "minimax.minimax-m2.5",
         // Per-container secrets CMK — used by core/crypto/kms_secrets.py to
         // encrypt operator device seeds + gateway tokens at rest. Reuses the
         // same CMK as the BYOK Fernet layer since the blast radius is the same
         // (any principal with kms:Decrypt on this key can read any of them).
         CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
         STRIPE_FLAT_PRICE_ID: process.env.STRIPE_FLAT_PRICE_ID ?? "",
-        STRIPE_STARTER_PRICE_ID:
-          env === "prod"
-            ? "price_1TF5MkI54BysGS3rLYE6K0fZ"
-            : "price_1TF5MDI54BysGS3rlT80MMI8",
-        STRIPE_PRO_PRICE_ID:
-          env === "prod"
-            ? "price_1TF5MkI54BysGS3regYBZj6a"
-            : "price_1TF5MEI54BysGS3rAxoFnoeX",
-        STRIPE_ENTERPRISE_PRICE_ID:
-          env === "prod"
-            ? "price_1TF5GiI54BysGS3rJ2n5EyNw"
-            : "price_1TF5ARI54BysGS3rPkwQYZ6L",
-        STRIPE_METERED_PRICE_ID:
-          env === "prod"
-            ? "price_1TF5HOI54BysGS3r5Jp56FV5"
-            : "price_1TBm0fI54BysGS3rrqTaZ5Zz",
-        STRIPE_METER_ID:
-          env === "prod"
-            ? "mtr_61UOTDUyCfar5AIY541I54BysGS3rToW"
-            : "mtr_test_61UL9xth9m1qTEaXv41I54BysGS3rJCC",
         FRONTEND_URL:
           env === "local"
             ? "http://localhost:3000"
