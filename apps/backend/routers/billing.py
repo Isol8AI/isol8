@@ -475,15 +475,25 @@ async def handle_stripe_webhook(
 
     billing_service = BillingService()
 
-    if event_type == "customer.subscription.updated":
+    if event_type in ("customer.subscription.created", "customer.subscription.updated"):
         # Single source of truth for subscription-state sync. Fires on trial
-        # start, payment-method updates, status transitions (trialing →
-        # active, active → past_due, etc.), and cancellation-at-period-end.
+        # start (.created), trial→active transitions, payment-method updates,
+        # past_due transitions, and cancellation-at-period-end (all .updated).
         # We just persist the Stripe-side state so the frontend can render
         # trial banners + access gates without a Stripe round-trip.
+        #
+        # CRITICAL: Stripe Checkout for a brand-new trial emits
+        # customer.subscription.CREATED first; .updated only fires on later
+        # state transitions. Without the .created branch, the user's first
+        # trial never persists subscription_status or provider_choice — they
+        # get stuck on the ProviderPicker after returning from Checkout
+        # because is_subscribed stays False.
         put_metric(
             "stripe.subscription",
-            dimensions={"event": "updated", "status": event_data.get("status", "unknown")},
+            dimensions={
+                "event": event_type.split(".")[-1],
+                "status": event_data.get("status", "unknown"),
+            },
         )
         customer_id = event_data["customer"]
         account = await billing_repo.get_by_stripe_customer_id(customer_id)
