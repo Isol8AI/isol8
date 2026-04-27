@@ -172,6 +172,14 @@ export function ChatLayout({
   // (ChatGPTOAuthStep / ByoKeyStep / CreditsStep) — without this, the
   // OAuth + BYO paths break because the wizard never gets to the step
   // that collects the user's credentials.
+  //
+  // Race against Stripe webhook delivery: the user returns from Checkout
+  // before customer.subscription.created lands at our webhook endpoint
+  // (typically <2s, but variable). Without polling, the wizard would
+  // bounce back to the ProviderPicker because is_subscribed stays False
+  // until the webhook persists subscription_status. Poll every 2s for
+  // up to 30s — once is_subscribed flips True the SWR cache update will
+  // re-render the wizard into the provider phase.
   useEffect(() => {
     if (!showSubscriptionSuccess) return;
 
@@ -182,8 +190,15 @@ export function ChatLayout({
     const remaining = params.toString();
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
 
-    const timer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
-    return () => clearTimeout(timer);
+    const pollInterval = setInterval(() => refreshBilling(), 2000);
+    const giveUpTimer = setTimeout(() => clearInterval(pollInterval), 30_000);
+    const dismissTimer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
+
+    return () => {
+      clearInterval(pollInterval);
+      clearTimeout(giveUpTimer);
+      clearTimeout(dismissTimer);
+    };
   }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
 
   function handleSelectAgent(agentId: string): void {

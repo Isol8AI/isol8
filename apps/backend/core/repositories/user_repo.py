@@ -66,3 +66,19 @@ async def set_provider_choice(
         UpdateExpression=update_expr,
         ExpressionAttributeValues=values,
     )
+
+
+async def clear_provider_choice(user_id: str) -> None:
+    """Remove provider_choice + byo_provider so the user is sent back through
+    onboarding to re-pick a provider.
+
+    Called from disconnect / key-delete paths so the wizard's gate
+    (``providerChoice !== null``) re-fires on next visit.
+    """
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"user_id": user_id},
+        UpdateExpression="REMOVE provider_choice, byo_provider SET updated_at = :t",
+        ExpressionAttributeValues={":t": utc_now_iso()},
+    )
