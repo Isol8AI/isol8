@@ -70,14 +70,20 @@ export function ChatLayout({
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
-  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
-    // Stripe Checkout returns either ?subscription=success (legacy) or
-    // ?checkout=success (new trial-checkout flow). Both should trigger the
-    // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
-    () =>
-      searchParams.get("subscription") === "success" ||
-      searchParams.get("checkout") === "success",
-  );
+  // Stripe Checkout returns either ?subscription=success (legacy) or
+  // ?checkout=success (new trial-checkout flow). Both should trigger the
+  // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
+  //
+  // Two separate state slices keyed off the same URL param so the banner
+  // and the polling lifecycle are independent — banner auto-dismisses at
+  // 5s, polling continues for up to 30s. Without this split the
+  // banner-dismiss tear-down was clobbering the poll interval. Codex P2
+  // on PR #399.
+  const cameFromCheckout =
+    searchParams.get("subscription") === "success" ||
+    searchParams.get("checkout") === "success";
+  const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(() => cameFromCheckout);
+  const [pollingForWebhook, setPollingForWebhook] = useState(() => cameFromCheckout);
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [createFormOpen, setCreateFormOpen] = useState(false);
@@ -166,20 +172,12 @@ export function ChatLayout({
     }
   }, [currentAgentId]);
 
-  // Post-checkout confirmation: refresh billing + clean URL + auto-dismiss.
+  // Post-checkout confirmation: refresh billing + clean URL.
   // Strip ONLY ?checkout / ?subscription, preserving ?provider= so the
   // ProvisioningStepper can still render the provider-specific step
   // (ChatGPTOAuthStep / ByoKeyStep / CreditsStep) — without this, the
   // OAuth + BYO paths break because the wizard never gets to the step
   // that collects the user's credentials.
-  //
-  // Race against Stripe webhook delivery: the user returns from Checkout
-  // before customer.subscription.created lands at our webhook endpoint
-  // (typically <2s, but variable). Without polling, the wizard would
-  // bounce back to the ProviderPicker because is_subscribed stays False
-  // until the webhook persists subscription_status. Poll every 2s for
-  // up to 30s — once is_subscribed flips True the SWR cache update will
-  // re-render the wizard into the provider phase.
   useEffect(() => {
     if (!showSubscriptionSuccess) return;
 
@@ -190,16 +188,30 @@ export function ChatLayout({
     const remaining = params.toString();
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
 
-    const pollInterval = setInterval(() => refreshBilling(), 2000);
-    const giveUpTimer = setTimeout(() => clearInterval(pollInterval), 30_000);
     const dismissTimer = setTimeout(() => setShowSubscriptionSuccess(false), 5000);
+    return () => clearTimeout(dismissTimer);
+  }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
 
+  // Race against Stripe webhook delivery: the user returns from Checkout
+  // before customer.subscription.created lands at our webhook endpoint
+  // (typically <2s, but variable). Without polling, the wizard would
+  // bounce back to the ProviderPicker because is_subscribed stays False
+  // until the webhook persists subscription_status. Poll every 2s for up
+  // to 30s — once is_subscribed flips True we stop early, otherwise we
+  // give up so we don't poll forever.
+  //
+  // Keyed on `pollingForWebhook` (independent of the banner state) so the
+  // banner's 5s auto-dismiss doesn't cancel the longer poll loop.
+  // Codex P2 on PR #399.
+  useEffect(() => {
+    if (!pollingForWebhook || isSubscribed) return;
+    const pollInterval = setInterval(() => refreshBilling(), 2000);
+    const giveUpTimer = setTimeout(() => setPollingForWebhook(false), 30_000);
     return () => {
       clearInterval(pollInterval);
       clearTimeout(giveUpTimer);
-      clearTimeout(dismissTimer);
     };
-  }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
+  }, [pollingForWebhook, isSubscribed, refreshBilling]);
 
   function handleSelectAgent(agentId: string): void {
     posthog?.capture("agent_selected", { agent_id: agentId });
