@@ -2,6 +2,7 @@ import pytest
 
 from core.services.catalog_slice import (
     extract_agent_slice,
+    filter_cron_jobs_for_agent,
     strip_user_specific_fields,
 )
 
@@ -138,3 +139,65 @@ def test_strip_user_specific_fields_removes_agentDir():
     cleaned = strip_user_specific_fields(agent)
     assert "agentDir" not in cleaned
     assert cleaned["skills"] == ["web-search"]
+
+
+# ---- filter_cron_jobs_for_agent ----
+
+
+def test_filter_cron_jobs_keeps_only_matching_agent():
+    jobs = [
+        {"id": "j1", "agentId": "agent_abc", "name": "Daily"},
+        {"id": "j2", "agentId": "agent_xyz", "name": "Other"},
+        {"id": "j3", "agentId": "agent_abc", "name": "Weekly"},
+    ]
+    out = filter_cron_jobs_for_agent(jobs, "agent_abc")
+    assert [j["name"] for j in out] == ["Daily", "Weekly"]
+
+
+def test_filter_cron_jobs_strips_runtime_and_user_specific_fields():
+    """``id``, ``sessionKey``, ``state``, ``createdAtMs``, ``updatedAtMs``
+    are regenerated at deploy and must not leak through the slice."""
+    jobs = [
+        {
+            "id": "j1",
+            "agentId": "agent_abc",
+            "sessionKey": "agent:agent_abc:user_publisher",
+            "name": "Daily",
+            "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+            "payload": {"kind": "agentTurn", "message": "Run morning brief"},
+            "delivery": {"mode": "announce", "channel": "telegram"},
+            "createdAtMs": 1700000000000,
+            "updatedAtMs": 1700000060000,
+            "state": {"nextRunAtMs": 1700000120000, "lastRunAtMs": 1700000000000},
+            "enabled": True,
+        }
+    ]
+    [out] = filter_cron_jobs_for_agent(jobs, "agent_abc")
+    assert "id" not in out
+    assert "sessionKey" not in out
+    assert "state" not in out
+    assert "createdAtMs" not in out
+    assert "updatedAtMs" not in out
+    # Behavioral fields preserved.
+    assert out["agentId"] == "agent_abc"
+    assert out["name"] == "Daily"
+    assert out["schedule"] == {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"}
+    assert out["payload"]["message"] == "Run morning brief"
+    assert out["delivery"] == {"mode": "announce", "channel": "telegram"}
+    assert out["enabled"] is True
+
+
+def test_filter_cron_jobs_skips_non_dict_entries():
+    """Defensive: same posture as the agents-list reader. Stray strings or
+    None entries from hand-edits don't crash; they're skipped."""
+    jobs = [
+        "stray-string",
+        None,
+        {"id": "j1", "agentId": "agent_abc", "name": "Keep"},
+    ]
+    out = filter_cron_jobs_for_agent(jobs, "agent_abc")
+    assert [j["name"] for j in out] == ["Keep"]
+
+
+def test_filter_cron_jobs_empty_input_returns_empty():
+    assert filter_cron_jobs_for_agent([], "agent_abc") == []

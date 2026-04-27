@@ -17,6 +17,11 @@ import copy
 from typing import Any
 
 _STRIPPED_KEYS = frozenset({"model", "channels", "workspace", "id", "agentDir"})
+# Cron-job fields stripped at slice time. Each is either runtime state (set
+# by OpenClaw on first execution) or user-specific provenance regenerated
+# at deploy. Schema reference: openclaw/src/config/types.cron.ts +
+# the persisted shape in {owner_id}/cron/jobs.json.
+_STRIPPED_CRON_KEYS = frozenset({"id", "sessionKey", "state", "createdAtMs", "updatedAtMs"})
 # ``agentDir`` is per-agent-id (NOT per-user — the path is in-container
 # uniform). Carrying the publisher's value into the slice means the deployed
 # agent inherits a path keyed to the publisher's agent id, which:
@@ -57,6 +62,55 @@ def _agents_list(openclaw_json: dict[str, Any]) -> list[Any]:
         return []
     lst = agents.get("list")
     return lst if isinstance(lst, list) else []
+
+
+def filter_cron_jobs_for_agent(
+    all_jobs: list[Any],
+    agent_id: str,
+) -> list[dict[str, Any]]:
+    """Keep cron jobs whose ``agentId`` matches ``agent_id``; strip runtime +
+    user-specific fields that must be regenerated at deploy.
+
+    Persisted shape (one entry of ``jobs.json#/jobs``)::
+
+        {
+          "id":            <UUID>,         # regenerated on deploy
+          "agentId":       <agent_id>,     # rewritten on deploy
+          "sessionKey":    "agent:{id}:{userId}",  # regenerated on deploy
+          "name":          ...,
+          "description":   ...,
+          "enabled":       bool,
+          "schedule":      {kind, expr, tz},
+          "sessionTarget": ...,
+          "wakeMode":      ...,
+          "payload":       {kind, message, ...},
+          "delivery":      {mode, channel, accountId?},  # may reference a
+                                                          # channel the deployer
+                                                          # hasn't bound yet —
+                                                          # carried as-is so
+                                                          # the deployer can
+                                                          # bind + flip the
+                                                          # job on later
+          "createdAtMs":   ...,            # regenerated on deploy
+          "updatedAtMs":   ...,            # regenerated on deploy
+          "state":         {nextRunAtMs,...} # OpenClaw recomputes from schedule
+        }
+
+    Non-dict entries are skipped silently (the persisted file has been
+    observed with stray strings from hand-edits, same defensive posture as
+    the agents list).
+    """
+    out: list[dict[str, Any]] = []
+    for job in all_jobs:
+        if not isinstance(job, dict):
+            continue
+        if job.get("agentId") != agent_id:
+            continue
+        clean = copy.deepcopy(job)
+        for k in _STRIPPED_CRON_KEYS:
+            clean.pop(k, None)
+        out.append(clean)
+    return out
 
 
 def extract_agent_slice(openclaw_json: dict[str, Any], agent_id: str) -> dict[str, Any]:
