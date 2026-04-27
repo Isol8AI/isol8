@@ -1,7 +1,7 @@
 "use client";
 
 import "./settings.css";
-import React, { useState, useCallback } from "react";
+import React, { Suspense, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import Link from "next/link";
@@ -247,6 +247,17 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
 // =============================================================================
 
 export default function SettingsPage() {
+  // useSearchParams() forces dynamic rendering; wrap the inner component
+  // in a Suspense boundary so the static-export step at build time
+  // doesn't error (Next.js 16 requirement for static prerender).
+  return (
+    <Suspense fallback={null}>
+      <SettingsPageInner />
+    </Suspense>
+  );
+}
+
+function SettingsPageInner() {
   // ?panel=billing|profile|channels preselects the tab. Used by deep
   // links from the chat banners (TrialBanner "Manage" CTA, etc.) so they
   // land on the right pane. Codex P2 on PR #393 — the prior /settings/

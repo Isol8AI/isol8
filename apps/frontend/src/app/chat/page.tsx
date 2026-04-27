@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
@@ -8,6 +8,16 @@ import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 
 export default function ChatPage() {
+  // useSearchParams() forces dynamic rendering; wrap in Suspense so the
+  // static-export step at build time doesn't error.
+  return (
+    <Suspense fallback={null}>
+      <ChatPageInner />
+    </Suspense>
+  );
+}
+
+function ChatPageInner() {
   const searchParams = useSearchParams();
   // ?panel=credits opens the credits control panel directly. Used by
   // OutOfCreditsBanner's CTA so blocked card-3 users land on the top-up
