@@ -79,7 +79,13 @@ def _mock_oauth_external_deps(monkeypatch):
 
             async def post(self, url, **kwargs):
                 url_str = str(url)
-                if "/codex/device" in url_str:
+                # Match the OpenAI device-code endpoint by either the
+                # legacy /codex/device path OR the current
+                # /api/accounts/deviceauth path. OpenAI moved the URL
+                # ~2026-04; keep both forms recognized so the contract
+                # test passes regardless of which is pinned in
+                # oauth_service.DEVICE_CODE_URL.
+                if "/codex/device" in url_str or "/deviceauth" in url_str:
                     return httpx.Response(
                         200,
                         json={
