@@ -577,9 +577,14 @@ class GatewayConnection:
             # Plan 3 Task 5: card-3 (bedrock_claude) deduct credits in
             # addition to the legacy usage_service path. Other cards skip.
             # Synchronous so the next chat sees the updated balance.
+            # Pass the resolved member_user_id explicitly — for channel/DM
+            # session keys, the key alone doesn't carry the member id and
+            # _maybe_deduct_credits would fall back to self.user_id (the
+            # org owner). Codex P1 on PR #393.
             try:
                 await self._maybe_deduct_credits(
                     chat_session_id=session_key,
+                    member_user_id=member_user_id,
                     model=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
@@ -599,6 +604,7 @@ class GatewayConnection:
         self,
         *,
         chat_session_id: str,
+        member_user_id: str | None = None,
         model: str,
         input_tokens: int,
         output_tokens: int,
@@ -613,6 +619,12 @@ class GatewayConnection:
         chat deducts correctly.
 
         Markup is applied here (1.4x raw) per the spec's pricing model.
+
+        ``member_user_id`` should be the per-Clerk-user id resolved by the
+        caller (``_fetch_and_record_usage`` already does this for channel/DM
+        sessions via the channel-link lookup). When omitted, falls back to
+        parsing the session key (works for personal/org webchat) and finally
+        to ``self.user_id``. Codex P1 on PR #393.
         """
         from core.billing.bedrock_pricing import (
             UnknownModelError,
@@ -621,12 +633,16 @@ class GatewayConnection:
         from core.repositories import user_repo
         from core.services import credit_ledger
 
-        # provider_choice + credit balance live on the per-Clerk-user row,
-        # not on the (owner-keyed) gateway connection. For org webchat the
-        # session_key carries the member id; for personal webchat the
-        # connection's user_id IS the Clerk user. Codex P1 on PR #393.
-        parsed = _parse_session_key(chat_session_id)
-        billing_user_id = parsed.get("member_id") or self.user_id
+        # Prefer the explicitly-resolved member id from the caller; only
+        # fall back to session-key parsing when the caller didn't pass one.
+        # For channel/DM/group session keys without a member_id segment,
+        # the parser returns owner-context only — that's the wrong row for
+        # provider_choice + credit deduction.
+        if member_user_id:
+            billing_user_id = member_user_id
+        else:
+            parsed = _parse_session_key(chat_session_id)
+            billing_user_id = parsed.get("member_id") or self.user_id
 
         user = await user_repo.get(billing_user_id)
         if not user or user.get("provider_choice") != "bedrock_claude":
