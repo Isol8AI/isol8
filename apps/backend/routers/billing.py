@@ -436,6 +436,22 @@ async def handle_stripe_webhook(
         logger.error("Stripe webhook signature verification failed: %s", e)
         raise HTTPException(status_code=400, detail="Invalid signature")
 
+    # Dedup check — Stripe replays webhooks on any non-2xx and on its own
+    # at-least-once delivery insurance. The local import keeps the helper's
+    # boto3 client out of cold-start until first use.
+    from core.services.webhook_dedup import (
+        WebhookDedupResult,
+        record_event_or_skip,
+    )
+
+    dedup = await record_event_or_skip(event["id"], source="stripe")
+    if dedup is WebhookDedupResult.ALREADY_SEEN:
+        put_metric(
+            "stripe.webhook.dedup_skipped",
+            dimensions={"event_type": event["type"]},
+        )
+        return Response(status_code=200)
+
     event_type = event["type"]
     put_metric("stripe.webhook.received", dimensions={"event_type": event_type})
     event_data = event["data"]["object"]

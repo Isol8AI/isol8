@@ -67,8 +67,12 @@ class TestBillingServiceCreateCustomer:
 
         result = await service.create_customer_for_owner(owner_id="user_race")
 
-        # Orphan Stripe customer should be deleted
-        mock_stripe.Customer.delete.assert_called_once_with("cus_loser")
+        # Orphan Stripe customer should be deleted (use partial-match to
+        # tolerate the idempotency_key kwarg added in Stripe Hardening Task 4).
+        mock_stripe.Customer.delete.assert_called_once()
+        delete_args, delete_kwargs = mock_stripe.Customer.delete.call_args
+        assert delete_args[0] == "cus_loser"
+        assert delete_kwargs.get("idempotency_key") == "delete_customer:cus_loser"
         # Should return the winner's record
         assert result["stripe_customer_id"] == "cus_winner"
 

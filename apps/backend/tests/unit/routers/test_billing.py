@@ -2,7 +2,30 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import boto3
 import pytest
+from moto import mock_aws
+
+
+@pytest.fixture
+def dedup_table_and_settings(monkeypatch):
+    """Provision a moto-mocked dedup table and point the env var at it.
+
+    The Stripe webhook handler now invokes record_event_or_skip on every
+    request, which requires WEBHOOK_DEDUP_TABLE to point at a real DynamoDB
+    table. Apply this fixture to webhook tests so they don't blow up on the
+    dedup PutItem.
+    """
+    with mock_aws():
+        client = boto3.client("dynamodb", region_name="us-east-1")
+        client.create_table(
+            TableName="test-webhook-event-dedup",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
+        yield
 
 
 class TestGetBillingAccount:
@@ -369,11 +392,14 @@ class TestOverageToggle:
         )
         assert response.status_code == 200
 
-        # Stripe: metered item ADDED to the existing subscription
-        mock_stripe.Subscription.modify.assert_called_once_with(
-            "sub_test_123",
-            items=[{"price": "price_metered_test"}],
-        )
+        # Stripe: metered item ADDED to the existing subscription.
+        # Partial-match assertion to tolerate the idempotency_key kwarg
+        # added in Stripe Hardening Task 4.
+        mock_stripe.Subscription.modify.assert_called_once()
+        modify_args, modify_kwargs = mock_stripe.Subscription.modify.call_args
+        assert modify_args == ("sub_test_123",)
+        assert modify_kwargs["items"] == [{"price": "price_metered_test"}]
+        assert modify_kwargs["idempotency_key"] == "sub_modify:sub_test_123:add_metered"
         # DynamoDB: flag flipped on
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", True, overage_limit=50_000_000)
 
@@ -411,11 +437,14 @@ class TestOverageToggle:
         )
         assert response.status_code == 200
 
-        # Stripe: metered item REMOVED via deleted=true on its item id
-        mock_stripe.Subscription.modify.assert_called_once_with(
-            "sub_test_123",
-            items=[{"id": "si_metered", "deleted": True}],
-        )
+        # Stripe: metered item REMOVED via deleted=true on its item id.
+        # Partial-match assertion to tolerate the idempotency_key kwarg
+        # added in Stripe Hardening Task 4.
+        mock_stripe.Subscription.modify.assert_called_once()
+        modify_args, modify_kwargs = mock_stripe.Subscription.modify.call_args
+        assert modify_args == ("sub_test_123",)
+        assert modify_kwargs["items"] == [{"id": "si_metered", "deleted": True}]
+        assert modify_kwargs["idempotency_key"] == "sub_modify:sub_test_123:remove_metered"
         # DynamoDB: flag flipped off
         mock_repo.set_overage_enabled.assert_called_once_with("user_test_123", False, overage_limit=None)
 
@@ -504,9 +533,10 @@ class TestStripeWebhook:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_created_webhook(self, mock_stripe, mock_repo, async_client, dedup_table_and_settings):
         """Should update billing account on subscription.created — NO container provisioning."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_created_test_1",
             "type": "customer.subscription.created",
             "data": {
                 "object": {
@@ -544,9 +574,10 @@ class TestStripeWebhook:
     @pytest.mark.asyncio
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
-    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client):
+    async def test_subscription_deleted_webhook(self, mock_stripe, mock_repo, async_client, dedup_table_and_settings):
         """Should cancel subscription and disable overage — NO container stop."""
         mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_deleted_test_1",
             "type": "customer.subscription.deleted",
             "data": {
                 "object": {

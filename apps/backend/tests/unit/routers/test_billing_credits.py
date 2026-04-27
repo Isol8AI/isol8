@@ -10,12 +10,13 @@ from moto import mock_aws
 
 @pytest.fixture
 def credit_ledger_tables(monkeypatch):
-    """Provision moto-mocked credits + credit-transactions tables.
+    """Provision moto-mocked credits + credit-transactions + webhook-dedup tables.
 
-    The webhook tests don't need the dedup table on this branch — Plan 1
-    Task 3 (Stripe event dedup) hasn't landed yet, so the handler doesn't
-    call record_event_or_skip. We still set CREDITS_TABLE / CREDIT_TRANSACTIONS_TABLE
-    so credit_ledger reads moto, not real AWS.
+    Plan 1 (Stripe webhook event dedup, merged in main as `c9113ca`) makes
+    the Stripe webhook handler call record_event_or_skip first; that helper
+    fails fast if WEBHOOK_DEDUP_TABLE is empty. The credit-top-up webhook
+    test routes through that path, so the fixture also provisions the
+    dedup table.
     """
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
@@ -37,8 +38,15 @@ def credit_ledger_tables(monkeypatch):
             ],
             BillingMode="PAY_PER_REQUEST",
         )
+        client.create_table(
+            TableName="test-webhook-event-dedup",
+            KeySchema=[{"AttributeName": "event_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "event_id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+        )
         monkeypatch.setenv("CREDITS_TABLE", "test-credits")
         monkeypatch.setenv("CREDIT_TRANSACTIONS_TABLE", "test-credit-txns")
+        monkeypatch.setenv("WEBHOOK_DEDUP_TABLE", "test-webhook-event-dedup")
         yield
 
 
