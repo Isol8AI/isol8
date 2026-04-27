@@ -25,10 +25,10 @@ type AgentTab = "overview" | "tools" | "channels";
 export function AgentsPanel() {
   const { data: rawData, error, isLoading, mutate } = useGatewayRpc<AgentsListResponse>("agents.list");
   const callRpc = useGatewayRpcMutation();
-  // Free tier containers scale to zero after idle, so a bot session can't
-  // stay logged in — hide the Channels tab entirely for free accounts.
-  const { planTier } = useBilling();
-  const channelsEnabled = planTier !== "free";
+  // Channels require an active subscription (or trial). Pre-signup users
+  // shouldn't see the Channels tab.
+  const { isSubscribed } = useBilling();
+  const channelsEnabled = isSubscribed;
   const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);

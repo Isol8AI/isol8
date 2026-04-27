@@ -19,7 +19,7 @@ interface ContainerSlice {
   cluster_name?: string;
   cluster_arn?: string;
   access_point_id?: string;
-  plan_tier?: string;
+  subscription_status?: string | null;
   created_at?: string;
   updated_at?: string;
   error?: string;
@@ -49,7 +49,7 @@ function pickContainer(raw: unknown): { container: ContainerSlice | null; raw: R
       cluster_name: asString(r.cluster_name),
       cluster_arn: asString(r.cluster_arn),
       access_point_id: asString(r.access_point_id),
-      plan_tier: asString(r.plan_tier),
+      subscription_status: asString(r.subscription_status),
       created_at: asString(r.created_at),
       updated_at: asString(r.updated_at),
       error: asString(r.error),
@@ -159,7 +159,7 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
           </span>
         </div>
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-          <DefRow label="Plan tier" value={container.plan_tier ?? "\u2014"} />
+          <DefRow label="Subscription" value={container.subscription_status ?? "\u2014"} />
           <DefRow label="Service name" value={container.service_name ?? "\u2014"} mono />
           <DefRow
             label="Task ARN"
@@ -178,7 +178,7 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
       </section>
 
       {/* Actions */}
-      <ContainerActionsPanel userId={id} currentTier={container.plan_tier} />
+      <ContainerActionsPanel userId={id} currentTier={container.subscription_status ?? undefined} />
     </div>
   );
 }

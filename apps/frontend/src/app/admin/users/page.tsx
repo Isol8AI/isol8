@@ -146,7 +146,7 @@ function UsersTable({ users }: { users: UserDirectoryRow[] }) {
               <td className="px-3 py-2 font-mono text-xs text-zinc-300" title={u.clerk_id}>
                 {truncateId(u.clerk_id)}
               </td>
-              <td className="px-3 py-2 text-zinc-300">{u.plan_tier}</td>
+              <td className="px-3 py-2 text-zinc-300">{u.subscription_status ?? "—"}</td>
               <td className="px-3 py-2">
                 <span
                   className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${statusClass(u.container_status)}`}

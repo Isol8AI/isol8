@@ -28,18 +28,6 @@ const RPC_TIMEOUT_MS = 30000;
 // Types
 // =============================================================================
 
-/** Chat message types received from backend */
-export interface BudgetExceededPayload {
-  code: "BUDGET_EXCEEDED";
-  current_spend: number;
-  included_budget: number;
-  within_included: boolean;
-  overage_available: boolean;
-  overage_enabled: boolean;
-  is_subscribed: boolean;
-  tier: string;
-}
-
 /**
  * OpenClaw tool result content blocks — text blocks or image refs. Image
  * data is replaced with `{ bytes, omitted: true }` by OpenClaw's sanitizer.
@@ -50,7 +38,7 @@ export type ChatIncomingMessage =
   | { type: "chunk"; content: string; agent_id?: string; runId: string }
   | { type: "thinking"; content: string; agent_id?: string; runId: string }
   | { type: "done"; agent_id?: string; runId: string }
-  | ({ type: "error"; message: string; code?: string; agent_id?: string; runId?: string } & Partial<BudgetExceededPayload>)
+  | { type: "error"; message: string; code?: string; agent_id?: string; runId?: string }
   | { type: "heartbeat" }
   | {
       type: "tool_start";

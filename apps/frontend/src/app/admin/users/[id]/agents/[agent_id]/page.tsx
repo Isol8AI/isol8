@@ -62,7 +62,7 @@ function toAgentMeta(raw: unknown): AgentMeta {
     name: asString(r.name) ?? asString(r.display_name),
     owner_id: asString(r.owner_id) ?? asString(r.user_id),
     model: asString(r.model) ?? asString(r.model_id),
-    tier: asString(r.tier) ?? asString(r.plan_tier),
+    tier: asString(r.tier) ?? asString(r.subscription_status),
     last_active: asString(r.last_active) ?? asString(r.updated_at),
   };
 }

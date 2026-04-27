@@ -17,7 +17,6 @@ import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import {
   useGateway,
   type ChatIncomingMessage,
-  type BudgetExceededPayload,
 } from "@/hooks/useGateway";
 import type {
   ApprovalRequest,
@@ -98,7 +97,6 @@ export interface UseAgentChatReturn {
   messages: AgentMessage[];
   isStreaming: boolean;
   error: string | null;
-  budgetError: BudgetExceededPayload | null;
   sendMessage: (message: string) => Promise<void>;
   cancelMessage: () => Promise<void>;
   clearMessages: () => void;
@@ -152,7 +150,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     _setIsStreamingRaw(value);
   }, []);
   const [error, setError] = useState<string | null>(null);
-  const [budgetError, setBudgetError] = useState<BudgetExceededPayload | null>(null);
   const [historyLoadState, setHistoryLoadState] = useState<"idle" | "loading" | "done">("idle");
   const isLoadingHistory = historyLoadState === "loading";
 
@@ -427,30 +424,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       if (msg.type === "error") {
-        // Budget-exceeded is a global terminal — not tied to a specific run.
-        if (msg.code === "BUDGET_EXCEEDED") {
-          setBudgetError({
-            code: "BUDGET_EXCEEDED",
-            current_spend: msg.current_spend ?? 0,
-            included_budget: msg.included_budget ?? 0,
-            within_included: msg.within_included ?? false,
-            overage_available: msg.overage_available ?? false,
-            overage_enabled: msg.overage_enabled ?? false,
-            is_subscribed: msg.is_subscribed ?? false,
-            tier: msg.tier ?? "free",
-          });
-          // Remove any empty assistant placeholders across active runs.
-          const activeMessageIds = new Set(
-            Array.from(runsRef.current.values()).map((r) => r.messageId),
-          );
-          setMessages((prev) => prev.filter((m) => !activeMessageIds.has(m.id)));
-          finalizeAllActiveRuns();
-          // Close the window for late stragglers whose runId we never saw.
-          pendingCancelRef.current = true;
-          setIsStreaming(false);
-          return;
-        }
-
         const displayError = friendlyError(msg.message);
 
         if (msg.runId) {
@@ -853,7 +826,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
       }
 
       setError(null);
-      setBudgetError(null);
 
       const key = agentIdRef.current ? `${agentIdRef.current}:${sessionName}` : null;
       if (key) _needsBootstrap.delete(key);
@@ -983,7 +955,6 @@ export function useAgentChat(agentId: string | null, sessionName: string): UseAg
     messages: externalMessages,
     isStreaming,
     error,
-    budgetError,
     sendMessage,
     cancelMessage,
     clearMessages,

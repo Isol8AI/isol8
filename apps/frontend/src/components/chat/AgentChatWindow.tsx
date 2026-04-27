@@ -8,14 +8,14 @@ import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
 import { useAgents, agentDisplayName } from "@/hooks/useAgents";
 import { useApi } from "@/lib/api";
-import { useBilling } from "@/hooks/useBilling";
+import { isSnoozed, setSnoozed, updateSnoozeKey } from "@/lib/snooze";
 import { useAuth, useOrganization } from "@clerk/nextjs";
-import { Loader2, AlertTriangle, ArrowDownCircle, RefreshCw, Clock, X } from "lucide-react";
+import { Loader2, RefreshCw, Clock, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useGateway } from "@/hooks/useGateway";
 
 import type { ToolUse } from "@/hooks/useAgentChat";
-import type { BudgetExceededPayload, ChatIncomingMessage } from "@/hooks/useGateway";
+import type { ChatIncomingMessage } from "@/hooks/useGateway";
 
 interface Message {
   id: string;
@@ -29,166 +29,6 @@ interface Message {
 interface AgentChatWindowProps {
   agentId: string | null;
   onOpenFile?: (path: string) => void;
-}
-
-function BudgetExceededBanner({
-  budgetError,
-}: {
-  budgetError: BudgetExceededPayload;
-}) {
-  const posthog = usePostHog();
-  const { account, createCheckout, toggleOverage } = useBilling();
-  const { organization, membership } = useOrganization();
-  const [loading, setLoading] = useState(false);
-
-  const isOrg = !!organization;
-  const isOrgAdmin = membership?.role === "org:admin";
-
-  const handleAction = useCallback(async () => {
-    setLoading(true);
-    try {
-      if (!budgetError.is_subscribed) {
-        posthog?.capture("overage_enabled_from_banner", { action: "subscribe" });
-        await createCheckout("starter");
-      } else if (budgetError.overage_available && !budgetError.overage_enabled) {
-        posthog?.capture("overage_enabled_from_banner", { action: "enable_paygo" });
-        await toggleOverage(true);
-      }
-    } catch (err) {
-      console.error("Budget action failed:", err);
-    } finally {
-      setLoading(false);
-    }
-  }, [budgetError, createCheckout, toggleOverage, posthog]);
-
-  let message: string;
-  let subtext: string | null = null;
-  let actionLabel: string | null = null;
-
-  if (isOrg && !isOrgAdmin) {
-    message = "Your organization has reached its usage limit. Contact your admin.";
-  } else if (!budgetError.is_subscribed) {
-    message = "You've reached your free tier limit. Subscribe to continue.";
-    actionLabel = "Subscribe";
-  } else if (budgetError.overage_available && !budgetError.overage_enabled) {
-    message = "Your included LLM budget is used up. Enable pay-as-you-go to continue.";
-    subtext = "Overage is billed at 1.4x standard rates";
-    actionLabel = "Enable pay-as-you-go";
-  } else if (account?.overage_enabled && account?.overage_limit !== null) {
-    message = "You've reached your usage limit for this billing period.";
-    subtext = `Overage limit: $${account.overage_limit.toFixed(2)}`;
-  } else {
-    message = "You've reached your usage limit for this billing period.";
-  }
-
-  return (
-    <div className="mx-4 mb-2 p-3 bg-[#fff8e1] border border-[#ffe0b2] rounded-lg flex items-center gap-3">
-      <AlertTriangle className="h-4 w-4 text-[#8a6a22] shrink-0" />
-      <div className="flex-1">
-        <p className="text-sm text-[#5a4510]">{message}</p>
-        {subtext && (
-          <p className="text-xs text-[#8a6a22] mt-0.5">{subtext}</p>
-        )}
-      </div>
-      {actionLabel && (
-        <Button
-          size="sm"
-          variant="outline"
-          className="shrink-0 border-[#ffe0b2] text-[#5a4510] hover:bg-[#fff3cc]"
-          onClick={handleAction}
-          disabled={loading}
-        >
-          {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : actionLabel}
-        </Button>
-      )}
-    </div>
-  );
-}
-
-// =============================================================================
-// Approach-Limit Banner
-// =============================================================================
-
-import { isSnoozed, setSnoozed, budgetSnoozeKey, updateSnoozeKey } from "@/lib/snooze";
-
-function ApproachLimitBanner() {
-  const { account, isSubscribed, toggleOverage } = useBilling();
-  const [dismissed75, setDismissed75] = useState(() => isSnoozed(budgetSnoozeKey(75)));
-  const [dismissed90, setDismissed90] = useState(() => isSnoozed(budgetSnoozeKey(90)));
-  const [loading, setLoading] = useState(false);
-
-  if (!account || !isSubscribed) return null;
-
-  const pct = account.budget_percent;
-
-  if (pct >= 90 && !dismissed90) {
-    return (
-      <div className="mx-4 mb-2 p-3 bg-[#fff3e0] border border-[#ffcc80] rounded-lg flex items-center gap-3">
-        <AlertTriangle className="h-4 w-4 text-[#e65100] shrink-0" />
-        <div className="flex-1">
-          <p className="text-sm text-[#5a3500]">
-            You&apos;ve used {Math.round(pct)}% of your included LLM budget. Consider enabling pay-as-you-go.
-          </p>
-          <p className="text-xs text-[#8a6200] mt-0.5">
-            Overage is billed at 1.4x standard rates
-          </p>
-        </div>
-        {!account.overage_enabled && (
-          <Button
-            size="sm"
-            variant="outline"
-            className="shrink-0 border-[#ffcc80] text-[#5a3500] hover:bg-[#ffe0b2]"
-            onClick={async () => {
-              setLoading(true);
-              try {
-                await toggleOverage(true);
-              } catch (err) {
-                console.error("Failed to enable overage:", err);
-              } finally {
-                setLoading(false);
-              }
-            }}
-            disabled={loading}
-          >
-            {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : "Enable pay-as-you-go"}
-          </Button>
-        )}
-        <button
-          onClick={() => {
-            setSnoozed(budgetSnoozeKey(90));
-            setDismissed90(true);
-          }}
-          className="text-[#e65100] hover:text-[#e65100] shrink-0"
-          aria-label="Dismiss"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    );
-  }
-
-  if (pct >= 75 && !dismissed75) {
-    return (
-      <div className="mx-4 mb-2 p-3 bg-[#fff8e1] border border-[#ffe082] rounded-lg flex items-center gap-3">
-        <AlertTriangle className="h-4 w-4 text-[#f9a825] shrink-0" />
-        <p className="text-sm text-[#5a4510] flex-1">
-          You&apos;ve used {Math.round(pct)}% of your included LLM budget this month.
-        </p>
-        <button
-          onClick={() => {
-            setSnoozed(budgetSnoozeKey(75));
-            setDismissed75(true);
-          }}
-          className="text-[#f9a825] hover:text-[#f9a825] shrink-0"
-          aria-label="Dismiss"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-    );
-  }
-
-  return null;
 }
 
 // =============================================================================
@@ -378,32 +218,6 @@ function UpdateBanner() {
   );
 }
 
-// =============================================================================
-// Downgrade Banner
-// =============================================================================
-
-function DowngradeBanner() {
-  const { wasDowngraded, clearDowngrade } = useBilling();
-
-  if (!wasDowngraded) return null;
-
-  return (
-    <div className="mx-4 mb-2 p-3 bg-[#fce4ec] border border-[#f8bbd0] rounded-lg flex items-center gap-3">
-      <ArrowDownCircle className="h-4 w-4 text-[#c62828] shrink-0" />
-      <p className="text-sm text-[#a5311f] flex-1">
-        Your subscription has ended. You&apos;re now on the free tier with $2 lifetime usage.
-      </p>
-      <button
-        onClick={clearDowngrade}
-        className="text-[#c62828] hover:text-[#c62828] shrink-0"
-        aria-label="Dismiss"
-      >
-        <X className="h-4 w-4" />
-      </button>
-    </div>
-  );
-}
-
 export function AgentChatWindow({
   agentId,
   onOpenFile,
@@ -417,7 +231,6 @@ export function AgentChatWindow({
     messages: chatMessages,
     isStreaming,
     error: chatError,
-    budgetError,
     sendMessage,
     cancelMessage,
     clearMessages,
@@ -436,7 +249,6 @@ export function AgentChatWindow({
 
   const isInitialState = chatMessages.length === 0;
   const isTyping = isStreaming;
-  const isBudgetExceeded = !!budgetError;
 
   const prevAgentIdRef = useRef<string | null | undefined>(undefined);
 
@@ -544,9 +356,6 @@ export function AgentChatWindow({
           </div>
           <div className="w-full max-w-2xl">
             <UpdateBanner />
-            <DowngradeBanner />
-            <ApproachLimitBanner />
-            {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
             <ChatInput
               onSend={handleSend}
               onStop={cancelMessage}
@@ -555,7 +364,6 @@ export function AgentChatWindow({
               centered
               isUploading={isUploading}
               suggestedMessage={needsBootstrap ? BOOTSTRAP_MESSAGE : undefined}
-              budgetExceeded={isBudgetExceeded}
             />
           </div>
         </div>
@@ -567,16 +375,12 @@ export function AgentChatWindow({
     <div className="flex flex-col h-full min-h-0 bg-[#faf7f2]">
       <MessageList ref={messageListRef} messages={messages} isTyping={isTyping} agentName={agentName} onOpenFile={onOpenFile} onDecide={resolveApproval} />
       <UpdateBanner />
-      <DowngradeBanner />
-      <ApproachLimitBanner />
-      {budgetError && <BudgetExceededBanner budgetError={budgetError} />}
       <ChatInput
         onSend={handleSend}
         onStop={cancelMessage}
         disabled={isTyping}
         isStreaming={isStreaming}
         isUploading={isUploading}
-        budgetExceeded={isBudgetExceeded}
       />
     </div>
   );
