@@ -47,6 +47,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     creditsTable: dynamodb.Table;
     creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
+    webhookDedupTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -261,6 +262,9 @@ export class ServiceStack extends cdk.Stack {
     props.database.creditsTable.grantReadWriteData(this.taskRole);
     props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
     props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
+    // Webhook dedup helper does conditional PutItem with attribute_not_exists;
+    // never reads. Write-only grant is sufficient.
+    props.database.webhookDedupTable.grantWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -593,6 +597,7 @@ export class ServiceStack extends cdk.Stack {
         AWS_REGION: "us-east-1",
         WS_MANAGEMENT_API_URL: props.managementApiUrl,
         WS_CONNECTIONS_TABLE: props.connectionsTableName,
+        WEBHOOK_DEDUP_TABLE: props.database.webhookDedupTable.tableName,
         CORS_ORIGINS:
           env === "local"
             ? "http://localhost:3000"
