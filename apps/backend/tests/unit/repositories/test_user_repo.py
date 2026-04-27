@@ -68,3 +68,27 @@ async def test_delete_nonexistent_no_error(dynamodb_table):
 
     # Should not raise
     await user_repo.delete("ghost_user")
+
+
+@pytest.mark.asyncio
+async def test_clear_provider_choice_removes_fields(dynamodb_table):
+    """Disconnect path: clear_provider_choice must remove both
+    provider_choice and byo_provider so the wizard's gate fires again."""
+    from core.repositories import user_repo
+
+    await user_repo.put("user_pc")
+    await user_repo.set_provider_choice(
+        "user_pc",
+        provider_choice="byo_key",
+        byo_provider="openai",
+    )
+    item = await user_repo.get("user_pc")
+    assert item is not None
+    assert item.get("provider_choice") == "byo_key"
+    assert item.get("byo_provider") == "openai"
+
+    await user_repo.clear_provider_choice("user_pc")
+    item = await user_repo.get("user_pc")
+    assert item is not None
+    assert "provider_choice" not in item
+    assert "byo_provider" not in item

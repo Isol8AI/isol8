@@ -289,6 +289,62 @@ class TestStripeWebhook:
         assert kwargs.get("trial_end") == 1700000000
 
     @pytest.mark.asyncio
+    @patch("core.repositories.user_repo.set_provider_choice")
+    @patch("routers.billing.billing_repo")
+    @patch("routers.billing.stripe")
+    async def test_subscription_created_persists_status_and_provider_choice(
+        self, mock_stripe, mock_repo, mock_set_provider_choice, async_client, dedup_table_and_settings
+    ):
+        """customer.subscription.created (the FIRST event for a new trial)
+        must persist subscription_status + trial_end + provider_choice — same
+        as customer.subscription.updated. Without this branch, users finishing
+        Stripe Checkout are stuck on the provider picker because is_subscribed
+        stays False.
+        """
+        mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_created_x",
+            "type": "customer.subscription.created",
+            "data": {
+                "object": {
+                    "id": "sub_created_x",
+                    "customer": "cus_created_x",
+                    "status": "trialing",
+                    "trial_end": 1700000000,
+                    "metadata": {
+                        "provider_choice": "chatgpt_oauth",
+                        "clerk_user_id": "user_clerk_x",
+                    },
+                }
+            },
+        }
+        mock_repo.get_by_stripe_customer_id = AsyncMock(
+            return_value={
+                "owner_id": "user_clerk_x",
+                "stripe_customer_id": "cus_created_x",
+            }
+        )
+        mock_repo.set_subscription = AsyncMock()
+        mock_set_provider_choice.return_value = None  # AsyncMock by default since the patched target is async
+
+        response = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=b'{"test": true}',
+            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
+        )
+
+        assert response.status_code == 200
+        mock_repo.set_subscription.assert_awaited_once()
+        kwargs = mock_repo.set_subscription.await_args.kwargs
+        assert kwargs["owner_id"] == "user_clerk_x"
+        assert kwargs["subscription_id"] == "sub_created_x"
+        assert kwargs["status"] == "trialing"
+        assert kwargs["trial_end"] == 1700000000
+        mock_set_provider_choice.assert_awaited_once_with(
+            "user_clerk_x",
+            provider_choice="chatgpt_oauth",
+        )
+
+    @pytest.mark.asyncio
     @patch("routers.billing.stripe")
     async def test_webhook_invalid_signature(self, mock_stripe, async_client):
         mock_stripe.Webhook.construct_event.side_effect = Exception("bad sig")
