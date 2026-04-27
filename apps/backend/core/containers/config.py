@@ -297,32 +297,308 @@ def _build_exec_policy() -> dict:
     }
 
 
+def _provider_block(
+    *,
+    provider_choice: str,
+    user_id: str,
+    byo_provider: str | None,
+) -> tuple[dict, dict, dict]:
+    """Build (models.providers, agents.defaults.model, plugins.entries) for the
+    user's signup choice.
+
+    Per spec §4.2 (flat-fee pivot, 2026-04). API keys are NEVER embedded in
+    openclaw.json — they're injected via ECS task definition secrets at task
+    start. The Bedrock branch enables plugin discovery (the plugin queries
+    bedrock:ListFoundationModels at startup) since we no longer ship a
+    static per-tier catalog.
+
+    Returns:
+        ``(providers_config, default_model, plugin_entries)``.
+    """
+    if provider_choice == "chatgpt_oauth":
+        codex_home = f"{settings.EFS_MOUNT_PATH.rstrip('/')}/{user_id}/codex"
+        return (
+            {"openai-codex": {"codexHome": codex_home}},
+            {"primary": "openai-codex/gpt-5.5", "subagent": "openai-codex/gpt-5.5"},
+            {},
+        )
+    if provider_choice == "byo_key":
+        if byo_provider == "openai":
+            return ({}, {"primary": "openai/gpt-5.4", "subagent": "openai/gpt-5.4"}, {})
+        if byo_provider == "anthropic":
+            return (
+                {},
+                {
+                    "primary": "anthropic/claude-opus-4-7",
+                    "subagent": "anthropic/claude-sonnet-4-6",
+                },
+                {},
+            )
+        raise ValueError(f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}")
+    if provider_choice == "bedrock_claude":
+        return (
+            {},
+            {
+                "primary": "amazon-bedrock/anthropic.claude-opus-4-7",
+                "subagent": "amazon-bedrock/anthropic.claude-sonnet-4-6",
+            },
+            {
+                "amazon-bedrock": {
+                    "config": {
+                        "discovery": {"enabled": True, "region": settings.AWS_REGION},
+                    },
+                },
+            },
+        )
+    raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
+
+
+def build_openclaw_config_dict(
+    *,
+    user_id: str,
+    gateway_token: str,
+    provider_choice: str,
+    byo_provider: str | None = None,
+) -> dict:
+    """Build the openclaw.json config dict for a per-user container.
+
+    Pure (no I/O) so it can be unit-tested without filesystem mocks.
+
+    The provider block (``models.providers`` + ``agents.defaults.model`` +
+    ``plugins.entries``) is selected by ``provider_choice``. Everything
+    else (gateway, agents.defaults, agents.list, memory, tools, hooks,
+    channels, browser, nodeHost, update) is the same across signup paths
+    — these are sections OpenClaw refuses to start without (e.g.
+    ``gateway.mode``).
+    """
+    # Reprovision flows pull gateway_token from the existing container row;
+    # legacy rows missing the field would silently write
+    # `{"mode":"token","token":null}`, leaving the gateway unauthable.
+    # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
+    if not gateway_token:
+        raise ValueError("gateway_token must be a non-empty string")
+
+    providers_config, default_model, plugin_entries = _provider_block(
+        provider_choice=provider_choice,
+        user_id=user_id,
+        byo_provider=byo_provider,
+    )
+
+    # Token auth — shared secret between backend and container.
+    # Trusted-proxy mode explicitly blocks loopback connections (OpenClaw #17761),
+    # which breaks the local agent's ability to call its own gateway for node
+    # discovery and other internal RPCs. Token mode works for both our backend
+    # (VPC -> container) and the in-container agent (loopback -> container).
+    # Network isolation (private VPC subnet) provides the transport boundary;
+    # user identity is implicit since each container is per-user.
+    auth = {
+        "mode": "token",
+        "token": gateway_token,
+    }
+
+    config = {
+        "gateway": {
+            "mode": "local",
+            "bind": "lan",
+            "auth": auth,
+            "trustedProxies": ["10.0.0.0/8", "127.0.0.1", "::1"],
+            "controlUi": {
+                "enabled": False,
+            },
+            "http": {
+                "endpoints": {
+                    "chatCompletions": {"enabled": False},
+                },
+            },
+        },
+        "models": {
+            "providers": providers_config,
+        },
+        "agents": {
+            "defaults": {
+                "model": default_model,
+                "workspace": "/home/node/.openclaw/workspaces",
+                "memorySearch": {
+                    "enabled": True,
+                },
+                "llm": {
+                    "idleTimeoutSeconds": 300,
+                },
+                # verboseDefault="full" keeps tool result/partialResult in
+                # agent events so the frontend can show tool input + output.
+                # OpenClaw defaults to "off" which strips those fields before
+                # they reach our WebSocket subscriber.
+                "verboseDefault": "full",
+            },
+            # Per-agent settings. reasoningDefault is not allowed in
+            # agents.defaults (see openclaw zod-schema.agent-defaults.ts), so
+            # we declare the implicit "main" agent explicitly here to opt it
+            # into real-time thinking streams. User-created agents inherit it
+            # via AgentCreateForm passing reasoningDefault: "stream" on
+            # agents.create.
+            "list": [
+                {
+                    "id": "main",
+                    "default": True,
+                    "reasoningDefault": "stream",
+                    # Absolute path so path.resolve() returns it unchanged
+                    # regardless of process cwd (agent exec tools run with
+                    # cwd=workspaceDir, which breaks relative resolution).
+                    "workspace": "/home/node/.openclaw/workspaces/main",
+                },
+            ],
+        },
+        "memory": {
+            "backend": "qmd",
+            "citations": "auto",
+            "qmd": {
+                "command": "/home/node/.npm-global/bin/qmd",
+                "includeDefaultMemory": True,
+                "searchMode": "search",
+                "update": {
+                    "interval": "5m",
+                    "debounceMs": 15000,
+                    "onBoot": True,
+                    "waitForBootSync": False,
+                },
+                "limits": {
+                    "maxResults": 6,
+                    "timeoutMs": 4000,
+                },
+                "scope": {
+                    "default": "deny",
+                    "rules": [
+                        {"action": "allow", "match": {"chatType": "direct"}},
+                    ],
+                },
+            },
+        },
+        "tools": {
+            "profile": "full",
+            # Default-deny both canvas and nodes. node_proxy.py toggles
+            # "nodes" back to enabled dynamically when a desktop node
+            # pairs, and back to denied when the last one disconnects.
+            # Leaving nodes always-allowed here would expose the tool
+            # even to users without the desktop app.
+            "deny": ["canvas", "nodes"],
+            **_build_exec_policy(),
+            "web": {
+                "fetch": {"enabled": True},
+            },
+            "media": {
+                "image": {"enabled": True},
+                "audio": {"enabled": False},
+                "video": {"enabled": False},
+            },
+        },
+        "skills": {
+            "install": {
+                "nodeManager": "npm",
+            },
+        },
+        "hooks": {
+            "internal": {
+                "entries": {
+                    "command-logger": {"enabled": True},
+                    "session-memory": {"enabled": True},
+                },
+            },
+        },
+        "plugins": {
+            "slots": {},
+            "entries": plugin_entries,
+        },
+        # Channels: we ship every supported provider as `enabled: true`
+        # for ALL tiers so the plugin is loaded into the gateway at
+        # startup. OpenClaw's reload plan treats `channels.{id}` as a
+        # hot-reload prefix ONLY when the channel plugin is already
+        # running — on the very first enable of a never-before-loaded
+        # channel it escalates to a full gateway restart (~6 min on
+        # Fargate). Shipping the plugins hot at provision time means
+        # every subsequent token/account change is a fast per-channel
+        # restart, not a gateway restart. Plugins with no `accounts`
+        # entries sit idle safely.
+        #
+        # Free-tier UI is gated client-side (AgentsPanel hides the
+        # Channels tab when planTier === "free"), so idle plugins in
+        # free containers never receive a token or serve traffic. This
+        # also makes the tier-upgrade path work without re-provisioning:
+        # upgrading free → paid just unlocks the UI; the plugins are
+        # already loaded from the initial scaffold.
+        "channels": {
+            "telegram": {
+                "enabled": True,
+                "dmPolicy": "pairing",
+            },
+            "discord": {
+                "enabled": True,
+                "dmPolicy": "pairing",
+            },
+            "slack": {
+                "enabled": True,
+                "dmPolicy": "pairing",
+            },
+        },
+        "session": {
+            "dmScope": "per-account-channel-peer",
+        },
+        "web": {
+            "enabled": True,
+        },
+        "browser": {
+            # Enables OpenClaw's browser tool. Default profile is `user`
+            # which attaches to the user's real signed-in Chrome 144+ via
+            # chrome-devtools-mcp + CDP. No Chromium bundled in the
+            # container image.
+            "enabled": True,
+            "defaultProfile": "user",
+            "profiles": {
+                "user": {
+                    "driver": "existing-session",
+                    # Required since OpenClaw bumped its config schema —
+                    # `browser.profiles.*.color` is now a required string.
+                    # Surfaces in the OpenClaw UI as the profile chip.
+                    "color": "#0066FF",
+                },
+            },
+        },
+        "nodeHost": {
+            "browserProxy": {
+                # Auto-route browser tool calls to the paired desktop
+                # node. The Isol8 Tauri app runs the sidecar
+                # (openclaw/extensions/browser + chrome-devtools-mcp)
+                # colocated with Chrome on the user's Mac.
+                "enabled": True,
+            },
+        },
+        "update": {"checkOnStart": False},
+    }
+
+    return config
+
+
 async def write_openclaw_config(
     *,
     config_path: Path,
+    gateway_token: str,
     provider_choice: str,
     user_id: str,
     byo_provider: str | None = None,
 ) -> None:
-    """Write the user's openclaw.json with the correct provider block.
+    """Write the user's openclaw.json with the full container config.
 
-    Per spec §4.2 (flat-fee pivot, 2026-04). Tier gating + per-tier model
-    whitelisting is removed — one config shape per ``provider_choice``.
-    The ``OPENAI_API_KEY`` / ``ANTHROPIC_API_KEY`` env vars are NEVER
-    written into this file; they're injected via ECS task definition
-    secrets at task start.
+    Per spec §4.2 (flat-fee pivot, 2026-04). Tier gating is removed —
+    one config shape per ``provider_choice``. The OPENAI/ANTHROPIC API
+    keys are NEVER written into this file; they're injected via ECS
+    task definition secrets at task start.
 
     Args:
         config_path: Where on disk to write the JSON file. Parent dirs
             are created if missing.
-        provider_choice: One of:
-            - ``"chatgpt_oauth"`` — user signed in with ChatGPT; we use
-              the openai-codex provider with ``codexHome`` pointing at
-              the EFS dir we pre-staged ``auth.json`` into (Task 9).
-            - ``"byo_key"`` — user pasted their own API key. Pair with
-              ``byo_provider`` to choose openai vs anthropic.
-            - ``"bedrock_claude"`` — Bedrock-hosted Claude (Opus 4.7 +
-              Sonnet 4.6). Auth comes from the ECS task IAM role.
+        gateway_token: Shared secret for container auth. Required because
+            ``gateway.auth.mode = "token"``.
+        provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
+            ``"bedrock_claude"``.
         user_id: Owner ID; used to construct the EFS codexHome path
             for chatgpt_oauth.
         byo_provider: ``"openai"`` or ``"anthropic"`` — required when
@@ -332,53 +608,16 @@ async def write_openclaw_config(
         ValueError: when ``provider_choice`` is unknown or
             ``byo_provider`` is missing/invalid for ``byo_key``.
     """
-    base_config: dict = {
-        "agents": {"defaults": {"model": {}}},
-        "plugins": {"entries": {}},
-    }
-
-    if provider_choice == "chatgpt_oauth":
-        codex_home = f"{settings.EFS_MOUNT_PATH.rstrip('/')}/{user_id}/codex"
-        base_config["models"] = {"providers": {"openai-codex": {"codexHome": codex_home}}}
-        base_config["agents"]["defaults"]["model"] = {
-            "primary": "openai-codex/gpt-5.5",
-            "subagent": "openai-codex/gpt-5.5",
-        }
-
-    elif provider_choice == "byo_key":
-        if byo_provider == "openai":
-            base_config["agents"]["defaults"]["model"] = {
-                "primary": "openai/gpt-5.4",
-                "subagent": "openai/gpt-5.4",
-            }
-        elif byo_provider == "anthropic":
-            base_config["agents"]["defaults"]["model"] = {
-                "primary": "anthropic/claude-opus-4-7",
-                "subagent": "anthropic/claude-sonnet-4-6",
-            }
-        else:
-            raise ValueError(f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}")
-
-    elif provider_choice == "bedrock_claude":
-        base_config["plugins"]["entries"]["amazon-bedrock"] = {
-            "config": {
-                "discovery": {
-                    "enabled": True,
-                    "region": settings.AWS_REGION,
-                },
-            },
-        }
-        base_config["agents"]["defaults"]["model"] = {
-            "primary": "amazon-bedrock/anthropic.claude-opus-4-7",
-            "subagent": "amazon-bedrock/anthropic.claude-sonnet-4-6",
-        }
-
-    else:
-        raise ValueError(f"Unknown provider_choice: {provider_choice!r}")
+    config = build_openclaw_config_dict(
+        user_id=user_id,
+        gateway_token=gateway_token,
+        provider_choice=provider_choice,
+        byo_provider=byo_provider,
+    )
 
     def _write() -> None:
         config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(base_config, indent=2))
+        config_path.write_text(json.dumps(config, indent=2))
 
     await asyncio.to_thread(_write)
 

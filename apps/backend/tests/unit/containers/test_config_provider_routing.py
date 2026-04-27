@@ -12,6 +12,7 @@ async def test_chatgpt_oauth_branch(tmp_path):
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
+        gateway_token="test-token",
         provider_choice="chatgpt_oauth",
         user_id="u_1",
     )
@@ -27,6 +28,7 @@ async def test_byo_key_openai_branch(tmp_path):
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
+        gateway_token="test-token",
         provider_choice="byo_key",
         byo_provider="openai",
         user_id="u_1",
@@ -44,6 +46,7 @@ async def test_byo_key_anthropic_branch(tmp_path):
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
+        gateway_token="test-token",
         provider_choice="byo_key",
         byo_provider="anthropic",
         user_id="u_1",
@@ -62,6 +65,7 @@ async def test_bedrock_claude_branch(tmp_path):
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
+        gateway_token="test-token",
         provider_choice="bedrock_claude",
         user_id="u_1",
     )
@@ -79,6 +83,7 @@ async def test_byo_key_requires_byo_provider(tmp_path):
     with pytest.raises(ValueError, match="byo_provider"):
         await write_openclaw_config(
             config_path=out,
+            gateway_token="test-token",
             provider_choice="byo_key",
             user_id="u_1",
         )
@@ -90,6 +95,21 @@ async def test_unknown_provider_choice_raises(tmp_path):
     with pytest.raises(ValueError, match="Unknown provider_choice"):
         await write_openclaw_config(
             config_path=out,
+            gateway_token="test-token",
             provider_choice="totally_made_up",
+            user_id="u_1",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_token", ["", None])
+async def test_empty_gateway_token_raises(tmp_path, bad_token):
+    """Empty/None gateway_token must fail fast — never silently write a null auth."""
+    out = tmp_path / "openclaw.json"
+    with pytest.raises(ValueError, match="gateway_token must be a non-empty string"):
+        await write_openclaw_config(
+            config_path=out,
+            gateway_token=bad_token,
+            provider_choice="bedrock_claude",
             user_id="u_1",
         )
