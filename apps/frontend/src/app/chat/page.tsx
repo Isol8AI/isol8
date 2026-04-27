@@ -1,15 +1,24 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
 import { GatewayProvider } from "@/hooks/useGateway";
 
 export default function ChatPage() {
+  const searchParams = useSearchParams();
+  // ?panel=credits opens the credits control panel directly. Used by
+  // OutOfCreditsBanner's CTA so blocked card-3 users land on the top-up
+  // form. Codex P1 on PR #393 — the previous CTA pointed to a
+  // /settings/credits route that doesn't exist.
+  const initialPanel = searchParams.get("panel") || "overview";
+  const initialView = searchParams.get("panel") ? "control" : "chat";
+
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<"chat" | "control">("chat");
-  const [activePanel, setActivePanel] = useState<string>("overview");
+  const [activeView, setActiveView] = useState<"chat" | "control">(initialView);
+  const [activePanel, setActivePanel] = useState<string>(initialPanel);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
 

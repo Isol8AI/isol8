@@ -306,6 +306,11 @@ async def create_trial_checkout(
         session = await create_flat_fee_checkout(
             owner_id=owner_id,
             provider_choice=body.provider_choice,
+            # auth.user_id is the Clerk user actually clicking the button —
+            # in org context this is the admin, NOT the org id. Threaded
+            # through subscription_data.metadata so the webhook can persist
+            # provider_choice on the right per-Clerk-user row. Codex P1.
+            clerk_user_id=auth.user_id,
             trial_days=14,
         )
     except BillingServiceError as e:
@@ -467,22 +472,27 @@ async def handle_stripe_webhook(
                 status=event_data.get("status", "active"),
                 trial_end=event_data.get("trial_end"),
             )
-            # Trial-checkout threads provider_choice into subscription
-            # metadata so we can persist it on the user row without a
-            # separate /users/sync call from the post-Checkout return.
-            metadata_provider = (event_data.get("metadata") or {}).get("provider_choice")
+            # Trial-checkout threads provider_choice + clerk_user_id into
+            # subscription metadata so we can persist provider_choice on
+            # the right per-Clerk-user row. account["owner_id"] is the
+            # org_id in org context, which is NOT a valid user_repo key —
+            # chat gating reads provider_choice keyed by Clerk user_id.
+            # Codex P1 on PR #393.
+            metadata = event_data.get("metadata") or {}
+            metadata_provider = metadata.get("provider_choice")
+            metadata_clerk_user_id = metadata.get("clerk_user_id") or account["owner_id"]
             if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
                 from core.repositories import user_repo
 
                 try:
                     await user_repo.set_provider_choice(
-                        account["owner_id"],
+                        metadata_clerk_user_id,
                         provider_choice=metadata_provider,
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to persist provider_choice from sub metadata for owner %s",
-                        account["owner_id"],
+                        "Failed to persist provider_choice from sub metadata for clerk_user_id %s",
+                        metadata_clerk_user_id,
                     )
 
     elif event_type == "customer.subscription.trial_will_end":

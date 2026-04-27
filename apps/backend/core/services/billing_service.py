@@ -98,6 +98,7 @@ async def create_flat_fee_checkout(
     *,
     owner_id: str,
     provider_choice: str | None = None,
+    clerk_user_id: str | None = None,
     trial_days: int | None = 14,
 ) -> stripe.checkout.Session:
     """Create a Stripe Checkout session on the single flat-fee price.
@@ -107,9 +108,10 @@ async def create_flat_fee_checkout(
     ``trial_days`` is set, the resulting subscription has a trial of that
     length and Stripe charges nothing until the trial converts.
 
-    ``provider_choice`` is threaded into ``subscription_data.metadata`` so
-    the customer.subscription.updated webhook can persist it on the user
-    row without a separate /users/sync call.
+    ``provider_choice`` and ``clerk_user_id`` are threaded into
+    ``subscription_data.metadata`` so the customer.subscription.updated
+    webhook can persist provider_choice on the right per-Clerk-user row
+    (which differs from owner_id in org context).
 
     Conventions (mirrors Plan 1 Stripe Tax setup):
       - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.
@@ -130,8 +132,13 @@ async def create_flat_fee_checkout(
     subscription_data: dict = {}
     if trial_days is not None and trial_days > 0:
         subscription_data["trial_period_days"] = trial_days
+    metadata: dict = {}
     if provider_choice:
-        subscription_data["metadata"] = {"provider_choice": provider_choice}
+        metadata["provider_choice"] = provider_choice
+    if clerk_user_id:
+        metadata["clerk_user_id"] = clerk_user_id
+    if metadata:
+        subscription_data["metadata"] = metadata
 
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],

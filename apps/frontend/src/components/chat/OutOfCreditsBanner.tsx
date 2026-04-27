@@ -32,7 +32,7 @@ export function OutOfCreditsBanner() {
         You&apos;re out of Claude credits. Top up to keep chatting.
       </span>
       <Link
-        href="/settings/credits"
+        href="/chat?panel=credits"
         className="rounded-md bg-destructive px-3 py-1 text-destructive-foreground text-xs"
       >
         Top up now
