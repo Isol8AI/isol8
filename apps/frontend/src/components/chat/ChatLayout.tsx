@@ -71,7 +71,12 @@ export function ChatLayout({
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
-    () => searchParams.get("subscription") === "success",
+    // Stripe Checkout returns either ?subscription=success (legacy) or
+    // ?checkout=success (new trial-checkout flow). Both should trigger the
+    // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
+    () =>
+      searchParams.get("subscription") === "success" ||
+      searchParams.get("checkout") === "success",
   );
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);

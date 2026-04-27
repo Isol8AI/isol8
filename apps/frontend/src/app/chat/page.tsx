@@ -1,7 +1,7 @@
 "use client";
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { ChatLayout } from "@/components/chat/ChatLayout";
 import { AgentChatWindow } from "@/components/chat/AgentChatWindow";
 import { ControlPanelRouter } from "@/components/control/ControlPanelRouter";
@@ -19,16 +19,36 @@ export default function ChatPage() {
 
 function ChatPageInner() {
   const searchParams = useSearchParams();
-  // ?panel=credits opens the credits control panel directly. Used by
-  // OutOfCreditsBanner's CTA so blocked card-3 users land on the top-up
-  // form. Codex P1 on PR #393 — the previous CTA pointed to a
-  // /settings/credits route that doesn't exist.
-  const initialPanel = searchParams.get("panel") || "overview";
-  const initialView = searchParams.get("panel") ? "control" : "chat";
+  const router = useRouter();
+  // Single source of truth for view + panel is the URL. ?panel=credits
+  // opens the credits control panel directly (used by OutOfCreditsBanner's
+  // CTA). The sidebar updates the URL via router.replace so in-app deep
+  // links and clicks share the same code path. Codex P1/P2 on PR #393.
+  const panelParam = searchParams.get("panel");
+  const viewParam = searchParams.get("view");
+  const activeView: "chat" | "control" =
+    viewParam === "control" || (viewParam !== "chat" && panelParam) ? "control" : "chat";
+  const activePanel: string = panelParam || "overview";
+
+  const setActiveView = useCallback(
+    (next: "chat" | "control") => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("view", next);
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
+  const setActivePanel = useCallback(
+    (next: string) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("panel", next);
+      params.set("view", "control");
+      router.replace(`/chat?${params.toString()}`, { scroll: false });
+    },
+    [router, searchParams],
+  );
 
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [activeView, setActiveView] = useState<"chat" | "control">(initialView);
-  const [activePanel, setActivePanel] = useState<string>(initialPanel);
   const [fileViewerOpen, setFileViewerOpen] = useState(false);
   const [activeFilePath, setActiveFilePath] = useState<string | null>(null);
 

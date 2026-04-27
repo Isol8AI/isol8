@@ -100,33 +100,47 @@ function ReplaceKeyForm({
   const [apiKey, setApiKey] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  const [error, setError] = useState<string | null>(null);
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     setSubmitting(true);
-    await api.put(`/settings/keys/${currentProvider}`, { api_key: apiKey });
-    setApiKey("");
-    setSubmitting(false);
-    onReplaced();
+    setError(null);
+    try {
+      await api.put(`/settings/keys/${currentProvider}`, { api_key: apiKey });
+      setApiKey("");
+      onReplaced();
+    } catch (err) {
+      // Surface the failure and let the user retry — without this catch,
+      // submitting stayed true forever and the form was un-retryable.
+      // Codex P2 on PR #393.
+      setError(err instanceof Error ? err.message : "Couldn't save key");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
-    <form onSubmit={submit} className="flex gap-2">
-      <input
-        type="password"
-        value={apiKey}
-        onChange={(e) => setApiKey(e.target.value)}
-        placeholder={
-          currentProvider === "openai" ? "sk-proj-…" : "sk-ant-…"
-        }
-        className="flex-1 rounded-md border border-input px-3 py-2 font-mono text-sm"
-      />
-      <button
-        type="submit"
-        disabled={submitting || !apiKey}
-        className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-      >
-        Save
-      </button>
-    </form>
+    <div className="flex flex-col gap-2">
+      <form onSubmit={submit} className="flex gap-2">
+        <input
+          type="password"
+          value={apiKey}
+          onChange={(e) => setApiKey(e.target.value)}
+          placeholder={
+            currentProvider === "openai" ? "sk-proj-…" : "sk-ant-…"
+          }
+          className="flex-1 rounded-md border border-input px-3 py-2 font-mono text-sm"
+        />
+        <button
+          type="submit"
+          disabled={submitting || !apiKey}
+          className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
+        >
+          Save
+        </button>
+      </form>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+    </div>
   );
 }
