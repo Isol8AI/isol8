@@ -15,12 +15,14 @@ import hashlib
 import hmac
 import json
 import logging
+import time
 
+import stripe
 from fastapi import APIRouter, HTTPException, Request
 
 from core.config import settings
 from core.observability.metrics import put_metric
-from core.repositories import channel_link_repo
+from core.repositories import billing_repo, channel_link_repo
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +102,49 @@ async def handle_clerk_webhook(request: Request):
     elif event_type == "user.updated":
         user_id = data.get("id", "")
         logger.info("Clerk user.updated webhook received for %s", user_id)
+
+        # Sync the primary email to the user's Stripe Customer if one exists.
+        # Catches receipt / invoice / trial-end emails going to a stale address.
+        new_email = next(
+            (
+                e["email_address"]
+                for e in data.get("email_addresses") or []
+                if e.get("id") == data.get("primary_email_address_id")
+            ),
+            None,
+        )
+        if new_email and user_id:
+            account = await billing_repo.get_by_owner_id(user_id)
+            if account and account.get("stripe_customer_id"):
+                # Use the Clerk webhook's unique svix-id as the Stripe idempotency
+                # key. Each genuine Clerk event gets a unique id; a retry of the
+                # SAME event reuses it. Embedding user_id+email instead would let
+                # an A→B→A→B email flip within Stripe's 24h idempotency window
+                # collide with the first A→B and silently skip the modify.
+                svix_id = request.headers.get("svix-id")
+                if svix_id:
+                    idempotency_key = f"customer_email_sync:{svix_id}"
+                else:
+                    # Defensive fallback (shouldn't happen with real Clerk
+                    # traffic — _verify_svix_signature already requires it
+                    # when CLERK_WEBHOOK_SECRET is set). 1-min bucket bounds
+                    # the worst-case skipped writes.
+                    idempotency_key = f"customer_email_sync:{user_id}:{new_email}:{int(time.time() // 60)}"
+                try:
+                    stripe.Customer.modify(
+                        account["stripe_customer_id"],
+                        email=new_email,
+                        idempotency_key=idempotency_key,
+                    )
+                    put_metric("stripe.customer.email_sync", dimensions={"result": "ok"})
+                except stripe.StripeError as e:
+                    put_metric("stripe.customer.email_sync", dimensions={"result": "error"})
+                    logger.warning(
+                        "Stripe email sync failed for %s: %s",
+                        user_id,
+                        e,
+                    )
+                    # Non-fatal — Clerk update succeeded.
 
     elif event_type == "user.deleted":
         user_id = data.get("id", "")

@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw) (reference copy in `openclaw_reference/`). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (EC2), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, api-keys, usage counters, pending updates), AWS Bedrock for LLM inference, Stripe for billing, and EFS for per-user agent workspaces. Infrastructure is managed via **AWS CDK** in `apps/infra/` (the `apps/terraform/` directory is legacy/empty). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory.
+Isol8 is an AI agent platform powered by [OpenClaw](https://github.com/openclaw/openclaw). Users subscribe, get a per-user ECS Fargate container running the OpenClaw Docker image, and interact with their agents via a WebSocket-based chat UI. The platform uses a Next.js 16 frontend (Vercel), FastAPI backend (ECS Fargate), Clerk for authentication, **DynamoDB** for metadata (users, containers, billing, api-keys, usage counters, pending updates, channel links, admin actions), AWS Bedrock for LLM inference, Stripe for billing, and EFS for per-user agent workspaces. Infrastructure is managed via **AWS CDK** in `apps/infra/` (the `apps/terraform/` directory only contains stale cache dirs and is unused). The desktop app is **Tauri** (not Electron) — see `project_desktop_app_tauri` memory.
+
+The OpenClaw container image Isol8 runs is an **extended image** built from `alpine/openclaw:<upstream>` with additional Linux skill binaries. Its Dockerfile lives at `apps/infra/openclaw/` and is published to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml`. The pinned upstream + per-env extended tags are tracked in `openclaw-version.json` at the repo root.
+
+The Isol8 repo does not vendor OpenClaw source — upstream lives at [github.com/openclaw/openclaw](https://github.com/openclaw/openclaw). For reading upstream code without a fresh clone, a local checkout sits alongside this repo at `~/Desktop/openclaw` (sibling of `~/Desktop/isol8.nosync`). Treat it as read-only reference — do not edit it from Isol8 work, and do not commit it into this repo.
 
 Each user gets their own isolated OpenClaw container, with a persistent WebSocket connection pool on the backend proxying RPC calls and streaming events back to the frontend.
 
@@ -14,7 +18,7 @@ Each user gets their own isolated OpenClaw container, with a persistent WebSocke
 1. Be version controlled in the appropriate repository
 2. Go through CI/CD pipelines for deployment
 
-This includes environment variables -- use Terraform, GitHub secrets, and AWS Secrets Manager.
+This includes environment variables -- use AWS CDK, GitHub secrets, and AWS Secrets Manager.
 
 **Always watch your runs after you make a push to a repository.**
 
@@ -37,21 +41,19 @@ cd apps/backend && uv sync            # Python deps
 
 ### Individual Services
 
-**Database:** Production uses RDS PostgreSQL (provisioned by CDK). Local dev uses LocalStack RDS (see below).
+**Database:** DynamoDB tables provisioned by CDK (`apps/infra/lib/stacks/database-stack.ts`). No relational DB — items are plain dicts, accessed via repositories in `apps/backend/core/repositories/`.
 
 **All services (via Turborepo):**
 ```bash
 turbo run dev                         # Start all services in parallel
 turbo run dev --filter=@isol8/frontend    # Frontend only
 turbo run dev --filter=@isol8/backend     # Backend only
-turbo run dev --filter=@isol8/goosetown   # GooseTown only
 ```
 
 **Backend:**
 ```bash
 cd apps/backend
 uv run uvicorn main:app --reload --port 8000
-uv run python init_db.py --reset     # Drop and recreate all tables
 ```
 
 **Frontend:**
@@ -110,15 +112,14 @@ export AWS_DEFAULT_REGION=us-east-1
 3. Deploys all 6 CDK stacks (`cdklocal deploy "local/*"`) — auth, network, database, container, api, service
 4. Extracts stack outputs to `localstack/generated.env`
 5. Pulls Ollama model (qwen2.5:14b, first time only)
-6. Runs database migrations (`init_db.py --reset`)
-7. Starts backend in Docker (on same network as LocalStack containers)
-8. Starts frontend on host
+6. Starts backend in Docker (on same network as LocalStack containers)
+7. Starts frontend on host
 
 **Prerequisites:** Docker Desktop, `LOCALSTACK_AUTH_TOKEN`, `CLERK_ISSUER`, `CLERK_SECRET_KEY`, `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`, `pnpm`, `uv`, `cdklocal`
 
 **Architecture:** Backend runs in Docker (not on host) for container IP reachability with LocalStack-launched OpenClaw containers. Source code is bind-mounted for hot-reload. Frontend runs on host. Ollama provides local LLM inference via native OpenClaw provider. CDK stacks are the single source of truth — same infrastructure as dev/prod.
 
-**Services emulated:** ECS, EFS, Cloud Map, DynamoDB, S3, Secrets Manager, KMS, API Gateway V2 (WebSocket), RDS PostgreSQL, Lambda, VPC, ALB, IAM, CloudFormation
+**Services emulated:** ECS, EFS, Cloud Map, DynamoDB, S3, Secrets Manager, KMS, API Gateway V2 (WebSocket), Lambda, VPC, ALB, IAM, CloudFormation
 
 **Not emulated:** Clerk (real dev keys), Stripe (test mode keys), Bedrock (replaced by Ollama)
 
@@ -223,9 +224,12 @@ gh run view <run-id> --repo Isol8AI/isol8 --json status,jobs
 ```
 
 **Deployment methods:**
-- **Frontend + GooseTown:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
-- **Backend:** GitHub Actions → ECR Docker build → ASG instance refresh
-- **Terraform:** GitHub Actions → plan → apply (dev only, staging/prod disabled)
+- **Frontend:** Vercel auto-deploy on push to main (configured via Vercel dashboard)
+- **Backend:** GitHub Actions (`backend.yml`) → ECR Docker build → ECS Fargate service deploy
+- **Infrastructure (CDK):** GitHub Actions (`deploy.yml`) → `cdk synth` → `cdk deploy` per environment
+- **Extended OpenClaw image:** GitHub Actions (`build-openclaw-image.yml`) → build on Dockerfile/`openclaw-version.json` changes → push to ECR `isol8/openclaw-extended`
+- **Desktop app:** GitHub Actions (`desktop-build.yml`) → signed DMG via Tauri
+- **E2E gate:** GitHub Actions (`e2e-dev.yml`) runs Playwright journey test on dev before prod promotion
 
 ---
 
@@ -248,10 +252,14 @@ Client --> wss://ws-dev.isol8.co --> API Gateway --> Lambda Auth --> VPC Link V1
 isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 +-- apps/
 |   +-- frontend/            # Next.js 16 (Vercel auto-deploy)
-|   +-- backend/             # FastAPI (AWS EC2, uv managed)
-|   +-- goosetown/           # GooseTown simulation (Vercel auto-deploy)
-|   +-- terraform/           # Infrastructure as Code (AWS)
-+-- packages/                # Shared packages (future)
+|   +-- backend/             # FastAPI on ECS Fargate (uv managed, Docker image to ECR)
+|   +-- desktop/             # Tauri desktop app (signed DMG via CI)
+|   +-- infra/               # AWS CDK (TypeScript) — the single IaC source of truth
+|   |   +-- lib/stacks/      # auth, network, database, container, api, service, dns, observability
+|   |   +-- openclaw/        # Extended OpenClaw Dockerfile (ECR: isol8/openclaw-extended)
+|   +-- terraform/           # Legacy — only stale cache dirs, unused
++-- packages/                # Shared packages (empty/future)
++-- openclaw-version.json    # Pinned upstream + per-env extended image tags
 +-- turbo.json               # Task orchestration
 +-- pnpm-workspace.yaml      # Workspace definitions
 +-- package.json             # Root (devDeps: turbo)
@@ -264,21 +272,25 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 |               |---->|  WebSocket API GW --> VPC Link V1 --> NLB --> ALB   |
 |               |<----|       | Management API                              |
 |               |     |       Lambda Authorizer (Clerk JWT)                 |
-|               |     |       DynamoDB (connection state)                   |
+|               |     |       DynamoDB ws-connections table                 |
 |               |     |                                                    |
-|  REST API     |---->|  ALB -----------------------------> EC2             |
+|  REST API     |---->|  ALB ----------------------> ECS Fargate            |
+|               |     |                                (FastAPI backend    |
+|               |     |                                 service — uvicorn) |
 |               |     |                                      |             |
-|               |     |                          +-----------+-------+     |
-|               |     |                          | FastAPI backend    |     |
-|               |     |                          | (connection pool   |     |
-|               |     |                          |  to user containers)|    |
-|               |     |                          +-------------------+     |
+|               |     |                          connection pool to        |
+|               |     |                          per-user OpenClaw         |
 |               |     |                                                    |
 |               |     |  ECS Fargate (per-user OpenClaw containers)        |
 |               |     |  EFS (per-user workspaces at /mnt/efs/users/)     |
 |               |     |  Cloud Map (service discovery)                     |
-|               |     |  Supabase PostgreSQL    Secrets Manager            |
-|               |     |  S3 (config + sprites)  CloudFront (assets CDN)   |
+|               |     |  DynamoDB (users, containers, billing,             |
+|               |     |            api-keys, usage-counters,               |
+|               |     |            pending-updates, channel-links,         |
+|               |     |            admin-actions, ws-connections)          |
+|               |     |  Secrets Manager + KMS                             |
+|               |     |  S3 (config + catalog) + CloudFront                |
+|               |     |  ECR (isol8-backend, isol8/openclaw-extended)      |
 +---------------+     +----------------------------------------------------+
 ```
 
@@ -293,84 +305,110 @@ isol8/                       # Turborepo monorepo (Isol8AI/isol8)
 
 ---
 
-## Backend (FastAPI + SQLAlchemy)
+## Backend (FastAPI + DynamoDB)
 
-**Entry point:** `main.py` -- FastAPI app with lifespan handler that starts the UsagePoller + GooseTown simulation. 13 routers registered under `/api/v1`. CORS middleware, custom OpenAPI schema with BearerAuth.
+**Entry point:** `main.py` -- FastAPI app with lifespan handler that boots the gateway connection pool, starts container lifecycle management (`startup_containers` / `shutdown_containers`), starts the update-service scheduled worker, and installs observability middleware. ~20 routers registered under `/api/v1`. CORS middleware, custom OpenAPI schema with BearerAuth.
+
+No SQLAlchemy, no ORM — DynamoDB items are plain dicts accessed via repositories.
 
 ### Core (`core/`)
 
-| File | Purpose |
-|------|---------|
-| `config.py` | Pydantic settings: ECS/EFS/CloudMap, Stripe billing, Bedrock, CORS, plan budgets (Free/$40/$75/$165), S3 buckets, encryption key. |
+| File / Dir | Purpose |
+|------------|---------|
+| `config.py` | Pydantic settings: ECS/EFS/CloudMap, Stripe billing, Bedrock, CORS, plan budgets, S3 buckets, encryption key. |
 | `auth.py` | Clerk JWT validation via PyJWT. `get_current_user` dependency returns `AuthContext`. JWKS cache with 1-hour TTL. |
-| `database.py` | Async SQLAlchemy with NullPool (pgbouncer-compatible). `get_session_factory()` for streaming. |
+| `dynamodb.py` | Low-level DynamoDB client + table helpers. |
+| `encryption.py` | Fernet symmetric encryption helpers (used by key_service + channel links). |
 | `constants.py` | `SYSTEM_ACTOR_ID = "__system__"` for audit logs. |
+| `crypto/` | `kms_secrets.py` (KMS-backed secret fetch), `operator_device.py` (desktop auth device attestation). |
+| `middleware/` | `admin_metrics.py` — per-request metric emission for the admin surface. |
+| `observability/` | `logging.py`, `metrics.py` (CloudWatch EMF), `middleware.py`, `e2e_correlation.py` (correlation ID propagation). |
+
+### Repositories (`core/repositories/`)
+
+DynamoDB-backed data access. One repo per table.
+
+| File | Table(s) |
+|------|----------|
+| `user_repo.py` | `users` |
+| `container_repo.py` | `containers` |
+| `billing_repo.py` | `billing-accounts`, usage counters |
+| `api_key_repo.py` | `api-keys` (BYOK, encrypted) |
+| `usage_repo.py` | `usage-counters` (atomic counters + daily rollups) |
+| `update_repo.py` | `pending-updates` (container update queue) |
+| `channel_link_repo.py` | `channel-links` (Telegram/Discord/WhatsApp bindings) |
+| `admin_actions_repo.py` | `admin-actions` (audit log of admin ops) |
 
 ### Container Orchestration (`core/containers/`)
 
 | File | Purpose |
 |------|---------|
-| `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. Usage recording callback. |
+| `__init__.py` | Singletons: `get_ecs_manager()`, `get_workspace()`, `get_gateway_pool()`. `startup_containers()` / `shutdown_containers()` lifecycle. Usage-recording callback. |
 | `ecs_manager.py` | Per-user ECS Fargate lifecycle. Cloud Map discovery. Per-user EFS access points. Service naming: `openclaw-{user_id}-{hash}`. |
 | `config.py` | `write_openclaw_config()`: generates `openclaw.json` with Bedrock provider and memory plugin. `write_mcporter_config()` for MCP servers. |
 | `workspace.py` | EFS file I/O at `/mnt/efs/users/{user_id}/`. |
-| `config_store.py` | Container metadata persistence (DB-backed Container model). |
 
 ### Gateway (`core/gateway/`)
 
 | File | Purpose |
 |------|---------|
-| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw protocol 3.0 handshake, RPC proxy, event forwarding (agent streaming, tool_start/tool_end, chat final/error/aborted). Usage callback. Grace period idle cleanup. |
+| `connection_pool.py` | `GatewayConnectionPool`: persistent WebSocket connections to per-user OpenClaw containers. OpenClaw protocol 3.0 handshake, RPC proxy, event forwarding, idle scale-to-zero reaper, usage callback. |
+| `node_connection.py` | Per-user node-host connection for desktop browser-proxy / exec-approval flows. |
 
 ### Services (`core/services/`)
 
 | File | Purpose |
 |------|---------|
 | `billing_service.py` | Stripe: customers, checkout, portal, subscription lifecycle. |
-| `usage_service.py` | Usage tracking: `record_usage()` writes UsageEvent + UsageDaily rollup + Stripe Meters. |
-| `usage_poller.py` | Background task polling OpenClaw gateway for session usage, writes to billing. |
-| `update_service.py` | Container update system: silent config patches (Track 1) + queued image/resize updates (Track 2). |
+| `usage_service.py` | Usage tracking: `record_usage()` writes per-owner + per-member atomic counters, forwards overage to Stripe Meters. |
+| `update_service.py` | Container update system: silent config patches (Track 1) + queued image/resize updates (Track 2). Exposes `run_scheduled_worker`. |
+| `config_patcher.py` | EFS-safe JSON deep-merge with NFS-compatible file locking; writes `openclaw.json` for the file watcher to pick up. |
 | `connection_service.py` | DynamoDB WebSocket connection state (connectionId -> user_id). |
 | `management_api_client.py` | Pushes messages to frontend via API Gateway Management API. |
-| `bedrock_discovery.py` | Discover available models via Bedrock APIs. 1-hour cache. |
 | `bedrock_client.py` | AWS Bedrock LLM inference wrapper. |
-| `clerk_sync_service.py` | Clerk webhook sync for user lifecycle. |
+| `bedrock_pricing.py` | Bedrock per-model input/output token pricing. |
 | `key_service.py` | BYOK API key encryption/decryption (Fernet). |
-| `pixellab_service.py` | PixelLab sprite generation for GooseTown agents. |
-| `sprite_storage.py` | S3 + CloudFront storage for generated sprites. |
-| `town_simulation.py` | GooseTown background simulation loop. |
-| `town_service.py` | Town CRUD operations and state queries. |
-| `town_agent_ws.py` | WebSocket manager for town agent connections. |
-| `town_mood_engine.py` | Agent mood/emotion state machine. |
-| `town_pathfinding.py` | A* pathfinding for town movement. |
+| `channel_link_service.py` | Channel binding CRUD + invariant enforcement. |
+| `catalog_service.py`, `catalog_s3_client.py`, `catalog_slice.py`, `catalog_package.py` | Admin-curated skill/agent catalog stored in S3 + delivered to user containers. |
+| `admin_service.py`, `admin_audit.py`, `admin_redact.py` | Admin surface: action execution, audit log, PII redaction. |
+| `clerk_admin.py` | Clerk admin API wrapper (user search, impersonation, org mgmt). |
+| `cloudwatch_logs.py`, `cloudwatch_url.py` | Fetch + deep-link CloudWatch log streams from admin UI. |
+| `posthog_admin.py` | Admin-side PostHog queries. |
+| `idempotency.py` | Per-request idempotency key store (DynamoDB conditional-write based). |
+| `system_health.py` | Aggregate health signal: gateway pool, ECS, DynamoDB, Bedrock reachability. |
 
-### Routers (`routers/`)
+### Routers (`routers/`) — all mounted under `/api/v1`
 
 | File | Prefix | Purpose |
 |------|--------|---------|
 | `users.py` | `/users` | `POST /sync` -- idempotent user creation from Clerk auth |
-| `webhooks.py` | `/webhooks` | `POST /clerk` -- user.created/updated/deleted |
-| `websocket_chat.py` | `/ws` | `POST /connect`, `/disconnect`, `/message` -- API Gateway WS integration. Handles ping/pong, town events, agent_chat, RPC forwarding. |
-| `billing.py` | `/billing` | `GET /account`, `/usage`; `POST /checkout`, `/portal`, `/webhooks/stripe` |
+| `webhooks.py` | `/webhooks` | `POST /clerk` -- user.created/updated/deleted; `POST /stripe` |
+| `websocket_chat.py` | `/ws` | `POST /connect`, `/disconnect`, `/message` -- API Gateway WS integration. ping/pong, agent_chat, RPC forwarding. |
+| `billing.py` | `/billing` | `GET /account`, `/usage`; `POST /checkout`, `/portal` |
+| `container.py` | `/container` | Container lifecycle (provision/status) |
 | `container_rpc.py` | `/container` | `GET /health`; `POST /rpc` -- generic RPC proxy to user's OpenClaw gateway |
+| `container_recover.py` | `/container` | Recovery actions for wedged containers |
 | `control_ui_proxy.py` | `/control-ui` | Proxy for OpenClaw built-in control UI SPA |
 | `channels.py` | `/channels` | Messaging channel management (Telegram, Discord, WhatsApp) |
 | `settings_keys.py` | `/settings/keys` | BYOK API key CRUD (encrypted) |
-| `integrations.py` | `/` | MCP server integration management (mcporter) |
+| `integrations.py` | — | MCP server integration management (mcporter) |
 | `updates.py` | `/container` | Container update system: `PATCH /config/{owner_id}`, `PATCH /config` (fleet), `GET /updates/{owner_id}` |
+| `catalog.py` | `/catalog` | User-facing catalog of curated skills/agents |
+| `config.py` | `/config` | Read/patch of per-user openclaw.json |
+| `workspace_files.py` | `/workspace` | File-tree + file-content read for the chat UI FileTree/FileViewer |
+| `node_proxy.py` | `/node` | Proxies desktop-side node-host RPCs (browser.proxy, exec approvals) |
+| `desktop_auth.py` | `/desktop-auth` | Desktop app OAuth device-code flow |
+| `admin.py` | `/admin` | Admin surface (audit log, user actions, system health) — gated by admin host |
+| `admin_catalog.py` | `/admin/catalog` | Admin CRUD of the catalog |
 | `debug.py` | `/debug` | Dev-only container provisioning (403 in prod) |
-| `town.py` | `/town` | GooseTown: status, state, descriptions, join, move, chat |
 
 ### Models (`models/`)
 
-| File | Tables |
-|------|--------|
-| `user.py` | `users` (Clerk user ID as PK) |
-| `container.py` | `containers` (user_id unique, service_name, task_arn, access_point_id, gateway_token, status) |
-| `billing.py` | `model_pricing`, `tool_pricing`, `billing_account`, `usage_event`, `usage_daily` |
-| `audit_log.py` | `audit_logs` |
-| `user_api_key.py` | `user_api_keys` (encrypted BYOK keys) |
-| `town.py` | `town_agents`, `town_state`, `town_conversations`, `town_relationships` |
+Intentionally empty (just an `__init__.py` docstring: *"DynamoDB items are plain dicts, no ORM models needed."*). Use repositories instead.
+
+### Request/response schemas (`schemas/`)
+
+Pydantic request/response models for the HTTP surface: `billing.py`, `user_schemas.py`.
 
 ---
 
@@ -382,44 +420,62 @@ React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
 
 | Path | Purpose |
 |------|---------|
-| `/` | Landing page (Navbar, Hero, Features, Pricing, Footer) |
-| `/chat` | Main app: chat + control panel (requires auth) |
+| `/` | Landing page (Navbar, Hero, Features, Pricing, FAQ, Footer, GooseTown promo block) |
+| `/chat` | Main app: chat + control panel (Clerk-protected) |
+| `/onboarding` | Post-signup provisioning flow (Clerk-protected) |
+| `/settings` | Settings layout (Clerk-protected) |
+| `/admin` | Admin surface — accessible only via allowed admin hosts (`admin.isol8.co`, `admin-dev.isol8.co`); 404s on non-admin hosts |
 | `/sign-in`, `/sign-up` | Clerk auth pages |
 | `/auth/desktop-callback` | Desktop app OAuth callback |
-| `/settings` | Settings layout |
+| `/privacy`, `/terms`, `/support` | Static marketing pages |
 
 ### Components (`src/components/`)
 
 **Chat (`chat/`):**
 | Component | Purpose |
 |-----------|---------|
-| `ChatLayout.tsx` | Main layout: sidebar + chat/control tabs + header with UserButton |
+| `ChatLayout.tsx` (+ `.css`) | Main layout: sidebar + chat/control tabs + header with UserButton |
 | `AgentChatWindow.tsx` | Chat UI: connection bar, messages, input, file upload, bootstrap suggestion |
+| `AgentDetailPanel.tsx`, `AgentDialogs.tsx` | Agent inspector + create/edit/delete dialogs |
 | `ChatInput.tsx` | Text input + file upload + stop button + suggested message (Tab to accept) |
-| `MessageList.tsx` | Message rendering: markdown, syntax highlighting, thinking blocks, tool use indicators |
-| `Sidebar.tsx` | Agent list with create/delete/select |
+| `MessageList.tsx` | Message rendering: markdown, syntax highlighting, thinking blocks, tool-use indicators |
+| `ApprovalCard.tsx` | Inline card for desktop exec-approval prompts |
+| `FileTree.tsx`, `FileViewer.tsx`, `FileContentViewer.tsx` | Workspace file browser |
+| `GallerySection.tsx`, `GalleryItemRow.tsx` | Image/asset gallery surface |
+| `HealthIndicator.tsx` | Container/gateway health dot |
 | `ProvisioningStepper.tsx` | Onboarding flow: billing -> container -> gateway -> channels -> ready |
-| `ChannelSetupStep.tsx` | Channel config UI (Telegram, Discord, WhatsApp) |
-| `ConnectionStatusBar.tsx` | WebSocket connection indicator |
 | `ModelSelector.tsx` | Model dropdown |
+| `ProviderIcons.tsx` | Brand marks for model providers |
 
 **Control Panel (`control/`):**
 | Component | Purpose |
 |-----------|---------|
 | `ControlPanelRouter.tsx` | Routes to active panel |
 | `ControlSidebar.tsx` | Navigation for control panels |
+| `ControlIframe.tsx` | Embeds OpenClaw's built-in control-ui where native panel isn't wired |
 | `panels/OverviewPanel.tsx` | Dashboard: health, uptime, agents, sessions, billing, usage |
-| `panels/ChannelsPanel.tsx` | Channel configuration |
+| `panels/AgentsPanel.tsx` + `AgentOverviewTab.tsx` + `AgentToolsTab.tsx` + `AgentCreateForm.tsx` + `AgentChannelsSection.tsx` | Agent CRUD + per-agent inspector |
 | `panels/SessionsPanel.tsx` | Session management |
 | `panels/UsagePanel.tsx` | Usage analytics |
-| `panels/AgentsPanel.tsx` | Agent CRUD |
 | `panels/SkillsPanel.tsx` | Skill/tool management |
 | `panels/McpServersTab.tsx` | MCP server list |
 | `panels/ConfigPanel.tsx` | Raw config editor |
 | `panels/LogsPanel.tsx` | Log viewer |
+| `panels/InstancesPanel.tsx` | Container instances view |
+| `panels/NodesPanel.tsx` | Desktop node-host status |
+| `panels/CronPanel.tsx` (+ `cron/` subdir) | Cron job view / edit / vet |
+| `panels/ActionsPanel.tsx` | Pending/recent action feed |
 | `panels/DebugPanel.tsx` | Debug utilities |
 
-**Landing (`landing/`):** Navbar, Hero, Features, Pricing, Footer
+**Admin (`admin/`):** `AuditRow.tsx`, `CodeBlock.tsx`, `ConfirmActionDialog.tsx`, `EmptyState.tsx`, `ErrorBanner.tsx`, `LogRow.tsx`, `UserSearchInput.tsx`
+
+**Channels (`channels/`):** `BotSetupWizard.tsx`
+
+**Settings (`settings/`):** `MyChannelsSection.tsx`
+
+**Landing (`landing/`):** Navbar, Hero, Features, OurAgents, Skills, Pricing, GooseTown, FAQ, Footer, ScrollManager
+
+**Providers (`providers/`):** Global SWR/Clerk/PostHog providers. Root-level: `DesktopAuthListener.tsx`, `ErrorBoundary.tsx`, `PostHogProvider.tsx`.
 
 **UI (`ui/`):** shadcn/ui (button, alert-dialog, dropdown-menu, checkbox, input, popover, scroll-area)
 
@@ -427,12 +483,17 @@ React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
 
 | Hook | Purpose |
 |------|---------|
-| `useGateway.tsx` | WebSocket provider for gateway RPC + chat. Reconnection (max 10), ping/pong, event pub-sub, RPC request/response matching. |
-| `useAgentChat.ts` | Agent chat via useGateway. Message cache, bootstrap flag, tool use tracking, cancel via `chat.abort`, thinking blocks. |
+| `useGateway.tsx` | WebSocket provider for gateway RPC + chat. Reconnection, ping/pong, event pub-sub, RPC request/response matching. |
+| `useAgentChat.ts` | Agent chat via useGateway. Message cache, bootstrap flag, tool-use tracking, cancel via `chat.abort`, thinking blocks. |
 | `useGatewayRpc.ts` | SWR-wrapped RPC calls via WebSocket. `useGatewayRpc<T>()` (read) + `useGatewayRpcMutation()` (write). |
-| `useAgents.ts` | Agent CRUD via RPC: `agents.list`, `agents.create`, `agents.delete`, `agents.update`. |
+| `useAgents.ts` | Agent CRUD via RPC: `agents.list/create/delete/update`. |
 | `useBilling.ts` | Billing account + checkout via REST API. |
 | `useContainerStatus.ts` | Container status polling via REST. |
+| `useActivityPing.ts` | Activity-ping hook keeping free-tier container from scaling to zero mid-use (do not remove — paired with 5-min idle reaper; see memory). |
+| `useCatalog.ts` | Catalog data fetching. |
+| `useWorkspaceFiles.ts` | Workspace file tree / content. |
+| `useDesktopAuth.ts` | Desktop app OAuth flow. |
+| `useSystemHealth.ts` | System health surface (admin). |
 | `useScrollToBottom.ts` | Auto-scroll hook. |
 
 ### Utilities (`src/lib/`)
@@ -441,11 +502,14 @@ React 19, Tailwind CSS v4, Clerk auth, Framer Motion, SWR, lucide-react icons.
 |------|---------|
 | `api.ts` | `useApi()` hook: authenticated REST methods (`get`, `post`, `put`, `del`, `syncUser`, `uploadFiles`). |
 | `utils.ts` | Tailwind `cn()` class merging. |
+| `channels.ts` | Channel helpers. |
+| `filePathDetection.ts` | Detect file paths in chat output for linkification. |
+| `snooze.ts` | Snooze helper. |
 | `tar.ts` | Tar utilities. |
 
 ### Middleware
 
-`src/middleware.ts` -- Clerk protection for `/chat(.*)` and `/auth/desktop-callback`.
+`src/middleware.ts` -- Clerk middleware protects `/chat(.*)`, `/onboarding`, `/settings(.*)`. An admin-host gate (`decideAdminHostRouting`) also runs on every request: `/admin` paths on non-admin hosts return 404, and admin hosts straying off `/admin` redirect back to `/admin`.
 
 ---
 
@@ -492,7 +556,7 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 **Key design decisions:**
 1. VPC Link V1 (WebSocket API requires it, only supports NLB)
-2. NLB -> ALB -> EC2 chain (Layer 4 -> Layer 7)
+2. NLB -> ALB -> ECS Fargate (backend service) chain (Layer 4 -> Layer 7)
 3. Management API for responses (HTTPS POST to `@connections/{id}`)
 4. Lambda Authorizer validates Clerk JWT
 5. DynamoDB stores connectionId -> user_id mapping
@@ -543,7 +607,6 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `DATABASE_URL` | PostgreSQL async connection string | `postgresql+asyncpg://...localhost:5432/securechat` |
 | `CLERK_ISSUER` | Clerk domain for JWT validation | Required |
 | `CLERK_SECRET_KEY` | Clerk secret key | Optional |
 | `CLERK_WEBHOOK_SECRET` | Clerk webhook verification | Optional |
@@ -559,8 +622,7 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 | `EFS_MOUNT_PATH` | EFS mount root | `/mnt/efs/users` |
 | `EFS_FILE_SYSTEM_ID` | EFS filesystem | Required |
 | `S3_CONFIG_BUCKET` | Config bucket | Required |
-| `OPENCLAW_IMAGE` | Container image | `alpine/openclaw:2026.3.24` |
-| `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by Terraform |
+| `WS_MANAGEMENT_API_URL` | Management API endpoint | Set by CDK |
 | `WS_CONNECTIONS_TABLE` | DynamoDB table | `isol8-websocket-connections` |
 | `STRIPE_SECRET_KEY` | Stripe API key | Empty |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook verification | Empty |
@@ -590,55 +652,34 @@ Client          API Gateway WS      FastAPI              OpenClaw (ECS Fargate)
 
 ---
 
-## Terraform Modules
+## AWS CDK Stacks
 
-Located in `terraform/`:
+Located in `apps/infra/lib/stacks/`. Entry point: `apps/infra/lib/app.ts`. Per-environment stage classes: `local-stage.ts`, `isol8-stage.ts`. Stacks deliberately pass secret *names* (not `ISecret`) and KMS key *ARNs* (not objects) between stacks to avoid cross-stack KMS auto-grant cycles — see comments in `service-stack.ts`.
 
-| Module | Purpose |
-|--------|---------|
-| `modules/vpc/` | VPC with public/private subnets, NAT gateway |
-| `modules/alb/` | Application Load Balancer (300s timeout) |
-| `modules/nlb/` | Network Load Balancer (for WebSocket VPC Link V1) |
-| `modules/websocket-api/` | WebSocket API Gateway, Lambda authorizer, VPC Link V1, DynamoDB |
-| `modules/ec2/` | Launch template, Auto Scaling Group (m5.xlarge) |
-| `modules/ecs/` | Fargate cluster for per-user OpenClaw containers |
-| `modules/efs/` | Elastic File System for per-user workspaces |
-| `modules/iam/` | EC2 role, ECS task role, GitHub Actions OIDC provider |
-| `modules/secrets/` | Secrets Manager (DB URL, Clerk, Stripe, encryption keys) |
-| `modules/kms/` | Encryption at rest (secrets, EBS, S3) |
-| `modules/acm/` | SSL certificates (ALB + CloudFront) |
-| `modules/api-gateway/` | API Gateway configuration |
+| Stack | Purpose |
+|-------|---------|
+| `network-stack.ts` | VPC (public/private subnets, NAT), ALB, NLB (for WebSocket VPC Link V1), security groups |
+| `auth-stack.ts` | Secrets Manager secrets (Clerk, Stripe, encryption keys) + KMS key |
+| `database-stack.ts` | All DynamoDB tables (users, containers, billing-accounts, api-keys, usage-counters, pending-updates, channel-links, admin-actions, ws-connections) |
+| `container-stack.ts` | ECS cluster for per-user OpenClaw containers, EFS filesystem, Cloud Map namespace/service, container task-definition scaffolding |
+| `service-stack.ts` | Backend FastAPI service on ECS Fargate: task definition (Docker image from ECR), service, autoscaling, target-group wiring, DynamoDB/secrets IAM |
+| `api-stack.ts` | WebSocket API Gateway, Lambda authorizer (Clerk JWT), VPC Link V1 wiring |
+| `dns-stack.ts` | Route53 records + ACM certs (ALB + CloudFront) |
+| `observability-stack.ts` | CloudWatch dashboards, alarms, log retention |
 
----
-
-## GooseTown
-
-AI Town-style simulation where AI agents live and interact in a pixel art city.
-
-**Live:** `https://dev.town.isol8.co`
-
-**Repos:**
-- `goosetown/` -- Vite + React + PixiJS frontend (Vercel)
-- `goosetown-skill/` -- OpenClaw skill plugin (lets agents join the town as residents). Lives in the backend as an endpoint. 
-
-**Backend files:**
-- `routers/town.py` -- REST endpoints + WebSocket state push
-- `core/services/town_simulation.py` -- Background simulation loop
-- `core/services/town_agent_ws.py` -- Agent WebSocket connections
-- `core/services/town_pathfinding.py` -- A* pathfinding
-- `core/services/town_mood_engine.py` -- Mood/emotion state machine
-- `core/services/pixellab_service.py` -- AI sprite generation
-- `core/town_constants.py` -- Locations and character spawns
-- `models/town.py` -- DB models
-- `data/city_map.json` -- Map data
+`apps/infra/openclaw/` is a sibling directory (not a stack) containing the extended OpenClaw Dockerfile + README. Built by `.github/workflows/build-openclaw-image.yml` and pushed to ECR `isol8/openclaw-extended`. The tag Isol8 runs is pinned in `openclaw-version.json`.
 
 ---
 
 ## Desktop App
 
-Electron app at `desktop/`. Bundle ID: `co.isol8.desktop`.
+Tauri 2 app at `apps/desktop/`. Bundle ID: `co.isol8.desktop`. Product name: `Isol8`.
 
-- Protocol handler: `isol8://` deep links
-- Single instance lock
-- Auto-update via GitHub releases
-- DMG (macOS), Squirrel (Windows), DEB (Linux)
+- Rust sidecar host at `apps/desktop/src-tauri/src/` (`lib.rs`, `main.rs`, `browser_sidecar.rs`, `exec_approvals.rs`, `node_client.rs`, `node_invoke.rs`, `tray.rs`)
+- Points at `https://dev.isol8.co/chat` as the embedded web view
+- Bundled binaries (`src-tauri/bin/`): `isol8-browser-service` (externalBin), per-arch `node` and `openclaw-host` copies for macOS (aarch64 + x86_64)
+- Protocol handler: `isol8://` deep links (via `tauri-plugin-deep-link`)
+- Single-instance lock (`tauri-plugin-single-instance`)
+- Signed DMG for macOS, built by `.github/workflows/desktop-build.yml`
+- Auth flow uses the backend's `/desktop-auth` device-code endpoints + the frontend's `/auth/desktop-callback` page
+- Requirement driver: WebAuthn/passkey support (see `project_desktop_app_tauri` memory)
