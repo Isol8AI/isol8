@@ -15,13 +15,78 @@ from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
 
 from core.services.catalog_package import build_manifest, tar_directory
-from core.services.catalog_slice import _agents_list, extract_agent_slice
+from core.services.catalog_slice import (
+    _agents_list,
+    extract_agent_slice,
+    filter_cron_jobs_for_agent,
+)
 
 # Catalog slugs become a single S3 key path segment (e.g. "pitch/v1/..."),
 # so reject anything that could inject additional segments, reserved
 # characters, or escape the prefix. Must start with [a-z0-9] to avoid
 # leading dashes.
 _VALID_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def _remap_cron_jobs_for_deploy(
+    template_jobs: list[dict],
+    *,
+    new_agent_id: str,
+    owner_id: str,
+) -> list[dict]:
+    """Regenerate per-deploy fields on each cron-job template.
+
+    The slice carries cron jobs with ``id``, ``sessionKey``, ``state``,
+    ``createdAtMs``, and ``updatedAtMs`` already stripped (by
+    ``catalog_slice.filter_cron_jobs_for_agent``). For each remaining
+    template entry, we set:
+      - a fresh ``id`` (random UUID)
+      - the deployer's new ``agentId``
+      - ``delivery.accountId`` rewritten to the new agent id — OpenClaw's
+        per-agent channel routing convention pairs ``accountId`` with
+        ``agentId`` (see ``_ensure_channel_bindings_for_patch`` in
+        ``config_patcher`` for the same 1:1 mapping). Carrying the
+        publisher's accountId would silently route delivery to the wrong
+        per-agent channel on the deployer's container.
+      - a freshly-derived ``sessionKey`` matching OpenClaw's
+        ``agent:{agentId}:{userId}`` shape (the persisted format observed
+        in ``cron/jobs.json``)
+      - ``createdAtMs`` and ``updatedAtMs`` set to now
+      - ``state`` is intentionally absent — OpenClaw recomputes
+        ``nextRunAtMs`` from ``schedule`` on first read.
+
+    ``delivery.channel`` and ``delivery.mode`` are carried as-is. If the
+    deployer hasn't bound the named channel yet, the cron run will fail
+    at delivery time and OpenClaw's ``failureAlert`` flow surfaces the
+    error.
+    """
+    if not template_jobs:
+        return []
+    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    owner_id_lower = owner_id.lower()
+    out: list[dict] = []
+    for job in template_jobs:
+        if not isinstance(job, dict):
+            continue
+        new_job = copy.deepcopy(job)
+        new_job["id"] = str(uuid.uuid4())
+        new_job["agentId"] = new_agent_id
+        new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
+        new_job["createdAtMs"] = now_ms
+        new_job["updatedAtMs"] = now_ms
+        # Codex P1: per-agent channel bindings pair ``accountId`` 1:1 with
+        # ``agentId`` (see config_patcher._ensure_channel_bindings_for_patch).
+        # Rewrite delivery.accountId to the new agent id so the cron lands on
+        # the deployer's binding instead of the publisher's.
+        delivery = new_job.get("delivery")
+        if isinstance(delivery, dict) and "accountId" in delivery:
+            delivery["accountId"] = new_agent_id
+        # Drop any stale ``state`` carried through (defensive — slice should
+        # already have stripped it, but jobs.json from older publishes may
+        # have leaked it through).
+        new_job.pop("state", None)
+        out.append(new_job)
+    return out
 
 
 class CatalogService:
@@ -174,6 +239,24 @@ class CatalogService:
                     "deployed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
+
+            # Carry the publisher's cron jobs (filtered + stripped at publish
+            # time) over to the deployer's cron/jobs.json with regenerated
+            # ids and the new agent_id wired in. Done AFTER the agent entry
+            # is in place so the runtime never sees a cron job pointing at a
+            # nonexistent agent.
+            template_cron_jobs = slice_.get("cron_jobs") or []
+            if template_cron_jobs:
+                from core.services.config_patcher import append_cron_jobs
+
+                await append_cron_jobs(
+                    owner_id,
+                    _remap_cron_jobs_for_deploy(
+                        template_cron_jobs,
+                        new_agent_id=new_agent_id,
+                        owner_id=owner_id,
+                    ),
+                )
         except Exception:
             # Roll back the extracted workspace so a failed deploy doesn't
             # leave orphan files on EFS. cleanup_agent_dirs removes both
@@ -181,6 +264,34 @@ class CatalogService:
             # idempotent — safe to call even if the config patch never
             # ran or already succeeded.
             self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
+            # Codex P2: ``apply_deploy_mutation`` may have already committed
+            # the agent entry to openclaw.json before a later step (sidecar
+            # write, cron append) failed. Without an inverse mutation, retries
+            # would accumulate dangling agent entries that openclaw_id never
+            # gets workspace files for. Best-effort remove from agents.list;
+            # swallow secondary failures so the original exception surfaces.
+            try:
+                from core.services.config_patcher import (
+                    remove_from_openclaw_config_list,
+                )
+
+                await remove_from_openclaw_config_list(
+                    owner_id,
+                    ["agents", "list"],
+                    lambda a: isinstance(a, dict) and a.get("id") == new_agent_id,
+                )
+            except Exception:
+                pass
+            # Known limitation (Codex P2): the plugins deep-merge from
+            # apply_deploy_mutation isn't rolled back. Plugin code is
+            # bundled in the OpenClaw image, so leaving extra plugins
+            # enabled in config has no install side-effect — the merge
+            # is also idempotent on retry. Inverting a deep-merge
+            # cleanly requires a pre-mutation snapshot, which adds
+            # complexity that isn't matched by the equivalent
+            # ``patch_openclaw_config`` path (channel binding deep-merges
+            # are likewise not reversible). Accepted as the same risk
+            # posture as the rest of the codebase.
             raise
 
         return {
@@ -193,6 +304,7 @@ class CatalogService:
             # the top-level keys (``slots``/``entries``) are structural
             # containers, not plugin names.
             "plugins_enabled": list(((slice_.get("plugins") or {}).get("entries") or {}).keys()),
+            "cron_jobs_added": len(slice_.get("cron_jobs") or []),
         }
 
     # ---- deployed ----
@@ -248,6 +360,15 @@ class CatalogService:
         slice_ = extract_agent_slice(config, agent_id)
         # Read from the nested agents.list the same way extract_agent_slice does.
         agent_entry_raw = next(a for a in _agents_list(config) if isinstance(a, dict) and a.get("id") == agent_id)
+        # Carry the publisher's cron jobs that target this agent. Lives in
+        # a separate file from openclaw.json (see config.cron.store, default
+        # ``~/.openclaw/cron/jobs.json``); runtime + user-specific fields
+        # (id, sessionKey, state, createdAtMs, updatedAtMs) are stripped at
+        # slice time and regenerated at deploy.
+        slice_["cron_jobs"] = filter_cron_jobs_for_agent(
+            self._workspace.read_cron_jobs(owner_id),
+            agent_id,
+        )
 
         name = agent_entry_raw.get("name") or agent_id
         slug = (slug_override or name).strip().lower().replace(" ", "-")

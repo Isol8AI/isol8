@@ -598,3 +598,111 @@ async def test_apply_deploy_mutation_preserves_agents_defaults(catalog_efs_dir):
 
     assert result["agents"]["defaults"] == {"workspace": "/workspace/root"}
     assert [a["id"] for a in result["agents"]["list"]] == ["existing_agent", "new"]
+
+
+# ---- append_cron_jobs ----
+#
+# Cron jobs live in {owner_id}/cron/jobs.json (separate file from
+# openclaw.json — see config.cron.store in OpenClaw's schema). The deploy
+# path uses append_cron_jobs() to atomically add the publisher's filtered
+# + remapped jobs to the deployer's file.
+
+
+@pytest.fixture
+def cron_efs_dir():
+    """EFS fixture for cron-jobs tests. Same temp tree shape as catalog_efs_dir
+    but without the openclaw.json prefill — append_cron_jobs operates on a
+    different file and shouldn't depend on the agent config existing."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        os.makedirs(os.path.join(tmpdir, "user_1"))
+        with patch("core.services.config_patcher._efs_mount_path", tmpdir):
+            yield tmpdir
+
+
+@pytest.mark.asyncio
+async def test_append_cron_jobs_creates_jobs_file_if_missing(cron_efs_dir):
+    from core.services.config_patcher import append_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    assert not os.path.exists(jobs_path)
+
+    await append_cron_jobs(
+        "user_1",
+        [
+            {
+                "id": "j1",
+                "agentId": "agent_abc",
+                "name": "Morning brief",
+                "schedule": {"kind": "cron", "expr": "0 9 * * *", "tz": "UTC"},
+            }
+        ],
+    )
+
+    assert os.path.exists(jobs_path)
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert data["version"] == 1
+    assert len(data["jobs"]) == 1
+    assert data["jobs"][0]["name"] == "Morning brief"
+
+
+@pytest.mark.asyncio
+async def test_append_cron_jobs_extends_existing_file(cron_efs_dir):
+    from core.services.config_patcher import append_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    os.makedirs(os.path.dirname(jobs_path), exist_ok=True)
+    with open(jobs_path, "w") as f:
+        json.dump(
+            {
+                "version": 1,
+                "jobs": [{"id": "existing", "agentId": "main", "name": "Existing"}],
+            },
+            f,
+        )
+
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "new1", "agentId": "agent_abc", "name": "New A"}],
+    )
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "new2", "agentId": "agent_xyz", "name": "New B"}],
+    )
+
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert [j["id"] for j in data["jobs"]] == ["existing", "new1", "new2"]
+
+
+@pytest.mark.asyncio
+async def test_append_cron_jobs_empty_list_is_noop(cron_efs_dir):
+    """Callers that have nothing to add shouldn't be required to skip the
+    call themselves — the helper short-circuits and doesn't create the file."""
+    from core.services.config_patcher import append_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    await append_cron_jobs("user_1", [])
+    assert not os.path.exists(jobs_path)
+
+
+@pytest.mark.asyncio
+async def test_append_cron_jobs_recovers_from_corrupt_file(cron_efs_dir):
+    """If jobs.json is unreadable JSON (e.g. partial write from a crash),
+    treat it as empty rather than refusing to ever write again."""
+    from core.services.config_patcher import append_cron_jobs
+
+    jobs_path = os.path.join(cron_efs_dir, "user_1", "cron", "jobs.json")
+    os.makedirs(os.path.dirname(jobs_path), exist_ok=True)
+    with open(jobs_path, "w") as f:
+        f.write("{ this is not json")
+
+    await append_cron_jobs(
+        "user_1",
+        [{"id": "j1", "agentId": "agent_abc", "name": "Recovery"}],
+    )
+
+    with open(jobs_path) as f:
+        data = json.load(f)
+    assert data["version"] == 1
+    assert [j["name"] for j in data["jobs"]] == ["Recovery"]

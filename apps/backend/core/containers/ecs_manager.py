@@ -1061,13 +1061,77 @@ class EcsManager:
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
-                try:
-                    await self.start_user_service(user_id)
-                except EcsManagerError:
-                    put_metric("container.provision", dimensions={"status": "error"})
-                    put_metric("container.error_state")
-                    await self._update_container(user_id, status="error", substatus=None)
-                    raise
+                # Re-register the task definition with the freshly-computed
+                # secrets_for_task. Without this, a BYOK user whose container
+                # scaled to zero would restart on the prior revision and skip
+                # the per-user OPENAI/ANTHROPIC secrets injection (the path
+                # that flows in via _build_byo_secrets_for_user above).
+                # We always re-register so the path is uniform across
+                # providers; oauth/bedrock_claude have empty secrets_for_task.
+                access_point_id = existing.get("access_point_id") if existing else None
+                if access_point_id:
+                    try:
+                        new_task_def_arn = await asyncio.to_thread(
+                            self._register_task_definition,
+                            access_point_id,
+                            secrets_for_task=secrets_for_task,
+                        )
+                        await asyncio.to_thread(
+                            self._ecs.update_service,
+                            cluster=self._cluster,
+                            service=service_name,
+                            desiredCount=1,
+                            taskDefinition=new_task_def_arn,
+                            deploymentConfiguration={
+                                "deploymentCircuitBreaker": {
+                                    "enable": True,
+                                    "rollback": False,
+                                }
+                            },
+                        )
+                        old_task_def_arn = existing.get("task_definition_arn") if existing else None
+                        await container_repo.update_fields(
+                            user_id,
+                            {"task_definition_arn": new_task_def_arn},
+                        )
+                        if old_task_def_arn and old_task_def_arn != new_task_def_arn:
+                            try:
+                                await asyncio.to_thread(
+                                    self._deregister_task_definition,
+                                    old_task_def_arn,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to deregister stale task def %s: %s",
+                                    old_task_def_arn,
+                                    e,
+                                )
+                        # start_user_service normally fires the running-transition
+                        # poller; we bypassed it, so do it here.
+                        asyncio.create_task(self._await_running_transition(user_id))
+                    except EcsManagerError:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise
+                    except Exception as e:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise EcsManagerError(
+                            f"Failed to restart service with refreshed task def: {e}",
+                            user_id,
+                        )
+                else:
+                    # No access point on record (shouldn't happen for an
+                    # ACTIVE service but fall back to the simple start path).
+                    try:
+                        await self.start_user_service(user_id)
+                    except EcsManagerError:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise
 
                 put_metric("container.provision", dimensions={"status": "ok"})
                 return service_name
