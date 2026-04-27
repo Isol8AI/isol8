@@ -94,14 +94,22 @@ class BillingService:
         )
 
 
-async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
+async def create_flat_fee_checkout(
+    *,
+    owner_id: str,
+    provider_choice: str | None = None,
+    trial_days: int | None = 14,
+) -> stripe.checkout.Session:
     """Create a Stripe Checkout session on the single flat-fee price.
 
     Used by the flat-fee onboarding wizard (frontend cards 1, 2, 3 — all three
-    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). The trial flow
-    (Plan 3) bypasses Checkout entirely in favor of SetupIntent + Subscription
-    create with ``trial_period_days``; this helper exists for the no-trial
-    path (e.g. card 3 if the user opts to skip trial and pay immediately).
+    pay the same monthly fee against ``STRIPE_FLAT_PRICE_ID``). When
+    ``trial_days`` is set, the resulting subscription has a trial of that
+    length and Stripe charges nothing until the trial converts.
+
+    ``provider_choice`` is threaded into ``subscription_data.metadata`` so
+    the customer.subscription.updated webhook can persist it on the user
+    row without a separate /users/sync call.
 
     Conventions (mirrors Plan 1 Stripe Tax setup):
       - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.
@@ -119,17 +127,29 @@ async def create_flat_fee_checkout(*, owner_id: str) -> stripe.checkout.Session:
     if not account or not account.get("stripe_customer_id"):
         raise BillingServiceError(f"No Stripe customer for owner_id={owner_id}")
 
+    subscription_data: dict = {}
+    if trial_days is not None and trial_days > 0:
+        subscription_data["trial_period_days"] = trial_days
+    if provider_choice:
+        subscription_data["metadata"] = {"provider_choice": provider_choice}
+
+    kwargs: dict = dict(
+        customer=account["stripe_customer_id"],
+        mode="subscription",
+        line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
+        success_url=(
+            f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
+        ),
+        cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        automatic_tax={"enabled": True},
+        customer_update={"address": "auto"},
+        idempotency_key=f"flat_checkout:{owner_id}:{provider_choice or '_'}:{int(time.time() // 300)}",
+    )
+    if subscription_data:
+        kwargs["subscription_data"] = subscription_data
+
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
-        session = stripe.checkout.Session.create(
-            customer=account["stripe_customer_id"],
-            mode="subscription",
-            line_items=[{"price": settings.STRIPE_FLAT_PRICE_ID, "quantity": 1}],
-            success_url=f"{FRONTEND_URL}/chat?checkout=success",
-            cancel_url=f"{FRONTEND_URL}/onboarding?checkout=cancel",
-            automatic_tax={"enabled": True},
-            customer_update={"address": "auto"},
-            idempotency_key=f"flat_checkout:{owner_id}:{int(time.time() // 300)}",
-        )
+        session = stripe.checkout.Session.create(**kwargs)
     return session
 
 

@@ -724,3 +724,26 @@ async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
         "pre_staged_codex_auth",
         extra={"user_id": user_id, "has_account_id": "account_id" in oauth_tokens},
     )
+
+
+async def delete_codex_auth(*, user_id: str) -> None:
+    """Remove the staged Codex auth.json from the user's EFS workspace.
+
+    Paired with pre_stage_codex_auth. Called on OAuth disconnect so the
+    container can no longer read tokens cold even if it doesn't restart.
+    Codex P1/P2 on PR #393.
+    """
+    if not _USER_ID_PATTERN.match(user_id):
+        raise ValueError(f"user_id contains invalid characters: {user_id!r}")
+
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        return  # No EFS configured (e.g. tests) — nothing to delete.
+
+    auth_path = Path(efs_root) / user_id / "codex" / "auth.json"
+    try:
+        auth_path.unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning("delete_codex_auth: %s — %s", auth_path, e)
+    else:
+        logger.info("deleted_codex_auth", extra={"user_id": user_id})

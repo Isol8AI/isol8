@@ -629,7 +629,10 @@ async def _process_agent_chat_background(
         # Plan 3 Task 4: card-3 (bedrock_claude) hard-stop when balance ≤ 0.
         # Cards 1+2 always pass through. We push a structured error event
         # back to the client and bail before forwarding to OpenClaw.
-        gate = await pool.gate_chat(user_id=owner_id)
+        # Use the per-user member id (not owner_id) so org-context chats
+        # gate correctly — provider_choice + credit balance live on the
+        # Clerk user row, not the org row. Codex P1 on PR #393.
+        gate = await pool.gate_chat(user_id=user_id)
         if gate.get("blocked"):
             put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
             logger.info(

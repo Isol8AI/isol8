@@ -1,10 +1,29 @@
 "use client";
 
 import Link from "next/link";
+import useSWR from "swr";
+import { useApi } from "@/lib/api";
 import { useCredits } from "@/hooks/useCredits";
 
+interface UserMeResponse {
+  user_id: string;
+  provider_choice: string | null;
+  byo_provider: string | null;
+}
+
 export function OutOfCreditsBanner() {
+  const api = useApi();
   const { balance } = useCredits();
+  const { data: me } = useSWR<UserMeResponse>(
+    "/users/me",
+    () => api.get("/users/me") as Promise<UserMeResponse>,
+  );
+
+  // Only the bedrock_claude path uses prepaid credits. Without the gate,
+  // chatgpt_oauth / byo_key users see a false "out of credits" banner because
+  // /billing/credits/balance returns 0 when no credits row exists. Codex P2
+  // on PR #393.
+  if (me?.provider_choice !== "bedrock_claude") return null;
   if (!balance || balance.balance_microcents > 0) return null;
 
   return (

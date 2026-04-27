@@ -2,14 +2,14 @@
 
 import asyncio
 import logging
-import time
+import uuid
 
 import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from core.auth import AuthContext, get_current_user, resolve_owner_id, require_org_admin
+from core.auth import AuthContext, get_current_user, get_owner_type, resolve_owner_id, require_org_admin
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
@@ -89,8 +89,17 @@ async def get_billing_account(
     subscription_status = account.get("subscription_status") if account else None
     trial_end = account.get("trial_end") if account else None
 
+    # is_subscribed is keyed off subscription_status when present, but falls
+    # back to the legacy stripe_subscription_id marker for accounts that
+    # predate the cutover or haven't yet received a customer.subscription
+    # .updated webhook. Without the fallback, paid users get pushed back into
+    # the payment phase. Codex P1 on PR #393.
+    is_subscribed = subscription_status in ("active", "trialing") or (
+        account is not None and bool(account.get("stripe_subscription_id"))
+    )
+
     return BillingAccountResponse(
-        is_subscribed=subscription_status in ("active", "trialing"),
+        is_subscribed=is_subscribed,
         current_spend=current_spend,
         lifetime_spend=lifetime_spend,
         subscription_status=subscription_status,
@@ -226,6 +235,62 @@ async def create_portal(
 
 
 # ---------------------------------------------------------------------------
+# Trial signup — single endpoint that backs the ProviderPicker cards.
+# ---------------------------------------------------------------------------
+
+
+class TrialCheckoutRequest(BaseModel):
+    provider_choice: str = Field(..., description="chatgpt_oauth | byo_key | bedrock_claude")
+
+
+@router.post(
+    "/trial-checkout",
+    summary="Start a 14-day trial via Stripe Checkout",
+    description=(
+        "Creates a Stripe Checkout session in subscription mode with a 14-day trial. "
+        "Charges $0 today; user enters card details, the Subscription is born trialing, "
+        "and Stripe converts it on day 15. The chosen provider_choice is threaded into "
+        "subscription metadata so the webhook handler can persist it on the user row. "
+        "Returns the Checkout URL — frontend redirects the browser to it."
+    ),
+    operation_id="create_trial_checkout",
+)
+async def create_trial_checkout(
+    body: TrialCheckoutRequest,
+    auth: AuthContext = Depends(get_current_user),
+):
+    from core.services.billing_service import (
+        BillingService,
+        BillingServiceError,
+        create_flat_fee_checkout,
+    )
+
+    if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+        raise HTTPException(status_code=400, detail="unknown provider_choice")
+
+    owner_id = resolve_owner_id(auth)
+    account = await _get_billing_account(auth)
+    if not account:
+        owner_type = get_owner_type(auth)
+        billing_service = BillingService()
+        account = await billing_service.create_customer_for_owner(
+            owner_id=owner_id,
+            owner_type=owner_type,
+            email=auth.email,
+        )
+
+    try:
+        session = await create_flat_fee_checkout(
+            owner_id=owner_id,
+            provider_choice=body.provider_choice,
+            trial_days=14,
+        )
+    except BillingServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"checkout_url": session.url}
+
+
+# ---------------------------------------------------------------------------
 # Credit ledger endpoints (Plan 2 §6.2 / §6.4)
 # ---------------------------------------------------------------------------
 
@@ -269,6 +334,12 @@ async def top_up_credits(
     if not account or not account.get("stripe_customer_id"):
         raise HTTPException(status_code=400, detail="No Stripe customer on file")
 
+    # Idempotency key is a per-request UUID so two legitimate top-ups of the
+    # same amount (even within the same minute) create distinct PaymentIntents.
+    # The double-submit guard is a frontend concern (the Pay button disables
+    # itself + the page reloads on success). Codex P2 on PR #393 — using a
+    # minute bucket meant a second top-up could collapse onto the first
+    # PaymentIntent and silently skip the credit grant.
     with timing("stripe.api.latency", {"op": "payment_intent.create"}):
         pi = stripe.PaymentIntent.create(
             amount=body.amount_cents,
@@ -279,14 +350,13 @@ async def top_up_credits(
                 "purpose": "credit_top_up",
                 "user_id": ctx.user_id,
             },
-            idempotency_key=f"top_up:{ctx.user_id}:{body.amount_cents}:{int(time.time() // 60)}",
+            idempotency_key=f"top_up:{ctx.user_id}:{uuid.uuid4().hex}",
         )
     return {"client_secret": pi.client_secret, "payment_intent_id": pi.id}
 
 
 @router.put(
     "/credits/auto_reload",
-    status_code=204,
     summary="Configure auto-reload",
     description=("Configure auto-reload: when balance drops below threshold_cents, charge amount_cents off-session."),
 )
@@ -305,7 +375,11 @@ async def set_auto_reload(
         threshold_cents=body.threshold_cents,
         amount_cents=body.amount_cents,
     )
-    return Response(status_code=204)
+    # Return JSON (not 204) — the frontend `useApi` helper unconditionally
+    # parses successful responses with .json(), so an empty body is read as
+    # a parse failure and surfaces as an error in CreditsPanel. Codex P2 on
+    # PR #393.
+    return {"status": "ok"}
 
 
 @router.post(
@@ -370,6 +444,23 @@ async def handle_stripe_webhook(
                 status=event_data.get("status", "active"),
                 trial_end=event_data.get("trial_end"),
             )
+            # Trial-checkout threads provider_choice into subscription
+            # metadata so we can persist it on the user row without a
+            # separate /users/sync call from the post-Checkout return.
+            metadata_provider = (event_data.get("metadata") or {}).get("provider_choice")
+            if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
+                from core.repositories import user_repo
+
+                try:
+                    await user_repo.set_provider_choice(
+                        account["owner_id"],
+                        provider_choice=metadata_provider,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist provider_choice from sub metadata for owner %s",
+                        account["owner_id"],
+                    )
 
     elif event_type == "customer.subscription.trial_will_end":
         # Plan 3 §7.2 + §8.2: Stripe fires this 3 days before trial_end. We

@@ -93,8 +93,13 @@ async def set_subscription(
 
     existing["stripe_subscription_id"] = subscription_id
     existing["subscription_status"] = status
+    # Always overwrite trial_end so a cancellation (trial_end=None) actually
+    # clears the field — Codex P2 on PR #393 (stale trial countdown after
+    # subscription.deleted).
     if trial_end is not None:
         existing["trial_end"] = trial_end
+    else:
+        existing.pop("trial_end", None)
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()

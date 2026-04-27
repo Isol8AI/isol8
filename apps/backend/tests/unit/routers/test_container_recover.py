@@ -27,6 +27,15 @@ class TestContainerRecover:
             mock_rpc.return_value = {}
             yield mock_rpc
 
+    @pytest.fixture(autouse=True)
+    def mock_user_repo(self):
+        """Recovery now reads provider_choice from user_repo before
+        reprovisioning (Codex P1 on PR #393). Mock the lookup so tests
+        don't hit DDB."""
+        with patch("routers.container_recover.user_repo") as mock_repo:
+            mock_repo.get = AsyncMock(return_value=None)  # falls through to bedrock_claude default
+            yield mock_repo
+
     # --- CONTAINER_DOWN: full re-provision ---
 
     @pytest.mark.asyncio

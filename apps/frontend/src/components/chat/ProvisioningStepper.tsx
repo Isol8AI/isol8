@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
-import Link from "next/link";
 import {
   Loader2,
   XCircle,
@@ -328,13 +327,18 @@ export function ProvisioningStepper({
         posthog?.capture("onboarding_provider_completed", {
           provider_choice: providerChoice,
         });
+        setProviderStepDone(true);
       } catch (err) {
-        // Don't block the wizard on a sync failure — the user already
-        // completed their provider step locally; we'll retry on next
-        // chat message via the gateway's lazy /users/sync.
+        // Sync MUST succeed before we advance — backend gating + credit
+        // deduction key off the persisted provider_choice. Letting the
+        // wizard proceed without it lets bedrock_claude users chat for
+        // free until ChatLayout's /users/sync (which doesn't pass
+        // provider_choice) eventually retries. Codex P1 on PR #393.
         console.error("Provider /users/sync failed:", err);
+        alert(
+          "Couldn't save your provider choice — please try again. If this keeps happening, contact support@isol8.co.",
+        );
       }
-      setProviderStepDone(true);
     };
     return (
       <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
@@ -750,6 +754,33 @@ function StepperDisplay({
 }
 
 function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }) {
+  const api = useApi();
+  const [loading, setLoading] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const handlePick = useCallback(async (id: "chatgpt_oauth" | "byo_key" | "bedrock_claude") => {
+    setLoading(id);
+    setError(null);
+    try {
+      const resp = (await api.post("/billing/trial-checkout", {
+        provider_choice: id,
+      })) as { checkout_url?: string };
+      if (resp?.checkout_url) {
+        // Redirect to Stripe Checkout. After Checkout returns success, the
+        // wizard re-mounts on /chat?checkout=success&provider=<id>; the
+        // subscription.updated webhook persists provider_choice to the user
+        // row, the wizard sees subscription_status === "trialing", and
+        // advances into the provider phase. Codex P1 on PR #393 — without
+        // this round-trip the user got stuck in the payment phase forever.
+        window.location.href = resp.checkout_url;
+      } else {
+        throw new Error("No checkout_url returned");
+      }
+    } catch (err) {
+      setLoading(null);
+      setError(err instanceof Error ? err.message : "Couldn't start checkout. Please try again.");
+    }
+  }, [api]);
   type Card = {
     id: "chatgpt_oauth" | "byo_key" | "bedrock_claude";
     title: string;
@@ -817,13 +848,16 @@ function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }
           </p>
         </div>
 
+        {error && (
+          <div className="text-sm text-red-600 -mt-4">{error}</div>
+        )}
+
         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
           {cards.map((card) => (
-            <Link
+            <div
               key={card.id}
-              href={`/chat?provider=${card.id}`}
               className={
-                "rounded-xl border p-6 space-y-4 bg-white text-left flex flex-col hover:shadow-md transition-shadow " +
+                "rounded-xl border p-6 space-y-4 bg-white text-left flex flex-col " +
                 (card.highlighted ? "border-2 border-[#06402B]" : "border-[#e0dbd0]")
               }
             >
@@ -847,11 +881,12 @@ function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }
                     : "w-full rounded-full border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]"
                 }
                 variant={card.highlighted ? "default" : "outline"}
-                asChild
+                onClick={() => handlePick(card.id)}
+                disabled={loading !== null}
               >
-                <span>{card.cta}</span>
+                {loading === card.id ? <Loader2 className="h-4 w-4 animate-spin" /> : card.cta}
               </Button>
-            </Link>
+            </div>
           ))}
         </div>
       </div>

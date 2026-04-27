@@ -621,7 +621,14 @@ class GatewayConnection:
         from core.repositories import user_repo
         from core.services import credit_ledger
 
-        user = await user_repo.get(self.user_id)
+        # provider_choice + credit balance live on the per-Clerk-user row,
+        # not on the (owner-keyed) gateway connection. For org webchat the
+        # session_key carries the member id; for personal webchat the
+        # connection's user_id IS the Clerk user. Codex P1 on PR #393.
+        parsed = _parse_session_key(chat_session_id)
+        billing_user_id = parsed.get("member_id") or self.user_id
+
+        user = await user_repo.get(billing_user_id)
         if not user or user.get("provider_choice") != "bedrock_claude":
             return
 
@@ -651,7 +658,7 @@ class GatewayConnection:
         # throughout the credit ledger.
         marked_up = raw * 14 // 10
         await credit_ledger.deduct(
-            self.user_id,
+            billing_user_id,
             amount_microcents=marked_up,
             chat_session_id=chat_session_id,
             raw_cost_microcents=raw,
@@ -659,7 +666,7 @@ class GatewayConnection:
         )
         logger.info(
             "Deducted credits for user %s session %s: raw=%d marked_up=%d model=%s",
-            self.user_id,
+            billing_user_id,
             chat_session_id,
             raw,
             marked_up,
