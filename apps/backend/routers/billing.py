@@ -268,6 +268,12 @@ async def create_trial_checkout(
     if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         raise HTTPException(status_code=400, detail="unknown provider_choice")
 
+    # Org-context callers must be admins — without this gate any org member
+    # could create a Stripe Checkout against the org's billing account and
+    # spawn a parallel subscription. Codex P1 on PR #393.
+    if auth.is_org_context:
+        require_org_admin(auth)
+
     owner_id = resolve_owner_id(auth)
     account = await _get_billing_account(auth)
     if not account:
@@ -278,6 +284,23 @@ async def create_trial_checkout(
             owner_type=owner_type,
             email=auth.email,
         )
+
+    # Refuse a second trial-checkout when an active/trialing subscription
+    # already exists. Stripe Checkout in mode="subscription" creates a NEW
+    # subscription on every successful return, so a retry past the 5-minute
+    # idempotency-bucket window would charge the customer twice. Codex P1
+    # on PR #393.
+    existing_status = account.get("subscription_status")
+    if existing_status in ("active", "trialing", "past_due") or account.get("stripe_subscription_id"):
+        # Allow retries when the existing row is canceled / incomplete /
+        # incomplete_expired — those don't bill, and the user genuinely
+        # needs to be able to start a fresh trial. Match the criteria used
+        # by the legacy create_checkout_session guard (see PR #389).
+        if existing_status in ("active", "trialing", "past_due"):
+            raise HTTPException(
+                status_code=409,
+                detail=f"already_subscribed:{existing_status}",
+            )
 
     try:
         session = await create_flat_fee_checkout(

@@ -120,11 +120,15 @@ async def patch_config(
 
     # Subscription gate on channel fields. Channels require an active or
     # trialing subscription — pre-signup users (no billing row) and
-    # canceled/past_due users can't bind bots.
+    # canceled/past_due users can't bind bots. Falls back to the legacy
+    # stripe_subscription_id marker for accounts that predate the cutover
+    # or haven't yet received a customer.subscription.updated webhook so
+    # paid users don't get rejected mid-migration. Codex P1 on PR #393.
     if _patch_touches_channels(body.patch):
         account = await billing_repo.get_by_owner_id(owner_id)
         status = account.get("subscription_status") if isinstance(account, dict) else None
-        if status not in ("active", "trialing"):
+        has_legacy_sub = bool(isinstance(account, dict) and account.get("stripe_subscription_id"))
+        if status not in ("active", "trialing") and not has_legacy_sub:
             raise HTTPException(
                 status_code=403,
                 detail="channels_require_subscription",
