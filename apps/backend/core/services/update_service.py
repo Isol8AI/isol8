@@ -1,4 +1,13 @@
-"""Update service -- orchestrates tier changes, image updates, and scheduled worker."""
+"""Update service -- orchestrates tier changes, image updates, and scheduled worker.
+
+Plan 2 (flat-fee pivot) deletes tier-based model routing. The legacy
+``_build_tier_config_patch`` helper still exists below so callers
+(billing.py webhook + tests) keep importing cleanly, but its model
+list is empty pending the full removal in Task 16. Behavior on a
+post-pivot deploy: a tier change emits a no-op patch — harmless,
+since plan_tier itself is going away. Tests for this flow are
+xfailed pending Task 16.
+"""
 
 import asyncio
 import logging
@@ -6,19 +15,23 @@ import logging
 from core.config import TIER_CONFIG
 from core.observability.metrics import put_metric
 from core.repositories import update_repo
-from core.containers.config import _models_for_tier
 from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
 
 def _build_tier_config_patch(tier_config: dict, tier: str) -> dict:
-    """Build the openclaw.json patch dict for a given tier config."""
+    """Build the openclaw.json patch dict for a given tier config.
+
+    Stubbed for the flat-fee pivot — emits an empty Bedrock model
+    list rather than the deleted ``_models_for_tier`` lookup. Will
+    be removed entirely by Task 16 along with ``queue_tier_change``.
+    """
     return {
         "models": {
             "providers": {
                 "amazon-bedrock": {
-                    "models": _models_for_tier(tier),
+                    "models": [],
                 },
             },
         },

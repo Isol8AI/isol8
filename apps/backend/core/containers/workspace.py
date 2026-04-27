@@ -16,6 +16,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -23,6 +24,11 @@ from core.config import settings
 from core.observability.metrics import put_metric
 
 logger = logging.getLogger(__name__)
+
+# Clerk user ids look like `user_xxxxxx`. Restrict to that character class so
+# any path component can never contain `/`, `..`, or other traversal payloads
+# when interpolated into an EFS path.
+_USER_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # System files/dirs to hide from every directory listing, regardless of depth.
 # Anything that could legitimately exist as a user file at a deeper path (e.g.,
@@ -642,3 +648,79 @@ class Workspace:
 
     def agent_workspace_path(self, user_id: str, agent_id: str) -> Path:
         return self.user_path(user_id) / "workspaces" / agent_id
+
+
+async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
+    """Write the user's ChatGPT OAuth profile to EFS before container start.
+
+    The file shape is what OpenClaw's openai-codex provider reads at boot
+    via $CODEX_HOME/auth.json (default ~/.codex/auth.json). Container
+    config sets CODEX_HOME to /mnt/efs/users/{user_id}/codex so this file
+    is found cold. Per spec §5.1.
+
+    Re-OAuth callers can re-invoke this helper; the file is overwritten,
+    not merged.
+
+    Args:
+        user_id: our internal user_id.
+        oauth_tokens: dict with keys access_token, refresh_token, and
+            (optional) account_id. Sourced from oauth_service.poll_device_code.
+
+    Note: tokens are written in plaintext to EFS. This is intentional —
+    OpenClaw's openai-codex provider reads them at boot. Security boundary
+    is EFS encryption-at-rest (KMS) + per-user EFS access point UID/GID
+    isolation, NOT in-file encryption. Don't try to "fix" by encrypting
+    here; the container can't decrypt at boot.
+    """
+    if not _USER_ID_PATTERN.match(user_id):
+        raise ValueError(f"user_id contains invalid characters: {user_id!r}")
+
+    required = {"access_token", "refresh_token"}
+    missing = required - set(oauth_tokens.keys())
+    if missing:
+        raise ValueError(f"oauth_tokens missing required keys: {sorted(missing)}")
+
+    efs_root = os.environ.get("EFS_MOUNT_PATH") or settings.EFS_MOUNT_PATH
+    if not efs_root:
+        raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
+
+    base = Path(efs_root) / user_id / "codex"
+    base.mkdir(parents=True, exist_ok=True)
+
+    payload = {
+        "auth_mode": "chatgpt",
+        "tokens": {
+            "access_token": oauth_tokens["access_token"],
+            "refresh_token": oauth_tokens["refresh_token"],
+        },
+    }
+    if oauth_tokens.get("account_id"):
+        payload["tokens"]["account_id"] = oauth_tokens["account_id"]
+
+    # Atomic write: write to .tmp + os.replace. Truncate-then-write isn't
+    # crash-atomic — a re-OAuth that crashes mid-write would leave OpenClaw
+    # with corrupt JSON. os.replace is atomic on POSIX (same filesystem).
+    auth_path = base / "auth.json"
+    tmp_path = base / "auth.json.tmp"
+    tmp_path.write_text(json.dumps(payload, indent=2))
+
+    # OpenClaw container runs as UID 1000 — match ownership so the
+    # in-container token-refresh logic can rotate the file. Best-effort;
+    # ignore failures (e.g. local dev without root, test tmp_path).
+    try:
+        os.chown(str(tmp_path), 1000, 1000)
+    except (PermissionError, OSError):
+        pass
+
+    os.replace(str(tmp_path), str(auth_path))
+
+    # Chown the parent dir (best-effort, separate from the file).
+    try:
+        os.chown(str(base), 1000, 1000)
+    except (PermissionError, OSError):
+        pass
+
+    logger.info(
+        "pre_staged_codex_auth",
+        extra={"user_id": user_id, "has_account_id": "account_id" in oauth_tokens},
+    )

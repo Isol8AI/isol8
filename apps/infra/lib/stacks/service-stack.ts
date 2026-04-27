@@ -44,6 +44,9 @@ export interface ServiceStackProps extends cdk.StackProps {
     pendingUpdatesTable: dynamodb.Table;
     channelLinksTable: dynamodb.Table;
     adminActionsTable: dynamodb.Table;
+    creditsTable: dynamodb.Table;
+    creditTransactionsTable: dynamodb.Table;
+    oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
@@ -225,6 +228,28 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Per-user LLM-key secrets (Plan 2 Task 10): backend creates/updates/reads
+    // a Secrets Manager secret per user under isol8/{env}/user-keys/*. Scoped
+    // tightly to that prefix so the broad SecretsAccess policy above is not
+    // implicitly widened to write access on all isol8/{env}/* secrets.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "UserKeysSecretsRW",
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DeleteSecret",
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/user-keys/*`,
+        ],
+      }),
+    );
+
     // DynamoDB tables
     props.database.usersTable.grantReadWriteData(this.taskRole);
     props.database.containersTable.grantReadWriteData(this.taskRole);
@@ -234,6 +259,9 @@ export class ServiceStack extends cdk.Stack {
     props.database.pendingUpdatesTable.grantReadWriteData(this.taskRole);
     props.database.channelLinksTable.grantReadWriteData(this.taskRole);
     props.database.adminActionsTable.grantReadWriteData(this.taskRole);
+    props.database.creditsTable.grantReadWriteData(this.taskRole);
+    props.database.creditTransactionsTable.grantReadWriteData(this.taskRole);
+    props.database.oauthTokensTable.grantReadWriteData(this.taskRole);
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     props.database.webhookDedupTable.grantWriteData(this.taskRole);
@@ -582,6 +610,7 @@ export class ServiceStack extends cdk.Stack {
         // same CMK as the BYOK Fernet layer since the blast radius is the same
         // (any principal with kms:Decrypt on this key can read any of them).
         CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
+        STRIPE_FLAT_PRICE_ID: process.env.STRIPE_FLAT_PRICE_ID ?? "",
         STRIPE_STARTER_PRICE_ID:
           env === "prod"
             ? "price_1TF5MkI54BysGS3rLYE6K0fZ"
@@ -627,6 +656,10 @@ export class ServiceStack extends cdk.Stack {
         CLOUD_MAP_SERVICE_ID: props.container.cloudMapService.serviceId,
         CLOUD_MAP_SERVICE_ARN: props.container.cloudMapService.serviceArn,
         DYNAMODB_TABLE_PREFIX: `isol8-${env}-`,
+        CREDITS_TABLE: props.database.creditsTable.tableName,
+        CREDIT_TRANSACTIONS_TABLE:
+          props.database.creditTransactionsTable.tableName,
+        OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
         // PostHog server-side reads for the admin Activity tab.
         // us.posthog.com is the API host for US Cloud (our project lives

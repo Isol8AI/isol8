@@ -1828,7 +1828,7 @@ class TestProvisionUserContainer:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
             mock_repo.update_fields = AsyncMock()
 
-            await manager.provision_user_container("user_test_123")
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
             import asyncio as _asyncio
 
@@ -1860,7 +1860,7 @@ class TestProvisionUserContainer:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
             mock_repo.update_fields = AsyncMock()
 
-            await manager.provision_user_container("user_test_123")
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
             import asyncio as _asyncio
 
@@ -1892,7 +1892,7 @@ class TestProvisionUserContainer:
             mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
 
-            await manager.provision_user_container("user_test_123")
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
             # Let any fire-and-forget tasks be scheduled.
             import asyncio as _asyncio
@@ -1930,7 +1930,7 @@ class TestProvisionUserContainer:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
             mock_repo.update_fields = AsyncMock()
 
-            await manager.provision_user_container("user_test_123")
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
             # update_service is called directly (not via asyncio.to_thread)
             # in the redeploying branch.
@@ -1967,7 +1967,7 @@ class TestProvisionUserContainer:
             mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="provisioning"))
             mock_repo.update_fields = AsyncMock()
 
-            await manager.provision_user_container("user_test_123")
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
 
             import asyncio as _asyncio
 
@@ -1978,180 +1978,376 @@ class TestProvisionUserContainer:
             # Also no DDB update (status already correct).
             mock_repo.update_fields.assert_not_called()
 
+    # NOTE: pre-existing tier-resolution tests
+    # (test_provision_resolves_tier_from_billing_when_not_passed,
+    #  test_provision_defaults_to_free_when_no_billing_record,
+    #  test_provision_falls_back_to_free_on_billing_lookup_error,
+    #  test_provision_respects_explicit_tier_arg_over_billing,
+    #  test_provision_produces_paid_tier_openclaw_config_for_starter [xfail])
+    # were deleted in Plan 2 Task 13 — the flat-fee pivot removes per-tier
+    # plan resolution entirely. Coverage of the new shape lives below in
+    # TestProvisionUserContainerProviderChoice and in
+    # tests/unit/containers/test_config_provider_routing.py.
+
+
+class TestProvisionUserContainerProviderChoice:
+    """Tests for the Plan 2 Task 13 provider_choice plumbing.
+
+    Each provider_choice triggers a different pre-task setup:
+      * chatgpt_oauth -> pre_stage_codex_auth runs BEFORE the ECS service
+        is created so the codex auth.json is on EFS at first boot.
+      * byo_key       -> per-user Secrets Manager ARN is added to the task
+        definition's secrets[] block under OPENAI_API_KEY/ANTHROPIC_API_KEY.
+      * bedrock_claude -> no extra setup; AWS creds come from the task IAM role.
+    """
+
     @pytest.mark.asyncio
-    async def test_provision_resolves_tier_from_billing_when_not_passed(
+    async def test_provision_byo_key_attaches_secret_arn_to_task_def(self, manager, mock_ecs_client, mock_efs_client):
+        """For byo_key provider, the per-user Secrets Manager ARN saved by
+        key_service (Task 10) lands in the registered task def's secrets[]
+        block under OPENAI_API_KEY. The first task that boots reads the key
+        from Secrets Manager via the task IAM role grant — no plaintext on
+        disk."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_get_key.return_value = {
+                "user_id": "user_test_123",
+                "tool_id": "openai",
+                "secret_arn": secret_arn,
+            }
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="byo_key",
+                byo_provider="openai",
+            )
+
+            # The per-user task def registration must have included the
+            # OPENAI_API_KEY secret entry. With register_task_definition mocked,
+            # we inspect the kwargs of the call.
+            assert mock_ecs_client.register_task_definition.called
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            assert "secrets" in container_def, "byo_key must add a secrets[] block"
+            secret_names = {s["name"] for s in container_def["secrets"]}
+            assert "OPENAI_API_KEY" in secret_names, f"Expected OPENAI_API_KEY in task-def secrets, got {secret_names}"
+            entry = next(s for s in container_def["secrets"] if s["name"] == "OPENAI_API_KEY")
+            assert entry["valueFrom"] == secret_arn
+
+    @pytest.mark.asyncio
+    async def test_provision_byo_key_anthropic_uses_anthropic_env_var(self, manager, mock_ecs_client, mock_efs_client):
+        """byo_provider=anthropic pivots the secrets[] env var name to
+        ANTHROPIC_API_KEY (the env var the OpenClaw anthropic provider reads)."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/anthropic-XyZqr"
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_get_key.return_value = {
+                "user_id": "user_test_123",
+                "tool_id": "anthropic",
+                "secret_arn": secret_arn,
+            }
+
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="byo_key",
+                byo_provider="anthropic",
+            )
+
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            secret_names = {s["name"] for s in container_def["secrets"]}
+            assert "ANTHROPIC_API_KEY" in secret_names
+
+    @pytest.mark.asyncio
+    async def test_provision_byo_key_missing_secret_arn_raises_before_service_create(
         self, manager, mock_ecs_client, mock_efs_client
     ):
-        """When no tier argument is passed (the usual router call), the
-        billing record's plan_tier must be forwarded to write_user_configs.
+        """If the api-keys row has no secret_arn (key never saved or save
+        rolled back), provisioning must abort BEFORE create_user_service so
+        we don't end up with a half-provisioned ECS service the user can't
+        use. Caller is expected to gate provisioning on a successful key
+        save."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
 
-        Regression test for issue #293: the router called
-        provision_user_container without a tier arg, so the function-level
-        default ("free") was used regardless of the caller's actual plan.
-        A paying starter/pro/enterprise user ended up with free-tier
-        configs written to EFS on first provision.
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            # No secret_arn set on the row.
+            mock_get_key.return_value = {"user_id": "user_test_123", "tool_id": "openai"}
+
+            with pytest.raises(EcsManagerError):
+                await manager.provision_user_container(
+                    "user_test_123",
+                    provider_choice="byo_key",
+                    byo_provider="openai",
+                )
+
+            # Service was never created.
+            assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_chatgpt_oauth_pre_stages_auth_before_service_create(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """For chatgpt_oauth, the codex auth.json must be written to EFS
+        BEFORE create_service is called — otherwise the first task boots
+        without auth and crashes on first chat."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+        call_order: list[str] = []
+
+        async def _record_pre_stage(*, user_id, oauth_tokens):
+            call_order.append("pre_stage")
+
+        def _record_create_service(**kwargs):
+            call_order.append("create_service")
+            return {"service": {"serviceName": kwargs.get("serviceName")}}
+
+        mock_ecs_client.create_service.side_effect = _record_create_service
+
+        tokens = {"access_token": "tok-a", "refresh_token": "tok-r"}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=tokens)),
+            patch("core.containers.workspace.pre_stage_codex_auth", side_effect=_record_pre_stage),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.provision_user_container("user_test_123", provider_choice="chatgpt_oauth")
+
+            assert call_order, "pre_stage_codex_auth and create_service must both be called"
+            # pre_stage_codex_auth runs before create_service.
+            assert call_order.index("pre_stage") < call_order.index("create_service"), (
+                f"pre_stage_codex_auth must run before create_service, got order={call_order}"
+            )
+
+    @pytest.mark.asyncio
+    async def test_provision_chatgpt_oauth_aborts_when_no_tokens(self, manager, mock_ecs_client, mock_efs_client):
+        """If no active OAuth row exists for the user, provisioning aborts
+        before any AWS calls. Caller is expected to gate on a completed
+        device-code flow."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=None)),
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+
+            with pytest.raises(EcsManagerError):
+                await manager.provision_user_container("user_test_123", provider_choice="chatgpt_oauth")
+
+            assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_bedrock_claude_skips_pre_task_setup(self, manager, mock_ecs_client, mock_efs_client):
+        """bedrock_claude routes auth via the task IAM role — no per-user
+        secrets injection, no codex auth pre-stage. The registered task def
+        must NOT carry a per-user secrets[] block beyond whatever the CDK
+        base already had."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            # api_key_repo never queried for bedrock.
+            assert not mock_get_key.called
+
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            # No per-user secrets layered on top.
+            assert not container_def.get("secrets"), (
+                "bedrock_claude must not add per-user secrets; auth comes from task IAM role"
+            )
+
+    @pytest.mark.asyncio
+    async def test_provision_byo_key_requires_byo_provider(self, manager, mock_ecs_client, mock_efs_client):
+        """byo_key without byo_provider is a programming error from the
+        caller. Raise before creating any AWS resources."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+
+            with pytest.raises(EcsManagerError):
+                await manager.provision_user_container("user_test_123", provider_choice="byo_key")
+
+            assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_unknown_provider_choice_raises(self, manager, mock_ecs_client, mock_efs_client):
+        """An unknown provider_choice value is rejected before any AWS work."""
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+
+            with pytest.raises(EcsManagerError):
+                await manager.provision_user_container("user_test_123", provider_choice="something-else")
+
+            assert not mock_ecs_client.create_service.called
+
+    @pytest.mark.asyncio
+    async def test_provision_byo_key_restart_from_zero_re_registers_task_def_with_secrets(
+        self, manager, mock_ecs_client, mock_efs_client
+    ):
+        """When a BYOK user's container is at desired=0 and re-provisions,
+        the restart path MUST register a fresh task def carrying the per-user
+        OPENAI_API_KEY/ANTHROPIC_API_KEY secret entry. Without this, the
+        service comes back on the prior task definition (which may not have
+        the secret, e.g. user just switched provider while the container was
+        scaled to zero) and the container fails provider auth on cold start.
         """
-        # No service exists -> full-provisioning path (writes configs).
-        mock_ecs_client.describe_services.return_value = {"services": []}
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "status": "ACTIVE",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                }
+            ]
+        }
+        old_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:5"
+        new_arn = "arn:aws:ecs:us-east-1:123:task-definition/openclaw:6"
+        mock_ecs_client.register_task_definition.return_value = {"taskDefinition": {"taskDefinitionArn": new_arn}}
+        secret_arn = "arn:aws:secretsmanager:us-east-1:123:secret:isol8/dev/user-keys/user_test_123/openai-AbCdE"
 
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
+            patch("core.repositories.api_key_repo.get_key", new_callable=AsyncMock) as mock_get_key,
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "plan_tier": "starter"})
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(
+                    status="stopped",
+                    access_point_id="fsap-user-restart",
+                    task_definition_arn=old_arn,
+                )
+            )
+            mock_repo.update_fields = AsyncMock()
+            mock_get_key.return_value = {
+                "user_id": "user_test_123",
+                "tool_id": "openai",
+                "secret_arn": secret_arn,
+            }
 
-            await manager.provision_user_container("user_test_123")
-
-            mock_billing.get_by_owner_id.assert_awaited_once_with("user_test_123")
-            # write_user_configs must be invoked with tier="starter", not "free".
-            assert mock_write_configs.await_count >= 1
-            kwargs = mock_write_configs.await_args_list[-1].kwargs
-            assert kwargs.get("tier") == "starter", (
-                f"Expected tier='starter' from billing record, got {kwargs.get('tier')!r}. "
-                "Router callers don't pass a tier, so provision_user_container must "
-                "resolve it from billing or paying users get free-tier configs."
+            await manager.provision_user_container(
+                "user_test_123",
+                provider_choice="byo_key",
+                byo_provider="openai",
             )
 
-    @pytest.mark.asyncio
-    async def test_provision_defaults_to_free_when_no_billing_record(self, manager, mock_ecs_client, mock_efs_client):
-        """No billing row yet -> fall back to tier='free'. This is the path
-        a brand-new user hits before Stripe webhook creates the billing
-        account row."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_billing.get_by_owner_id = AsyncMock(return_value=None)
-
-            await manager.provision_user_container("user_test_123")
-
-            kwargs = mock_write_configs.await_args_list[-1].kwargs
-            assert kwargs.get("tier") == "free"
-
-    @pytest.mark.asyncio
-    async def test_provision_falls_back_to_free_on_billing_lookup_error(
-        self, manager, mock_ecs_client, mock_efs_client
-    ):
-        """A billing_repo exception must not crash the provision path.
-        Worst case: user boots on free-tier configs and the next patch
-        (via queue_tier_change on the subscription webhook) corrects it."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_billing.get_by_owner_id = AsyncMock(side_effect=RuntimeError("dynamodb down"))
-
-            await manager.provision_user_container("user_test_123")
-
-            kwargs = mock_write_configs.await_args_list[-1].kwargs
-            assert kwargs.get("tier") == "free"
-
-    @pytest.mark.asyncio
-    async def test_provision_respects_explicit_tier_arg_over_billing(self, manager, mock_ecs_client, mock_efs_client):
-        """Explicit tier arg wins over the billing lookup. This keeps the
-        /debug/provision-style override possible and makes the function
-        composable for tests."""
-        mock_ecs_client.describe_services.return_value = {"services": []}
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "write_user_configs", new_callable=AsyncMock) as mock_write_configs,
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_billing.get_by_owner_id = AsyncMock(return_value={"plan_tier": "starter"})
-
-            await manager.provision_user_container("user_test_123", tier="pro")
-
-            kwargs = mock_write_configs.await_args_list[-1].kwargs
-            assert kwargs.get("tier") == "pro"
-            # Explicit tier should bypass the billing lookup entirely.
-            mock_billing.get_by_owner_id.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_provision_produces_paid_tier_openclaw_config_for_starter(
-        self, manager, mock_ecs_client, mock_efs_client
-    ):
-        """End-to-end assertion: a router-style provision call (no tier arg)
-        for a starter-subscribed user must produce an openclaw.json on EFS
-        whose primary model is Qwen3 VL 235B, not the free-tier MiniMax.
-
-        This is the real chain #293 fixes:
-            router (no tier)
-              -> provision_user_container
-                -> _resolve_tier_for_owner (billing.plan_tier="starter")
-                  -> write_user_configs(tier="starter")
-                    -> write_openclaw_config(tier="starter")
-
-        Runs the real write_openclaw_config; only the EFS boundary and the
-        KMS-heavy device-identity step are stubbed.
-        """
-        import json as _json
-
-        mock_ecs_client.describe_services.return_value = {"services": []}
-        captured_writes: dict[str, str] = {}
-
-        fake_workspace = MagicMock()
-        fake_workspace.write_file = MagicMock(
-            side_effect=lambda _uid, path, content: captured_writes.__setitem__(path, content)
-        )
-
-        with (
-            patch("core.containers.ecs_manager.container_repo") as mock_repo,
-            patch("core.containers.ecs_manager.billing_repo") as mock_billing,
-            patch("core.containers.ecs_manager.get_workspace", return_value=fake_workspace),
-            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
-            patch.object(manager, "ensure_device_identities", new_callable=AsyncMock),
-        ):
-            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
-            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
-            mock_billing.get_by_owner_id = AsyncMock(return_value={"owner_id": "user_test_123", "plan_tier": "starter"})
-
-            await manager.provision_user_container("user_test_123")
-
-            assert "openclaw.json" in captured_writes, (
-                f"openclaw.json was not written. Files seen: {list(captured_writes)}"
+            # A fresh task def was registered carrying the BYO secret.
+            assert mock_ecs_client.register_task_definition.called, (
+                "Restart-from-zero must register a new task definition so the "
+                "BYO secrets get applied; otherwise the cold-started task "
+                "boots on a stale revision without OPENAI_API_KEY."
             )
-            config = _json.loads(captured_writes["openclaw.json"])
-
-            # Primary model must be Qwen3 VL 235B for starter, not MiniMax.
-            # Before the fix, tier resolved to "free" so primary was MiniMax.
-            primary = config["agents"]["defaults"]["model"]["primary"]
-            assert "qwen.qwen3-vl-235b-a22b" in primary, (
-                f"Expected Qwen3 VL 235B primary for starter, got {primary!r}. "
-                "If this is MiniMax, provision_user_container fell back to free tier."
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            container_def = reg_kwargs["containerDefinitions"][0]
+            secret_names = {s["name"] for s in container_def.get("secrets", [])}
+            assert "OPENAI_API_KEY" in secret_names, (
+                f"Expected OPENAI_API_KEY in restart-path task-def secrets, got {secret_names}"
             )
 
-            # Starter catalog exposes BOTH MiniMax and Qwen, not just MiniMax.
-            bedrock_models = config["models"]["providers"]["amazon-bedrock"]["models"]
-            model_ids = {m["id"] for m in bedrock_models}
-            assert "qwen.qwen3-vl-235b-a22b" in model_ids, f"Starter must expose Qwen3 VL 235B; got {model_ids}"
-            assert "minimax.minimax-m2.5" in model_ids, f"Starter must still expose MiniMax M2.5; got {model_ids}"
+            # update_service was called with the new ARN + desiredCount=1.
+            update_calls = [
+                c for c in mock_ecs_client.update_service.call_args_list if c.kwargs.get("desiredCount") == 1
+            ]
+            assert update_calls, "Expected an update_service call to scale up to 1"
+            kw = update_calls[-1].kwargs
+            assert kw.get("taskDefinition") == new_arn, (
+                "update_service must point at the freshly-registered task def; "
+                "without taskDefinition= the service stays pinned to the prior revision."
+            )
+
+            # Old task def was deregistered.
+            assert any(
+                c.kwargs.get("taskDefinition") == old_arn
+                for c in mock_ecs_client.deregister_task_definition.call_args_list
+            ), "Expected the prior per-user task def to be deregistered after refresh"
+
+
+class TestPerUserTaskSize:
+    """Plan 2 Task 13 / Task 2: every per-user task def is registered with
+    the single PER_USER_CPU/MEMORY constants, regardless of plan tier."""
+
+    @pytest.mark.asyncio
+    async def test_register_task_definition_uses_per_user_constants(self, manager, mock_ecs_client, mock_efs_client):
+        """Per-user task definitions clone the CDK base but enforce the
+        canonical 0.5 vCPU / 1 GB shape — they don't inherit a stale base
+        cpu/memory value."""
+        from core.containers.ecs_manager import PER_USER_CPU, PER_USER_MEMORY_MIB
+
+        mock_ecs_client.describe_services.return_value = {"services": []}
+
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+            patch.object(manager, "write_user_configs", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            mock_repo.upsert = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+            mock_repo.update_status = AsyncMock(return_value=_make_container_dict(status="provisioning"))
+
+            await manager.provision_user_container("user_test_123", provider_choice="bedrock_claude")
+
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            assert reg_kwargs["cpu"] == PER_USER_CPU
+            assert reg_kwargs["memory"] == PER_USER_MEMORY_MIB

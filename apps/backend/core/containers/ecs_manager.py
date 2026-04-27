@@ -13,6 +13,7 @@ import logging
 import re
 import secrets
 import socket
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
@@ -27,11 +28,18 @@ from core.containers.config import (
     write_openclaw_config,
 )
 from core.containers.workspace import get_workspace
-from core.repositories import billing_repo, container_repo
+from core.repositories import container_repo
 
 logger = logging.getLogger(__name__)
 
 GATEWAY_PORT = 18789
+
+# Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
+# Old per-tier sizing (free/starter 0.5/1, pro 1/2, enterprise 2/4) deleted —
+# every paying user gets the same 0.5 vCPU / 1 GB box. Kept as constants
+# so the resize/register paths pull from a single place.
+PER_USER_CPU = "512"
+PER_USER_MEMORY_MIB = "1024"
 
 
 class EcsManagerError(Exception):
@@ -139,6 +147,7 @@ class EcsManager:
         new_image: str | None = None,
         new_cpu: str | None = None,
         new_memory: str | None = None,
+        secrets_for_task: list[dict] | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
@@ -169,13 +178,22 @@ class EcsManager:
                 vol_copy["efsVolumeConfiguration"] = efs_copy
             volumes.append(vol_copy)
 
-        # Deep-copy containerDefinitions because we may mutate `image`. Each
-        # entry is itself a dict — we shallow-copy each before mutation.
+        # Deep-copy containerDefinitions because we may mutate `image` and
+        # `secrets`. Each entry is itself a dict — we shallow-copy each before
+        # mutation. Per-user `secrets:` (LLM API key Secrets Manager ARN for
+        # byo_key provider, card 2 of the flat-fee pivot) are layered onto the
+        # primary container only.
         container_defs = []
-        for cd in base["containerDefinitions"]:
+        for idx, cd in enumerate(base["containerDefinitions"]):
             cd_copy = dict(cd)
             if new_image:
                 cd_copy["image"] = new_image
+            if idx == 0 and secrets_for_task:
+                # Merge with any baseline `secrets` list the CDK base may have
+                # set so we don't drop platform secrets while injecting per-user
+                # provider keys.
+                base_secrets = list(cd_copy.get("secrets") or [])
+                cd_copy["secrets"] = base_secrets + list(secrets_for_task)
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
@@ -186,19 +204,31 @@ class EcsManager:
             containerDefinitions=container_defs,
             volumes=volumes,
             requiresCompatibilities=base.get("requiresCompatibilities", ["FARGATE"]),
-            cpu=new_cpu or base.get("cpu", "256"),
-            memory=new_memory or base.get("memory", "512"),
+            # Single per-user task size (flat-fee pivot). Explicit `new_cpu`/
+            # `new_memory` (used by the resize flow) win; otherwise fall back to
+            # the canonical PER_USER_* constants instead of whatever the CDK base
+            # task def carries — a stale base value would leak into per-user
+            # revisions.
+            cpu=new_cpu or PER_USER_CPU,
+            memory=new_memory or PER_USER_MEMORY_MIB,
         )
         if base.get("runtimePlatform"):
             reg_kwargs["runtimePlatform"] = base["runtimePlatform"]
 
         return reg_kwargs
 
-    def _register_task_definition(self, access_point_id: str) -> str:
+    def _register_task_definition(
+        self,
+        access_point_id: str,
+        secrets_for_task: list[dict] | None = None,
+    ) -> str:
         """Clone the CDK base for a new per-user container.
 
         Args:
             access_point_id: The per-user EFS access point ID.
+            secrets_for_task: Optional ECS-task ``secrets:`` entries to layer
+                onto the primary container. Each entry is a dict like
+                ``{"name": "OPENAI_API_KEY", "valueFrom": "<secrets-arn>"}``.
 
         Returns:
             The ARN of the newly registered task definition revision.
@@ -207,7 +237,10 @@ class EcsManager:
             EcsManagerError: If the ECS API calls fail.
         """
         try:
-            reg_kwargs = self._build_register_kwargs_from_base(access_point_id)
+            reg_kwargs = self._build_register_kwargs_from_base(
+                access_point_id,
+                secrets_for_task=secrets_for_task,
+            )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
             put_metric("container.task_def.register", dimensions={"status": "ok"})
@@ -240,7 +273,13 @@ class EcsManager:
     # Service lifecycle
     # ------------------------------------------------------------------
 
-    async def create_user_service(self, user_id: str, gateway_token: str, owner_type: str = "personal") -> str:
+    async def create_user_service(
+        self,
+        user_id: str,
+        gateway_token: str,
+        owner_type: str = "personal",
+        secrets_for_task: list[dict] | None = None,
+    ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
         1. Upserts the Container DB record (status=provisioning) so frontend can poll
@@ -253,6 +292,11 @@ class EcsManager:
         Args:
             user_id: Clerk user ID.
             gateway_token: Auth token for the OpenClaw gateway HTTP API.
+            owner_type: "personal" or "org" for tagging the EFS access point.
+            secrets_for_task: Optional per-user ECS ``secrets:`` entries to
+                inject into the primary container (e.g. the BYOK
+                OPENAI_API_KEY/ANTHROPIC_API_KEY ARN). Empty for the
+                ``chatgpt_oauth`` and ``bedrock_claude`` paths.
 
         Returns:
             The ECS service name.
@@ -285,8 +329,13 @@ class EcsManager:
                 substatus="efs_created",
             )
 
-            # Step 2: Register per-user task definition with that access point
-            task_def_arn = self._register_task_definition(access_point_id)
+            # Step 2: Register per-user task definition with that access point.
+            # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN)
+            # before the service is created so the first task pulls them.
+            task_def_arn = self._register_task_definition(
+                access_point_id,
+                secrets_for_task=secrets_for_task,
+            )
             await self._update_container(
                 user_id,
                 task_definition_arn=task_def_arn,
@@ -589,24 +638,26 @@ class EcsManager:
         await self.start_user_service(user_id)
         return {"status": "started"}
 
-    async def resize_for_user(self, user_id: str, tier: str) -> dict:
-        """Resize to the per-tier CPU/memory profile.
+    async def resize_for_user(self, user_id: str, tier: str | None = None) -> dict:
+        """Resize the user's container to the single per-user task size.
 
-        Mirrors the tier mapping in CLAUDE.md (free/starter: 0.5 vCPU /
-        1 GB; pro: 1 vCPU / 2 GB; enterprise: 2 vCPU / 4 GB). Wraps the
-        existing resize_user_container method.
+        Per spec §3.2 / §10 (flat-fee pivot, 2026-04): every user — free or
+        paying — gets the same 0.5 vCPU / 1 GB box. The old per-tier sizing
+        (pro 1/2, enterprise 2/4) is gone; the ``tier`` arg is accepted for
+        admin-router back-compat (Plan 3 cutover removes the call site) and
+        is otherwise ignored.
         """
-        tier_resources = {
-            "free": ("512", "1024"),
-            "starter": ("512", "1024"),
-            "pro": ("1024", "2048"),
-            "enterprise": ("2048", "4096"),
+        del tier  # unused under flat-fee
+        await self.resize_user_container(
+            user_id,
+            new_cpu=PER_USER_CPU,
+            new_memory=PER_USER_MEMORY_MIB,
+        )
+        return {
+            "status": "resized",
+            "cpu": PER_USER_CPU,
+            "memory": PER_USER_MEMORY_MIB,
         }
-        if tier not in tier_resources:
-            raise EcsManagerError(f"unknown tier: {tier}", user_id)
-        cpu, memory = tier_resources[tier]
-        await self.resize_user_container(user_id, new_cpu=cpu, new_memory=memory)
-        return {"status": "resized", "tier": tier, "cpu": cpu, "memory": memory}
 
     async def delete_user_service(self, user_id: str) -> None:
         """Remove a user's ECS service and per-user resources entirely.
@@ -865,29 +916,65 @@ class EcsManager:
             pass
         return None
 
-    async def _resolve_tier_for_owner(self, owner_id: str) -> str:
-        """Resolve the plan tier for an owner from the billing record.
+    async def _build_byo_secrets_for_user(
+        self,
+        user_id: str,
+        byo_provider: str,
+    ) -> list[dict]:
+        """Build the ECS task ``secrets:`` block for a BYOK provisioning.
 
-        Returns "free" if the billing row is missing, has no plan_tier, or
-        the lookup itself raises. A failing tier lookup must not crash the
-        provision path -- the container can still boot on free-tier configs
-        and the next config patch (via queue_tier_change on the subscription
-        webhook) will correct anything that drifts.
+        Looks up the api-keys row populated by ``key_service`` (Task 10) for
+        ``{user_id, byo_provider}`` and turns its ``secret_arn`` into a single
+        ``secrets:`` entry that the per-user task definition references.
+        ``service-stack.ts`` already grants the backend
+        ``secretsmanager:GetSecretValue`` for ``isol8/{env}/user-keys/*``, so
+        the per-user ARN is reachable from the task IAM role.
         """
-        try:
-            account = await billing_repo.get_by_owner_id(owner_id)
-        except Exception:
-            logger.warning("billing_repo lookup failed for %s; defaulting tier=free", owner_id, exc_info=True)
-            return "free"
-        if not account:
-            return "free"
-        return account.get("plan_tier") or "free"
+        if byo_provider not in {"openai", "anthropic"}:
+            raise EcsManagerError(
+                f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}",
+                user_id,
+            )
+        from core.repositories import api_key_repo
+
+        key_row = await api_key_repo.get_key(user_id, byo_provider)
+        if not key_row or not key_row.get("secret_arn"):
+            raise EcsManagerError(
+                f"No saved {byo_provider} key for user {user_id} - caller should "
+                "block provisioning until the user adds their key",
+                user_id,
+            )
+        env_var_name = "OPENAI_API_KEY" if byo_provider == "openai" else "ANTHROPIC_API_KEY"
+        return [{"name": env_var_name, "valueFrom": key_row["secret_arn"]}]
+
+    async def _pre_stage_oauth_for_user(self, user_id: str) -> None:
+        """Pre-stage the codex auth.json for a chatgpt_oauth user.
+
+        Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
+        (Task 7) and writes them to EFS at ``/mnt/efs/users/{user_id}/codex/``
+        BEFORE the ECS service is created so the container reads them cold
+        on first boot. Raises if no active OAuth row exists — caller should
+        gate provisioning on a completed device-code flow.
+        """
+        from core.services.oauth_service import get_decrypted_tokens
+
+        tokens = await get_decrypted_tokens(user_id=user_id)
+        if not tokens:
+            raise EcsManagerError(
+                f"No ChatGPT OAuth tokens for user {user_id} - caller should complete OAuth before provisioning",
+                user_id,
+            )
+        from core.containers.workspace import pre_stage_codex_auth
+
+        await pre_stage_codex_auth(user_id=user_id, oauth_tokens=tokens)
 
     async def provision_user_container(
         self,
         user_id: str,
+        *,
+        provider_choice: str,
+        byo_provider: str | None = None,
         owner_type: str = "personal",
-        tier: str | None = None,
     ) -> str:
         """Provision or recover a user's container.
 
@@ -901,12 +988,14 @@ class EcsManager:
 
         Args:
             user_id: Clerk user ID.
-            owner_type: "personal" or "org".
-            tier: Plan tier for config generation. When None (the usual
-                case -- every production router caller omits this arg), the
-                tier is resolved from the billing account; a missing or
-                unreadable account falls back to "free" so we never crash
-                the provision path on a billing lookup error.
+            provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
+                ``"bedrock_claude"``. Selects the LLM provider block in
+                openclaw.json (Task 12) and drives any pre-task setup
+                (codex auth pre-stage for chatgpt_oauth, per-user
+                Secrets Manager wiring for byo_key).
+            byo_provider: Required when ``provider_choice == "byo_key"``;
+                one of ``"openai"`` or ``"anthropic"``.
+            owner_type: "personal" or "org" (for EFS access-point tagging).
 
         Returns:
             The ECS service name.
@@ -914,8 +1003,28 @@ class EcsManager:
         Raises:
             EcsManagerError: If any provisioning step fails.
         """
-        if tier is None:
-            tier = await self._resolve_tier_for_owner(user_id)
+        # --- Card-specific pre-task setup (must run BEFORE ECS service create
+        # so the first task starts with auth/keys already in place). ---
+        secrets_for_task: list[dict] = []
+        if provider_choice == "chatgpt_oauth":
+            await self._pre_stage_oauth_for_user(user_id)
+        elif provider_choice == "byo_key":
+            if byo_provider is None:
+                raise EcsManagerError(
+                    "byo_provider is required when provider_choice == 'byo_key'",
+                    user_id,
+                )
+            secrets_for_task = await self._build_byo_secrets_for_user(user_id, byo_provider)
+        elif provider_choice == "bedrock_claude":
+            # No extra setup — auth comes from the ECS task IAM role granted
+            # bedrock:InvokeModel by the container stack.
+            pass
+        else:
+            raise EcsManagerError(
+                f"Unknown provider_choice: {provider_choice!r}",
+                user_id,
+            )
+
         service_name = self._service_name(user_id)
 
         # Check current state
@@ -943,17 +1052,86 @@ class EcsManager:
                     )
 
                 try:
-                    await self.write_user_configs(user_id, gateway_token, tier=tier)
+                    await self.write_user_configs(
+                        user_id,
+                        gateway_token,
+                        provider_choice=provider_choice,
+                        byo_provider=byo_provider,
+                    )
                 except Exception as e:
                     logger.warning("Config write failed during restart: %s (continuing anyway)", e)
 
-                try:
-                    await self.start_user_service(user_id)
-                except EcsManagerError:
-                    put_metric("container.provision", dimensions={"status": "error"})
-                    put_metric("container.error_state")
-                    await self._update_container(user_id, status="error", substatus=None)
-                    raise
+                # Re-register the task definition with the freshly-computed
+                # secrets_for_task. Without this, a BYOK user whose container
+                # scaled to zero would restart on the prior revision and skip
+                # the per-user OPENAI/ANTHROPIC secrets injection (the path
+                # that flows in via _build_byo_secrets_for_user above).
+                # We always re-register so the path is uniform across
+                # providers; oauth/bedrock_claude have empty secrets_for_task.
+                access_point_id = existing.get("access_point_id") if existing else None
+                if access_point_id:
+                    try:
+                        new_task_def_arn = await asyncio.to_thread(
+                            self._register_task_definition,
+                            access_point_id,
+                            secrets_for_task=secrets_for_task,
+                        )
+                        await asyncio.to_thread(
+                            self._ecs.update_service,
+                            cluster=self._cluster,
+                            service=service_name,
+                            desiredCount=1,
+                            taskDefinition=new_task_def_arn,
+                            deploymentConfiguration={
+                                "deploymentCircuitBreaker": {
+                                    "enable": True,
+                                    "rollback": False,
+                                }
+                            },
+                        )
+                        old_task_def_arn = existing.get("task_definition_arn") if existing else None
+                        await container_repo.update_fields(
+                            user_id,
+                            {"task_definition_arn": new_task_def_arn},
+                        )
+                        if old_task_def_arn and old_task_def_arn != new_task_def_arn:
+                            try:
+                                await asyncio.to_thread(
+                                    self._deregister_task_definition,
+                                    old_task_def_arn,
+                                )
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to deregister stale task def %s: %s",
+                                    old_task_def_arn,
+                                    e,
+                                )
+                        # start_user_service normally fires the running-transition
+                        # poller; we bypassed it, so do it here.
+                        asyncio.create_task(self._await_running_transition(user_id))
+                    except EcsManagerError:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise
+                    except Exception as e:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise EcsManagerError(
+                            f"Failed to restart service with refreshed task def: {e}",
+                            user_id,
+                        )
+                else:
+                    # No access point on record (shouldn't happen for an
+                    # ACTIVE service but fall back to the simple start path).
+                    try:
+                        await self.start_user_service(user_id)
+                    except EcsManagerError:
+                        put_metric("container.provision", dimensions={"status": "error"})
+                        put_metric("container.error_state")
+                        await self._update_container(user_id, status="error", substatus=None)
+                        raise
 
                 put_metric("container.provision", dimensions={"status": "ok"})
                 return service_name
@@ -1046,12 +1224,25 @@ class EcsManager:
         # Step 1: Generate gateway token
         gateway_token = secrets.token_urlsafe(32)
 
-        # Step 2: Create ECS service (desiredCount=0)
-        service_name = await self.create_user_service(user_id, gateway_token, owner_type=owner_type)
+        # Step 2: Create ECS service (desiredCount=0). Per-user secrets (only
+        # set for byo_key) are layered onto the per-user task def so the first
+        # task that ECS launches starts with OPENAI_API_KEY/ANTHROPIC_API_KEY
+        # already injected.
+        service_name = await self.create_user_service(
+            user_id,
+            gateway_token,
+            owner_type=owner_type,
+            secrets_for_task=secrets_for_task,
+        )
 
         # Step 3: Write configs to EFS
         try:
-            await self.write_user_configs(user_id, gateway_token, tier=tier)
+            await self.write_user_configs(
+                user_id,
+                gateway_token,
+                provider_choice=provider_choice,
+                byo_provider=byo_provider,
+            )
         except Exception as e:
             put_metric("container.provision", dimensions={"status": "error"})
             put_metric("container.error_state")
@@ -1232,12 +1423,20 @@ class EcsManager:
                         return task_arn, detail.get("value")
         return None, None
 
-    async def write_user_configs(self, user_id: str, gateway_token: str, tier: str = "free") -> None:
+    async def write_user_configs(
+        self,
+        user_id: str,
+        gateway_token: str,
+        *,
+        provider_choice: str,
+        byo_provider: str | None = None,
+    ) -> None:
         """Write OpenClaw config files + pre-paired device trust store to EFS.
 
         Writes four files to the user's EFS workspace:
 
-        - `openclaw.json` — the gateway config (models, channels, scopes, etc.)
+        - `openclaw.json` — the gateway config (provider block driven by
+          ``provider_choice``: chatgpt_oauth / byo_key / bedrock_claude)
         - `.mcporter/mcporter.json` — MCP server registry (currently empty)
         - `devices/.node-device-key.pem` — the node role's private key, read
           by the in-container agent for loopback authentication
@@ -1250,14 +1449,25 @@ class EcsManager:
         a config patch that updated openclaw.json in-place) should call
         :meth:`ensure_device_identities` instead to avoid overwriting the
         openclaw.json that was just patched.
+
+        Args:
+            user_id: Clerk user ID (also the EFS subdir).
+            gateway_token: Auth token for the OpenClaw gateway HTTP API.
+            provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
+                ``"bedrock_claude"``. Drives which provider block lands in
+                openclaw.json (Task 12 contract).
+            byo_provider: ``"openai"`` or ``"anthropic"``. Required when
+                ``provider_choice == "byo_key"`` so the right model block is
+                emitted; ignored otherwise.
         """
-        config_json = write_openclaw_config(
-            region=settings.AWS_REGION,
-            gateway_token=gateway_token,
-            tier=tier,
+        config_path = Path(settings.EFS_MOUNT_PATH) / user_id / "openclaw.json"
+        await write_openclaw_config(
+            config_path=config_path,
+            provider_choice=provider_choice,
+            user_id=user_id,
+            byo_provider=byo_provider,
         )
         workspace = get_workspace()
-        workspace.write_file(user_id, "openclaw.json", config_json)
         workspace.write_file(user_id, ".mcporter/mcporter.json", write_mcporter_config())
         await self.ensure_device_identities(user_id, gateway_token)
 

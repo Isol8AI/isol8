@@ -2,15 +2,18 @@
 
 import asyncio
 import logging
+import time
 
 import httpx
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id, get_owner_type, require_org_admin
 from core.config import settings, TIER_CONFIG
-from core.observability.metrics import put_metric
+from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
+from core.services import credit_ledger
 from core.services.billing_service import (
     AlreadySubscribedError,
     BillingService,
@@ -320,6 +323,89 @@ async def toggle_overage(
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Credit ledger endpoints (Plan 2 §6.2 / §6.4)
+# ---------------------------------------------------------------------------
+
+
+class TopUpRequest(BaseModel):
+    amount_cents: int = Field(..., ge=500, description="Minimum $5 (500 cents)")
+
+
+class AutoReloadRequest(BaseModel):
+    enabled: bool
+    threshold_cents: int | None = Field(default=None, ge=500)
+    amount_cents: int | None = Field(default=None, ge=500)
+
+
+@router.get(
+    "/credits/balance",
+    summary="Get the user's prepaid credit balance",
+    description=("Returns the user's current prepaid Claude credit balance in microcents and dollars (formatted)."),
+)
+async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
+    balance_uc = await credit_ledger.get_balance(ctx.user_id)
+    dollars = f"{balance_uc / 1_000_000:.2f}"
+    return {"balance_microcents": balance_uc, "balance_dollars": dollars}
+
+
+@router.post(
+    "/credits/top_up",
+    summary="Buy credits via Stripe PaymentIntent",
+    description=(
+        "Creates a Stripe PaymentIntent for one-time credit purchase. "
+        "Returns client_secret for Stripe.js confirmation. Minimum $5."
+    ),
+)
+async def top_up_credits(
+    body: TopUpRequest,
+    ctx: AuthContext = Depends(get_current_user),
+):
+    if body.amount_cents < 500:
+        raise HTTPException(status_code=400, detail="Minimum top-up is $5 (500 cents)")
+    account = await billing_repo.get_by_owner_id(ctx.user_id)
+    if not account or not account.get("stripe_customer_id"):
+        raise HTTPException(status_code=400, detail="No Stripe customer on file")
+
+    with timing("stripe.api.latency", {"op": "payment_intent.create"}):
+        pi = stripe.PaymentIntent.create(
+            amount=body.amount_cents,
+            currency="usd",
+            customer=account["stripe_customer_id"],
+            automatic_payment_methods={"enabled": True},
+            metadata={
+                "purpose": "credit_top_up",
+                "user_id": ctx.user_id,
+            },
+            idempotency_key=f"top_up:{ctx.user_id}:{body.amount_cents}:{int(time.time() // 60)}",
+        )
+    return {"client_secret": pi.client_secret, "payment_intent_id": pi.id}
+
+
+@router.put(
+    "/credits/auto_reload",
+    status_code=204,
+    summary="Configure auto-reload",
+    description=("Configure auto-reload: when balance drops below threshold_cents, charge amount_cents off-session."),
+)
+async def set_auto_reload(
+    body: AutoReloadRequest,
+    ctx: AuthContext = Depends(get_current_user),
+):
+    if body.enabled and (body.threshold_cents is None or body.amount_cents is None):
+        raise HTTPException(
+            status_code=400,
+            detail="threshold_cents and amount_cents required when enabling",
+        )
+    await credit_ledger.set_auto_reload(
+        ctx.user_id,
+        enabled=body.enabled,
+        threshold_cents=body.threshold_cents,
+        amount_cents=body.amount_cents,
+    )
+    return Response(status_code=204)
+
+
 @router.post(
     "/webhooks/stripe",
     summary="Handle Stripe webhooks",
@@ -425,5 +511,30 @@ async def handle_stripe_webhook(
 
     elif event_type == "invoice.paid":
         logger.info("Payment succeeded for customer %s", event_data.get("customer"))
+
+    elif event_type == "payment_intent.succeeded":
+        pi = event["data"]["object"]
+        if pi.get("metadata", {}).get("purpose") != "credit_top_up":
+            # Some other payment intent (e.g. Stripe-internal). Ignore.
+            return Response(status_code=200)
+
+        user_id = pi["metadata"].get("user_id")
+        if not user_id:
+            logger.error("Credit top-up webhook missing user_id metadata: %s", pi["id"])
+            return Response(status_code=200)
+
+        # 1 cent = 10_000 microcents. PaymentIntent.amount is in cents.
+        amount_microcents = int(pi["amount"]) * 10_000
+        await credit_ledger.top_up(
+            user_id,
+            amount_microcents=amount_microcents,
+            stripe_payment_intent_id=pi["id"],
+        )
+        put_metric(
+            "credit.top_up",
+            value=pi["amount"] / 100.0,
+            unit="None",
+            dimensions={"source": "stripe_payment_intent"},
+        )
 
     return {"status": "ok"}

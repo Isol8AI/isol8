@@ -87,3 +87,74 @@ class TestSettingsKeys:
         data = resp.json()
         assert len(data["keys"]) == 1
         assert data["keys"][0]["tool_id"] == "elevenlabs"
+
+
+class TestSettingsKeysLLM:
+    """Task 11: the router accepts the new LLM provider IDs at the gate."""
+
+    @pytest.mark.asyncio
+    @patch("routers.settings_keys.KeyService")
+    async def test_put_settings_keys_accepts_openai(self, mock_svc_cls, async_client):
+        """The router no longer rejects openai at the gate."""
+        mock_svc = AsyncMock()
+        mock_svc.set_key = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "tool_id": "openai",
+                "secret_arn": "arn:aws:secretsmanager:us-east-1:000:secret:n",
+            }
+        )
+        mock_svc_cls.return_value = mock_svc
+        resp = await async_client.put(
+            "/api/v1/settings/keys/openai",
+            json={"api_key": "sk-test-key"},
+        )
+        # Either 200 or 204 is fine depending on the existing handler shape;
+        # the key assertion is "not 400 / Unsupported tool".
+        assert resp.status_code != 400, f"Got 400: {resp.text}"
+        assert resp.status_code == 200
+        assert resp.json()["tool_id"] == "openai"
+
+    @pytest.mark.asyncio
+    @patch("routers.settings_keys.KeyService")
+    async def test_put_settings_keys_accepts_anthropic(self, mock_svc_cls, async_client):
+        """The router no longer rejects anthropic at the gate."""
+        mock_svc = AsyncMock()
+        mock_svc.set_key = AsyncMock(
+            return_value={
+                "user_id": "user_test_123",
+                "tool_id": "anthropic",
+                "secret_arn": "arn:aws:secretsmanager:us-east-1:000:secret:n",
+            }
+        )
+        mock_svc_cls.return_value = mock_svc
+        resp = await async_client.put(
+            "/api/v1/settings/keys/anthropic",
+            json={"api_key": "sk-ant-test"},
+        )
+        assert resp.status_code != 400, f"Got 400: {resp.text}"
+        assert resp.status_code == 200
+        assert resp.json()["tool_id"] == "anthropic"
+
+    @pytest.mark.asyncio
+    async def test_put_settings_keys_still_rejects_garbage(self, async_client):
+        """Negative test: an unknown tool_id still returns 400."""
+        resp = await async_client.put(
+            "/api/v1/settings/keys/totally_made_up",
+            json={"api_key": "x"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("routers.settings_keys.KeyService")
+    async def test_list_keys_exposes_llm_providers(self, mock_svc_cls, async_client):
+        """GET /settings/keys advertises the LLM providers in its envelope."""
+        mock_svc = AsyncMock()
+        mock_svc.list_keys = AsyncMock(return_value=[])
+        mock_svc_cls.return_value = mock_svc
+        resp = await async_client.get("/api/v1/settings/keys")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "supported_llm_providers" in data
+        # Order isn't guaranteed; assert as a set.
+        assert set(data["supported_llm_providers"]) == {"openai", "anthropic"}
