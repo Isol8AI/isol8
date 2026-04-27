@@ -75,3 +75,31 @@ async def sync_user(
     # + ProvisioningStepper) for the same reason.
 
     return {"status": status, "user_id": user_id}
+
+
+@router.get(
+    "/me",
+    summary="Get the authenticated user's record",
+    description=(
+        "Returns the user's persisted fields needed by the frontend "
+        "(provider_choice, byo_provider). Used by the LLMPanel settings "
+        "page to render the correct provider section."
+    ),
+    operation_id="get_me",
+    responses={401: {"description": "Missing or invalid Clerk JWT token"}},
+)
+async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
+    user = await user_repo.get(auth.user_id)
+    if not user:
+        # Frontend treats absent record as "not yet synced" — return an
+        # empty shape so the panel's Loading state can resolve cleanly.
+        return {
+            "user_id": auth.user_id,
+            "provider_choice": None,
+            "byo_provider": None,
+        }
+    return {
+        "user_id": auth.user_id,
+        "provider_choice": user.get("provider_choice"),
+        "byo_provider": user.get("byo_provider"),
+    }

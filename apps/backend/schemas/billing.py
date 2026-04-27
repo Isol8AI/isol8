@@ -21,6 +21,11 @@ class BillingAccountResponse(BaseModel):
     overage_enabled: bool
     overage_limit: float | None
     within_included: bool
+    # Stripe-native trial state (Plan 3 §7.1 / §7.5). Frontend
+    # TrialBanner reads `subscription_status` + `trial_end` to render
+    # the days-left countdown. Both null until the user enters a trial.
+    subscription_status: str | None = None
+    trial_end: int | None = None  # Unix epoch seconds
 
 
 class CheckoutRequest(BaseModel):

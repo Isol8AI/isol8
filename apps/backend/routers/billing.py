@@ -99,6 +99,13 @@ async def get_billing_account(
     # response (account is None) always reports None.
     overage_limit = float(account["overage_limit"]) / 1_000_000 if account and account.get("overage_limit") else None
 
+    # Stripe-native trial state for Plan 3 TrialBanner. Both fields
+    # come from billing_repo.set_subscription (set on subscription create
+    # + refreshed by customer.subscription.updated webhook). Account is
+    # None for synthetic free-tier responses → both fields stay None.
+    subscription_status = account.get("subscription_status") if account else None
+    trial_end = account.get("trial_end") if account else None
+
     return BillingAccountResponse(
         tier=budget["tier"],
         is_subscribed=budget["is_subscribed"],
@@ -109,6 +116,8 @@ async def get_billing_account(
         overage_enabled=budget["overage_enabled"],
         overage_limit=overage_limit,
         within_included=budget["within_included"],
+        subscription_status=subscription_status,
+        trial_end=int(trial_end) if trial_end is not None else None,
     )
 
 
