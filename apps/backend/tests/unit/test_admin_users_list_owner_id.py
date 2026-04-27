@@ -56,7 +56,7 @@ async def test_list_users_dedupes_container_lookup_for_same_org_members():
 
     container_mock = AsyncMock(return_value={"status": "running"})
     # plan_tier lives on billing_accounts, not containers (see fix-plan-tier PR).
-    billing_mock = AsyncMock(return_value={"plan_tier": "pro"})
+    billing_mock = AsyncMock(return_value={"subscription_status": "active"})
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
@@ -76,7 +76,7 @@ async def test_list_users_dedupes_container_lookup_for_same_org_members():
     assert len(result["users"]) == 2
     for row in result["users"]:
         assert row["container_status"] == "running"
-        assert row["plan_tier"] == "pro"
+        assert row["subscription_status"] == "active"
         assert row["org"] == ORG_FIXTURE
 
 
@@ -98,7 +98,7 @@ async def test_list_users_personal_mode_looks_up_container_by_user_id():
         return []
 
     container_mock = AsyncMock(return_value={"status": "running"})
-    billing_mock = AsyncMock(return_value={"plan_tier": "starter"})
+    billing_mock = AsyncMock(return_value={"subscription_status": "active"})
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
@@ -112,7 +112,7 @@ async def test_list_users_personal_mode_looks_up_container_by_user_id():
     billing_mock.assert_awaited_once_with("user_solo")
     assert len(result["users"]) == 1
     assert result["users"][0]["container_status"] == "running"
-    assert result["users"][0]["plan_tier"] == "starter"
+    assert result["users"][0]["subscription_status"] == "active"
     assert result["users"][0]["org"] is None
 
 
@@ -146,8 +146,8 @@ async def test_list_users_mixed_page_resolves_each_row_correctly():
 
     async def fake_billing_lookup(owner_id):
         return {
-            "org_abc": {"plan_tier": "pro"},
-            "user_solo": {"plan_tier": "free"},
+            "org_abc": {"subscription_status": "active"},
+            "user_solo": {},
         }.get(owner_id)
 
     with (
@@ -163,11 +163,11 @@ async def test_list_users_mixed_page_resolves_each_row_correctly():
     solo_row = next(r for r in result["users"] if r["clerk_id"] == "user_solo")
 
     assert member_row["container_status"] == "running"
-    assert member_row["plan_tier"] == "pro"
+    assert member_row["subscription_status"] == "active"
     assert member_row["org"] == ORG_FIXTURE
 
     assert solo_row["container_status"] == "stopped"
-    assert solo_row["plan_tier"] == "free"
+    assert solo_row["subscription_status"] is None
     assert solo_row["org"] is None
 
 
@@ -209,8 +209,8 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
 
     async def fake_billing_lookup(owner_id):
         return {
-            "org_abc": {"plan_tier": "pro"},
-            "user_flaky": {"plan_tier": "free"},
+            "org_abc": {"subscription_status": "active"},
+            "user_flaky": {},
         }.get(owner_id)
 
     with (
@@ -235,7 +235,7 @@ async def test_list_users_falls_back_to_personal_mode_when_clerk_errors_for_one_
 
 
 @pytest.mark.asyncio
-async def test_list_users_reads_plan_tier_from_billing_not_container():
+async def test_list_users_reads_subscription_status_from_billing_not_container():
     """Regression: plan_tier lives on the billing_accounts row (see
     billing_repo.put_billing), NOT on the container row. Reading it from the
     container row (the previous bug) caused every user in the list view to
@@ -260,7 +260,7 @@ async def test_list_users_reads_plan_tier_from_billing_not_container():
     # since plan_tier is not a field on the containers table.
     container_mock = AsyncMock(return_value={"status": "running", "service_name": "openclaw-x"})
     # Billing row is the authoritative source for plan_tier.
-    billing_mock = AsyncMock(return_value={"plan_tier": "enterprise"})
+    billing_mock = AsyncMock(return_value={"subscription_status": "active"})
 
     with (
         patch("core.services.admin_service.clerk_admin.list_users", new=fake_clerk_list),
@@ -271,14 +271,14 @@ async def test_list_users_reads_plan_tier_from_billing_not_container():
         result = await admin_service.list_users()
 
     assert len(result["users"]) == 1
-    assert result["users"][0]["plan_tier"] == "enterprise", (
+    assert result["users"][0]["subscription_status"] == "active", (
         "plan_tier must come from billing_repo, not container_repo; "
         "previously returned 'free' because containers never have plan_tier"
     )
 
 
 @pytest.mark.asyncio
-async def test_list_users_plan_tier_defaults_to_free_when_no_billing_row():
+async def test_list_users_subscription_status_is_none_when_no_billing_row():
     """Users with no billing row (never subscribed, pre-provisioning, etc.)
     should render as 'free' — the sensible default. Guards against the fix
     regressing in the opposite direction (KeyError on missing billing row).
@@ -308,5 +308,5 @@ async def test_list_users_plan_tier_defaults_to_free_when_no_billing_row():
     ):
         result = await admin_service.list_users()
 
-    assert result["users"][0]["plan_tier"] == "free"
+    assert result["users"][0]["subscription_status"] is None
     assert result["users"][0]["container_status"] == "none"

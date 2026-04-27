@@ -39,17 +39,20 @@ def _patch_auth(auth: AuthContext):
     return lambda: app.dependency_overrides.pop(get_current_user, None)
 
 
-def _mock_billing(tier: str):
+def _mock_billing(status: str | None):
+    """Mock the billing-account lookup. Pass `None` for the pre-signup case
+    (no billing row); pass "active"/"trialing"/"past_due"/"canceled" to
+    simulate the corresponding subscription state."""
     return patch(
         "routers.config.billing_repo.get_by_owner_id",
-        AsyncMock(return_value={"plan_tier": tier}),
+        AsyncMock(return_value=None if status is None else {"subscription_status": status}),
     )
 
 
 def test_patch_config_personal_user_succeeds(client):
     cleanup = _patch_auth(_personal_auth())
     try:
-        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("starter"):
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("active"):
             resp = client.patch(
                 "/api/v1/config",
                 json={"patch": {"channels": {"telegram": {"enabled": True}}}},
@@ -65,7 +68,7 @@ def test_patch_config_personal_user_succeeds(client):
 def test_patch_config_org_admin_succeeds(client):
     cleanup = _patch_auth(_org_admin_auth())
     try:
-        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("pro"):
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("active"):
             resp = client.patch(
                 "/api/v1/config",
                 json={"patch": {"channels": {"telegram": {"enabled": True}}}},
@@ -80,7 +83,7 @@ def test_patch_config_org_admin_succeeds(client):
 def test_patch_config_org_member_rejected(client):
     cleanup = _patch_auth(_org_member_auth())
     try:
-        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("pro"):
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("active"):
             resp = client.patch(
                 "/api/v1/config",
                 json={"patch": {"channels": {"telegram": {"enabled": True}}}},
@@ -91,25 +94,25 @@ def test_patch_config_org_member_rejected(client):
         cleanup()
 
 
-def test_patch_config_free_tier_channels_rejected(client):
+def test_patch_config_no_subscription_channels_rejected(client):
     cleanup = _patch_auth(_personal_auth())
     try:
-        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("free"):
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing(None):
             resp = client.patch(
                 "/api/v1/config",
                 json={"patch": {"channels": {"telegram": {"enabled": True}}}},
             )
         assert resp.status_code == 403
-        assert "channels_require_paid_tier" in resp.json().get("detail", "")
+        assert "channels_require_subscription" in resp.json().get("detail", "")
         mock_patch.assert_not_called()
     finally:
         cleanup()
 
 
-def test_patch_config_free_tier_non_channels_succeeds(client):
+def test_patch_config_no_subscription_non_channels_succeeds(client):
     cleanup = _patch_auth(_personal_auth())
     try:
-        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing("free"):
+        with patch("routers.config.patch_openclaw_config", AsyncMock()) as mock_patch, _mock_billing(None):
             resp = client.patch(
                 "/api/v1/config",
                 json={"patch": {"tools": {"profile": "full"}}},
@@ -151,7 +154,7 @@ def test_patch_config_rejects_token_collision(client):
                 "routers.config.read_openclaw_config_from_efs",
                 AsyncMock(return_value=existing_cfg),
             ),
-            _mock_billing("pro"),
+            _mock_billing("active"),
         ):
             resp = client.patch(
                 "/api/v1/config",
@@ -192,7 +195,7 @@ def test_patch_config_allows_overwriting_own_agent_token(client):
                 "routers.config.read_openclaw_config_from_efs",
                 AsyncMock(return_value=existing_cfg),
             ),
-            _mock_billing("pro"),
+            _mock_billing("active"),
         ):
             resp = client.patch(
                 "/api/v1/config",

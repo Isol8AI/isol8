@@ -108,7 +108,8 @@ export function OverviewPanel() {
   } = useGatewayRpc<HealthResponse>("health", undefined, { refreshInterval: 10000 });
 
   const { container, isLoading: statusLoading, error: statusError } = useContainerStatus();
-  const { planTier } = useBilling();
+  const { account } = useBilling();
+  const subscriptionStatus = account?.subscription_status ?? null;
 
   const { data: cronData } = useGatewayRpc<CronJob[]>("cron.list");
 
@@ -190,8 +191,8 @@ export function OverviewPanel() {
             />
             <InfoRow
               icon={<CreditCard className="h-3.5 w-3.5" />}
-              label="Plan"
-              value={planTier}
+              label="Subscription"
+              value={subscriptionStatus ?? "—"}
             />
             <InfoRow
               icon={<MapPin className="h-3.5 w-3.5" />}

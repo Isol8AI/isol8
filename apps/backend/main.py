@@ -26,7 +26,6 @@ from core.containers import (
     shutdown_containers,
 )
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
-from core.observability.metrics import put_metric
 from core.repositories import container_repo
 from core.services.update_service import run_scheduled_worker
 from routers import (
@@ -54,24 +53,20 @@ from routers import (
 logger = logging.getLogger(__name__)
 
 
-async def _safe_idle_checker():
-    """Run the gateway idle checker with a metric emitted on crash.
+async def _running_count_gauge_loop():
+    """Periodically emit the gateway running-count gauges.
 
-    The in-process reaper used to die silently inside this broad except, which
-    meant free-tier containers never scaled to zero. Emitting
-    ``gateway.idle_checker.crash`` lets a CloudWatch alarm page when the reaper
-    dies. The metric emit is itself wrapped in try/except so a metric failure
-    can't mask the original reaper crash.
+    Replaces the old _safe_idle_checker — flat-fee cutover removed
+    scale-to-zero, but the W5 alarm on gateway.connection.open still
+    expects a steady metric stream.
     """
-    try:
-        pool = get_gateway_pool()
-        await pool.run_idle_checker()
-    except Exception:
+    while True:
         try:
-            put_metric("gateway.idle_checker.crash")
+            pool = get_gateway_pool()
+            await pool.emit_running_gauges()
         except Exception:
-            pass
-        logger.warning("idle checker exited with exception", exc_info=True)
+            logger.warning("running_gauges loop iteration failed", exc_info=True)
+        await asyncio.sleep(60)
 
 
 async def _resume_provisioning_transitions() -> None:
@@ -107,24 +102,24 @@ async def lifespan(app: FastAPI):
     await _resume_provisioning_transitions()
     worker_task = asyncio.create_task(run_scheduled_worker())
 
-    idle_checker_task = asyncio.create_task(_safe_idle_checker())
+    gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
     # Register background tasks so /admin/system/health can surface their state.
     # See core/services/system_health.py — admin dashboard reads this dict.
     from core.services import system_health
 
     system_health.BACKGROUND_TASKS["scheduled_worker"] = worker_task
-    system_health.BACKGROUND_TASKS["idle_checker"] = idle_checker_task
+    system_health.BACKGROUND_TASKS["running_gauges"] = gauge_task
 
     yield
 
     # Shutdown
     logger.info("Shutting down application...")
     system_health.BACKGROUND_TASKS.clear()
-    idle_checker_task.cancel()
+    gauge_task.cancel()
     worker_task.cancel()
     try:
-        await idle_checker_task
+        await gauge_task
     except asyncio.CancelledError:
         pass
     try:

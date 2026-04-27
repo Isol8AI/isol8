@@ -68,19 +68,10 @@ def connected_user(mock_connection_service):
 
 @pytest.fixture
 def mock_check_budget_allowed():
-    """Mock check_budget to return an allowed result."""
-    with patch("core.services.usage_service.check_budget", new_callable=AsyncMock) as mock_cb:
-        mock_cb.return_value = {
-            "allowed": True,
-            "within_included": True,
-            "overage_available": False,
-            "overage_enabled": False,
-            "current_spend": 0,
-            "included_budget": 2_000_000,
-            "is_subscribed": False,
-            "tier": "free",
-        }
-        yield mock_cb
+    """No-op fixture retained for test arg compatibility — the per-tier budget
+    pre-gate was deleted in the flat-fee cutover (gating now happens in the
+    gateway connection_pool.gate_chat for card-3 users)."""
+    yield None
 
 
 class TestAgentChatMessageRouting:
@@ -230,6 +221,10 @@ class TestProcessAgentChatBackground:
         with patch("routers.websocket_chat.get_gateway_pool") as mock_getter:
             pool = AsyncMock()
             pool.send_rpc = AsyncMock(return_value={"runId": "run-123", "status": "started"})
+            # Plan 3 Task 4: chat.send path now calls gate_chat() before
+            # forwarding to OpenClaw. Default to "not blocked" so existing
+            # tests don't need to know about the gate.
+            pool.gate_chat = AsyncMock(return_value={"blocked": False})
             mock_getter.return_value = pool
             yield pool
 

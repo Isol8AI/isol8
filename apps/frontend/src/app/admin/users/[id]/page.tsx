@@ -27,7 +27,7 @@ interface ClerkIdentity extends ErrorPayload {
 }
 
 interface BillingRow extends ErrorPayload {
-  plan_tier?: string;
+  subscription_status?: string | null;
   stripe_customer_id?: string;
   stripe_subscription_id?: string | null;
   overage_enabled?: boolean;
@@ -37,7 +37,7 @@ interface ContainerRow extends ErrorPayload {
   status?: string;
   task_arn?: string | null;
   service_name?: string | null;
-  plan_tier?: string;
+  subscription_status?: string | null;
   created_at?: number | string | null;
 }
 
@@ -268,7 +268,7 @@ function BillingCard({ billing }: { billing: unknown }) {
   return (
     <Card title="Billing">
       <div className="space-y-0">
-        <Field label="Plan" value={data.plan_tier ?? <span className="text-zinc-500">(unknown)</span>} />
+        <Field label="Plan" value={data.subscription_status ?? <span className="text-zinc-500">(none)</span>} />
         <Field
           label="Stripe customer"
           value={
@@ -337,7 +337,7 @@ function ContainerCard({ container }: { container: unknown }) {
             </span>
           }
         />
-        <Field label="Plan" value={data.plan_tier ?? <span className="text-zinc-500">(unknown)</span>} />
+        <Field label="Plan" value={data.subscription_status ?? <span className="text-zinc-500">(none)</span>} />
         <Field
           label="Service"
           value={

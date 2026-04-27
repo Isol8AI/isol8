@@ -106,10 +106,16 @@ class TestDeduct:
         assert deduct_row["chat_session_id"]["S"] == "sess_1"
 
     @pytest.mark.asyncio
-    async def test_deduct_with_insufficient_balance_overdrafts_to_zero(self, ledger_tables):
+    async def test_deduct_with_insufficient_balance_applies_overdraft(self, ledger_tables):
         """Race scenario: chat completed, deduction would go negative.
-        Per spec §6.3 step 6: accept the small overdraft, set balance to 0,
-        log a warning. Don't reject — the chat already happened."""
+
+        Codex P1 on PR #393: the previous implementation force-set the
+        balance to 0, which would erase any concurrent top-up that landed
+        between the failed conditional decrement and the fallback write.
+        New behavior — apply the deduct with a guard that balance is still
+        below the requested amount; if a top-up already arrived, do
+        nothing. The next top-up restores the balance correctly.
+        """
         await top_up("u_1", amount_microcents=1_000_000, stripe_payment_intent_id="pi_x")  # $1
         await deduct(
             "u_1",
@@ -118,7 +124,39 @@ class TestDeduct:
             raw_cost_microcents=1_428_571,
             markup_multiplier=1.4,
         )
-        assert await get_balance("u_1") == 0
+        # Balance now negative by exactly the overdraft amount. A future
+        # top-up (e.g. auto-reload) lands on top of this and the user
+        # eventually settles. Concurrent top-ups are not erased.
+        assert await get_balance("u_1") == -1_000_000
+
+    @pytest.mark.asyncio
+    async def test_deduct_overdraft_preserves_concurrent_top_up(self, ledger_tables):
+        """If a top-up lands between the failed conditional decrement and
+        the fallback write, the fallback's balance < amount guard short-
+        circuits and the top-up is preserved. Codex P1 on PR #393."""
+        # Simulate the race manually: balance starts low, then a top-up
+        # arrives before the deduct's fallback runs. We approximate by
+        # topping up enough that the *fallback's* condition (balance <
+        # amount) fails, mirroring what would happen if the top-up beat the
+        # fallback.
+        await top_up("u_1", amount_microcents=500_000, stripe_payment_intent_id="pi_x")  # $0.50
+
+        # First deduct: 0.50 < 2.00, conditional decrement fails, fallback
+        # checks balance < 2.00 ($0.50 < $2 — still true), so the deduct
+        # applies: balance becomes 0.50 - 2.00 = -1.50.
+        await deduct(
+            "u_1",
+            amount_microcents=2_000_000,
+            chat_session_id="sess_a",
+            raw_cost_microcents=1_428_571,
+            markup_multiplier=1.4,
+        )
+        assert await get_balance("u_1") == -1_500_000
+
+        # Now simulate the top-up arriving — credit ledger top_up adds the
+        # amount. After this, balance is -1.50 + 5.00 = 3.50.
+        await top_up("u_1", amount_microcents=5_000_000, stripe_payment_intent_id="pi_y")
+        assert await get_balance("u_1") == 3_500_000
 
 
 class TestAutoReload:

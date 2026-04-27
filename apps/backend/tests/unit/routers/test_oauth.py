@@ -70,5 +70,5 @@ async def test_poll_returns_completed_status(async_client):
 async def test_disconnect_revokes(async_client):
     with patch("routers.oauth.revoke_user_oauth", new=AsyncMock()) as mock_revoke:
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     mock_revoke.assert_awaited_once()

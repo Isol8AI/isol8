@@ -169,19 +169,41 @@ async def deduct(
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
         # Race-induced overdraft: chat already completed, can't refund.
-        # Force balance to 0, log, continue.
+        # Decrement by the deduct amount with a guard that the balance is
+        # still negative — this races correctly against a concurrent top-up
+        # that lands between the failed conditional decrement and this
+        # write. Without the guard we'd zero the balance and erase the
+        # top-up entirely (Codex P1 on PR #393).
         logger.warning(
-            "Credit overdraft for user_id=%s session=%s amount=%d — forcing to 0",
+            "Credit overdraft for user_id=%s session=%s amount=%d — applying overdraft deduct",
             user_id,
             chat_session_id,
             amount_microcents,
         )
-        _credits_table().update_item(
-            Key={"user_id": user_id},
-            UpdateExpression="SET balance_microcents = :zero, updated_at = :now",
-            ExpressionAttributeValues={":zero": 0, ":now": _now_iso()},
-        )
-        new_balance = 0
+        try:
+            resp = _credits_table().update_item(
+                Key={"user_id": user_id},
+                UpdateExpression=("ADD balance_microcents :neg SET updated_at = :now"),
+                # Only apply the overdraft deduct if the balance is still
+                # below the requested amount. If a top-up arrived first and
+                # the balance is now sufficient, do nothing — the chat is
+                # already over, the top-up should be retained.
+                ConditionExpression="balance_microcents < :amt",
+                ExpressionAttributeValues={
+                    ":neg": -amount_microcents,
+                    ":amt": amount_microcents,
+                    ":now": _now_iso(),
+                },
+                ReturnValues="UPDATED_NEW",
+            )
+            new_balance = int(resp["Attributes"]["balance_microcents"])
+        except ClientError as e2:
+            if e2.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                raise
+            # Top-up already restored a positive balance — read it and use
+            # that for the audit row instead of writing a zero we'd regret.
+            current = await get_balance(user_id)
+            new_balance = current
 
     txn_item = {
         "user_id": user_id,

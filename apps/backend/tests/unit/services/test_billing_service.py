@@ -1,4 +1,4 @@
-"""Tests for BillingService (DynamoDB-backed) — hybrid tier model."""
+"""Tests for BillingService — flat-fee model."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -6,14 +6,13 @@ import pytest
 
 from core.services import billing_service
 from core.services.billing_service import (
-    AlreadySubscribedError,
     BillingService,
     BillingServiceError,
 )
 
 
 class TestBillingServiceCreateCustomer:
-    """Test Stripe customer creation with DynamoDB conditional write dedup."""
+    """Stripe customer creation with DynamoDB conditional write dedup."""
 
     @pytest.fixture
     def service(self):
@@ -23,14 +22,12 @@ class TestBillingServiceCreateCustomer:
     @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
     async def test_create_customer_for_owner(self, mock_stripe, mock_repo, service):
-        """Should create Stripe customer and billing account for user."""
         mock_repo.get_by_owner_id = AsyncMock(return_value=None)
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_new_123")
         mock_repo.create_if_not_exists = AsyncMock(
             return_value={
                 "owner_id": "user_new_123",
                 "stripe_customer_id": "cus_new_123",
-                "plan_tier": "free",
             }
         )
 
@@ -47,44 +44,38 @@ class TestBillingServiceCreateCustomer:
     @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
     async def test_create_customer_race_deletes_orphan(self, mock_stripe, mock_repo, service):
-        """If DynamoDB conditional write fails (race), delete the orphan Stripe customer."""
+        """If the DDB conditional put loses the race, delete the orphan Stripe customer."""
+        from core.repositories.billing_repo import AlreadyExistsError
+
+        # The patch replaces billing_repo with a MagicMock, including its
+        # AlreadyExistsError attribute. Restore the real class so the
+        # `except billing_repo.AlreadyExistsError` clause in
+        # create_customer_for_owner can match.
+        mock_repo.AlreadyExistsError = AlreadyExistsError
         mock_repo.get_by_owner_id = AsyncMock(
             side_effect=[
-                None,  # first call: no existing
-                {"owner_id": "user_race", "stripe_customer_id": "cus_winner", "plan_tier": "free"},  # after race
+                None,
+                {"owner_id": "user_race", "stripe_customer_id": "cus_winner"},
             ]
         )
         mock_stripe.Customer.create.return_value = MagicMock(id="cus_loser")
-        mock_repo.create_if_not_exists = AsyncMock(side_effect=mock_repo.AlreadyExistsError("user_race"))
-        mock_repo.AlreadyExistsError = type("AlreadyExistsError", (Exception,), {})
-        mock_repo.create_if_not_exists.side_effect = mock_repo.AlreadyExistsError("user_race")
-
-        # Re-patch to use real AlreadyExistsError
-        from core.repositories.billing_repo import AlreadyExistsError
-
-        mock_repo.AlreadyExistsError = AlreadyExistsError
         mock_repo.create_if_not_exists = AsyncMock(side_effect=AlreadyExistsError("user_race"))
 
         result = await service.create_customer_for_owner(owner_id="user_race")
 
-        # Orphan Stripe customer should be deleted (use partial-match to
-        # tolerate the idempotency_key kwarg added in Stripe Hardening Task 4).
         mock_stripe.Customer.delete.assert_called_once()
         delete_args, delete_kwargs = mock_stripe.Customer.delete.call_args
         assert delete_args[0] == "cus_loser"
         assert delete_kwargs.get("idempotency_key") == "delete_customer:cus_loser"
-        # Should return the winner's record
         assert result["stripe_customer_id"] == "cus_winner"
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
     async def test_create_customer_idempotent(self, mock_stripe, mock_repo, service):
-        """Should return existing account if already created."""
         existing = {
             "owner_id": "user_idem",
             "stripe_customer_id": "cus_idem",
-            "plan_tier": "free",
             "id": "acc-123",
         }
         mock_repo.get_by_owner_id = AsyncMock(return_value=existing)
@@ -98,270 +89,31 @@ class TestBillingServiceCreateCustomer:
         mock_stripe.Customer.create.assert_not_called()
 
 
-class TestBillingServiceCheckout:
-    """Test Stripe Checkout session creation."""
-
-    @pytest.fixture
-    def billing_account(self):
-        return {
-            "owner_id": "user_checkout",
-            "stripe_customer_id": "cus_checkout",
-        }
-
-    @pytest.fixture
-    def service(self):
-        return BillingService()
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"starter": "price_starter"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_create_checkout_session(self, mock_stripe, service, billing_account):
-        """Should create Stripe Checkout session."""
-        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
-
-        url = await service.create_checkout_session(
-            billing_account=billing_account,
-            tier="starter",
-        )
-
-        assert url == "https://checkout.stripe.com/test"
-        mock_stripe.checkout.Session.create.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"pro": "price_pro"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_checkout_passes_plan_tier_metadata(self, mock_stripe, service, billing_account):
-        """Should pass plan_tier metadata so webhook can read the tier."""
-        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
-
-        await service.create_checkout_session(billing_account=billing_account, tier="pro")
-
-        call_kwargs = mock_stripe.checkout.Session.create.call_args[1]
-        assert call_kwargs["subscription_data"]["metadata"]["plan_tier"] == "pro"
-
-    @pytest.mark.asyncio
-    async def test_checkout_rejects_unknown_tier(self, service, billing_account):
-        """Should raise error for unknown tier."""
-        with pytest.raises(BillingServiceError, match="Unknown tier"):
-            await service.create_checkout_session(billing_account=billing_account, tier="diamond")
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"starter": "price_starter"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_checkout_refuses_when_active_sub_exists(self, mock_stripe, service):
-        """Re-checkout while an active Stripe sub exists must NOT create a new sub.
-
-        Without this guard, every successful Stripe Checkout attaches a fresh
-        subscription to the same customer and silently overwrites the stored
-        sub_id in DDB. See incident 2026-04-17 where one user accumulated 5
-        starter subs from repeated Subscribe clicks.
-        """
-        account_with_sub = {
-            "owner_id": "user_checkout",
-            "stripe_customer_id": "cus_checkout",
-            "stripe_subscription_id": "sub_existing",
-        }
-        mock_stripe.Subscription.retrieve.return_value = {
-            "status": "active",
-            "cancel_at_period_end": False,
-        }
-
-        with pytest.raises(AlreadySubscribedError):
-            await service.create_checkout_session(
-                billing_account=account_with_sub,
-                tier="starter",
-            )
-
-        mock_stripe.checkout.Session.create.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"starter": "price_starter"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_checkout_proceeds_when_stored_sub_is_canceled_in_stripe(self, mock_stripe, service):
-        """If DDB has a stale sub_id but the Stripe sub no longer exists,
-        proceed with creating a new sub. Self-heals when our DDB drifts from
-        Stripe's source-of-truth state (e.g. a cancellation webhook was lost).
-        Must specifically detect Stripe's resource_missing error code.
-        """
-        import stripe as stripe_module
-
-        account_with_stale_sub = {
-            "owner_id": "user_checkout",
-            "stripe_customer_id": "cus_checkout",
-            "stripe_subscription_id": "sub_stale",
-        }
-        mock_stripe.error = stripe_module.error
-        mock_stripe.Subscription.retrieve.side_effect = stripe_module.error.InvalidRequestError(
-            message="No such subscription: sub_stale",
-            param="id",
-            code="resource_missing",
-        )
-        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/test")
-
-        url = await service.create_checkout_session(
-            billing_account=account_with_stale_sub,
-            tier="starter",
-        )
-
-        assert url == "https://checkout.stripe.com/test"
-        mock_stripe.checkout.Session.create.assert_called_once()
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"starter": "price_starter"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_checkout_does_not_self_heal_on_unrelated_invalid_request(self, mock_stripe, service):
-        """Self-heal must be narrow: only resource_missing is treated as a
-        missing sub. Other InvalidRequestErrors (malformed id, account
-        mismatch, etc.) must propagate, not bypass the duplicate-sub guard.
-        """
-        import stripe as stripe_module
-
-        account_with_sub = {
-            "owner_id": "user_checkout",
-            "stripe_customer_id": "cus_checkout",
-            "stripe_subscription_id": "sub_present",
-        }
-        mock_stripe.error = stripe_module.error
-        mock_stripe.Subscription.retrieve.side_effect = stripe_module.error.InvalidRequestError(
-            message="Malformed id",
-            param="id",
-            code="parameter_invalid_string_blank",
-        )
-
-        with pytest.raises(stripe_module.error.InvalidRequestError):
-            await service.create_checkout_session(
-                billing_account=account_with_sub,
-                tier="starter",
-            )
-
-        mock_stripe.checkout.Session.create.assert_not_called()
-
-    @pytest.mark.asyncio
-    @patch(
-        "core.services.billing_service.TIER_PRICES",
-        {"starter": "price_starter"},
-    )
-    @patch("core.services.billing_service.stripe")
-    async def test_checkout_allowed_when_stored_sub_is_incomplete(self, mock_stripe, service):
-        """`incomplete` means the customer's first payment never went through
-        (3DS failed, card declined, etc.). They must be able to retry — blocking
-        would strand conversion until Stripe times the sub out (~24h).
-        """
-        account_with_incomplete = {
-            "owner_id": "user_checkout",
-            "stripe_customer_id": "cus_checkout",
-            "stripe_subscription_id": "sub_incomplete",
-        }
-        mock_stripe.Subscription.retrieve.return_value = {
-            "status": "incomplete",
-            "cancel_at_period_end": False,
-        }
-        mock_stripe.checkout.Session.create.return_value = MagicMock(url="https://checkout.stripe.com/retry")
-
-        url = await service.create_checkout_session(
-            billing_account=account_with_incomplete,
-            tier="starter",
-        )
-
-        assert url == "https://checkout.stripe.com/retry"
-        mock_stripe.checkout.Session.create.assert_called_once()
-
-
 class TestBillingServicePortal:
-    """Test Stripe Customer Portal session."""
-
-    @pytest.fixture
-    def billing_account(self):
-        return {
-            "owner_id": "user_portal",
-            "stripe_customer_id": "cus_portal",
-        }
-
-    @pytest.fixture
-    def service(self):
-        return BillingService()
-
     @pytest.mark.asyncio
     @patch("core.services.billing_service.stripe")
-    async def test_create_portal_session(self, mock_stripe, service, billing_account):
-        """Should create Stripe Portal session."""
+    async def test_create_portal_session(self, mock_stripe):
         mock_stripe.billing_portal.Session.create.return_value = MagicMock(url="https://billing.stripe.com/test")
-
-        url = await service.create_portal_session(billing_account=billing_account)
-
+        url = await BillingService().create_portal_session(
+            billing_account={"owner_id": "user_portal", "stripe_customer_id": "cus_portal"}
+        )
         assert url == "https://billing.stripe.com/test"
 
 
-class TestBillingServiceSubscription:
-    """Test subscription management."""
-
-    @pytest.fixture
-    def billing_account(self):
-        return {
-            "owner_id": "user_sub",
-            "stripe_customer_id": "cus_sub",
-        }
-
-    @pytest.fixture
-    def service(self):
-        return BillingService()
+class TestBillingServiceCancelSubscription:
+    """Cancel writes status='canceled' and clears the subscription id via set_subscription."""
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
-    async def test_update_subscription(self, mock_repo, service, billing_account):
-        """Should update billing account with subscription details."""
-        mock_repo.update_subscription = AsyncMock(
-            return_value={
-                "owner_id": "user_sub",
-                "stripe_subscription_id": "sub_123",
-                "plan_tier": "starter",
-            }
-        )
-
-        await service.update_subscription(billing_account, "sub_123", "starter")
-
-        mock_repo.update_subscription.assert_called_once_with(
+    async def test_cancel_subscription(self, mock_repo):
+        mock_repo.set_subscription = AsyncMock()
+        await BillingService().cancel_subscription({"owner_id": "user_sub", "stripe_subscription_id": "sub_123"})
+        mock_repo.set_subscription.assert_called_once_with(
             owner_id="user_sub",
-            stripe_subscription_id="sub_123",
-            plan_tier="starter",
+            subscription_id=None,
+            status="canceled",
+            trial_end=None,
         )
-
-    @pytest.mark.asyncio
-    @patch("core.services.billing_service.billing_repo")
-    async def test_cancel_subscription(self, mock_repo, service, billing_account):
-        """Should revert to free tier and disable overage on cancellation."""
-        mock_repo.update_subscription = AsyncMock(
-            return_value={
-                "owner_id": "user_sub",
-                "stripe_subscription_id": None,
-                "plan_tier": "free",
-            }
-        )
-        mock_repo.set_overage_enabled = AsyncMock(return_value={})
-
-        await service.cancel_subscription(billing_account)
-
-        mock_repo.update_subscription.assert_called_once_with(
-            owner_id="user_sub",
-            stripe_subscription_id=None,
-            plan_tier="free",
-        )
-        mock_repo.set_overage_enabled.assert_called_once_with("user_sub", False)
 
 
 class TestCreateFlatFeeCheckout:
@@ -370,7 +122,6 @@ class TestCreateFlatFeeCheckout:
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_uses_flat_price_and_tax(self, monkeypatch):
-        """create_flat_fee_checkout passes STRIPE_FLAT_PRICE_ID and automatic_tax."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
         fake_session = MagicMock(url="https://checkout/x", id="cs_test")
         with (
@@ -400,8 +151,6 @@ class TestCreateFlatFeeCheckout:
 
     @pytest.mark.asyncio
     async def test_create_flat_fee_checkout_raises_without_stripe_customer(self, monkeypatch):
-        """If the billing account row is missing or has no Stripe customer id,
-        the helper must refuse rather than create an orphan Checkout."""
         monkeypatch.setattr(billing_service.settings, "STRIPE_FLAT_PRICE_ID", "price_flat_test")
         with patch.object(
             billing_service.billing_repo,

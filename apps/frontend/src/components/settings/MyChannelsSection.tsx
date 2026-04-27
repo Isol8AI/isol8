@@ -49,8 +49,7 @@ export function MyChannelsSection() {
 
 function MyChannelsSectionInner() {
   const api = useApi();
-  const { planTier } = useBilling();
-  const isFree = planTier === "free";
+  const { isSubscribed } = useBilling();
   // bot_username is now populated by the backend via channels.status probe
   const { data, error, isLoading, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
@@ -117,8 +116,8 @@ function MyChannelsSectionInner() {
             </h3>
             {bots.length === 0 ? (
               <div className="rounded-md border border-[#e0dbd0] p-3 text-xs text-[#8a8578]">
-                {isFree ? (
-                  <>Channels require a paid plan. Upgrade from the Billing page to connect {PROVIDER_LABELS[provider]}.</>
+                {!isSubscribed ? (
+                  <>Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.</>
                 ) : (
                   <>
                     No {PROVIDER_LABELS[provider]} bots set up in this container.

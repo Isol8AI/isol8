@@ -11,8 +11,9 @@ import Link from "next/link";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
+import { TrialBanner } from "@/components/chat/TrialBanner";
+import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGateway } from "@/hooks/useGateway";
-import { useActivityPing } from "@/hooks/useActivityPing";
 import { useApi } from "@/lib/api";
 import { useAgents, getAgentModelString, agentDisplayName, type Agent } from "@/hooks/useAgents";
 import { useBilling } from "@/hooks/useBilling";
@@ -66,14 +67,16 @@ export function ChatLayout({
   const { agents, defaultId, createAgent, deleteAgent, updateAgent } = useAgents();
   const { refresh: refreshBilling, account } = useBilling();
   const { nodeConnected } = useGateway();
-  // Emit throttled user_active pings so the backend scale-to-zero reaper
-  // can keep idle free-tier containers running while the user is active.
-  useActivityPing();
   const searchParams = useSearchParams();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   const [showSubscriptionSuccess, setShowSubscriptionSuccess] = useState(
-    () => searchParams.get("subscription") === "success",
+    // Stripe Checkout returns either ?subscription=success (legacy) or
+    // ?checkout=success (new trial-checkout flow). Both should trigger the
+    // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
+    () =>
+      searchParams.get("subscription") === "success" ||
+      searchParams.get("checkout") === "success",
   );
   const [recoveryTriggered, setRecoveryTriggered] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -84,7 +87,7 @@ export function ChatLayout({
   // Derive effective agent: user selection > default > first agent
   const currentAgentId = userSelectedId ?? defaultId ?? agents[0]?.id ?? null;
 
-  const planTier = account?.tier ?? "free";
+  const subscriptionStatus = account?.subscription_status ?? null;
   const userName = user?.fullName || user?.firstName || "User";
   const userInitials = userName
     .split(" ")
@@ -352,7 +355,7 @@ export function ChatLayout({
               <div className="user-info">
                 <div className="user-name">{userName}</div>
               </div>
-              <span className="plan-badge">{planTier}</span>
+              {subscriptionStatus && <span className="plan-badge">{subscriptionStatus}</span>}
             </div>
             <div className="version-text">isol8 v0.1</div>
           </div>
@@ -387,6 +390,8 @@ export function ChatLayout({
           </div>
 
           <div className="main-content">
+            <TrialBanner />
+            <OutOfCreditsBanner />
             {showSubscriptionSuccess && (
               <div className="subscription-banner">
                 <CheckCircle size={16} />

@@ -108,7 +108,7 @@ async def test_set_auto_reload_persists(async_client, credit_ledger_tables):
             "/api/v1/billing/credits/auto_reload",
             json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
         )
-    assert resp.status_code == 204
+    assert resp.status_code == 200
     _, kwargs = mock_set.call_args
     assert kwargs["enabled"] is True
     assert kwargs["threshold_cents"] == 500

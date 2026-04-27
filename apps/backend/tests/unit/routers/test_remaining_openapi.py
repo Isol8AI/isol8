@@ -32,11 +32,12 @@ async def test_every_endpoint_has_operation_id(async_client):
 
 
 @pytest.mark.asyncio
-async def test_webhook_endpoint_has_summary(async_client):
-    """POST /billing/checkout should have a summary (webhooks router removed in DynamoDB migration)."""
+async def test_billing_portal_endpoint_has_summary(async_client):
+    """POST /billing/portal should have a summary (replaces the deleted
+    per-tier /checkout endpoint as the canonical billing-action surface)."""
     response = await async_client.get("/api/v1/openapi.json")
     spec = response.json()
-    path = spec["paths"]["/api/v1/billing/checkout"]["post"]
+    path = spec["paths"]["/api/v1/billing/portal"]["post"]
     assert "summary" in path
 
 

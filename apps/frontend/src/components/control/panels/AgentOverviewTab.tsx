@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { Loader2, AlertCircle } from "lucide-react";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
-import { useBilling } from "@/hooks/useBilling";
 import { ModelSelector } from "@/components/chat/ModelSelector";
 import type { AgentEntry, AgentIdentity, ConfigSnapshot } from "./agents-types";
 
@@ -31,18 +30,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
   const callRpc = useGatewayRpcMutation();
   const [updatingModel, setUpdatingModel] = useState(false);
   const [modelError, setModelError] = useState<string | null>(null);
-
-  const { fetchPricing } = useBilling();
-  const [tierModel, setTierModel] = useState<string | undefined>(undefined);
-  useEffect(() => {
-    let cancelled = false;
-    fetchPricing().then((pricing) => {
-      if (!cancelled && pricing?.tier_model) {
-        setTierModel(pricing.tier_model);
-      }
-    }).catch(() => {});
-    return () => { cancelled = true; };
-  }, [fetchPricing]);
 
   const identity = (data || agent?.identity) as AgentIdentity | undefined;
   const configInner = configSnapshot?.config;
@@ -106,7 +93,6 @@ export function AgentOverviewTab({ agentId, agent, onAgentUpdated }: { agentId: 
             selectedModel={currentModel}
             onModelChange={handleModelChange}
             disabled={updatingModel || !configSnapshot?.hash}
-            tierModel={tierModel}
           />
         ) : (
           <p className="text-xs text-[#8a8578]">

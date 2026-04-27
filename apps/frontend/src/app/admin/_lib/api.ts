@@ -54,7 +54,7 @@ export interface UserDirectoryRow {
   last_sign_in_at?: number | string | null;
   banned: boolean;
   container_status: string;
-  plan_tier: string;
+  subscription_status: string | null;
   /**
    * Populated when the user belongs to a Clerk org. The list-view
    * container_status is now resolved via owner_id (== org_id for org members)

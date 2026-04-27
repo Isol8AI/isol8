@@ -16,11 +16,25 @@ import websockets
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.repositories import container_repo
+from core.repositories import container_repo, user_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _resolve_provider_choice(user_id: str) -> tuple[str, str | None]:
+    """Look up the user's saved provider_choice for recovery reprovisions.
+
+    Falls back to ``bedrock_claude`` when the row exists but no choice is
+    persisted yet — keeps recovery working for users who provisioned before
+    Plan 3 introduced the field.
+    """
+    row = await user_repo.get(user_id)
+    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
+    byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
+    return provider_choice, byo_provider
+
 
 # In-memory per-owner lock to prevent concurrent recovery.
 _recovery_locks: dict[str, asyncio.Lock] = {}
@@ -184,10 +198,14 @@ async def container_recover(
             reason = container.get("last_error", f"Container is {status}")
             logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
             try:
-                # Plan 2 Task 13 shim: provider_choice defaults to
-                # bedrock_claude until Plan 3 cutover wires the user's saved
-                # choice through.
-                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
+                # Read user's saved provider_choice so recovery rebuilds
+                # with the correct LLM path (Codex P1 on PR #393).
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                await ecs_manager.provision_user_container(
+                    owner_id,
+                    provider_choice=provider_choice,
+                    byo_provider=byo_provider,
+                )
             except Exception as e:
                 logger.error("Recovery reprovision failed for %s: %s", owner_id, e)
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
@@ -202,10 +220,14 @@ async def container_recover(
         if not ip:
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
-                # Plan 2 Task 13 shim: provider_choice defaults to
-                # bedrock_claude until Plan 3 cutover wires the user's saved
-                # choice through.
-                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
+                # Read user's saved provider_choice so recovery rebuilds
+                # with the correct LLM path (Codex P1 on PR #393).
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                await ecs_manager.provision_user_container(
+                    owner_id,
+                    provider_choice=provider_choice,
+                    byo_provider=byo_provider,
+                )
             except Exception:
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
             return {
@@ -239,10 +261,14 @@ async def container_recover(
             logger.warning("Owner %s: gateway restart failed, escalating to reprovision", owner_id)
             await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
             try:
-                # Plan 2 Task 13 shim: provider_choice defaults to
-                # bedrock_claude until Plan 3 cutover wires the user's saved
-                # choice through.
-                await ecs_manager.provision_user_container(owner_id, provider_choice="bedrock_claude")
+                # Read user's saved provider_choice so recovery rebuilds
+                # with the correct LLM path (Codex P1 on PR #393).
+                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                await ecs_manager.provision_user_container(
+                    owner_id,
+                    provider_choice=provider_choice,
+                    byo_provider=byo_provider,
+                )
             except Exception:
                 raise HTTPException(status_code=502, detail="Re-provisioning failed")
             return {

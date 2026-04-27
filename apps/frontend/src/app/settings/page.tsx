@@ -1,7 +1,8 @@
 "use client";
 
 import "./settings.css";
-import React, { useState, useEffect, useCallback } from "react";
+import React, { Suspense, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import Link from "next/link";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
@@ -29,50 +30,6 @@ const NAV_SECTIONS = [
 // =============================================================================
 // Constants
 // =============================================================================
-
-const PLAN_TIERS = [
-  {
-    id: "free" as const,
-    name: "Free",
-    price: 0,
-    budget: 2,
-    features: [
-      "1 personal pod",
-      "Persistent memory & personality",
-      "Core skills included",
-      "$2 included usage budget",
-    ],
-  },
-  {
-    id: "starter" as const,
-    name: "Starter",
-    price: 40,
-    budget: 10,
-    features: [
-      "1 personal pod",
-      "Persistent memory & personality",
-      "Core skills included",
-      "Pay-per-use premium models",
-      "$10 included usage budget",
-      "Standard support",
-    ],
-  },
-  {
-    id: "pro" as const,
-    name: "Pro",
-    price: 75,
-    budget: 40,
-    popular: true,
-    features: [
-      "Everything in Starter",
-      "Higher usage budget",
-      "All premium skills & tools",
-      "All top-tier models",
-      "$40 included usage budget",
-      "Priority support",
-    ],
-  },
-];
 
 // =============================================================================
 // Helpers
@@ -114,37 +71,13 @@ function NavIcon({ icon }: { icon: string }) {
 }
 
 // =============================================================================
-// Toggle Switch
-// =============================================================================
-
-function ToggleSwitch({
-  checked,
-  onChange,
-  disabled,
-  labelId,
-  descId,
-}: {
-  checked: boolean;
-  onChange: (val: boolean) => void;
-  disabled?: boolean;
-  labelId: string;
-  descId: string;
-}) {
-  return (
-    <label className="settings-toggle-switch" aria-labelledby={labelId} aria-describedby={descId} style={disabled ? { opacity: 0.5, cursor: "not-allowed" } : undefined}>
-      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} disabled={disabled} />
-      <span className="settings-toggle-slider" />
-    </label>
-  );
-}
-
-// =============================================================================
 // Profile Panel
 // =============================================================================
 
 function ProfilePanel() {
   const { user } = useUser();
-  const { planTier } = useBilling();
+  const { account } = useBilling();
+  const subscriptionStatus = account?.subscription_status ?? null;
 
   const email = user?.primaryEmailAddress?.emailAddress ?? "";
   const initials = `${(user?.firstName ?? "")[0] ?? ""}${(user?.lastName ?? "")[0] ?? ""}`.toUpperCase();
@@ -160,7 +93,9 @@ function ProfilePanel() {
           <div>
             <div className="settings-profile-name">
               {user?.fullName ?? "User"}
-              <span className="settings-profile-badge">{planTier}</span>
+              {subscriptionStatus && (
+                <span className="settings-profile-badge">{subscriptionStatus}</span>
+              )}
             </div>
             <div className="settings-profile-email">{email}</div>
           </div>
@@ -184,38 +119,11 @@ function BillingPanel() {
     isLoading,
     error: accountError,
     isSubscribed,
-    planTier,
-    createCheckout,
     openPortal,
-    toggleOverage,
   } = useBilling();
   const { membership } = useOrganization();
 
-  const isOrgAdmin = !membership || membership.role === "org:admin";
-
-  const [overageEnabled, setOverageEnabled] = useState(false);
-  const [overageLimit, setOverageLimit] = useState<string>("");
-  const [overageSaving, setOverageSaving] = useState(false);
-  const [overageError, setOverageError] = useState<string | null>(null);
-  const [overageSuccess, setOverageSuccess] = useState(false);
-  const [checkoutLoading, setCheckoutLoading] = useState<string | null>(null);
   const [portalLoading, setPortalLoading] = useState(false);
-
-  useEffect(() => {
-    if (account) {
-      setOverageEnabled(account.overage_enabled);
-      setOverageLimit(account.overage_limit != null ? String(account.overage_limit) : "");
-    }
-  }, [account]);
-
-  const handleCheckout = useCallback(async (tier: "starter" | "pro") => {
-    setCheckoutLoading(tier);
-    try {
-      await createCheckout(tier);
-    } catch {
-      setCheckoutLoading(null);
-    }
-  }, [createCheckout]);
 
   const handlePortal = useCallback(async () => {
     posthog?.capture("billing_portal_opened");
@@ -227,48 +135,11 @@ function BillingPanel() {
     }
   }, [openPortal, posthog]);
 
-  const handleOverageToggle = useCallback(async () => {
-    const newEnabled = !overageEnabled;
-    setOverageSaving(true);
-    setOverageError(null);
-    setOverageSuccess(false);
-    try {
-      const limit = overageLimit ? parseFloat(overageLimit) : null;
-      await toggleOverage(newEnabled, limit);
-      setOverageEnabled(newEnabled);
-      posthog?.capture("overage_enabled", { enabled: newEnabled });
-      setOverageSuccess(true);
-      setTimeout(() => setOverageSuccess(false), 2000);
-    } catch (err) {
-      setOverageError(err instanceof Error ? err.message : "Failed to update overage");
-    } finally {
-      setOverageSaving(false);
-    }
-  }, [overageEnabled, overageLimit, toggleOverage, posthog]);
-
-  const handleOverageLimitSave = useCallback(async () => {
-    setOverageSaving(true);
-    setOverageError(null);
-    setOverageSuccess(false);
-    try {
-      const limit = overageLimit ? parseFloat(overageLimit) : null;
-      await toggleOverage(overageEnabled, limit);
-      posthog?.capture("overage_limit_set", { limit });
-      setOverageSuccess(true);
-      setTimeout(() => setOverageSuccess(false), 2000);
-    } catch (err) {
-      setOverageError(err instanceof Error ? err.message : "Failed to update overage limit");
-    } finally {
-      setOverageSaving(false);
-    }
-  }, [overageEnabled, overageLimit, toggleOverage, posthog]);
-
-  // Loading
   if (isLoading) {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
         <h1 className="settings-page-title">Billing</h1>
-        <p className="settings-page-desc">Manage your subscription and view usage.</p>
+        <p className="settings-page-desc">Manage your subscription.</p>
         <div style={{ display: "flex", justifyContent: "center", padding: "60px 0" }}>
           <div className="settings-spinner" />
         </div>
@@ -276,7 +147,6 @@ function BillingPanel() {
     );
   }
 
-  // Org member (non-admin)
   if (membership && membership.role !== "org:admin") {
     return (
       <div className="settings-panel" id="panel-billing" role="tabpanel">
@@ -293,16 +163,12 @@ function BillingPanel() {
     );
   }
 
-  const currentSpend = account?.current_spend ?? 0;
-  const includedBudget = account?.included_budget ?? 0;
-  const budgetPercent = includedBudget > 0 ? (currentSpend / includedBudget) * 100 : 0;
-  const isPaid = planTier === "starter" || planTier === "pro";
-  const barColor = budgetPercent < 75 ? "#06402B" : budgetPercent < 90 ? "#c19a00" : "#b63025";
+  const subscriptionStatus = account?.subscription_status ?? null;
 
   return (
     <div className="settings-panel" id="panel-billing" role="tabpanel">
       <h1 className="settings-page-title">Billing</h1>
-      <p className="settings-page-desc">Manage your subscription and view usage.</p>
+      <p className="settings-page-desc">Manage your subscription.</p>
 
       {accountError && (
         <div className="settings-alert settings-alert-error">
@@ -311,144 +177,43 @@ function BillingPanel() {
         </div>
       )}
 
-      {/* Current plan summary */}
-      {account && (
-        <div className="settings-card">
-          <div className="settings-card-header">
-            <div>
-              <div className="settings-card-title" style={{ textTransform: "capitalize" }}>
-                {planTier} plan
-                {isSubscribed && (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999 }}>
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                    Active
-                  </span>
-                )}
-              </div>
-              <div className="settings-card-desc">
-                {isPaid ? `${formatDollars(PLAN_TIERS.find((t) => t.id === planTier)?.price ?? 0, 0)}/month` : "No subscription"}
-              </div>
+      <div className="settings-card">
+        <div className="settings-card-header">
+          <div>
+            <div className="settings-card-title">
+              Isol8 — $50 / month
+              {subscriptionStatus && (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 4, marginLeft: 8, fontSize: 11, fontWeight: 600, color: "#06402B", background: "rgba(6,64,43,.08)", padding: "2px 8px", borderRadius: 999, textTransform: "capitalize" }}>
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+                  {subscriptionStatus}
+                </span>
+              )}
             </div>
-            {isSubscribed && (
-              <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
-                {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                Manage Payment
-              </button>
+            <div className="settings-card-desc">
+              {subscriptionStatus === "trialing"
+                ? "Free trial — Stripe will email you before it converts."
+                : isSubscribed
+                  ? "Active subscription"
+                  : "No active subscription"}
+            </div>
+            {account && (
+              <div className="settings-card-desc" style={{ marginTop: 4 }}>
+                Current period spend: {formatDollars(account.current_spend, 4)} · Lifetime: {formatDollars(account.lifetime_spend)}
+              </div>
             )}
           </div>
-
-          {/* Budget bar */}
-          <div className="settings-usage-bar-wrap">
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
-              <span style={{ color: "#59534d" }}>Current period spend</span>
-              <span style={{ fontWeight: 600, fontFamily: "ui-monospace, monospace", fontSize: 13 }}>
-                {formatDollars(currentSpend)} / {formatDollars(includedBudget)}
-              </span>
-            </div>
-            <div className="settings-usage-bar-bg">
-              <div className="settings-usage-bar-fill" style={{ width: `${Math.min(budgetPercent, 100)}%`, background: barColor }} />
-            </div>
-            <div className="settings-usage-text" style={{ color: account.within_included ? "#06402B" : "#c19a00" }}>
-              {account.within_included
-                ? `${(100 - budgetPercent).toFixed(1)}% of budget remaining`
-                : "Exceeding included budget"}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Plan tier cards */}
-      <div className="settings-card">
-        <div className="settings-card-title" style={{ marginBottom: 20 }}>
-          {isPaid ? "Change plan" : "Upgrade your plan"}
-        </div>
-        <div className="settings-tier-grid">
-          {PLAN_TIERS.map((tier) => {
-            const isCurrent = planTier === tier.id;
-            return (
-              <div key={tier.id} className={`settings-tier-card${isCurrent ? " current" : ""}${tier.popular && !isCurrent ? " popular" : ""}`}>
-                {tier.popular && !isCurrent && <div className="settings-popular-badge">Popular</div>}
-                <div className="settings-tier-name">{tier.name}</div>
-                <div className="settings-tier-price">
-                  {tier.price === 0 ? "Free" : formatDollars(tier.price, 0)}
-                  {tier.price > 0 && <span> /mo</span>}
-                </div>
-                <ul className="settings-tier-features">
-                  {tier.features.map((f) => <li key={f}>{f}</li>)}
-                </ul>
-                {isCurrent ? (
-                  <button type="button" className="settings-btn-outline" disabled style={{ width: "100%", textAlign: "center" }}>Current plan</button>
-                ) : tier.id === "free" ? (
-                  isSubscribed ? (
-                    <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading} style={{ width: "100%", textAlign: "center" }}>
-                      {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                      Downgrade via Portal
-                    </button>
-                  ) : null
-                ) : (
-                  <button type="button" className="settings-btn-save" onClick={() => handleCheckout(tier.id as "starter" | "pro")} disabled={checkoutLoading === tier.id} style={{ width: "100%", textAlign: "center" }}>
-                    {checkoutLoading === tier.id && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, borderTopColor: "white", marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                    {isSubscribed ? "Switch to " : "Subscribe to "}{tier.name}
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          {isSubscribed ? (
+            <button type="button" className="settings-btn-outline" onClick={handlePortal} disabled={portalLoading}>
+              {portalLoading && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
+              Manage Payment
+            </button>
+          ) : (
+            <Link href="/chat" className="settings-btn-save">
+              Sign up
+            </Link>
+          )}
         </div>
       </div>
-
-      {/* Overage settings */}
-      {isPaid && isOrgAdmin && account && (
-        <div className="settings-card">
-          <div className="settings-card-title" style={{ marginBottom: 4 }}>Overage settings</div>
-          <div className="settings-card-desc" style={{ marginBottom: 20 }}>Control what happens when you exceed your included budget.</div>
-
-          {overageError && (
-            <div className="settings-alert settings-alert-error">{overageError}</div>
-          )}
-          {overageSuccess && (
-            <div className="settings-alert settings-alert-success">Overage settings saved.</div>
-          )}
-
-          <div className="settings-toggle-row">
-            <div>
-              <div className="settings-toggle-label" id="toggle-overage-label">Enable pay-as-you-go overage</div>
-              <div className="settings-toggle-desc" id="toggle-overage-desc">Continue using agents after exceeding your included budget</div>
-            </div>
-            <ToggleSwitch
-              checked={overageEnabled}
-              onChange={handleOverageToggle}
-              disabled={overageSaving}
-              labelId="toggle-overage-label"
-              descId="toggle-overage-desc"
-            />
-          </div>
-
-          {overageEnabled && (
-            <div style={{ borderTop: "1px solid #f0ebe0", paddingTop: 16, marginTop: 0 }}>
-              <div className="settings-toggle-label">Maximum overage spending</div>
-              <div className="settings-toggle-desc" style={{ marginBottom: 12 }}>Set a cap on overage charges per billing period. Leave empty for no limit.</div>
-              <div className="settings-overage-input-row">
-                <div className="settings-overage-input-wrap">
-                  <input
-                    type="number"
-                    min="0"
-                    step="1"
-                    placeholder="No limit"
-                    value={overageLimit}
-                    onChange={(e) => setOverageLimit(e.target.value)}
-                    className="settings-overage-input"
-                  />
-                </div>
-                <button type="button" className="settings-btn-outline" onClick={handleOverageLimitSave} disabled={overageSaving}>
-                  {overageSaving && <span className="settings-spinner" style={{ width: 14, height: 14, borderWidth: 2, marginRight: 6, display: "inline-block", verticalAlign: "middle" }} />}
-                  Save
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -482,7 +247,26 @@ const PANELS: Record<Panel, () => React.ReactElement> = {
 // =============================================================================
 
 export default function SettingsPage() {
-  const [activePanel, setActivePanel] = useState<Panel>("profile");
+  // useSearchParams() forces dynamic rendering; wrap the inner component
+  // in a Suspense boundary so the static-export step at build time
+  // doesn't error (Next.js 16 requirement for static prerender).
+  return (
+    <Suspense fallback={null}>
+      <SettingsPageInner />
+    </Suspense>
+  );
+}
+
+function SettingsPageInner() {
+  // ?panel=billing|profile|channels preselects the tab. Used by deep
+  // links from the chat banners (TrialBanner "Manage" CTA, etc.) so they
+  // land on the right pane. Codex P2 on PR #393 — the prior /settings/
+  // billing href was a 404.
+  const searchParams = useSearchParams();
+  const initialPanelParam = searchParams.get("panel");
+  const initialPanel: Panel =
+    initialPanelParam === "billing" || initialPanelParam === "channels" ? initialPanelParam : "profile";
+  const [activePanel, setActivePanel] = useState<Panel>(initialPanel);
   const ActivePanelComponent = PANELS[activePanel];
 
   const allNavItems = NAV_SECTIONS.flatMap((s) => s.items);

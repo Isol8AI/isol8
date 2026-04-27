@@ -16,10 +16,9 @@ interface PageProps {
 // ---------------------------------------------------------------------------
 
 interface BillingSlice {
-  plan_tier?: string;
+  subscription_status?: string | null;
   stripe_customer_id?: string;
   stripe_subscription_id?: string;
-  subscription_status?: string;
   current_period_end?: string;
   current_invoice?: {
     id?: string;
@@ -54,7 +53,6 @@ function pickBilling(raw: unknown): BillingSlice {
   const r = asRecord(raw);
   const inv = asRecord(r.current_invoice);
   return {
-    plan_tier: asString(r.plan_tier),
     stripe_customer_id: asString(r.stripe_customer_id),
     stripe_subscription_id: asString(r.stripe_subscription_id),
     subscription_status: asString(r.subscription_status) ?? asString(r.status),
@@ -125,7 +123,7 @@ export default async function AdminUserBillingPage({ params }: PageProps) {
           Subscription
         </h2>
         <dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-          <DefRow label="Plan tier" value={billing.plan_tier ?? "\u2014"} />
+          <DefRow label="Subscription" value={billing.subscription_status ?? "\u2014"} />
           <DefRow
             label="Status"
             value={billing.subscription_status ?? "\u2014"}

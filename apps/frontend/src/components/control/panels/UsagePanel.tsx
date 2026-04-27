@@ -6,8 +6,6 @@ import { useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import type { UsageSummary } from "@/hooks/useBilling";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { cn } from "@/lib/utils";
 
 // =============================================================================
 // Helpers
@@ -28,19 +26,13 @@ function formatTokens(n: number): string {
 // =============================================================================
 
 export function UsagePanel() {
-  const { account, isLoading: accountLoading, fetchUsage, toggleOverage, refresh } = useBilling();
+  const { account, isLoading: accountLoading, fetchUsage, refresh } = useBilling();
   const { membership } = useOrganization();
   const isOrgAdmin = !membership || membership.role === "org:admin";
 
-  // Usage data
   const [usage, setUsage] = useState<UsageSummary | null>(null);
   const [usageLoading, setUsageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  // Overage controls
-  const [overageEnabled, setOverageEnabled] = useState(false);
-  const [overageLimit, setOverageLimit] = useState<string>("");
-  const [overageSaving, setOverageSaving] = useState(false);
 
   const loadUsage = useCallback(async () => {
     setUsageLoading(true);
@@ -59,46 +51,11 @@ export function UsagePanel() {
     loadUsage();
   }, [loadUsage]);
 
-  // Sync overage state from account
-  useEffect(() => {
-    if (account) {
-      setOverageEnabled(account.overage_enabled);
-      setOverageLimit(account.overage_limit != null ? String(account.overage_limit) : "");
-    }
-  }, [account]);
-
   const handleRefresh = useCallback(() => {
     refresh();
     loadUsage();
   }, [refresh, loadUsage]);
 
-  const handleOverageToggle = useCallback(async () => {
-    const newEnabled = !overageEnabled;
-    setOverageSaving(true);
-    try {
-      const limit = overageLimit ? parseFloat(overageLimit) : null;
-      await toggleOverage(newEnabled, limit);
-      setOverageEnabled(newEnabled);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update overage");
-    } finally {
-      setOverageSaving(false);
-    }
-  }, [overageEnabled, overageLimit, toggleOverage]);
-
-  const handleOverageLimitSave = useCallback(async () => {
-    setOverageSaving(true);
-    try {
-      const limit = overageLimit ? parseFloat(overageLimit) : null;
-      await toggleOverage(overageEnabled, limit);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to update overage limit");
-    } finally {
-      setOverageSaving(false);
-    }
-  }, [overageEnabled, overageLimit, toggleOverage]);
-
-  // --- Loading state ---
   if (accountLoading && usageLoading) {
     return (
       <div className="flex-1 flex items-center justify-center">
@@ -107,16 +64,10 @@ export function UsagePanel() {
     );
   }
 
-  const currentSpend = account?.current_spend ?? 0;
-  const includedBudget = account?.included_budget ?? 0;
-  const budgetPercent = includedBudget > 0 ? (currentSpend / includedBudget) * 100 : 0;
-  const isPaid = account?.tier === "starter" || account?.tier === "pro";
-
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Usage & Billing</h2>
+        <h2 className="text-lg font-semibold">Usage</h2>
         <Button variant="ghost" size="sm" onClick={handleRefresh}>
           <RefreshCw className="h-3.5 w-3.5" />
         </Button>
@@ -132,14 +83,13 @@ export function UsagePanel() {
         </div>
       )}
 
-      {/* Plan + Status */}
       {account && (
         <div className="flex items-center gap-3 text-xs text-[#8a8578]">
-          <span>
-            Plan: <span className="font-medium text-[#1a1a1a] capitalize">{account.tier}</span>
-          </span>
-          {account.is_subscribed && (
-            <span className="text-[#2d8a4e] font-medium">Active Subscription</span>
+          {account.subscription_status && (
+            <span>
+              Subscription:{" "}
+              <span className="font-medium text-[#1a1a1a] capitalize">{account.subscription_status}</span>
+            </span>
           )}
           {usage?.period && (
             <span>
@@ -149,38 +99,6 @@ export function UsagePanel() {
         </div>
       )}
 
-      {/* Budget bar */}
-      {account && (
-        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-2">
-          <div className="flex items-center justify-between text-sm">
-            <span className="font-medium">Budget</span>
-            <span className="text-[#8a8578]">
-              {formatDollars(currentSpend)} / {formatDollars(includedBudget)}
-              <span className="ml-2 text-xs">({budgetPercent.toFixed(1)}%)</span>
-            </span>
-          </div>
-          <div className="h-2.5 rounded-full bg-[#e0dbd0]/50 overflow-hidden">
-            <div
-              className={cn(
-                "h-full rounded-full transition-all",
-                budgetPercent < 75
-                  ? "bg-[#06402B]"
-                  : budgetPercent < 90
-                    ? "bg-yellow-500"
-                    : "bg-red-500",
-              )}
-              style={{ width: `${Math.min(budgetPercent, 100)}%` }}
-            />
-          </div>
-          {account.within_included ? (
-            <p className="text-xs text-[#2d8a4e]">Within included budget</p>
-          ) : (
-            <p className="text-xs text-amber-600">Exceeding included budget</p>
-          )}
-        </div>
-      )}
-
-      {/* Token Breakdown */}
       {usage && (
         <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
           <h3 className="text-sm font-medium">Token Usage</h3>
@@ -209,66 +127,6 @@ export function UsagePanel() {
         </div>
       )}
 
-      {/* Overage Settings (paid tiers only) */}
-      {isPaid && account && (
-        <div className="rounded-lg border border-[#e0dbd0] p-4 space-y-3">
-          <h3 className="text-sm font-medium">Overage Settings</h3>
-          <div className="flex items-center justify-between">
-            <div className="space-y-0.5">
-              <p className="text-sm">Allow overage spending</p>
-              <p className="text-xs text-[#8a8578]">
-                Continue using agents after exceeding your included budget
-              </p>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={overageEnabled}
-              disabled={overageSaving}
-              onClick={handleOverageToggle}
-              className={cn(
-                "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
-                overageEnabled ? "bg-[#2d8a4e]" : "bg-[#e0dbd0]",
-                overageSaving && "opacity-50 cursor-not-allowed",
-              )}
-            >
-              <span
-                className={cn(
-                  "inline-block h-4 w-4 transform rounded-full bg-white transition-transform",
-                  overageEnabled ? "translate-x-4.5" : "translate-x-0.5",
-                )}
-              />
-            </button>
-          </div>
-          {overageEnabled && (
-            <div className="flex items-center gap-2 pt-1">
-              <label className="text-xs text-[#8a8578] whitespace-nowrap">
-                Spending limit ($):
-              </label>
-              <Input
-                type="number"
-                min="0"
-                step="1"
-                placeholder="No limit"
-                value={overageLimit}
-                onChange={(e) => setOverageLimit(e.target.value)}
-                className="h-7 w-28 text-xs"
-              />
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-7 text-xs"
-                onClick={handleOverageLimitSave}
-                disabled={overageSaving}
-              >
-                {overageSaving ? <Loader2 className="h-3 w-3 animate-spin" /> : "Save"}
-              </Button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Per-member table (org admins only) */}
       {isOrgAdmin && usage && usage.by_member && usage.by_member.length > 0 && (
         <div className="rounded-lg border border-[#e0dbd0] overflow-hidden">
           <div className="px-4 py-2 bg-[#f3efe6] border-b border-[#e0dbd0]">
@@ -304,7 +162,6 @@ export function UsagePanel() {
         </div>
       )}
 
-      {/* Lifetime spend */}
       {(usage || account) && (
         <div className="rounded-lg border border-[#e0dbd0] p-4">
           <div className="flex items-center justify-between text-sm">

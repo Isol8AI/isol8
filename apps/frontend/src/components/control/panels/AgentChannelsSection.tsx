@@ -39,8 +39,7 @@ interface AgentChannelsSectionProps {
 
 export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
   const api = useApi();
-  const { planTier } = useBilling();
-  const isFree = planTier === "free";
+  const { isSubscribed } = useBilling();
   const { data, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
@@ -89,9 +88,9 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 {PROVIDER_LABELS[provider]}
               </span>
             </div>
-            {isFree ? (
+            {!isSubscribed ? (
               <p className="text-xs text-[#8a8578]">
-                Channels require a paid plan. Upgrade from the Billing page to connect {PROVIDER_LABELS[provider]}.
+                Channels require an active subscription. Sign up to connect {PROVIDER_LABELS[provider]}.
               </p>
             ) : bots.length === 0 ? (
               <p className="text-xs text-[#8a8578]">No bot configured</p>
@@ -128,7 +127,7 @@ export function AgentChannelsSection({ agentId }: AgentChannelsSectionProps) {
                 </div>
               ))
             )}
-            {!isFree && data.can_create_bots && bots.length === 0 && (
+            {isSubscribed && data.can_create_bots && bots.length === 0 && (
               <Button
                 variant="outline"
                 size="sm"

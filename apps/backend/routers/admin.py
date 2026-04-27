@@ -111,7 +111,7 @@ async def admin_actions_audit(
 )
 async def admin_list_users(
     q: str = Query(""),
-    plan_tier: str | None = Query(None),
+    subscription_status: str | None = Query(None),
     container_status: str | None = Query(None),
     cursor: str | None = Query(None),
     limit: int = Query(50, le=200),

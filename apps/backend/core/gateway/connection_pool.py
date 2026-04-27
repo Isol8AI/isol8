@@ -11,14 +11,12 @@ req/res/event protocol. Background reader task handles incoming messages:
 import asyncio
 import json
 import logging
-import time
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
 
-from core.config import TIER_CONFIG
 from core.observability.metrics import put_metric, gauge
 from core.repositories import channel_link_repo
 
@@ -29,14 +27,6 @@ logger = logging.getLogger(__name__)
 _HANDSHAKE_TIMEOUT = 10  # seconds
 _RPC_TIMEOUT = 30  # seconds
 _GRACE_PERIOD = 30  # seconds before closing idle connection
-_IDLE_CHECK_INTERVAL = 60  # seconds between idle checks
-_IDLE_TIMEOUT = 300  # 5 minutes of inactivity before scale-to-zero
-_DDB_WRITE_COOLDOWN = 30.0  # seconds between per-owner last_active_at writes
-_DDB_WRITE_RETRY_FLOOR = 2.0  # minimum seconds between retries after a no-op / exception
-
-# Per-owner cooldown map. Module-level so it survives pool reconstruction in tests
-# and across pool singletons. Values are the last epoch-seconds we wrote to DDB.
-_LAST_DDB_WRITE: Dict[str, float] = {}
 
 
 class GatewayConnection:
@@ -72,7 +62,7 @@ class GatewayConnection:
 
     def _emit_status_change(self, state: str, reason: str) -> None:
         """Push a status_change event to all connected frontend WebSockets."""
-        from datetime import datetime, timezone
+        from datetime import timezone
 
         # Wrap as {type: "event"} so the frontend WS router in useGateway
         # delivers it to onEvent subscribers (unrecognized types are dropped).
@@ -584,9 +574,120 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
+            # Plan 3 Task 5: card-3 (bedrock_claude) deduct credits in
+            # addition to the legacy usage_service path. Other cards skip.
+            # Synchronous so the next chat sees the updated balance.
+            # Pass the resolved member_user_id explicitly — for channel/DM
+            # session keys, the key alone doesn't carry the member id and
+            # _maybe_deduct_credits would fall back to self.user_id (the
+            # org owner). Codex P1 on PR #393.
+            try:
+                await self._maybe_deduct_credits(
+                    chat_session_id=session_key,
+                    member_user_id=member_user_id,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to deduct credits for user %s session %s",
+                    self.user_id,
+                    session_key,
+                )
+
         except Exception:
             put_metric("chat.session_usage.fetch.error")
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
+
+    async def _maybe_deduct_credits(
+        self,
+        *,
+        chat_session_id: str,
+        member_user_id: str | None = None,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Card-3 (bedrock_claude) credit deduct on chat completion.
+
+        Per spec §6.3: card-3 users prepay for Claude inference; we deduct
+        from credit_ledger after each session ends. Cards 1 + 2 skip this
+        entirely. Unknown model_id (e.g. a new Claude model not yet in
+        bedrock_pricing) is logged + skipped — no overdraft, no error to
+        the user; the operator updates bedrock_pricing.py and the next
+        chat deducts correctly.
+
+        Markup is applied here (1.4x raw) per the spec's pricing model.
+
+        ``member_user_id`` should be the per-Clerk-user id resolved by the
+        caller (``_fetch_and_record_usage`` already does this for channel/DM
+        sessions via the channel-link lookup). When omitted, falls back to
+        parsing the session key (works for personal/org webchat) and finally
+        to ``self.user_id``. Codex P1 on PR #393.
+        """
+        from core.billing.bedrock_pricing import (
+            UnknownModelError,
+            cost_microcents,
+        )
+        from core.repositories import user_repo
+        from core.services import credit_ledger
+
+        # Prefer the explicitly-resolved member id from the caller; only
+        # fall back to session-key parsing when the caller didn't pass one.
+        # For channel/DM/group session keys without a member_id segment,
+        # the parser returns owner-context only — that's the wrong row for
+        # provider_choice + credit deduction.
+        if member_user_id:
+            billing_user_id = member_user_id
+        else:
+            parsed = _parse_session_key(chat_session_id)
+            billing_user_id = parsed.get("member_id") or self.user_id
+
+        user = await user_repo.get(billing_user_id)
+        if not user or user.get("provider_choice") != "bedrock_claude":
+            return
+
+        # Bedrock model ids may be passed with or without a provider prefix
+        # (e.g. "amazon-bedrock/anthropic.claude-sonnet-4-6"). Strip the
+        # prefix before looking up rates.
+        bare_model = model.split("/", 1)[-1] if "/" in model else model
+
+        try:
+            raw = cost_microcents(
+                model_id=bare_model,
+                input_tokens=int(input_tokens or 0),
+                output_tokens=int(output_tokens or 0),
+            )
+        except UnknownModelError:
+            logger.warning(
+                "Unknown Bedrock model %r in chat completion for user %s — skipping deduct",
+                bare_model,
+                self.user_id,
+            )
+            put_metric("credit.deduct.unknown_model", dimensions={"model": bare_model})
+            return
+
+        # Integer math — avoid IEEE-754 drift on the multiply.
+        # `raw * 1.4` is not exact (10500 * 1.4 = 14699.999...) so we use
+        # `raw * 14 // 10` instead. Spec §6.3 mandates microcents-as-int
+        # throughout the credit ledger.
+        marked_up = raw * 14 // 10
+        await credit_ledger.deduct(
+            billing_user_id,
+            amount_microcents=marked_up,
+            chat_session_id=chat_session_id,
+            raw_cost_microcents=raw,
+            markup_multiplier=1.4,
+        )
+        logger.info(
+            "Deducted credits for user %s session %s: raw=%d marked_up=%d model=%s",
+            billing_user_id,
+            chat_session_id,
+            raw,
+            marked_up,
+            bare_model,
+        )
 
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -846,51 +947,37 @@ class GatewayConnectionPool:
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
 
-    async def record_activity(self, owner_id: str) -> None:
-        """Record a user-interaction event.
+    async def gate_chat(self, *, user_id: str) -> dict:
+        """Pre-chat hard-stop for card-3 (bedrock_claude) users.
 
-        Throttles DDB writes to at most one per owner per _DDB_WRITE_COOLDOWN
-        seconds. Callers are not expected to throttle; fire for every event.
+        Per spec §6.3 step 1 + §6.6: blocks chat when card-3 balance ≤ 0.
+        Cards 1 + 2 (chatgpt_oauth, byo_key) are never gated — their LLM
+        cost is on the user's own provider account, not on us.
 
-        Cooldown is claimed *before* the await to deflect a thundering herd of
-        concurrent pings. On a no-op write (row missing or still `status=stopped`)
-        or an exception, the cooldown is *backdated* so the next retry is allowed
-        in ~_DDB_WRITE_RETRY_FLOOR seconds — not immediately. Two reasons:
+        Returns:
+            ``{"blocked": False}`` when chat may proceed.
+            ``{"blocked": True, "code": "out_of_credits", "message": ...}``
+            when the chat must NOT be forwarded to OpenClaw.
 
-        1. Cold-start UX: when a user returns after idle, their first ping may
-           land while the row is still flipping from `stopped` to `running`.
-           Retry quickly, but don't wait a full 30s.
-        2. Abuse floor: an authenticated user flooding `user_active` against
-           their own stopped container can't burn unbounded DDB WCU on
-           conditional-check failures — retries bounded to 1 per _DDB_WRITE_RETRY_FLOOR.
+        Read uses ``ConsistentRead=True`` so a top-up that just landed via
+        Stripe webhook unblocks the next message immediately (no
+        eventual-consistency lag on the credits table).
         """
-        now = time.time()
-        last = _LAST_DDB_WRITE.get(owner_id, 0.0)
-        if now - last < _DDB_WRITE_COOLDOWN:
-            return
-        _LAST_DDB_WRITE[owner_id] = now
+        from core.repositories import user_repo
+        from core.services import credit_ledger
 
-        from core.dynamodb import utc_now_iso
-        from core.repositories import container_repo
+        user = await user_repo.get(user_id)
+        if not user or user.get("provider_choice") != "bedrock_claude":
+            return {"blocked": False}
 
-        try:
-            wrote = await container_repo.update_last_active(owner_id, utc_now_iso())
-        except Exception:
-            logger.warning("record_activity: DDB write failed for %s", owner_id, exc_info=True)
-            put_metric("gateway.record_activity.count", dimensions={"outcome": "error"})
-            # Compute the backdate from a FRESH time.time() — not the pre-await
-            # `now` — so a slow DDB call (e.g. partial outage) can't itself
-            # consume the entire retry-floor window and admit the next ping
-            # immediately. Codex P2 on PR #269.
-            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
-            return
-
-        if not wrote:
-            put_metric("gateway.record_activity.count", dimensions={"outcome": "noop"})
-            _LAST_DDB_WRITE[owner_id] = time.time() - (_DDB_WRITE_COOLDOWN - _DDB_WRITE_RETRY_FLOOR)
-            return
-
-        put_metric("gateway.record_activity.count", dimensions={"outcome": "success"})
+        balance = await credit_ledger.get_balance(user_id, consistent=True)
+        if balance <= 0:
+            return {
+                "blocked": True,
+                "code": "out_of_credits",
+                "message": "You're out of Claude credits. Top up to continue.",
+            }
+        return {"blocked": False}
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""
@@ -1030,141 +1117,27 @@ class GatewayConnectionPool:
         for user_id in list(self._connections.keys()):
             await self.close_user(user_id)
 
-    async def _reap_once(self) -> list[str]:
-        """One pass of the reaper. Returns the list of owner_ids that were stopped.
+    async def emit_running_gauges(self) -> None:
+        """Emit gateway-running-count gauges. Called by the lifespan loop.
 
-        Extracted so the loop body is trivially testable — the test calls
-        `_reap_once` directly without running the outer `asyncio.sleep` loop.
-
-        Walks DDB (container_repo.get_by_status("running")) rather than the
-        in-memory connection pool, so disconnected users whose browsers have
-        closed remain candidates for reaping. That was the root bug: the old
-        loop walked `self._connections`, and a user who closed their tab was
-        evicted from the dict before the 5-minute timer fired — so their
-        container ran forever.
+        Replaces the old idle-reaper, which also computed these gauges as a
+        side-effect. Post-flat-fee cutover there is no scale-to-zero, so the
+        reaping loop is gone — but the running-count metric still drives the
+        W5 alarm on gateway.connection.open.
         """
-        from core.containers import get_ecs_manager
-        from core.containers.ecs_manager import EcsManagerError
-        from core.repositories import billing_repo, container_repo
+        from core.repositories import container_repo
 
         try:
             rows = await container_repo.get_by_status("running")
         except Exception:
-            logger.exception("idle_checker: get_by_status failed")
-            return []
+            logger.exception("running_gauges: get_by_status failed")
+            return
 
         try:
             gauge("gateway.running.count", len(rows))
-            # Preserve the legacy metric so the W5 alarm on gateway.connection.open
-            # keeps getting datapoints. Measures active backend↔container gateway
-            # WS connections (distinct from running.count, which is DDB-backed).
             gauge("gateway.connection.open", len(self._connections))
         except Exception:
             pass
-
-        now_ts = time.time()
-        stopped: list[str] = []
-        # Per-cycle billing cache: one DDB read per unique owner per cycle, even
-        # if the row appears in both the per-tier-breakdown count and the
-        # idle-eligible reap path below. `failed_lookups` caches the negative
-        # case so a transient billing outage doesn't double the read amp +
-        # log noise (Codex P2 on PR #273).
-        tier_cache: Dict[str, str] = {}
-        failed_lookups: set[str] = set()
-
-        async def _resolve_tier(oid: str) -> str | None:
-            if oid in tier_cache:
-                return tier_cache[oid]
-            if oid in failed_lookups:
-                return None
-            try:
-                account = await billing_repo.get_by_owner_id(oid)
-            except Exception:
-                logger.warning("idle_checker: billing lookup failed for %s, skipping", oid)
-                failed_lookups.add(oid)
-                return None
-            plan_tier = (account or {}).get("plan_tier", "free")
-            tier_cache[oid] = plan_tier
-            return plan_tier
-
-        # Per-tier running-container breakdown — useful for at-a-glance
-        # "how many free vs paid are running right now" without log scraping.
-        tier_counts: Dict[str, int] = {}
-        for row in rows:
-            tier = await _resolve_tier(row["owner_id"])
-            if tier is None:
-                continue
-            tier_counts[tier] = tier_counts.get(tier, 0) + 1
-        try:
-            for tier, count in tier_counts.items():
-                gauge("gateway.running.count.by_tier", count, dimensions={"tier": tier})
-        except Exception:
-            pass
-
-        for row in rows:
-            owner_id = row["owner_id"]
-            # last_active_at is bumped by record_activity() when traffic flows
-            # through the gateway. A freshly-provisioned container that just
-            # finished its provisioning→running transition has no last_active_at
-            # yet (no chat has happened), so we fall back to updated_at — that's
-            # the moment the row last changed state, including the transition
-            # to running. Final fallback is created_at, then epoch 0.
-            #
-            # Without this fallback chain, the reaper would kill every newly-
-            # provisioned free-tier container ~1 cycle after it became healthy
-            # (before the user ever sent a message), leaving the container
-            # bouncing between provisioning and stopped forever.
-            ts_str = row.get("last_active_at") or row.get("updated_at") or row.get("created_at")
-            last_active_epoch = 0.0
-            if ts_str:
-                try:
-                    # Our writer emits `+00:00`, but replace a trailing `Z` so
-                    # any external writer (or pre-3.11 Python) parses cleanly.
-                    last_active_epoch = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).timestamp()
-                except Exception:
-                    last_active_epoch = 0.0
-
-            if now_ts - last_active_epoch < _IDLE_TIMEOUT:
-                continue
-
-            # Tier was already resolved + cached above for the per-tier breakdown;
-            # this lookup hits the cache, no extra DDB read.
-            plan_tier = await _resolve_tier(owner_id)
-            if plan_tier is None:
-                # billing lookup failed earlier; skip this cycle (already logged).
-                continue
-
-            if not TIER_CONFIG.get(plan_tier, {}).get("scale_to_zero", False):
-                continue
-
-            try:
-                await get_ecs_manager().stop_user_service(owner_id)
-                await container_repo.mark_stopped_if_running(owner_id)
-                put_metric("gateway.idle.scale_to_zero", dimensions={"tier": plan_tier})
-                logger.info("scale-to-zero: stopped %s (tier=%s)", owner_id, plan_tier)
-                stopped.append(owner_id)
-            except EcsManagerError as e:
-                logger.error("scale-to-zero: ECS stop failed for %s: %s", owner_id, e)
-            except Exception:
-                logger.exception("scale-to-zero: unexpected error for %s", owner_id)
-
-        return stopped
-
-    async def run_idle_checker(self) -> None:
-        """Background task: every _IDLE_CHECK_INTERVAL seconds, reap idle
-        free-tier (or orphan) containers using DDB as source of truth."""
-        logger.info(
-            "Idle checker started (interval=%ds, timeout=%ds)",
-            _IDLE_CHECK_INTERVAL,
-            _IDLE_TIMEOUT,
-        )
-        try:
-            while True:
-                await asyncio.sleep(_IDLE_CHECK_INTERVAL)
-                await self._reap_once()
-        except asyncio.CancelledError:
-            logger.info("Idle checker stopped")
-            return
 
 
 def _parse_session_key(session_key: str) -> dict:

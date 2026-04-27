@@ -105,7 +105,8 @@ async def _check_token_collision(owner_id: str, patch: dict) -> None:
     description=(
         "Deep-merges the patch into the caller's owner_id openclaw.json on EFS. "
         "Derives owner_id from auth context (org_id if org, else user_id). "
-        "Requires org_admin for org callers. Tier-gates channel fields."
+        "Requires org_admin for org callers. Channel fields require an active or "
+        "trialing subscription."
     ),
 )
 async def patch_config(
@@ -117,14 +118,20 @@ async def patch_config(
 
     owner_id = resolve_owner_id(auth)
 
-    # Tier gate on channel fields
+    # Subscription gate on channel fields. Channels require an active or
+    # trialing subscription — pre-signup users (no billing row) and
+    # canceled/past_due users can't bind bots. Falls back to the legacy
+    # stripe_subscription_id marker for accounts that predate the cutover
+    # or haven't yet received a customer.subscription.updated webhook so
+    # paid users don't get rejected mid-migration. Codex P1 on PR #393.
     if _patch_touches_channels(body.patch):
         account = await billing_repo.get_by_owner_id(owner_id)
-        tier = account.get("plan_tier", "free") if isinstance(account, dict) else "free"
-        if tier == "free":
+        status = account.get("subscription_status") if isinstance(account, dict) else None
+        has_legacy_sub = bool(isinstance(account, dict) and account.get("stripe_subscription_id"))
+        if status not in ("active", "trialing") and not has_legacy_sub:
             raise HTTPException(
                 status_code=403,
-                detail="channels_require_paid_tier",
+                detail="channels_require_subscription",
             )
 
         # Bot token collision pre-check

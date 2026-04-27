@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from decimal import Decimal
 
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
@@ -40,8 +39,6 @@ async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
 async def create_if_not_exists(
     owner_id: str,
     stripe_customer_id: str,
-    plan_tier: str = "free",
-    markup_multiplier: float = 1.4,
     owner_type: str = "personal",
 ) -> dict:
     """Atomically create a billing account if one doesn't exist for this owner.
@@ -59,8 +56,6 @@ async def create_if_not_exists(
         "owner_type": owner_type,
         "id": str(uuid.uuid4()),
         "stripe_customer_id": stripe_customer_id,
-        "plan_tier": plan_tier,
-        "markup_multiplier": Decimal(str(markup_multiplier)),
         "created_at": now,
         "updated_at": now,
     }
@@ -77,17 +72,34 @@ async def create_if_not_exists(
     return item
 
 
-async def update_subscription(
+async def set_subscription(
+    *,
     owner_id: str,
-    stripe_subscription_id: str | None,
-    plan_tier: str,
+    subscription_id: str | None,
+    status: str,
+    trial_end: int | None = None,
 ) -> dict | None:
+    """Persist Stripe subscription identity + status onto the billing account.
+
+    Used on trial signup (Plan 3 §7.1) + every subscription state change
+    via the customer.subscription.updated/deleted webhook. Records
+    ``subscription_id`` (or ``None`` on cancellation) + ``status`` + the
+    optional ``trial_end`` epoch so the rest of the system can read state
+    without re-querying Stripe.
+    """
     existing = await get_by_owner_id(owner_id)
     if existing is None:
         return None
 
-    existing["stripe_subscription_id"] = stripe_subscription_id
-    existing["plan_tier"] = plan_tier
+    existing["stripe_subscription_id"] = subscription_id
+    existing["subscription_status"] = status
+    # Always overwrite trial_end so a cancellation (trial_end=None) actually
+    # clears the field — Codex P2 on PR #393 (stale trial countdown after
+    # subscription.deleted).
+    if trial_end is not None:
+        existing["trial_end"] = trial_end
+    else:
+        existing.pop("trial_end", None)
     existing["updated_at"] = utc_now_iso()
 
     table = _get_table()
@@ -98,21 +110,3 @@ async def update_subscription(
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
-
-
-async def set_overage_enabled(owner_id: str, enabled: bool, overage_limit: int | None = None) -> dict | None:
-    """Toggle overage for the current billing period."""
-    existing = await get_by_owner_id(owner_id)
-    if existing is None:
-        return None
-
-    existing["overage_enabled"] = enabled
-    if overage_limit is not None:
-        existing["overage_limit"] = Decimal(str(overage_limit))
-    elif not enabled:
-        existing.pop("overage_limit", None)
-    existing["updated_at"] = utc_now_iso()
-
-    table = _get_table()
-    await run_in_thread(table.put_item, Item=existing)
-    return existing

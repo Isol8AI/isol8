@@ -90,9 +90,7 @@ class Settings(BaseSettings):
     # Billing / Stripe
     STRIPE_SECRET_KEY: str = os.getenv("STRIPE_SECRET_KEY", "")
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-    STRIPE_METER_ID: str = os.getenv("STRIPE_METER_ID", "")
     STRIPE_FLAT_PRICE_ID: str = ""
-    BILLING_MARKUP: float = float(os.getenv("BILLING_MARKUP", "1.4"))
 
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
@@ -103,9 +101,6 @@ class Settings(BaseSettings):
     # time — both operations are audited via CloudTrail so we have a per-call
     # record of which backend instance touched which container's secrets.
     CONTAINER_SECRETS_KMS_KEY_ID: str = os.getenv("CONTAINER_SECRETS_KMS_KEY_ID", "")
-
-    # Free tier default model
-    FREE_TIER_MODEL: str = os.getenv("FREE_TIER_MODEL", "minimax.minimax-m2.5")
 
     @field_validator("CLERK_ISSUER")
     @classmethod
@@ -120,61 +115,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-# Tier configuration
-TIER_CONFIG = {
-    "free": {
-        "included_budget_microdollars": 2_000_000,  # $2 lifetime
-        "budget_type": "lifetime",
-        "primary_model": "amazon-bedrock/minimax.minimax-m2.5",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
-        "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-        },
-        "container_cpu": "512",
-        "container_memory": "1024",
-        "scale_to_zero": True,
-    },
-    "starter": {
-        "included_budget_microdollars": 10_000_000,  # $10/mo
-        "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
-        "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
-        },
-        "container_cpu": "512",
-        "container_memory": "1024",
-        "scale_to_zero": False,
-    },
-    "pro": {
-        "included_budget_microdollars": 40_000_000,  # $40/mo
-        "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
-        "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
-        },
-        "container_cpu": "1024",
-        "container_memory": "2048",
-        "scale_to_zero": False,
-    },
-    "enterprise": {
-        "included_budget_microdollars": 80_000_000,  # $80/mo
-        "budget_type": "monthly",
-        "primary_model": "amazon-bedrock/qwen.qwen3-vl-235b-a22b",
-        # Per product rule (2026-04-09): MiniMax is the subagent model on every
-        # paid tier, not just starter/pro. Enterprise used to clone the primary
-        # for the subagent; we've unified.
-        "subagent_model": "amazon-bedrock/minimax.minimax-m2.5",
-        "model_aliases": {
-            "amazon-bedrock/minimax.minimax-m2.5": {"alias": "MiniMax M2.5"},
-            "amazon-bedrock/qwen.qwen3-vl-235b-a22b": {"alias": "Qwen3 VL 235B"},
-        },
-        "container_cpu": "2048",
-        "container_memory": "4096",
-        "scale_to_zero": False,
-    },
-}

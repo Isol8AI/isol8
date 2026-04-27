@@ -1,0 +1,100 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useApi } from "@/lib/api";
+
+export type OAuthState =
+  | { status: "idle" }
+  | {
+      status: "pending";
+      userCode: string;
+      verificationUri: string;
+      expiresAt: number;
+    }
+  | { status: "completed"; accountId: string | null }
+  | { status: "error"; message: string };
+
+type StartResponse = {
+  user_code: string;
+  verification_uri: string;
+  expires_in: number;
+  interval: number;
+};
+
+type PollResponse =
+  | { status: "pending" }
+  | { status: "completed"; account_id: string | null };
+
+const DEFAULT_POLL_INTERVAL_S = 5;
+
+export function useChatGPTOAuth() {
+  const api = useApi();
+  const [state, setState] = useState<OAuthState>({ status: "idle" });
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollIntervalSec = useRef<number>(DEFAULT_POLL_INTERVAL_S);
+
+  const stopPolling = useCallback(() => {
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, []);
+
+  const start = useCallback(async () => {
+    stopPolling();
+    setState({ status: "idle" });
+    try {
+      const r = (await api.post("/oauth/chatgpt/start", {})) as StartResponse;
+      pollIntervalSec.current = r.interval || DEFAULT_POLL_INTERVAL_S;
+      setState({
+        status: "pending",
+        userCode: r.user_code,
+        verificationUri: r.verification_uri,
+        expiresAt: Date.now() + r.expires_in * 1000,
+      });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "OAuth start failed";
+      setState({ status: "error", message });
+    }
+  }, [api, stopPolling]);
+
+  const disconnect = useCallback(async () => {
+    stopPolling();
+    try {
+      await api.post("/oauth/chatgpt/disconnect", {});
+      setState({ status: "idle" });
+    } catch (e: unknown) {
+      const message = e instanceof Error ? e.message : "Disconnect failed";
+      setState({ status: "error", message });
+    }
+  }, [api, stopPolling]);
+
+  // Poll while in pending state. The interval comes from /start's response
+  // (defaults to 5s) and stops once we transition to completed/error.
+  useEffect(() => {
+    if (state.status !== "pending") return;
+    intervalRef.current = setInterval(async () => {
+      try {
+        const r = (await api.post(
+          "/oauth/chatgpt/poll",
+          {},
+        )) as PollResponse;
+        if (r.status === "completed") {
+          stopPolling();
+          setState({ status: "completed", accountId: r.account_id });
+        }
+      } catch (e: unknown) {
+        const message = e instanceof Error ? e.message : "OAuth poll failed";
+        stopPolling();
+        setState({ status: "error", message });
+      }
+    }, pollIntervalSec.current * 1000);
+
+    return () => stopPolling();
+  }, [state.status, api, stopPolling]);
+
+  // Stop on unmount.
+  useEffect(() => () => stopPolling(), [stopPolling]);
+
+  return { state, start, disconnect };
+}

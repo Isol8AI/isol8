@@ -14,7 +14,7 @@ from core.config import settings
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import EcsManagerError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo
+from core.repositories import billing_repo, container_repo, user_repo
 
 logger = logging.getLogger(__name__)
 
@@ -27,15 +27,41 @@ async def _owner_has_subscription(owner_id: str) -> bool:
     return account is not None and account.get("stripe_subscription_id") is not None
 
 
-async def _background_provision(user_id: str) -> None:
-    """Run provisioning in the background."""
+async def _resolve_provider_choice(clerk_user_id: str) -> tuple[str, str | None]:
+    """Look up the user's saved provider_choice (+ byo_provider when applicable).
+
+    Always reads ``user_repo`` by the *Clerk user id* (not owner_id) — in
+    org context, the org_id has no provider_choice row, so passing it
+    would silently fall back to bedrock_claude and provision the wrong
+    LLM config for chatgpt_oauth/byo_key users. Codex P1 on PR #393.
+
+    Falls back to ``bedrock_claude`` when the row exists but no choice is
+    persisted yet — that matches the old default and keeps recovery working
+    for users who provisioned before Plan 3 introduced the field.
+    """
+    row = await user_repo.get(clerk_user_id)
+    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
+    byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
+    return provider_choice, byo_provider
+
+
+async def _background_provision(owner_id: str, clerk_user_id: str) -> None:
+    """Run provisioning in the background.
+
+    ``owner_id`` is the container scope (org_id in org context, user_id in
+    personal). ``clerk_user_id`` is the calling Clerk user — used to look
+    up provider_choice. In personal context they are the same; in org
+    context they differ.
+    """
     try:
+        provider_choice, byo_provider = await _resolve_provider_choice(clerk_user_id)
         await get_ecs_manager().provision_user_container(
-            user_id,
-            provider_choice="bedrock_claude",
+            owner_id,
+            provider_choice=provider_choice,
+            byo_provider=byo_provider,
         )
     except Exception:
-        logger.exception("Background provisioning failed for user %s", user_id)
+        logger.exception("Background provisioning failed for owner %s", owner_id)
 
 
 @router.get(
@@ -70,7 +96,7 @@ async def container_status(
     retryable_states = ("error", "stopped")
     if container.get("status") in retryable_states and await _owner_has_subscription(owner_id):
         await container_repo.update_status(owner_id, "provisioning", "auto_retry")
-        asyncio.create_task(_background_provision(owner_id))
+        asyncio.create_task(_background_provision(owner_id, auth.user_id))
         container["status"] = "provisioning"
         container["substatus"] = "auto_retry"
 
@@ -134,15 +160,15 @@ async def container_provision(
             "already_existed": True,
         }
 
-    # Provision new container
+    # Provision new container — read the user's saved provider_choice so the
+    # container is configured for the right LLM path (OAuth / BYO key /
+    # bedrock_claude). Codex P1 on PR #393.
     try:
-        # NOTE (Plan 2 Task 13): provider_choice plumb-through. The router does
-        # not yet read the user's saved choice from user_repo — Plan 3 cutover
-        # wires that in. For now we fall back to bedrock_claude so the existing
-        # routes preserve behavior (Bedrock-hosted Claude on the task IAM role).
+        provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
         service_name = await get_ecs_manager().provision_user_container(
             owner_id,
-            provider_choice="bedrock_claude",
+            provider_choice=provider_choice,
+            byo_provider=byo_provider,
         )
         logger.info("Provisioned container %s for owner %s", service_name, owner_id)
         return {
@@ -187,9 +213,11 @@ async def container_retry(
         )
 
     try:
+        provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
         service_name = await ecs_manager.provision_user_container(
             owner_id,
-            provider_choice="bedrock_claude",
+            provider_choice=provider_choice,
+            byo_provider=byo_provider,
         )
     except EcsManagerError as e:
         logger.error("Retry provisioning failed for owner %s: %s", owner_id, e)
