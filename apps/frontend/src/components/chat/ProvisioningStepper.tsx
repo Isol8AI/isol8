@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
 import {
@@ -169,11 +169,27 @@ export function ProvisioningStepper({
   // /onboarding, or the URL was scrubbed), the provider step is skipped
   // entirely and the legacy flow takes over. Plan 3 cutover (Task 16)
   // removes the legacy path.
+  const router = useRouter();
   const searchParams = useSearchParams();
   const rawProvider = searchParams.get("provider");
   const providerChoice: ProviderChoice | null = isProviderChoice(rawProvider) ? rawProvider : null;
   const [providerStepDone, setProviderStepDone] = useState(false);
   const needsProviderStep = providerChoice !== null && !providerStepDone;
+
+  // Once the provider step is complete, strip ?provider= from the URL so a
+  // page reload doesn't re-enter the provider step. providerStepDone is a
+  // local state that resets on remount; ?provider= persists in the URL
+  // unless we clear it. For chatgpt_oauth specifically, re-entering the
+  // step calls /oauth/chatgpt/start which 409s on an already-active
+  // session — dead-ending the user. Codex P2 on PR #399.
+  useEffect(() => {
+    if (!providerStepDone) return;
+    if (!searchParams.get("provider")) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("provider");
+    const remaining = params.toString();
+    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
+  }, [providerStepDone, searchParams, router]);
 
   // Poll container status every 3s once subscribed (incl. trial).
   const shouldPollContainer = isSubscribed;
