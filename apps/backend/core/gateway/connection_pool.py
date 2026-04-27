@@ -584,9 +584,97 @@ class GatewayConnection:
             except Exception:
                 logger.exception("Failed to record usage for user %s", self.user_id)
 
+            # Plan 3 Task 5: card-3 (bedrock_claude) deduct credits in
+            # addition to the legacy usage_service path. Other cards skip.
+            # Synchronous so the next chat sees the updated balance.
+            try:
+                await self._maybe_deduct_credits(
+                    chat_session_id=session_key,
+                    model=model,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to deduct credits for user %s session %s",
+                    self.user_id,
+                    session_key,
+                )
+
         except Exception:
             put_metric("chat.session_usage.fetch.error")
             logger.exception("Failed to fetch session usage for user %s", self.user_id)
+
+    async def _maybe_deduct_credits(
+        self,
+        *,
+        chat_session_id: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Card-3 (bedrock_claude) credit deduct on chat completion.
+
+        Per spec §6.3: card-3 users prepay for Claude inference; we deduct
+        from credit_ledger after each session ends. Cards 1 + 2 skip this
+        entirely. Unknown model_id (e.g. a new Claude model not yet in
+        bedrock_pricing) is logged + skipped — no overdraft, no error to
+        the user; the operator updates bedrock_pricing.py and the next
+        chat deducts correctly.
+
+        Markup is applied here (1.4x raw) per the spec's pricing model.
+        """
+        from core.billing.bedrock_pricing import (
+            UnknownModelError,
+            cost_microcents,
+        )
+        from core.repositories import user_repo
+        from core.services import credit_ledger
+
+        user = await user_repo.get(self.user_id)
+        if not user or user.get("provider_choice") != "bedrock_claude":
+            return
+
+        # Bedrock model ids may be passed with or without a provider prefix
+        # (e.g. "amazon-bedrock/anthropic.claude-sonnet-4-6"). Strip the
+        # prefix before looking up rates.
+        bare_model = model.split("/", 1)[-1] if "/" in model else model
+
+        try:
+            raw = cost_microcents(
+                model_id=bare_model,
+                input_tokens=int(input_tokens or 0),
+                output_tokens=int(output_tokens or 0),
+            )
+        except UnknownModelError:
+            logger.warning(
+                "Unknown Bedrock model %r in chat completion for user %s — skipping deduct",
+                bare_model,
+                self.user_id,
+            )
+            put_metric("credit.deduct.unknown_model", dimensions={"model": bare_model})
+            return
+
+        # Integer math — avoid IEEE-754 drift on the multiply.
+        # `raw * 1.4` is not exact (10500 * 1.4 = 14699.999...) so we use
+        # `raw * 14 // 10` instead. Spec §6.3 mandates microcents-as-int
+        # throughout the credit ledger.
+        marked_up = raw * 14 // 10
+        await credit_ledger.deduct(
+            self.user_id,
+            amount_microcents=marked_up,
+            chat_session_id=chat_session_id,
+            raw_cost_microcents=raw,
+            markup_multiplier=1.4,
+        )
+        logger.info(
+            "Deducted credits for user %s session %s: raw=%d marked_up=%d model=%s",
+            self.user_id,
+            chat_session_id,
+            raw,
+            marked_up,
+            bare_model,
+        )
 
     def _handle_message(self, data: dict) -> None:
         """Route an incoming gateway message.
@@ -891,6 +979,38 @@ class GatewayConnectionPool:
             return
 
         put_metric("gateway.record_activity.count", dimensions={"outcome": "success"})
+
+    async def gate_chat(self, *, user_id: str) -> dict:
+        """Pre-chat hard-stop for card-3 (bedrock_claude) users.
+
+        Per spec §6.3 step 1 + §6.6: blocks chat when card-3 balance ≤ 0.
+        Cards 1 + 2 (chatgpt_oauth, byo_key) are never gated — their LLM
+        cost is on the user's own provider account, not on us.
+
+        Returns:
+            ``{"blocked": False}`` when chat may proceed.
+            ``{"blocked": True, "code": "out_of_credits", "message": ...}``
+            when the chat must NOT be forwarded to OpenClaw.
+
+        Read uses ``ConsistentRead=True`` so a top-up that just landed via
+        Stripe webhook unblocks the next message immediately (no
+        eventual-consistency lag on the credits table).
+        """
+        from core.repositories import user_repo
+        from core.services import credit_ledger
+
+        user = await user_repo.get(user_id)
+        if not user or user.get("provider_choice") != "bedrock_claude":
+            return {"blocked": False}
+
+        balance = await credit_ledger.get_balance(user_id, consistent=True)
+        if balance <= 0:
+            return {
+                "blocked": True,
+                "code": "out_of_credits",
+                "message": "You're out of Claude credits. Top up to continue.",
+            }
+        return {"blocked": False}
 
     async def _create_connection(self, user_id: str, ip: str, token: str) -> GatewayConnection:
         """Create and connect a new GatewayConnection."""

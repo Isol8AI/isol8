@@ -680,6 +680,32 @@ async def _process_agent_chat_background(
                 except Exception:
                     logger.warning("Failed to bind session %s to node", session_key)
 
+        # Plan 3 Task 4: card-3 (bedrock_claude) hard-stop when balance ≤ 0.
+        # Cards 1+2 always pass through. We push a structured error event
+        # back to the client and bail before forwarding to OpenClaw.
+        gate = await pool.gate_chat(user_id=owner_id)
+        if gate.get("blocked"):
+            put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
+            logger.info(
+                "[%s] chat.send BLOCKED agent=%s code=%s",
+                user_id,
+                agent_id,
+                gate.get("code"),
+            )
+            try:
+                management_api.send_message(
+                    connection_id,
+                    {
+                        "type": "error",
+                        "code": gate.get("code", "blocked"),
+                        "message": gate.get("message", "Chat blocked"),
+                        "agent_id": agent_id,
+                    },
+                )
+            except Exception:
+                logger.warning("[%s] failed to deliver blocked-chat error event", user_id)
+            return
+
         result = await pool.send_rpc(
             user_id=owner_id,
             req_id=req_id,
