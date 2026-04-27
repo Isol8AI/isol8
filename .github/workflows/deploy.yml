@@ -20,6 +20,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
       - name: Build
+        env:
+          # Stripe flat-fee Price IDs are baked into ECS task env at synth time
+          # via service-stack.ts. Empty string is tolerated (the backend will
+          # error out at request time with a clear message), but production
+          # subscriptions will fail until both secrets are populated.
+          STRIPE_FLAT_PRICE_ID_DEV: ${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}
+          STRIPE_FLAT_PRICE_ID_PROD: ${{ secrets.STRIPE_FLAT_PRICE_ID_PROD }}
         run: |-
           cd apps/infra
           npm ci

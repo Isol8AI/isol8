@@ -16,7 +16,7 @@ from core.repositories import billing_repo, usage_repo
 from core.services import credit_ledger
 from core.services.billing_service import BillingService
 from core.services.usage_service import get_usage_summary
-from core.services.bedrock_pricing import get_all_prices
+from core.billing.bedrock_pricing import get_all_rates
 from schemas.billing import (
     BillingAccountResponse,
     PortalResponse,
@@ -199,15 +199,17 @@ async def get_my_usage(
 async def get_pricing(
     auth: AuthContext = Depends(get_current_user),
 ):
-    all_prices = get_all_prices()
+    # Schema convention is USD per token; rate table is USD per million
+    # tokens. Convert here so the API contract is unchanged.
+    all_rates = get_all_rates()
     models = {
         model_id: ModelPriceResponse(
-            input=price["input"],
-            output=price["output"],
-            cache_read=price["cache_read"],
-            cache_write=price["cache_write"],
+            input=rate["input"] / 1_000_000,
+            output=rate["output"] / 1_000_000,
+            cache_read=rate["cache_read"] / 1_000_000,
+            cache_write=rate["cache_write"] / 1_000_000,
         )
-        for model_id, price in all_prices.items()
+        for model_id, rate in all_rates.items()
     }
     return PricingResponse(models=models)
 

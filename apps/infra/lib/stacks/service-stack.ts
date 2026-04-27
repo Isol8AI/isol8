@@ -609,7 +609,14 @@ export class ServiceStack extends cdk.Stack {
         // same CMK as the BYOK Fernet layer since the blast radius is the same
         // (any principal with kms:Decrypt on this key can read any of them).
         CONTAINER_SECRETS_KMS_KEY_ID: props.kmsKeyArn,
-        STRIPE_FLAT_PRICE_ID: process.env.STRIPE_FLAT_PRICE_ID ?? "",
+        // Stripe flat-fee Price ID is environment-specific: prod is created in
+        // Stripe live mode, dev in test mode, and they MUST NOT cross-pollinate
+        // (a test-mode Price would silently create test subscriptions in prod).
+        // Read per-env from the runner's secrets at synth time.
+        STRIPE_FLAT_PRICE_ID:
+          env === "prod"
+            ? (process.env.STRIPE_FLAT_PRICE_ID_PROD ?? "")
+            : (process.env.STRIPE_FLAT_PRICE_ID_DEV ?? ""),
         FRONTEND_URL:
           env === "local"
             ? "http://localhost:3000"

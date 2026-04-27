@@ -3,15 +3,27 @@
 import logging
 from datetime import datetime, timezone
 
+from core.billing.bedrock_pricing import UnknownModelError, cost_microcents
 from core.observability.metrics import put_metric
 from core.repositories import usage_repo
-from core.services.bedrock_pricing import get_model_price
 
 logger = logging.getLogger(__name__)
 
 
 def _current_period() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _strip_provider_prefix(model: str) -> str:
+    """Strip the provider prefix (e.g. ``amazon-bedrock/``) from the model id.
+
+    The pricing table is keyed on the bare Bedrock model id; the model
+    string the gateway emits in ``chat.final`` carries the provider
+    prefix. Strip it once here so callers don't have to.
+    """
+    if "/" in model:
+        return model.split("/", 1)[1]
+    return model
 
 
 async def record_usage(
@@ -29,21 +41,26 @@ async def record_usage(
     credit ledger (core/services/credit_ledger.py) handles authoritative
     billing for card-3 (bedrock_claude) users; this is a counter-only
     side-write surfaced via the admin /usage endpoint.
+
+    Microcents are stored in the same ``total_spend_microdollars``
+    column the legacy code wrote to (DDB schema unchanged for backward
+    compatibility — column name is a misnomer; values are microcents).
     """
-    pricing = get_model_price(model)
-    if pricing is None:
+    bare_model = _strip_provider_prefix(model)
+    try:
+        spend_microcents = cost_microcents(
+            model_id=bare_model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_write_tokens=cache_write,
+        )
+    except UnknownModelError:
         put_metric("billing.pricing.missing_model")
         logger.warning("No pricing for model %s — skipping for owner %s", model, owner_id)
         return
 
-    raw_cost_usd = (
-        input_tokens * pricing["input"]
-        + output_tokens * pricing["output"]
-        + cache_read * pricing["cache_read"]
-        + cache_write * pricing["cache_write"]
-    )
-    spend_microdollars = int(raw_cost_usd * 1_000_000)
-    if spend_microdollars <= 0:
+    if spend_microcents <= 0:
         return
 
     period = _current_period()
@@ -51,7 +68,7 @@ async def record_usage(
     await usage_repo.increment(
         owner_id,
         period,
-        spend_microdollars,
+        spend_microcents,
         input_tokens,
         output_tokens,
         cache_read,
@@ -60,7 +77,7 @@ async def record_usage(
     await usage_repo.increment(
         owner_id,
         "lifetime",
-        spend_microdollars,
+        spend_microcents,
         input_tokens,
         output_tokens,
         cache_read,
@@ -69,7 +86,7 @@ async def record_usage(
     await usage_repo.increment(
         owner_id,
         f"member:{user_id}:{period}",
-        spend_microdollars,
+        spend_microcents,
         input_tokens,
         output_tokens,
         cache_read,
@@ -78,7 +95,12 @@ async def record_usage(
 
 
 async def get_usage_summary(owner_id: str) -> dict:
-    """Get current period usage summary for the admin /usage endpoint."""
+    """Get current period usage summary for the admin /usage endpoint.
+
+    The DDB column is named ``total_spend_microdollars`` for legacy
+    reasons; values are stored as microcents. We surface the field as
+    USD here (microcents / 1e6 = USD).
+    """
     period = _current_period()
     usage = await usage_repo.get_period_usage(owner_id, period)
     lifetime = await usage_repo.get_period_usage(owner_id, "lifetime")

@@ -5,6 +5,8 @@ import pytest
 from core.billing.bedrock_pricing import (
     UnknownModelError,
     cost_microcents,
+    get_all_rates,
+    get_rate,
 )
 
 
@@ -57,3 +59,71 @@ class TestCostMicrocents:
             output_tokens=5678,
         )
         assert isinstance(result, int)
+
+    def test_cache_read_discount(self):
+        """cache_read tokens bill at 0.1× input rate ($0.30/MTok for Sonnet)."""
+        result = cost_microcents(
+            model_id="anthropic.claude-sonnet-4-6",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=10_000,
+        )
+        # 10_000 * $0.30/MTok = $0.003 = 3000 microcents
+        assert result == 3000
+
+    def test_cache_write_surcharge(self):
+        """cache_write tokens bill at 1.25× input rate ($3.75/MTok for Sonnet)."""
+        result = cost_microcents(
+            model_id="anthropic.claude-sonnet-4-6",
+            input_tokens=0,
+            output_tokens=0,
+            cache_write_tokens=10_000,
+        )
+        # 10_000 * $3.75/MTok = $0.0375 = 37_500 microcents
+        assert result == 37_500
+
+    def test_cache_tokens_default_to_zero(self):
+        """Older callers that don't pass cache tokens get the same answer."""
+        without_cache = cost_microcents(
+            model_id="anthropic.claude-opus-4-7",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        with_zero_cache = cost_microcents(
+            model_id="anthropic.claude-opus-4-7",
+            input_tokens=1000,
+            output_tokens=500,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+        )
+        assert without_cache == with_zero_cache
+
+
+class TestGetAllRates:
+    def test_returns_both_models(self):
+        rates = get_all_rates()
+        assert "anthropic.claude-sonnet-4-6" in rates
+        assert "anthropic.claude-opus-4-7" in rates
+
+    def test_each_rate_has_all_four_fields(self):
+        rates = get_all_rates()
+        for model_id, rate in rates.items():
+            assert {"input", "output", "cache_read", "cache_write"} <= set(rate.keys()), model_id
+
+    def test_returns_defensive_copy(self):
+        """Mutating the result must not affect future calls."""
+        rates = get_all_rates()
+        rates["anthropic.claude-sonnet-4-6"]["input"] = 999.0
+        fresh = get_all_rates()
+        assert fresh["anthropic.claude-sonnet-4-6"]["input"] == 3.0
+
+
+class TestGetRate:
+    def test_known_model(self):
+        rate = get_rate("anthropic.claude-opus-4-7")
+        assert rate["input"] == 15.0
+        assert rate["output"] == 75.0
+
+    def test_unknown_model_raises(self):
+        with pytest.raises(UnknownModelError):
+            get_rate("anthropic.claude-fake-99")

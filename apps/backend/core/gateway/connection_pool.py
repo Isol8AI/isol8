@@ -588,6 +588,8 @@ class GatewayConnection:
                     model=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
+                    cache_read_tokens=cache_read,
+                    cache_write_tokens=cache_write,
                 )
             except Exception:
                 logger.exception(
@@ -608,6 +610,8 @@ class GatewayConnection:
         model: str,
         input_tokens: int,
         output_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         """Card-3 (bedrock_claude) credit deduct on chat completion.
 
@@ -658,6 +662,8 @@ class GatewayConnection:
                 model_id=bare_model,
                 input_tokens=int(input_tokens or 0),
                 output_tokens=int(output_tokens or 0),
+                cache_read_tokens=int(cache_read_tokens or 0),
+                cache_write_tokens=int(cache_write_tokens or 0),
             )
         except UnknownModelError:
             logger.warning(

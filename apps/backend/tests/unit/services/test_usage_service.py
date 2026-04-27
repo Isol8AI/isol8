@@ -41,7 +41,7 @@ async def test_record_usage_increments_owner_lifetime_and_member(dynamodb_tables
     await record_usage(
         owner_id="org_1",
         user_id="user_a",
-        model="qwen.qwen3-vl-235b-a22b",
+        model="anthropic.claude-sonnet-4-6",
         input_tokens=1000,
         output_tokens=500,
         cache_read=0,
@@ -60,6 +60,28 @@ async def test_record_usage_increments_owner_lifetime_and_member(dynamodb_tables
     member_usage = await usage_repo.get_period_usage("org_1", f"member:user_a:{period}")
     assert member_usage is not None
     assert member_usage["request_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_record_usage_strips_provider_prefix(dynamodb_tables):
+    """Models from chat.final arrive prefixed (``amazon-bedrock/``); the prefix
+    must be stripped before pricing lookup."""
+    from core.repositories import usage_repo
+    from core.services.usage_service import _current_period, record_usage
+
+    await record_usage(
+        owner_id="org_2",
+        user_id="user_b",
+        model="amazon-bedrock/anthropic.claude-opus-4-7",
+        input_tokens=1000,
+        output_tokens=500,
+        cache_read=0,
+        cache_write=0,
+    )
+    period = _current_period()
+    owner_usage = await usage_repo.get_period_usage("org_2", period)
+    assert owner_usage is not None
+    assert owner_usage["request_count"] == 1
 
 
 @pytest.mark.asyncio
