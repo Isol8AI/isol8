@@ -34,6 +34,17 @@ export function getAgentModelString(agent: Pick<Agent, "model"> | undefined): st
   return undefined;
 }
 
+/** Resolve the human-readable label for an agent. Prefers ``identity.name``
+ * (the user-visible name OpenClaw renders in its own UI), falls back to the
+ * top-level ``name`` field, and only as a last resort surfaces the raw
+ * ``id`` (e.g. ``agent_e7668b0dd6a6`` from a freshly-deployed catalog
+ * template before the user has renamed it). */
+export function agentDisplayName(
+  agent: Pick<Agent, "id" | "name" | "identity">,
+): string {
+  return agent.identity?.name || agent.name || agent.id;
+}
+
 interface AgentsListResponse {
   defaultId?: string;
   agents?: Agent[];
