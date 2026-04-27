@@ -42,6 +42,12 @@ def _remap_cron_jobs_for_deploy(
     template entry, we set:
       - a fresh ``id`` (random UUID)
       - the deployer's new ``agentId``
+      - ``delivery.accountId`` rewritten to the new agent id — OpenClaw's
+        per-agent channel routing convention pairs ``accountId`` with
+        ``agentId`` (see ``_ensure_channel_bindings_for_patch`` in
+        ``config_patcher`` for the same 1:1 mapping). Carrying the
+        publisher's accountId would silently route delivery to the wrong
+        per-agent channel on the deployer's container.
       - a freshly-derived ``sessionKey`` matching OpenClaw's
         ``agent:{agentId}:{userId}`` shape (the persisted format observed
         in ``cron/jobs.json``)
@@ -49,11 +55,10 @@ def _remap_cron_jobs_for_deploy(
       - ``state`` is intentionally absent — OpenClaw recomputes
         ``nextRunAtMs`` from ``schedule`` on first read.
 
-    ``delivery`` (channel + accountId) is carried as-is. If the deployer
-    hasn't bound the named channel yet, the cron run will fail at delivery
-    time and OpenClaw's ``failureAlert`` flow surfaces the error. We
-    deliberately don't strip ``delivery`` because the schedule + payload +
-    routing intent IS the value of carrying the cron job.
+    ``delivery.channel`` and ``delivery.mode`` are carried as-is. If the
+    deployer hasn't bound the named channel yet, the cron run will fail
+    at delivery time and OpenClaw's ``failureAlert`` flow surfaces the
+    error.
     """
     if not template_jobs:
         return []
@@ -69,6 +74,13 @@ def _remap_cron_jobs_for_deploy(
         new_job["sessionKey"] = f"agent:{new_agent_id}:{owner_id_lower}"
         new_job["createdAtMs"] = now_ms
         new_job["updatedAtMs"] = now_ms
+        # Codex P1: per-agent channel bindings pair ``accountId`` 1:1 with
+        # ``agentId`` (see config_patcher._ensure_channel_bindings_for_patch).
+        # Rewrite delivery.accountId to the new agent id so the cron lands on
+        # the deployer's binding instead of the publisher's.
+        delivery = new_job.get("delivery")
+        if isinstance(delivery, dict) and "accountId" in delivery:
+            delivery["accountId"] = new_agent_id
         # Drop any stale ``state`` carried through (defensive — slice should
         # already have stripped it, but jobs.json from older publishes may
         # have leaked it through).
@@ -252,6 +264,24 @@ class CatalogService:
             # idempotent — safe to call even if the config patch never
             # ran or already succeeded.
             self._workspace.cleanup_agent_dirs(owner_id, new_agent_id)
+            # Codex P2: ``apply_deploy_mutation`` may have already committed
+            # the agent entry to openclaw.json before a later step (sidecar
+            # write, cron append) failed. Without an inverse mutation, retries
+            # would accumulate dangling agent entries that openclaw_id never
+            # gets workspace files for. Best-effort remove from agents.list;
+            # swallow secondary failures so the original exception surfaces.
+            try:
+                from core.services.config_patcher import (
+                    remove_from_openclaw_config_list,
+                )
+
+                await remove_from_openclaw_config_list(
+                    owner_id,
+                    ["agents", "list"],
+                    lambda a: isinstance(a, dict) and a.get("id") == new_agent_id,
+                )
+            except Exception:
+                pass
             raise
 
         return {
