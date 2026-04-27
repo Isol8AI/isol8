@@ -7,6 +7,8 @@ import {
   MessageSquare,
   Clock,
   BarChart3,
+  Plug,
+  Wallet,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
@@ -26,6 +28,8 @@ const NAV_ITEMS = [
   { key: "sessions", label: "Sessions", icon: MessageSquare },
   { key: "cron", label: "Cron Jobs", icon: Clock },
   { key: "usage", label: "Usage", icon: BarChart3 },
+  { key: "llm", label: "LLM Provider", icon: Plug },
+  { key: "credits", label: "Credits", icon: Wallet },
 ];
 
 // Panels hidden from non-admin org members

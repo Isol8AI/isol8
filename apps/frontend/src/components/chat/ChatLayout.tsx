@@ -11,6 +11,8 @@ import Link from "next/link";
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
 import { GallerySection } from "@/components/chat/GallerySection";
 import { HealthIndicator } from "@/components/chat/HealthIndicator";
+import { TrialBanner } from "@/components/chat/TrialBanner";
+import { OutOfCreditsBanner } from "@/components/chat/OutOfCreditsBanner";
 import { useGateway } from "@/hooks/useGateway";
 import { useActivityPing } from "@/hooks/useActivityPing";
 import { useApi } from "@/lib/api";
@@ -387,6 +389,8 @@ export function ChatLayout({
           </div>
 
           <div className="main-content">
+            <TrialBanner />
+            <OutOfCreditsBanner />
             {showSubscriptionSuccess && (
               <div className="subscription-banner">
                 <CheckCircle size={16} />
