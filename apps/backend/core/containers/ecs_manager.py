@@ -1039,7 +1039,10 @@ class EcsManager:
             if desired == 0:
                 # Service exists but stopped -- write fresh configs and scale up
                 logger.info("Service %s exists with 0 desired, scaling up", service_name)
-                gateway_token = existing.get("gateway_token") if existing else secrets.token_urlsafe(32)
+                # Legacy rows pre-dating gateway_token would yield None here;
+                # fall through to a fresh token so write_openclaw_config doesn't
+                # silently emit a null auth.token (see config.py validation).
+                gateway_token = (existing.get("gateway_token") if existing else None) or secrets.token_urlsafe(32)
 
                 # Update gateway token and write configs
                 if existing:

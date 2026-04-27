@@ -371,6 +371,13 @@ def build_openclaw_config_dict(
     — these are sections OpenClaw refuses to start without (e.g.
     ``gateway.mode``).
     """
+    # Reprovision flows pull gateway_token from the existing container row;
+    # legacy rows missing the field would silently write
+    # `{"mode":"token","token":null}`, leaving the gateway unauthable.
+    # Fail fast — caller must regenerate via secrets.token_urlsafe before retry.
+    if not gateway_token:
+        raise ValueError("gateway_token must be a non-empty string")
+
     providers_config, default_model, plugin_entries = _provider_block(
         provider_choice=provider_choice,
         user_id=user_id,

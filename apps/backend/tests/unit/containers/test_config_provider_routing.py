@@ -99,3 +99,17 @@ async def test_unknown_provider_choice_raises(tmp_path):
             provider_choice="totally_made_up",
             user_id="u_1",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_token", ["", None])
+async def test_empty_gateway_token_raises(tmp_path, bad_token):
+    """Empty/None gateway_token must fail fast — never silently write a null auth."""
+    out = tmp_path / "openclaw.json"
+    with pytest.raises(ValueError, match="gateway_token must be a non-empty string"):
+        await write_openclaw_config(
+            config_path=out,
+            gateway_token=bad_token,
+            provider_choice="bedrock_claude",
+            user_id="u_1",
+        )
