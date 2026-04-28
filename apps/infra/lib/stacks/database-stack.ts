@@ -34,6 +34,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
+  public readonly paperclipCompaniesTable: dynamodb.Table;
 
   // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
   // pgvector extension is created by the drizzle migrations runner in
@@ -232,6 +233,27 @@ export class DatabaseStack extends cdk.Stack {
       encryptionKey: props.kmsKey,
     });
 
+    // Paperclip companies — maps Isol8 user_id → their Paperclip company
+    // record + encrypted credentials. GSI by-status-purge-at lets the
+    // cleanup cron find disabled rows past their grace window. Per the
+    // paperclip-rebuild plan (Task 2). Customer-managed KMS to match the
+    // rest of this stack (deviates from the plan template's AWS_MANAGED).
+    this.paperclipCompaniesTable = new dynamodb.Table(this, "PaperclipCompaniesTable", {
+      tableName: `isol8-${env}-paperclip-companies`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
+      indexName: "by-status-purge-at",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "scheduled_purge_at", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
+
     new cdk.CfnOutput(this, "CreditsTableName", {
       value: this.creditsTable.tableName,
       exportName: `${this.stackName}-credits-table`,
@@ -243,6 +265,10 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "OAuthTokensTableName", {
       value: this.oauthTokensTable.tableName,
       exportName: `${this.stackName}-oauth-tokens-table`,
+    });
+    new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
+      value: this.paperclipCompaniesTable.tableName,
+      exportName: `${this.stackName}-paperclip-companies-table`,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

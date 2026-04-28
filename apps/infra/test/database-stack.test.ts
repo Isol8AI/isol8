@@ -170,3 +170,44 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
     expect(clusters[logicalId].DeletionPolicy).toBe("Snapshot");
   });
 });
+
+describe("DatabaseStack — paperclip-companies table", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates isol8-{env}-paperclip-companies with user_id PK and PAY_PER_REQUEST", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-paperclip-companies",
+      KeySchema: [{ AttributeName: "user_id", KeyType: "HASH" }],
+      BillingMode: "PAY_PER_REQUEST",
+    });
+  });
+
+  test("paperclip-companies has by-status-purge-at GSI for the cleanup cron", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-paperclip-companies",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-status-purge-at",
+          KeySchema: [
+            { AttributeName: "status", KeyType: "HASH" },
+            { AttributeName: "scheduled_purge_at", KeyType: "RANGE" },
+          ],
+          Projection: Match.objectLike({ ProjectionType: "KEYS_ONLY" }),
+        }),
+      ]),
+    });
+  });
+
+  test("paperclip-companies uses customer-managed KMS encryption (matches stack posture)", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-paperclip-companies",
+      SSESpecification: Match.objectLike({
+        SSEEnabled: true,
+        SSEType: "KMS",
+      }),
+    });
+  });
+});
