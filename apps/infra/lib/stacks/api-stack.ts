@@ -60,6 +60,13 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const httpApiDomain = isProd ? "api.isol8.co" : `api-${env}.isol8.co`;
+    // Second public custom domain for the same HTTP API (Paperclip surface).
+    // Backend dispatches per-host using X-Forwarded-Host (set below via the
+    // integration's requestParameters). The wildcard *.isol8.co cert in
+    // DnsStack already covers this hostname, so no SAN changes are needed.
+    const companyApiDomain = isProd
+      ? "company.isol8.co"
+      : `company-${env}.isol8.co`;
     const frontendUrl = isProd
       ? "https://isol8.co"
       : `https://${env}.isol8.co`;
@@ -101,6 +108,11 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
+    // We set X-Forwarded-Host = $context.domainName so the FastAPI backend
+    // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
+    // API Gateway rewrites the upstream Host to the ALB DNS, so the original
+    // requesting host is otherwise lost. The same integration (and so the
+    // same X-Forwarded-Host) serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
       "HttpAlbIntegration",
@@ -113,6 +125,9 @@ export class ApiStack extends cdk.Stack {
         connectionId: vpcLinkV2.ref,
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
+        requestParameters: {
+          "overwrite:header.X-Forwarded-Host": "$context.domainName",
+        },
       },
     );
 
@@ -187,6 +202,54 @@ export class ApiStack extends cdk.Stack {
           bind: () => ({
             dnsName: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalDomainName").toString(),
             hostedZoneId: cdk.Fn.getAtt(httpDomainName.logicalId, "RegionalHostedZoneId").toString(),
+          }),
+        }),
+      });
+
+      // --- Second public custom domain: company.isol8.co (Paperclip) ---
+      // Same HTTP API, same VPC Link → ALB → FastAPI integration. The
+      // X-Forwarded-Host header set on the integration above lets the
+      // backend dispatch per-host (T16). The wildcard *.isol8.co cert
+      // already covers this hostname, so we reuse props.certificate.
+      const companyDomainName = new apigatewayv2.CfnDomainName(
+        this,
+        "CompanyHttpDomain",
+        {
+          domainName: companyApiDomain,
+          domainNameConfigurations: [
+            {
+              certificateArn: props.certificate.certificateArn,
+              endpointType: "REGIONAL",
+              securityPolicy: "TLS_1_2",
+            },
+          ],
+        },
+      );
+
+      const companyMapping = new apigatewayv2.CfnApiMapping(
+        this,
+        "CompanyHttpApiMapping",
+        {
+          apiId: httpApi.ref,
+          domainName: companyDomainName.ref,
+          stage: env,
+        },
+      );
+      companyMapping.addDependency(httpStage);
+
+      new route53.ARecord(this, "CompanyHttpApiDnsRecord", {
+        zone: props.hostedZone,
+        recordName: companyApiDomain,
+        target: route53.RecordTarget.fromAlias({
+          bind: () => ({
+            dnsName: cdk.Fn.getAtt(
+              companyDomainName.logicalId,
+              "RegionalDomainName",
+            ).toString(),
+            hostedZoneId: cdk.Fn.getAtt(
+              companyDomainName.logicalId,
+              "RegionalHostedZoneId",
+            ).toString(),
           }),
         }),
       });
