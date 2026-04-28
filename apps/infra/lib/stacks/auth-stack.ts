@@ -25,6 +25,9 @@ export interface AuthStackProps extends cdk.StackProps {
 export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
+  public readonly paperclipAdminBoardKey: secretsmanager.Secret;
+  public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
+  public readonly paperclipServiceTokenKey: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -69,6 +72,40 @@ export class AuthStack extends cdk.Stack {
       // that defaults to empty in service-stack's environment block.
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
     };
+
+    // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through
+    // the AuthSecrets struct because they are consumed only by the
+    // service-stack's Paperclip-specific wiring + Lambda authorizer (Task 4+).
+    this.paperclipAdminBoardKey = new secretsmanager.Secret(this, "PaperclipAdminBoardKey", {
+      secretName: `isol8-${env}-paperclip-admin-board-key`,
+      description:
+        "Instance-admin Board API key used by FastAPI to call Paperclip admin API",
+      encryptionKey: this.kmsKey,
+      // No generateSecretString — minted manually post-deploy on first
+      // Paperclip bootstrap (Task 5 captures this in the runbook).
+    });
+
+    this.paperclipBetterAuthSecret = new secretsmanager.Secret(this, "PaperclipBetterAuthSecret", {
+      secretName: `isol8-${env}-paperclip-better-auth-secret`,
+      description:
+        "Paperclip BETTER_AUTH_SECRET (cookie signing); not used by us but required by Paperclip server",
+      encryptionKey: this.kmsKey,
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
+
+    this.paperclipServiceTokenKey = new secretsmanager.Secret(this, "PaperclipServiceTokenKey", {
+      secretName: `isol8-${env}-paperclip-service-token-key`,
+      description:
+        "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
+      encryptionKey: this.kmsKey,
+      generateSecretString: {
+        passwordLength: 64,
+        excludePunctuation: true,
+      },
+    });
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that
     // is NOT a valid Fernet key (Fernet wants 32 random bytes encoded as
