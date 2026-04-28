@@ -148,6 +148,7 @@ class EcsManager:
         new_cpu: str | None = None,
         new_memory: str | None = None,
         secrets_for_task: list[dict] | None = None,
+        environment_for_task: list[dict] | None = None,
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
@@ -178,11 +179,11 @@ class EcsManager:
                 vol_copy["efsVolumeConfiguration"] = efs_copy
             volumes.append(vol_copy)
 
-        # Deep-copy containerDefinitions because we may mutate `image` and
-        # `secrets`. Each entry is itself a dict — we shallow-copy each before
-        # mutation. Per-user `secrets:` (LLM API key Secrets Manager ARN for
-        # byo_key provider, card 2 of the flat-fee pivot) are layered onto the
-        # primary container only.
+        # Deep-copy containerDefinitions because we may mutate `image`,
+        # `secrets`, and `environment`. Each entry is itself a dict — we
+        # shallow-copy each before mutation. Per-user `secrets:` (BYOK provider
+        # key ARN) and `environment:` (chatgpt_oauth CODEX_HOME pointing at
+        # the EFS-staged auth.json dir) are layered onto the primary container.
         container_defs = []
         for idx, cd in enumerate(base["containerDefinitions"]):
             cd_copy = dict(cd)
@@ -194,6 +195,11 @@ class EcsManager:
                 # provider keys.
                 base_secrets = list(cd_copy.get("secrets") or [])
                 cd_copy["secrets"] = base_secrets + list(secrets_for_task)
+            if idx == 0 and environment_for_task:
+                # Same merge story for environment — keep CDK base entries
+                # (CHOKIDAR_USEPOLLING, CLAWHUB_WORKDIR) intact.
+                base_env = list(cd_copy.get("environment") or [])
+                cd_copy["environment"] = base_env + list(environment_for_task)
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
@@ -221,6 +227,7 @@ class EcsManager:
         self,
         access_point_id: str,
         secrets_for_task: list[dict] | None = None,
+        environment_for_task: list[dict] | None = None,
     ) -> str:
         """Clone the CDK base for a new per-user container.
 
@@ -229,6 +236,10 @@ class EcsManager:
             secrets_for_task: Optional ECS-task ``secrets:`` entries to layer
                 onto the primary container. Each entry is a dict like
                 ``{"name": "OPENAI_API_KEY", "valueFrom": "<secrets-arn>"}``.
+            environment_for_task: Optional plain ``environment:`` entries
+                (``{"name": "...", "value": "..."}``). Used for the
+                ``chatgpt_oauth`` path which injects ``CODEX_HOME`` so
+                OpenClaw reads its auth.json from EFS.
 
         Returns:
             The ARN of the newly registered task definition revision.
@@ -240,6 +251,7 @@ class EcsManager:
             reg_kwargs = self._build_register_kwargs_from_base(
                 access_point_id,
                 secrets_for_task=secrets_for_task,
+                environment_for_task=environment_for_task,
             )
             reg_resp = self._ecs.register_task_definition(**reg_kwargs)
             task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
@@ -279,6 +291,7 @@ class EcsManager:
         gateway_token: str,
         owner_type: str = "personal",
         secrets_for_task: list[dict] | None = None,
+        environment_for_task: list[dict] | None = None,
     ) -> str:
         """Create an ECS Service for a user with per-user EFS isolation.
 
@@ -297,6 +310,9 @@ class EcsManager:
                 inject into the primary container (e.g. the BYOK
                 OPENAI_API_KEY/ANTHROPIC_API_KEY ARN). Empty for the
                 ``chatgpt_oauth`` and ``bedrock_claude`` paths.
+            environment_for_task: Optional plain ``environment:`` entries.
+                Used by the ``chatgpt_oauth`` path to set ``CODEX_HOME``
+                so OpenClaw reads its auth.json from the EFS-staged dir.
 
         Returns:
             The ECS service name.
@@ -331,10 +347,12 @@ class EcsManager:
 
             # Step 2: Register per-user task definition with that access point.
             # Inject any per-user secrets (e.g. byo_key OPENAI/ANTHROPIC ARN)
-            # before the service is created so the first task pulls them.
+            # and per-user env vars (chatgpt_oauth CODEX_HOME) before the
+            # service is created so the first task pulls them.
             task_def_arn = self._register_task_definition(
                 access_point_id,
                 secrets_for_task=secrets_for_task,
+                environment_for_task=environment_for_task,
             )
             await self._update_container(
                 user_id,
@@ -1006,8 +1024,18 @@ class EcsManager:
         # --- Card-specific pre-task setup (must run BEFORE ECS service create
         # so the first task starts with auth/keys already in place). ---
         secrets_for_task: list[dict] = []
+        environment_for_task: list[dict] = []
         if provider_choice == "chatgpt_oauth":
             await self._pre_stage_oauth_for_user(user_id)
+            # OpenClaw's openai-codex provider reads ${CODEX_HOME}/auth.json
+            # at boot. The EFS access point chroots /users/{user_id} into
+            # /home/node/.openclaw, so the file we staged at
+            # `<EFS>/users/{user_id}/codex/auth.json` lands inside the
+            # container at `/home/node/.openclaw/codex/auth.json`. Point
+            # CODEX_HOME at that dir so OpenClaw finds it cold on first boot.
+            environment_for_task = [
+                {"name": "CODEX_HOME", "value": "/home/node/.openclaw/codex"},
+            ]
         elif provider_choice == "byo_key":
             if byo_provider is None:
                 raise EcsManagerError(
@@ -1078,6 +1106,7 @@ class EcsManager:
                             self._register_task_definition,
                             access_point_id,
                             secrets_for_task=secrets_for_task,
+                            environment_for_task=environment_for_task,
                         )
                         await asyncio.to_thread(
                             self._ecs.update_service,
@@ -1228,14 +1257,15 @@ class EcsManager:
         gateway_token = secrets.token_urlsafe(32)
 
         # Step 2: Create ECS service (desiredCount=0). Per-user secrets (only
-        # set for byo_key) are layered onto the per-user task def so the first
-        # task that ECS launches starts with OPENAI_API_KEY/ANTHROPIC_API_KEY
-        # already injected.
+        # set for byo_key) and per-user env (only set for chatgpt_oauth, to
+        # point CODEX_HOME at the EFS-staged auth.json dir) are layered onto
+        # the per-user task def so the first task ECS launches has them.
         service_name = await self.create_user_service(
             user_id,
             gateway_token,
             owner_type=owner_type,
             secrets_for_task=secrets_for_task,
+            environment_for_task=environment_for_task,
         )
 
         # Step 3: Write configs to EFS
