@@ -79,7 +79,41 @@ class OrgNotProvisionedError(RuntimeError):
     expected to dispatch ``organization.created`` before any
     ``organizationMembership.created`` event for the same org; if the
     order arrives reversed, the caller should retry.
+
+    The ``retryable`` class attribute is a stable signal for T12's
+    webhook handler: it can dispatch a retry without string-matching
+    on the exception's type or message. This is always retryable —
+    the org-create webhook is in flight and will land momentarily.
     """
+
+    retryable: bool = True
+
+
+def _annotate_retryable(exc: BaseException) -> BaseException:
+    """Attach a ``retryable: bool`` attribute to a Paperclip-side
+    exception so the webhook caller (T12) can dispatch retries
+    without inspecting status codes directly.
+
+    Classification:
+
+      * ``OrgNotProvisionedError`` -> always retryable (already
+        carries the class-level attr, but we re-set it for symmetry).
+      * ``PaperclipApiError`` -> retryable when status is 5xx or 429
+        (transient server / rate-limit); otherwise not (4xx is a
+        client/state error that won't fix itself).
+      * Anything else -> not retryable (programmer error).
+
+    We annotate via instance attribute rather than modifying the
+    upstream class so the change stays scoped to the provisioning
+    layer (T12 lives downstream of this module).
+    """
+    if isinstance(exc, OrgNotProvisionedError):
+        exc.retryable = True  # type: ignore[attr-defined]
+    elif isinstance(exc, PaperclipApiError):
+        exc.retryable = exc.status_code >= 500 or exc.status_code == 429  # type: ignore[attr-defined]
+    else:
+        exc.retryable = False  # type: ignore[attr-defined]
+    return exc
 
 
 class PaperclipProvisioning:
@@ -217,7 +251,7 @@ class PaperclipProvisioning:
                 org_id=org_id,
                 reason=f"provision_org failed: {e}",
             )
-            raise
+            raise _annotate_retryable(e)
 
     async def provision_member(
         self,
@@ -294,22 +328,21 @@ class PaperclipProvisioning:
                 session_token=member_session_token,
                 invite_token=invite_token,
             )
-            # Paperclip's accept response wraps the join request; tolerate
-            # both flat (``request_id``) and nested (``joinRequest.id``)
-            # shapes since the exact wire format is documented as a join
-            # request returned to the caller.
-            request_id = (
-                accept.get("request_id")
-                or accept.get("requestId")
-                or (accept.get("joinRequest") or {}).get("id")
-                or accept.get("id")
-            )
-            if not request_id:
+            # Paperclip's accept_invite response shape verified against
+            # ``server/src/routes/access.ts:3604-3630``:
+            # ``toJoinRequestResponse(created)`` spreads the joinRequests
+            # row into a flat object with a top-level ``id`` field. No
+            # wrapping, no alternate casing — strict access here so any
+            # future shape change fails loud instead of silently dropping
+            # the approve_join_request step.
+            try:
+                request_id = accept["id"]
+            except (KeyError, TypeError) as e:
                 raise PaperclipApiError(
-                    "accept_invite response missing request_id",
-                    status_code=500,
+                    "accept_invite response missing 'id' field",
+                    status_code=200,
                     body=accept,
-                )
+                ) from e
 
             # 5. Owner approves the pending join request — flips the
             #    membership from pending_approval to active.
@@ -351,7 +384,7 @@ class PaperclipProvisioning:
                 reason=f"provision_member failed: {e}",
                 company_id=company_id,
             )
-            raise
+            raise _annotate_retryable(e)
 
     async def disable(self, *, user_id: str, grace_days: int = 30) -> None:
         """Mark a user's Paperclip row disabled with a purge timer.
@@ -391,35 +424,40 @@ class PaperclipProvisioning:
         lingers (intentionally — it's still a valid identity for any
         other org we may add them to later, and v1 doesn't support
         cross-org users anyway).
+
+        Order matters: we delete THIS user's row FIRST, then count
+        the org's remaining members via the ``by-org-id`` GSI. A
+        post-delete count of 0 unambiguously means "the user we just
+        purged was the last one"; this is correct regardless of
+        whether the purged user was the org owner or a regular
+        member. (The previous implementation incorrectly archived
+        the company any time the owner row was purged, even with
+        other members still present.)
         """
         existing = await self._repo.get(user_id)
         if existing is None:
             return
 
-        # Is this the last member of the org? If so, archive the company.
-        sibling = await self._repo.get_org_company_id(existing.org_id)
-        # ``get_org_company_id`` only confirms a company exists for the
-        # org — it doesn't tell us whether THIS user is the only row.
-        # We do a second check by scanning for the org owner — if it's
-        # the same row we're about to delete, we're the last member.
-        owner_row = await self._find_org_owner(existing.org_id)
-        is_last_member = sibling is not None and owner_row is not None and owner_row.user_id == user_id
+        # Delete first so the count reflects the post-purge state.
+        await self._repo.delete(user_id)
+
+        remaining_members = await self._repo.count_org_members(existing.org_id)
+        is_last_member = remaining_members == 0
         if is_last_member:
             try:
                 await self._admin.disable_company(company_id=existing.company_id)
             except PaperclipApiError as e:
-                # Archive failure is logged but not fatal — we still
-                # remove the local row so the cron doesn't loop on it.
+                # Archive failure is logged but not fatal — we already
+                # removed the local row so the cron doesn't loop on it.
                 logger.warning(
                     "paperclip_provisioning.purge: disable_company failed for %s: %s",
                     existing.company_id,
                     e,
                 )
-
-        await self._repo.delete(user_id)
         logger.info(
-            "paperclip_provisioning.purge: user %s purged (last_member=%s)",
+            "paperclip_provisioning.purge: user %s purged (org_remaining=%d, last_member=%s)",
             user_id,
+            remaining_members,
             is_last_member,
         )
 

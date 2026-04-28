@@ -162,3 +162,32 @@ async def test_get_org_company_id_returns_none_for_missing_org(repo):
     treat this as "first member, create company"."""
     found = await repo.get_org_company_id("org_does_not_exist")
     assert found is None
+
+
+async def test_count_org_members_returns_zero_for_missing_org(repo):
+    """No rows for an org should count as 0 — used by purge() to detect
+    last-member archive eligibility."""
+    assert await repo.count_org_members("org_phantom") == 0
+
+
+async def test_count_org_members_counts_all_rows_for_org(repo):
+    """All rows sharing an ``org_id`` are counted via the by-org-id GSI."""
+    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
+    await repo.put(_make_company(user_id="u2", org_id="org_acme"))
+    await repo.put(_make_company(user_id="u3", org_id="org_acme"))
+    # Different org — must NOT be counted toward org_acme.
+    await repo.put(_make_company(user_id="u4", org_id="org_other"))
+    assert await repo.count_org_members("org_acme") == 3
+    assert await repo.count_org_members("org_other") == 1
+
+
+async def test_count_org_members_post_delete_reflects_remaining(repo):
+    """After deleting a row, count drops accordingly. This is the
+    contract purge() relies on (delete first, then count)."""
+    await repo.put(_make_company(user_id="u1", org_id="org_acme"))
+    await repo.put(_make_company(user_id="u2", org_id="org_acme"))
+    assert await repo.count_org_members("org_acme") == 2
+    await repo.delete("u1")
+    assert await repo.count_org_members("org_acme") == 1
+    await repo.delete("u2")
+    assert await repo.count_org_members("org_acme") == 0

@@ -93,7 +93,9 @@ def _make_admin_mock() -> MagicMock:
     admin.create_company = AsyncMock(return_value={"id": "co_default"})
     admin.create_agent = AsyncMock(return_value={"id": "agent_default"})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
-    admin.accept_invite = AsyncMock(return_value={"request_id": "req_default"})
+    # accept_invite returns the join request flat — see access.ts:3604
+    # (toJoinRequestResponse spreads the row, so ``id`` is top-level).
+    admin.accept_invite = AsyncMock(return_value={"id": "req_default"})
     admin.approve_join_request = AsyncMock(return_value={})
     admin.disable_company = AsyncMock(return_value={})
     return admin
@@ -308,7 +310,7 @@ async def test_provision_member_happy_path(repo):
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
     admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
     admin.create_invite = AsyncMock(return_value={"token": "invite-secret"})
-    admin.accept_invite = AsyncMock(return_value={"request_id": "req_abc"})
+    admin.accept_invite = AsyncMock(return_value={"id": "req_abc"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     row = await prov.provision_member(
@@ -376,7 +378,7 @@ async def test_provision_member_idempotent_on_second_call(repo):
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
     admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
-    admin.accept_invite = AsyncMock(return_value={"request_id": "req_abc"})
+    admin.accept_invite = AsyncMock(return_value={"id": "req_abc"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     first = await prov.provision_member(
@@ -436,40 +438,31 @@ async def test_provision_member_invite_failure_marks_failed(repo):
     assert failed.status == "failed"
 
 
-async def test_provision_member_accepts_alternate_request_id_shape(repo):
-    """Tolerate ``joinRequest.id`` and ``requestId`` shapes for accept_invite."""
+async def test_provision_member_raises_when_accept_invite_missing_id(repo):
+    """If Paperclip's accept_invite ever changes shape, fail loudly.
+
+    The original implementation tolerated four different keys
+    (``request_id``/``requestId``/``joinRequest.id``/``id``) but the
+    actual Paperclip route (``server/src/routes/access.ts:3604``)
+    always returns the join-request row spread flat with field
+    ``id``. Defensive multi-key fallback was dead code that would
+    mask a future schema change. We now strictly require ``id`` and
+    raise on anything else so a regression is observable.
+    """
     await _seed_owner(repo)
     admin = _make_admin_mock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "ms"})
     admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "os"})
-    # Nested shape — Paperclip wraps the join request
-    admin.accept_invite = AsyncMock(return_value={"joinRequest": {"id": "req_nested_42"}})
+    admin.accept_invite = AsyncMock(return_value={"unexpected": "shape"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    await prov.provision_member(
-        org_id="org_acme",
-        user_id="user_member",
-        email="member@acme.test",
-        owner_email="owner@acme.test",
-    )
-    aj_kwargs = admin.approve_join_request.call_args.kwargs
-    assert aj_kwargs["request_id"] == "req_nested_42"
-
-
-async def test_provision_member_missing_request_id_raises(repo):
-    await _seed_owner(repo)
-    admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "ms"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "os"})
-    admin.accept_invite = AsyncMock(return_value={})  # missing every flavor
-    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-    with pytest.raises(PaperclipApiError, match="missing request_id"):
+    with pytest.raises(PaperclipApiError, match="missing 'id'"):
         await prov.provision_member(
             org_id="org_acme",
             user_id="user_member",
             email="member@acme.test",
             owner_email="owner@acme.test",
         )
-    # Approve was never called
+    # Approve was never called — we bailed before then.
     admin.approve_join_request.assert_not_awaited()
 
 
@@ -564,11 +557,138 @@ async def test_purge_does_not_archive_when_other_members_remain(repo):
     admin.disable_company.assert_not_awaited()
 
 
+async def test_purge_owner_purge_with_other_members_does_not_archive(repo):
+    """Regression: purging the org owner with another member still
+    present must NOT archive the company.
+
+    The original implementation used "owner row matches purge target"
+    as the last-member signal, which falsely triggered archive any
+    time the owner was the one being purged — even with active
+    co-tenants. The new implementation counts via the by-org-id GSI
+    AFTER deletion, so the post-delete count of 1 here correctly
+    keeps the company alive.
+    """
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    # Owner row (created earliest) — this is the one being purged.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_owner",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_owner",
+            paperclip_password_encrypted=encrypt("p"),
+            service_token_encrypted=encrypt("t"),
+            status="disabled",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    # Co-tenant member — should keep the company alive.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_member",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_member",
+            paperclip_password_encrypted=encrypt("p"),
+            service_token_encrypted=encrypt("t"),
+            status="active",
+            created_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.purge(user_id="user_owner")
+
+    assert await repo.get("user_owner") is None
+    assert await repo.get("user_member") is not None
+    # Company NOT archived: another member remains.
+    admin.disable_company.assert_not_awaited()
+
+
 async def test_purge_idempotent_for_missing_row(repo):
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     await prov.purge(user_id="user_does_not_exist")
     admin.disable_company.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------
+# retryable error classification (consumed by T12 webhook handler)
+# ----------------------------------------------------------------------
+
+
+def test_org_not_provisioned_error_is_retryable_by_default():
+    """OrgNotProvisionedError carries class-level ``retryable=True`` so
+    T12 can dispatch a retry via ``getattr(exc, "retryable", False)``
+    without inspecting the exception type directly.
+    """
+    exc = OrgNotProvisionedError("org missing")
+    assert getattr(exc, "retryable", False) is True
+
+
+async def test_paperclip_api_error_5xx_annotated_retryable_on_provision_org(repo):
+    """5xx from the admin client classifies retryable=True after
+    bubbling through provision_org's except block."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("server", status_code=503, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as ei:
+        await prov.provision_org(
+            org_id="org_a",
+            owner_user_id="user_a",
+            owner_email="a@a.test",
+        )
+    assert getattr(ei.value, "retryable", None) is True
+
+
+async def test_paperclip_api_error_4xx_annotated_not_retryable_on_provision_org(repo):
+    """4xx (excluding 429) classifies retryable=False — a 409 dup-email
+    is a permanent state, not a transient one."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup", status_code=409, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as ei:
+        await prov.provision_org(
+            org_id="org_a",
+            owner_user_id="user_a",
+            owner_email="a@a.test",
+        )
+    assert getattr(ei.value, "retryable", None) is False
+
+
+async def test_paperclip_api_error_429_annotated_retryable(repo):
+    """429 rate-limit is retryable — caller should back off and retry."""
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("rate-limited", status_code=429, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as ei:
+        await prov.provision_org(
+            org_id="org_a",
+            owner_user_id="user_a",
+            owner_email="a@a.test",
+        )
+    assert getattr(ei.value, "retryable", None) is True
+
+
+async def test_paperclip_api_error_annotated_on_provision_member(repo):
+    """provision_member exception path annotates retryable too."""
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("server", status_code=500, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError) as ei:
+        await prov.provision_member(
+            org_id="org_acme",
+            user_id="user_member",
+            email="m@a.test",
+            owner_email="o@a.test",
+        )
+    assert getattr(ei.value, "retryable", None) is True
 
 
 async def test_purge_swallows_disable_company_failure(repo):

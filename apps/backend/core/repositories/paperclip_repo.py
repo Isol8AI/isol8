@@ -192,6 +192,38 @@ class PaperclipRepo:
         base = await self.get(first["user_id"])
         return base.company_id if base is not None else None
 
+    async def count_org_members(self, org_id: str) -> int:
+        """Count how many rows currently exist for ``org_id`` via the
+        ``by-org-id`` GSI.
+
+        Used by ``PaperclipProvisioning.purge`` to decide whether to
+        archive the underlying Paperclip company: callers delete the
+        target user's row FIRST, then call this — a result of 0 means
+        the purged user was the last member and the company can be
+        archived; anything else means co-tenants still need it.
+
+        Implementation: GSI Query with ``Select="COUNT"`` so DynamoDB
+        returns just the count without materializing items. We
+        paginate ``LastEvaluatedKey`` because Query's per-page count
+        cap (~1MB or 1000 items) would otherwise undercount large orgs.
+        For typical Isol8 org sizes (1-10 users) one page suffices.
+        """
+        count = 0
+        last_evaluated_key: dict | None = None
+        while True:
+            kwargs: dict = {
+                "IndexName": "by-org-id",
+                "KeyConditionExpression": Key("org_id").eq(org_id),
+                "Select": "COUNT",
+            }
+            if last_evaluated_key is not None:
+                kwargs["ExclusiveStartKey"] = last_evaluated_key
+            resp = await run_in_thread(self._table().query, **kwargs)
+            count += int(resp.get("Count", 0))
+            last_evaluated_key = resp.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                return count
+
     async def update_status(
         self,
         user_id: str,
