@@ -34,9 +34,9 @@ from typing import Final
 import boto3
 import httpx
 from botocore.exceptions import ClientError
-from cryptography.fernet import Fernet
 
 from core.config import settings
+from core.encryption import get_fernet
 
 
 logger = logging.getLogger(__name__)
@@ -90,13 +90,6 @@ def _table():
     if not table_name:
         raise RuntimeError("OAUTH_TOKENS_TABLE is empty — backend is misconfigured.")
     return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(table_name)
-
-
-def _fernet() -> Fernet:
-    key = os.environ.get("ENCRYPTION_KEY") or settings.ENCRYPTION_KEY
-    if not key:
-        raise RuntimeError("ENCRYPTION_KEY is empty — backend is misconfigured.")
-    return Fernet(key.encode() if isinstance(key, str) else key)
 
 
 async def request_device_code(*, user_id: str) -> DeviceCodeResponse:
@@ -265,7 +258,7 @@ async def poll_device_code(*, user_id: str) -> DevicePollResult | object:
             "account_id": account_id,
         }
     ).encode()
-    encrypted = _fernet().encrypt(tokens_plain)
+    encrypted = get_fernet().encrypt(tokens_plain)
 
     _table().update_item(
         Key={"user_id": user_id},
@@ -312,7 +305,7 @@ async def get_decrypted_tokens(*, user_id: str) -> dict | None:
     row = _table().get_item(Key={"user_id": user_id}).get("Item")
     if not row or row.get("state") != "active":
         return None
-    plain = _fernet().decrypt(bytes(row["encrypted_tokens"]))
+    plain = get_fernet().decrypt(bytes(row["encrypted_tokens"]))
     return json.loads(plain.decode())
 
 

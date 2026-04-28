@@ -13,12 +13,16 @@ from cryptography.fernet import Fernet, InvalidToken
 from core.config import settings
 
 
-def _get_fernet() -> Fernet:
+def get_fernet() -> Fernet:
     """Build a Fernet instance from the configured ENCRYPTION_KEY.
 
     If the key is already a valid 32-byte base64url-encoded Fernet key it is
     used directly.  Otherwise HKDF-SHA256 is used to derive a valid 32-byte
     key from the raw value (so any passphrase-style value will work).
+
+    The fallback exists because legacy environments stored a non-Fernet
+    placeholder for ENCRYPTION_KEY; callers should never rely on it. CDK now
+    provisions a real Fernet key (apps/infra/lib/stacks/auth-stack.ts).
     """
 
     raw = settings.ENCRYPTION_KEY
@@ -46,14 +50,14 @@ def _get_fernet() -> Fernet:
 
 def encrypt(plaintext: str) -> str:
     """Encrypt *plaintext* and return base64-encoded ciphertext."""
-    f = _get_fernet()
+    f = get_fernet()
     token = f.encrypt(plaintext.encode())
     return base64.urlsafe_b64encode(token).decode()
 
 
 def decrypt(ciphertext: str) -> str:
     """Decrypt base64-encoded *ciphertext* and return the original plaintext."""
-    f = _get_fernet()
+    f = get_fernet()
     try:
         token = base64.urlsafe_b64decode(ciphertext.encode())
         return f.decrypt(token).decode()
