@@ -64,6 +64,9 @@ export class Isol8Stage extends cdk.Stage {
       // for cross-stack secret refs to avoid KMS auto-grant cycles.
       paperclipServiceTokenKeySecretName:
         auth.paperclipServiceTokenKey.secretName,
+      // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
+      // on the authorizer's role without triggering CDK's auto-grant cycle.
+      paperclipKmsKeyArn: auth.kmsKey.keyArn,
     });
 
     // ServiceStack replaces ComputeStack

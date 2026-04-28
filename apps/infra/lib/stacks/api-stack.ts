@@ -10,6 +10,7 @@ import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authoriz
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
@@ -39,6 +40,15 @@ export interface ApiStackProps extends cdk.StackProps {
    * cross-stack KMS auto-grant cycles — see service-stack.ts comments.
    */
   paperclipServiceTokenKeySecretName: string;
+  /**
+   * AuthStack KMS key ARN (NOT a Key object) used to encrypt the Paperclip
+   * service-token secret. The authorizer Lambda needs `kms:Decrypt` on this
+   * key in order for `secretsmanager:GetSecretValue` to succeed at cold-start
+   * — `secret.grantRead()` only adds the SecretsManager action, not the
+   * underlying KMS one. Passed as a string for the same cross-stack reason
+   * as `paperclipServiceTokenKeySecretName`.
+   */
+  paperclipKmsKeyArn: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -340,6 +350,18 @@ export class ApiStack extends cdk.Stack {
       props.paperclipServiceTokenKeySecretName,
     );
     paperclipServiceTokenSecret.grantRead(authorizerFn);
+    // `grantRead` only adds `secretsmanager:GetSecretValue` — for KMS-encrypted
+    // secrets the caller also needs `kms:Decrypt` on the underlying CMK.
+    // Without this, cold-start get_secret_value returns AccessDeniedException
+    // and the service-token branch silently falls through to Clerk-only.
+    authorizerFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForServiceTokenSecret",
+        effect: iam.Effect.ALLOW,
+        actions: ["kms:Decrypt"],
+        resources: [props.paperclipKmsKeyArn],
+      }),
+    );
     authorizerFn.addEnvironment(
       "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN",
       paperclipServiceTokenSecret.secretArn,

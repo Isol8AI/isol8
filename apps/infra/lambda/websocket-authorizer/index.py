@@ -21,6 +21,7 @@ authorization context (userId, orgId, authKind) for the backend.
 import json
 import logging
 import os
+import time
 from typing import Any, Optional
 
 import boto3
@@ -54,6 +55,36 @@ def _get_secrets_client():
     return _secrets_client
 
 
+def _emit_metric(metric_name: str, value: int) -> None:
+    """Emit a CloudWatch EMF metric to stdout.
+
+    Lambda's log driver picks up Embedded Metric Format JSON automatically
+    and publishes the metric without an explicit PutMetricData call. We use
+    this so an alarm can fire on `ServiceTokenKeyLoadFailure > 0` without
+    needing to wire CloudWatch SDK creds into the Lambda role.
+    """
+    print(
+        json.dumps(
+            {
+                "_aws": {
+                    "Timestamp": int(time.time() * 1000),
+                    "CloudWatchMetrics": [
+                        {
+                            "Namespace": "Isol8/Authorizer",
+                            "Dimensions": [["FunctionName"]],
+                            "Metrics": [{"Name": metric_name, "Unit": "Count"}],
+                        }
+                    ],
+                },
+                "FunctionName": os.environ.get(
+                    "AWS_LAMBDA_FUNCTION_NAME", "unknown"
+                ),
+                metric_name: value,
+            }
+        )
+    )
+
+
 def _load_service_token_key() -> str:
     """Fetch the Paperclip service-token signing key from Secrets Manager.
 
@@ -68,12 +99,21 @@ def _load_service_token_key() -> str:
         resp = _get_secrets_client().get_secret_value(SecretId=arn)
         return resp.get("SecretString", "") or ""
     except Exception as e:  # noqa: BLE001 — best-effort cold-start fetch
-        logger.warning(f"Failed to load service-token signing key: {e}")
+        # Use error (not warning) so log-metric-filters and alarms can pick
+        # up the signal — a silent fall-through here disables service tokens
+        # platform-wide with no other observable symptom.
+        logger.error(f"Failed to load service-token signing key: {e}")
         return ""
 
 
 # Cold-start: load the symmetric key once per Lambda container
 PAPERCLIP_SERVICE_TOKEN_KEY = _load_service_token_key()
+_emit_metric(
+    "ServiceTokenKeyLoadSuccess"
+    if PAPERCLIP_SERVICE_TOKEN_KEY
+    else "ServiceTokenKeyLoadFailure",
+    1,
+)
 
 
 def get_jwks_client() -> PyJWKClient:

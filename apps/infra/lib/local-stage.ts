@@ -70,6 +70,9 @@ export class LocalStage extends cdk.Stage {
       // for cross-stack secret refs to avoid KMS auto-grant cycles.
       paperclipServiceTokenKeySecretName:
         auth.paperclipServiceTokenKey.secretName,
+      // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
+      // on the authorizer's role without triggering CDK's auto-grant cycle.
+      paperclipKmsKeyArn: auth.kmsKey.keyArn,
     });
 
     const service = new ServiceStack(this, `isol8-${env}-service`, {
