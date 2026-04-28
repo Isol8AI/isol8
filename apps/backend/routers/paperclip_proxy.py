@@ -66,15 +66,18 @@ independently rather than relying on any shared state.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 from collections import deque
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from websockets import connect as ws_connect
+from websockets.exceptions import ConnectionClosed
 
-from core.auth import AuthContext, get_current_user
+from core.auth import AuthContext, _decode_token, _extract_org_claims, get_current_user
 from core.config import settings
 from core.encryption import decrypt
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -466,3 +469,235 @@ async def proxy(
         response.raw_headers.append((b"set-cookie", cookie.encode("latin-1")))
 
     return response
+
+
+# ---------------------------------------------------------------------------
+# WebSocket relay — paired upstream WS for Paperclip live-events
+# ---------------------------------------------------------------------------
+#
+# Why a separate route from the HTTP one?
+#
+# 1. **Auth source.** Browser-issued WebSocket upgrades cannot carry an
+#    ``Authorization: Bearer`` header (the WebSocket JS API has no hook
+#    for it), so the only credential we get is the Clerk session cookie
+#    that already rides along on cross-origin requests to ``*.isol8.co``.
+#    That means we can't use ``Depends(get_current_user)`` here — we
+#    have to read ``websocket.cookies`` and validate the JWT manually
+#    via ``_decode_token``.
+# 2. **Different transport.** httpx can't proxy a WebSocket upgrade,
+#    and FastAPI dispatches WS upgrades to ``@router.websocket(...)``
+#    routes, not ``@router.api_route(...)`` ones. Both can register the
+#    same ``{path:path}`` because Starlette's matcher checks the
+#    ``websocket.scope["type"]`` and routes accordingly.
+#
+# Auth flow (mirrors the HTTP path's sign-in):
+#   1. Read ``__session`` cookie (Clerk's default JWT cookie name).
+#   2. Decode + validate with ``_decode_token`` → extract ``sub`` + ``email``.
+#   3. Look up the user's PaperclipCompany row, decrypt the password.
+#   4. Sign in to Paperclip (Better Auth) → session token.
+#   5. Open paired upstream WS with ``Authorization: Bearer <token>``.
+#   6. asyncio.gather two relay coroutines (browser→upstream and
+#      upstream→browser) until either side closes.
+#
+# Close codes follow RFC 6455 + the "private application" range
+# (4000-4999): 4401 unauthenticated, 4400 missing email claim, 4502
+# Paperclip auth failed, 4503 not provisioned. They're informational
+# only — the browser usually just sees an immediate close — but they
+# make CloudWatch traces readable.
+
+# Clerk's default cookie name. Verified against ``core/auth.py``: the
+# HTTP path uses Bearer (HTTPAuthorizationCredentials) so there's no
+# direct cookie reference in the codebase, but Clerk's documented
+# session-cookie name across their JS SDKs is ``__session``. If a future
+# Clerk upgrade renames it we centralize the constant here.
+_CLERK_SESSION_COOKIE = "__session"
+
+# Max WebSocket frame size we accept from either side. 10 MB matches
+# Paperclip's own server limit; bigger frames are almost certainly a
+# bug or abuse, so we let the websockets library reject them upstream
+# of the relay loop.
+_WS_MAX_FRAME_SIZE = 10 * 1024 * 1024
+
+
+@router.websocket("/{path:path}")
+async def proxy_ws(websocket: WebSocket, path: str) -> None:
+    """Bidirectional WebSocket relay for Paperclip live-events.
+
+    Auth via Clerk session cookie on the upgrade frame (browsers cannot
+    attach an Authorization header to a JS-initiated WebSocket open, so
+    cookie auth is the only viable channel). Same DB lookup + Better
+    Auth sign-in dance as the HTTP path; differs in that the upstream
+    leg is also a WebSocket and we relay frames bidirectionally instead
+    of round-tripping a single request/response.
+    """
+    # ---- Step 1: Extract + validate Clerk session cookie ----
+    clerk_token = websocket.cookies.get(_CLERK_SESSION_COOKIE)
+    if not clerk_token:
+        await websocket.close(code=4401, reason="Missing Clerk session cookie")
+        return
+
+    try:
+        payload = await _decode_token(clerk_token)
+    except Exception as e:  # noqa: BLE001 - opaque to caller; we close.
+        logger.warning("paperclip_proxy_ws: invalid Clerk token: %s", e)
+        await websocket.close(code=4401, reason="Invalid Clerk token")
+        return
+
+    user_id = payload.get("sub")
+    email = (payload.get("email") or "").strip()
+    if not user_id:
+        await websocket.close(code=4401, reason="Token missing subject")
+        return
+    if not email:
+        # Same constraint as the HTTP path — Better Auth needs email +
+        # password to sign the user in, and the Isol8 ``users`` row has
+        # no email column to fall back on.
+        logger.warning(
+            "paperclip_proxy_ws: user %s has no email claim on JWT; cannot sign in",
+            user_id,
+        )
+        await websocket.close(code=4400, reason="Email claim missing")
+        return
+
+    # Resolve the owner the same way ``resolve_owner_id`` does for the
+    # HTTP path, so a user in an org context hits their org's row.
+    org_claims = _extract_org_claims(payload)
+    owner_id = org_claims["org_id"] or user_id
+
+    # ---- Step 2: Look up Paperclip company + decrypt password ----
+    repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
+    company = await repo.get(owner_id)
+    if company is None or company.status != "active":
+        await websocket.close(code=4503, reason="Paperclip not provisioned")
+        return
+
+    try:
+        password = decrypt(company.paperclip_password_encrypted)
+    except ValueError as e:
+        logger.error(
+            "paperclip_proxy_ws: failed to decrypt password for owner %s: %s",
+            owner_id,
+            e,
+        )
+        await websocket.close(code=4500, reason="Credential decrypt failed")
+        return
+
+    # ---- Step 3: Sign in to Paperclip via Better Auth ----
+    async with httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=15.0,
+    ) as client:
+        admin = PaperclipAdminClient(
+            http_client=client,
+            admin_token=settings.PAPERCLIP_ADMIN_TOKEN,
+        )
+        try:
+            signin = await admin.sign_in_user(email=email, password=password)
+        except PaperclipApiError as e:
+            logger.exception(
+                "paperclip_proxy_ws: sign_in failed for owner=%s status=%s body=%s",
+                owner_id,
+                e.status_code,
+                e.body,
+            )
+            await websocket.close(code=4502, reason="Paperclip auth failed")
+            return
+
+        session_token = signin.get("token") or ""
+        if not session_token:
+            logger.error(
+                "paperclip_proxy_ws: Better Auth response had no token for owner %s",
+                owner_id,
+            )
+            await websocket.close(code=4502, reason="Paperclip auth response malformed")
+            return
+
+    # ---- Step 4: Open paired upstream WS ----
+    # Translate the http(s)://host base URL into ws(s)://host so we
+    # connect on the WebSocket transport. Paperclip's live-events
+    # endpoint lives under the same host as its HTTP API.
+    upstream_base = settings.PAPERCLIP_INTERNAL_URL.replace("https://", "wss://").replace("http://", "ws://")
+    # Ensure exactly one slash between base and path. Paperclip is
+    # forgiving about double slashes, but a clean URL keeps logs sane.
+    upstream_url = f"{upstream_base.rstrip('/')}/{path.lstrip('/')}"
+
+    await websocket.accept()
+
+    try:
+        async with ws_connect(
+            upstream_url,
+            additional_headers={"Authorization": f"Bearer {session_token}"},
+            max_size=_WS_MAX_FRAME_SIZE,
+            open_timeout=15,
+            close_timeout=5,
+        ) as upstream:
+            # ---- Step 5: Bidirectional relay ----
+            #
+            # We use ``asyncio.gather(..., return_exceptions=True)``
+            # rather than ``asyncio.wait(FIRST_COMPLETED)`` so that an
+            # exception in one leg doesn't tear down the other leg
+            # mid-frame — gather collects results, the outer ``finally``
+            # closes both sides cleanly.
+
+            async def client_to_upstream() -> None:
+                try:
+                    while True:
+                        msg = await websocket.receive()
+                        msg_type = msg.get("type")
+                        if msg_type == "websocket.disconnect":
+                            return
+                        # FastAPI's ``receive()`` returns the raw ASGI
+                        # event dict; either ``text`` or ``bytes`` is
+                        # populated for a ``websocket.receive`` event.
+                        if "text" in msg and msg["text"] is not None:
+                            await upstream.send(msg["text"])
+                        elif "bytes" in msg and msg["bytes"] is not None:
+                            await upstream.send(msg["bytes"])
+                except WebSocketDisconnect:
+                    return
+                except ConnectionClosed:
+                    return
+                except Exception as e:  # noqa: BLE001 - log + bail
+                    logger.warning(
+                        "paperclip_proxy_ws: client→upstream relay error owner=%s: %s",
+                        owner_id,
+                        e,
+                    )
+
+            async def upstream_to_client() -> None:
+                try:
+                    async for msg in upstream:
+                        if isinstance(msg, bytes):
+                            await websocket.send_bytes(msg)
+                        else:
+                            await websocket.send_text(msg)
+                except ConnectionClosed:
+                    return
+                except WebSocketDisconnect:
+                    return
+                except Exception as e:  # noqa: BLE001 - log + bail
+                    logger.warning(
+                        "paperclip_proxy_ws: upstream→client relay error owner=%s: %s",
+                        owner_id,
+                        e,
+                    )
+
+            await asyncio.gather(
+                client_to_upstream(),
+                upstream_to_client(),
+                return_exceptions=True,
+            )
+    except Exception as e:  # noqa: BLE001 - top-level guard
+        logger.exception(
+            "paperclip_proxy_ws: connection failed owner=%s path=%s: %s",
+            owner_id,
+            path,
+            e,
+        )
+    finally:
+        # ``websocket.close()`` is idempotent in Starlette — safe to call
+        # even if the relay loop already saw a disconnect.
+        try:
+            await websocket.close()
+        except Exception:  # noqa: BLE001
+            pass

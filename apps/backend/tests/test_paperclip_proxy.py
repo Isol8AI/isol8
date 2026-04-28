@@ -306,3 +306,115 @@ def test_filter_response_headers_drops_set_cookie_and_content_length():
     assert "set-cookie" not in {k.lower() for k in out}
     assert "transfer-encoding" not in {k.lower() for k in out}
     assert out.get("content-type") == "text/html"
+
+
+# ---------------------------------------------------------------
+# WebSocket relay — auth gate
+# ---------------------------------------------------------------
+#
+# We unit-test the close-paths only (missing cookie, invalid token,
+# missing email claim). The full relay flow needs a real upstream
+# WebSocket and is covered by T18-T20's docker-compose suite. Asserting
+# anything past auth here would be mocking ``_decode_token`` +
+# ``PaperclipRepo`` + ``PaperclipAdminClient`` + ``websockets.connect``
+# end-to-end — that's almost entirely "do my mocks return what I told
+# them to," which the integration suite proves for real.
+
+
+def _build_ws_app():
+    """Mount the proxy router on a fresh FastAPI app for testing.
+
+    Lazy import so module-level test discovery doesn't pay the cost
+    of pulling in heavy router deps.
+    """
+    from fastapi import FastAPI
+
+    from routers.paperclip_proxy import router
+
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+def test_ws_rejects_missing_clerk_cookie():
+    """No Clerk session cookie on the upgrade → close before accept().
+
+    Starlette's TestClient surfaces a pre-accept close as
+    ``WebSocketDisconnect``. The exact close code rides on the
+    exception (``e.code``) — we check it's the auth-failure code we
+    documented (4401) so the front-end can distinguish "no auth" from
+    "Paperclip not provisioned" (4503).
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    app = _build_ws_app()
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/some/live-events/path"):
+            pass  # pragma: no cover - we expect to never reach here.
+
+    assert exc_info.value.code == 4401
+
+
+def test_ws_rejects_invalid_clerk_token(monkeypatch):
+    """Invalid JWT in __session cookie → close with 4401 before accept().
+
+    We monkeypatch ``_decode_token`` to raise so we don't depend on
+    a real Clerk JWKS fetch in unit tests. The proxy code catches
+    *any* exception from the decoder (we don't leak Clerk internals
+    to the close reason) and turns it into a 4401 close.
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        raise ValueError("not a real jwt")
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_ws_app()
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/some/live-events/path",
+            cookies={"__session": "not.a.real.jwt"},
+        ):
+            pass  # pragma: no cover
+
+    assert exc_info.value.code == 4401
+
+
+def test_ws_rejects_missing_email_claim(monkeypatch):
+    """Valid JWT but no ``email`` claim → close with 4400.
+
+    This guards the same constraint the HTTP path enforces: Better
+    Auth needs an email + password to sign the user in, and the
+    Isol8 ``users`` row has no email column to fall back on. If
+    Clerk's JWT template ever drops the claim we fail fast at the
+    proxy edge instead of producing a confusing upstream auth error.
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        # Subject present but email missing — exactly the case we
+        # want to surface as 4400 rather than 4401.
+        return {"sub": "user_123", "o": {}}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_ws_app()
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/some/live-events/path",
+            cookies={"__session": "valid.but.no.email"},
+        ):
+            pass  # pragma: no cover
+
+    assert exc_info.value.code == 4400
