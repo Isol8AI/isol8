@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
 import {
@@ -9,7 +9,6 @@ import {
   XCircle,
   CheckCircle,
   Circle,
-  AlertTriangle,
 } from "lucide-react";
 import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
@@ -77,7 +76,12 @@ const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
 
-const TIMEOUT_MS = 180_000;
+// Fargate cold starts (image pull from ECR + ENI attach + container init) can
+// legitimately run 3-4 minutes for the first task on a service. Anything
+// shorter cries wolf during the normal happy path. The timer also doesn't
+// start until we actually enter the "container" phase — see provisioningStart
+// below — so time spent on OAuth/billing/credits doesn't burn this budget.
+const TIMEOUT_MS = 300_000;
 
 /**
  * Rotating idea prompts shown while the container spins up. Kept short (≤ ~52 chars)
@@ -98,6 +102,13 @@ const PROVISION_IDEAS: readonly string[] = [
 ];
 
 const IDEA_ROTATION_MS = 3200;
+
+function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
 
 function RotatingIdeas({ eyebrow }: { eyebrow: string }) {
   const [idx, setIdx] = useState(0);
@@ -151,8 +162,14 @@ export function ProvisioningStepper({
   const api = useApi();
   const { isLoading: billingLoading, isSubscribed } = useBilling();
   const provisionRequestedRef = useRef(false);
-  const [startTime] = useState(() => Date.now());
+  // Set when we first enter the container/gateway phase — _not_ at component
+  // mount. Time spent on the pre-provision steps (provider choice, billing
+  // checkout, OAuth) shouldn't count against the timeout budget. A ref because
+  // assigning it shouldn't trigger a re-render — the per-second tick effect
+  // owns that via setElapsedMs.
+  const provisioningStartRef = useRef<number | null>(null);
   const [timedOut, setTimedOut] = useState(false);
+  const [elapsedMs, setElapsedMs] = useState(0);
   // In-memory only — `channels.status` / `/channels/links/me` is the source
   // of truth for "is the channel onboarding step needed for this user". Cancel
   // hides the wizard for the current session; next mount re-checks the data.
@@ -169,11 +186,27 @@ export function ProvisioningStepper({
   // /onboarding, or the URL was scrubbed), the provider step is skipped
   // entirely and the legacy flow takes over. Plan 3 cutover (Task 16)
   // removes the legacy path.
+  const router = useRouter();
   const searchParams = useSearchParams();
   const rawProvider = searchParams.get("provider");
   const providerChoice: ProviderChoice | null = isProviderChoice(rawProvider) ? rawProvider : null;
   const [providerStepDone, setProviderStepDone] = useState(false);
   const needsProviderStep = providerChoice !== null && !providerStepDone;
+
+  // Once the provider step is complete, strip ?provider= from the URL so a
+  // page reload doesn't re-enter the provider step. providerStepDone is a
+  // local state that resets on remount; ?provider= persists in the URL
+  // unless we clear it. For chatgpt_oauth specifically, re-entering the
+  // step calls /oauth/chatgpt/start which 409s on an already-active
+  // session — dead-ending the user. Codex P2 on PR #399.
+  useEffect(() => {
+    if (!providerStepDone) return;
+    if (!searchParams.get("provider")) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("provider");
+    const remaining = params.toString();
+    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
+  }, [providerStepDone, searchParams, router]);
 
   // Poll container status every 3s once subscribed (incl. trial).
   const shouldPollContainer = isSubscribed;
@@ -268,16 +301,26 @@ export function ProvisioningStepper({
     if (completion) capture("onboarding_step_completed", { ...completion });
   }, [phase]);
 
-  // Timeout check via interval callback (setTimedOut only in callback, not sync in effect body)
+  // Tick elapsed once per second so the user sees real progress against the
+  // expected budget — gives "still working" instead of an indefinite spinner.
+  // Also stamps the start time the first time we enter container/gateway and
+  // flips `timedOut` when we cross TIMEOUT_MS, which softens the copy.
   useEffect(() => {
-    if (phase === "ready" || phase === "payment" || phase === "channels") return;
-    const interval = setInterval(() => {
-      if (Date.now() - startTime > TIMEOUT_MS) {
-        setTimedOut(true);
-      }
-    }, 5000);
+    if (phase !== "container" && phase !== "gateway") return;
+    if (provisioningStartRef.current === null) {
+      provisioningStartRef.current = Date.now();
+    }
+    const tick = () => {
+      const start = provisioningStartRef.current;
+      if (start === null) return;
+      const ms = Date.now() - start;
+      setElapsedMs(ms);
+      if (ms > TIMEOUT_MS) setTimedOut(true);
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
     return () => clearInterval(interval);
-  }, [phase, startTime]);
+  }, [phase]);
 
   // Ready — render children
   if (phase === "ready") {
@@ -588,13 +631,37 @@ export function ProvisioningStepper({
         .provision-free-sub {
           font-size: 12px; color: #8a8578; margin-top: 8px;
         }
+        /* Live elapsed counter — sits below the dots so the user always
+           sees the clock moving even before the soft-timeout copy appears. */
+        .provision-elapsed {
+          margin-top: 18px;
+          font-family: var(--font-dm-sans), sans-serif;
+          font-size: 12px;
+          color: #a8a396;
+          letter-spacing: 0.2px;
+          font-variant-numeric: tabular-nums;
+        }
+        /* Soft-timeout block — calm, not alarming. The provision is still
+           progressing; we're just inviting the user to re-check. */
         .provision-timeout {
-          margin-top: 24px; display: flex; flex-direction: column;
-          align-items: center; gap: 12px;
+          margin-top: 28px;
+          padding-top: 20px;
+          border-top: 1px solid #ece6d9;
+          display: flex; flex-direction: column;
+          align-items: center; gap: 14px;
+          max-width: 360px;
+          margin-left: auto; margin-right: auto;
         }
         .provision-timeout-msg {
-          display: flex; align-items: center; gap: 8px;
-          color: #8a6a22; font-size: 14px;
+          font-family: var(--font-dm-sans), sans-serif;
+          font-size: 13px;
+          color: #6e695d;
+          line-height: 1.5;
+          margin: 0;
+          text-align: center;
+        }
+        .provision-timeout-actions {
+          display: flex; gap: 8px; align-items: center;
         }
 
         @media (prefers-reduced-motion: reduce) {
@@ -681,18 +748,35 @@ export function ProvisioningStepper({
             ))}
           </div>
 
+          {/* Quiet elapsed counter — present from the start so the user can
+              see the clock advancing, not a wall of unchanging spinner. */}
+          {(phase === "container" || phase === "gateway") && elapsedMs > 0 && (
+            <div className="provision-elapsed" aria-live="polite">
+              {formatElapsed(elapsedMs)} · cold starts can take a few minutes
+            </div>
+          )}
+
           {timedOut && (
             <div className="provision-timeout">
-              <div className="provision-timeout-msg">
-                <AlertTriangle className="h-4 w-4" />
-                <span>Taking longer than expected</span>
-              </div>
-              <div className="flex gap-3">
-                <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
-                  Refresh
+              <p className="provision-timeout-msg">
+                Still going. Re-check below — your progress is preserved.
+              </p>
+              <div className="provision-timeout-actions">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full border-[#e0dbd0]"
+                  onClick={() => {
+                    refreshContainer();
+                    setTimedOut(false);
+                    provisioningStartRef.current = Date.now();
+                    setElapsedMs(0);
+                  }}
+                >
+                  Check again
                 </Button>
                 <Button variant="ghost" size="sm" asChild>
-                  <a href="mailto:support@isol8.co">Contact Support</a>
+                  <a href="mailto:support@isol8.co">Contact support</a>
                 </Button>
               </div>
             </div>
