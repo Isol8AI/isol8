@@ -86,7 +86,6 @@ def mock_settings():
         s.AWS_REGION = "us-east-1"
         s.ENVIRONMENT = "dev"
         s.ECS_CLUSTER_ARN = "arn:aws:ecs:us-east-1:123456789:cluster/test-cluster"
-        s.ECS_TASK_DEFINITION = "arn:aws:ecs:us-east-1:123456789:task-definition/openclaw:1"
         s.ECS_SUBNETS = "subnet-aaa,subnet-bbb"
         s.ECS_SECURITY_GROUP_ID = "sg-12345"
         s.CLOUD_MAP_SERVICE_ARN = "arn:aws:servicediscovery:us-east-1:123456789:service/srv-test"
@@ -264,13 +263,21 @@ class TestRegisterTaskDefinition:
 
         assert "task-definition" in task_def_arn
 
-        # Verify describe was called to read base
-        mock_ecs_client.describe_task_definition.assert_called_once_with(taskDefinition=manager._task_def)
+        # Verify describe was called against the BASE family (not an ARN with
+        # revision). The base family is uncontaminated by per-user clones —
+        # those go to `<base>-user` — so a bare family lookup deterministically
+        # returns the latest CDK base. See PR #410.
+        mock_ecs_client.describe_task_definition.assert_called_once_with(
+            taskDefinition=manager._base_task_def_family,
+        )
+        assert manager._base_task_def_family == "isol8-dev-openclaw"
 
-        # Verify register was called with overridden access point
+        # Verify register was called with overridden access point AND in the
+        # per-user family (not the base family) so future describes of the
+        # base family don't pick up this revision.
         mock_ecs_client.register_task_definition.assert_called_once()
         call_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
-        assert call_kwargs["family"] == "isol8-dev-openclaw"
+        assert call_kwargs["family"] == "isol8-dev-openclaw-user"
         volumes = call_kwargs["volumes"]
         assert len(volumes) == 1
         efs_config = volumes[0]["efsVolumeConfiguration"]
@@ -1518,12 +1525,13 @@ class TestResizeUserContainer:
     @pytest.mark.asyncio
     async def test_resize_reads_env_from_base_not_current(self, manager, mock_ecs_client):
         """resize must read containerDefinitions from the CDK-managed base
-        (self._task_def), NOT from the user's prior per-user revision.
+        family, NOT from the user's prior per-user revision.
 
         Regression: incident 2026-04-17 — the resize path read from the user's
-        own task def, propagating any env-var drift forever. After this fix,
-        the base ARN is always read, so a user with a stale per-user task def
-        still gets the current CDK env on the next resize.
+        own task def, propagating any env-var drift forever. After PR #299 we
+        pinned to a base ARN (with revision) via SSM. After PR #410 we drop
+        the SSM coupling and read the base FAMILY live — per-user clones are
+        in `<base>-user`, so the base family always returns latest CDK base.
         """
         # Base task def has CLAWHUB_WORKDIR. User's *prior* per-user task def
         # does NOT (simulating tonight's incident). Resize must produce an env

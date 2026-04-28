@@ -53,11 +53,21 @@ class EcsManagerError(Exception):
 class EcsManager:
     """Manages per-user ECS Fargate services for OpenClaw gateways."""
 
+    # The CDK base task def lives in this family; per-user clones live in
+    # `<base>-user`. Splitting the families means `describe_task_definition`
+    # on the base family always returns the latest CDK base — no need for
+    # SSM-pinned ARNs. See PR #410 for the reasoning (and #299 for the
+    # earlier same-family workaround that this supersedes).
+    _BASE_TASK_DEF_FAMILY = "isol8-{env}-openclaw"
+    _PER_USER_FAMILY_SUFFIX = "-user"
+
     def __init__(self):
         self._ecs = boto3.client("ecs", region_name=settings.AWS_REGION)
         self._efs = boto3.client("efs", region_name=settings.AWS_REGION)
         self._cluster = settings.ECS_CLUSTER_ARN
-        self._task_def = settings.ECS_TASK_DEFINITION
+        self._base_task_def_family = self._BASE_TASK_DEF_FAMILY.format(
+            env=settings.ENVIRONMENT or "dev",
+        )
         self._subnets = [s.strip() for s in settings.ECS_SUBNETS.split(",") if s.strip()]
         self._security_groups = [settings.ECS_SECURITY_GROUP_ID]
         self._cloud_map_service_arn = settings.CLOUD_MAP_SERVICE_ARN
@@ -152,19 +162,20 @@ class EcsManager:
     ) -> dict:
         """Build register_task_definition kwargs by cloning the CDK-managed base.
 
-        Always reads from ``self._task_def`` (the pinned ARN exported by
-        container-stack.ts). NEVER reads from a per-user revision — per-user
-        clones register into the same family, so the family name resolves
-        non-deterministically depending on provision order. Pinning to the
-        full ARN keeps env vars / command / mountPoints in sync with what CDK
-        deployed.
+        Reads the latest revision from the base family (e.g. ``isol8-dev-openclaw``)
+        live on every call — that family contains ONLY CDK-managed base
+        revisions because per-user clones register into ``<base>-user`` (see
+        the family below). This means the running backend always picks up
+        new CDK base deploys without a backend restart.
 
         Per-user state layered on top:
           - access_point_id  (per-user EFS access point, replaces the volume's)
           - new_image        (image_update flow only — None preserves base image)
           - new_cpu/memory   (tier-resize flow only — None preserves base values)
         """
-        desc_resp = self._ecs.describe_task_definition(taskDefinition=self._task_def)
+        desc_resp = self._ecs.describe_task_definition(
+            taskDefinition=self._base_task_def_family,
+        )
         base = desc_resp["taskDefinition"]
 
         volumes = []
@@ -203,7 +214,12 @@ class EcsManager:
             container_defs.append(cd_copy)
 
         reg_kwargs = dict(
-            family=base["family"],
+            # Per-user clones go to a SEPARATE family so future
+            # describe_task_definition(base_family) always returns a CDK base
+            # revision, never a per-user clone. Keeps the cross-stack story
+            # simple and removes the SSM-pin dance that #299 had to add when
+            # the two kinds of revisions co-mingled.
+            family=f"{base['family']}{self._PER_USER_FAMILY_SUFFIX}",
             taskRoleArn=base.get("taskRoleArn", ""),
             executionRoleArn=base.get("executionRoleArn", ""),
             networkMode=base.get("networkMode", "awsvpc"),

@@ -12,7 +12,6 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
-import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 /**
@@ -63,7 +62,6 @@ export interface ServiceStackProps extends cdk.StackProps {
     taskExecutionRole: iam.IRole;
     taskRole: iam.IRole;
     openclawTaskDef: ecs.ITaskDefinition;
-    openclawTaskDefArnParam: ssm.IStringParameter;
   };
   managementApiUrl: string;
   connectionsTableName: string;
@@ -632,8 +630,10 @@ export class ServiceStack extends cdk.Stack {
         CONTAINER_EXECUTION_ROLE_ARN:
           props.container.taskExecutionRole.roleArn,
         ECS_CLUSTER_ARN: props.container.cluster.clusterArn,
-        // ECS_TASK_DEFINITION is injected via `secrets` below (SSM-backed).
-        // Resolves at container start to the current CDK-managed task-def ARN.
+        // ECS_TASK_DEFINITION removed (#410). Backend now reads the latest
+        // CDK base revision live via describe_task_definition(family) — the
+        // base family is uncontaminated because per-user clones go to a
+        // separate `<base>-user` family.
         ECS_SUBNETS: privateSubnetIds,
         ECS_SECURITY_GROUP_ID:
           props.container.containerSecurityGroup.securityGroupId,
@@ -689,14 +689,6 @@ export class ServiceStack extends cdk.Stack {
             "ImportPosthogProjectApiKey",
             props.secretNames.posthogProjectApiKey,
           ),
-        ),
-        // Task-def ARN comes from SSM rather than a cross-stack Fn::ImportValue.
-        // The backend reads this env var and uses it as the base to clone per-user
-        // task defs. Resolved by ECS at task start — new backend deploys always see
-        // the current CDK-managed revision. Grants ssm:GetParameters on the param's
-        // ARN to the execution role automatically.
-        ECS_TASK_DEFINITION: ecs.Secret.fromSsmParameter(
-          props.container.openclawTaskDefArnParam,
         ),
       },
       healthCheck: {

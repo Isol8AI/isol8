@@ -40,7 +40,10 @@ class Settings(BaseSettings):
 
     # --- ECS Fargate ---
     ECS_CLUSTER_ARN: str = os.getenv("ECS_CLUSTER_ARN", "")
-    ECS_TASK_DEFINITION: str = os.getenv("ECS_TASK_DEFINITION", "")
+    # ECS_TASK_DEFINITION removed — EcsManager now reads the latest CDK base
+    # revision live via describe_task_definition(family) on each provision.
+    # Per-user clones live in a separate family (`<base>-user`) so the base
+    # family is uncontaminated. See #410.
     ECS_SUBNETS: str = os.getenv("ECS_SUBNETS", "")  # comma-separated
     ECS_SECURITY_GROUP_ID: str = os.getenv("ECS_SECURITY_GROUP_ID", "")
 
