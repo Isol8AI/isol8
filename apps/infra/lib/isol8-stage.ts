@@ -39,6 +39,7 @@ export class Isol8Stage extends cdk.Stage {
       stackName: `isol8-${env}-database`,
       environment: env,
       kmsKey: auth.kmsKey,
+      vpc: network.vpc,
     });
 
     const container = new ContainerStack(this, `isol8-${env}-container`, {

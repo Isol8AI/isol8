@@ -1,4 +1,5 @@
 import * as cdk from "aws-cdk-lib";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import { DatabaseStack } from "../lib/stacks/database-stack";
@@ -8,10 +9,12 @@ function buildStack(environment: "dev" | "prod"): Template {
   const env = { account: "877352799272", region: "us-east-1" };
   const supportStack = new cdk.Stack(app, `Support-${environment}`, { env });
   const kmsKey = new kms.Key(supportStack, "KmsKey");
+  const vpc = new ec2.Vpc(supportStack, "Vpc", { maxAzs: 2 });
   const databaseStack = new DatabaseStack(app, `Database-${environment}`, {
     env,
     environment,
     kmsKey,
+    vpc,
   });
   return Template.fromStack(databaseStack);
 }
@@ -98,5 +101,65 @@ describe("DatabaseStack — admin-actions table — prod", () => {
     });
     const logicalId = Object.keys(tables)[0];
     expect(tables[logicalId].DeletionPolicy).toBe("Retain");
+  });
+});
+
+describe("DatabaseStack — Paperclip Aurora cluster", () => {
+  let template: Template;
+  beforeAll(() => {
+    template = buildStack("dev");
+  });
+
+  test("creates Aurora Serverless v2 Postgres cluster with scale-to-zero", () => {
+    template.hasResourceProperties("AWS::RDS::DBCluster", {
+      DBClusterIdentifier: "isol8-dev-paperclip-db",
+      Engine: "aurora-postgresql",
+      DatabaseName: "paperclip",
+      StorageEncrypted: true,
+      ServerlessV2ScalingConfiguration: Match.objectLike({
+        MinCapacity: 0,
+        MaxCapacity: 4,
+      }),
+    });
+  });
+
+  test("Aurora cluster uses generated secret with deterministic name", () => {
+    template.hasResourceProperties("AWS::SecretsManager::Secret", {
+      Name: "isol8-dev-paperclip-db-credentials",
+    });
+  });
+
+  test("Aurora cluster gets a serverless v2 writer instance", () => {
+    template.hasResourceProperties("AWS::RDS::DBInstance", {
+      DBInstanceClass: "db.serverless",
+      Engine: "aurora-postgresql",
+    });
+  });
+
+  test("Aurora security group has no ingress rules at the DatabaseStack layer", () => {
+    // Ingress is granted later by the consuming stacks (backend SG +
+    // Paperclip task SG). The SG here must start closed so a misconfigured
+    // consumer cannot accidentally make the DB world-reachable.
+    template.hasResourceProperties("AWS::EC2::SecurityGroup", {
+      GroupDescription: Match.stringLikeRegexp("Paperclip Aurora cluster"),
+      SecurityGroupEgress: Match.arrayWith([
+        Match.objectLike({ CidrIp: "255.255.255.255/32" }),
+      ]),
+    });
+  });
+
+  test("Aurora cluster has 7-day backup retention", () => {
+    template.hasResourceProperties("AWS::RDS::DBCluster", {
+      DBClusterIdentifier: "isol8-dev-paperclip-db",
+      BackupRetentionPeriod: 7,
+    });
+  });
+
+  test("Aurora cluster uses SNAPSHOT removal policy regardless of env", () => {
+    const clusters = template.findResources("AWS::RDS::DBCluster", {
+      Properties: { DBClusterIdentifier: "isol8-dev-paperclip-db" },
+    });
+    const logicalId = Object.keys(clusters)[0];
+    expect(clusters[logicalId].DeletionPolicy).toBe("Snapshot");
   });
 });

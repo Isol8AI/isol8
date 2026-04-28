@@ -1,11 +1,19 @@
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as rds from "aws-cdk-lib/aws-rds";
 import { Construct } from "constructs";
 
 export interface DatabaseStackProps extends cdk.StackProps {
   environment: string;
   kmsKey: kms.IKey;
+  /**
+   * VPC for the Paperclip Aurora cluster (Task 1 of paperclip-rebuild).
+   * The DynamoDB tables in this stack are VPC-less; the VPC is consumed
+   * exclusively by the Aurora subnet group + security group.
+   */
+  vpc: ec2.IVpc;
 }
 
 const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
@@ -26,6 +34,12 @@ export class DatabaseStack extends cdk.Stack {
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
+
+  // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
+  // pgvector extension is created by the drizzle migrations runner in
+  // paperclip-stack.ts (Task 5), not here.
+  public readonly paperclipDbCluster: rds.DatabaseCluster;
+  public readonly paperclipDbSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -234,6 +248,58 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: `isol8-${env}-`,
       exportName: `${this.stackName}-table-prefix`,
+    });
+
+    // ─────────────────────────────────────────────────────────────────
+    // Paperclip Aurora Serverless v2 cluster
+    //
+    // Postgres 16.4 with pgvector available. Scale-to-zero (min 0 ACU,
+    // max 4 ACU). Subnet group on private-with-egress subnets. Security
+    // group is restrictive — ingress is granted later (in paperclip-stack
+    // / service-stack) only from the backend SG and the Paperclip task SG.
+    //
+    // Cross-stack note: the props.vpc reference here is the only reason
+    // DatabaseStack now depends on NetworkStack. See isol8-stage.ts for
+    // the wiring.
+    // ─────────────────────────────────────────────────────────────────
+    const paperclipDbSubnetGroup = new rds.SubnetGroup(this, "PaperclipDbSubnets", {
+      vpc: props.vpc,
+      description: "Subnets for Paperclip Aurora cluster",
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    const paperclipDbSecurityGroup = new ec2.SecurityGroup(this, "PaperclipDbSg", {
+      vpc: props.vpc,
+      description:
+        "Paperclip Aurora cluster — only backend SG and Paperclip task SG may reach 5432",
+      allowAllOutbound: false,
+    });
+
+    this.paperclipDbCluster = new rds.DatabaseCluster(this, "PaperclipDb", {
+      engine: rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds.AuroraPostgresEngineVersion.VER_16_4,
+      }),
+      serverlessV2MinCapacity: 0, // scale-to-zero
+      serverlessV2MaxCapacity: 4,
+      writer: rds.ClusterInstance.serverlessV2("writer"),
+      vpc: props.vpc,
+      subnetGroup: paperclipDbSubnetGroup,
+      securityGroups: [paperclipDbSecurityGroup],
+      defaultDatabaseName: "paperclip",
+      credentials: rds.Credentials.fromGeneratedSecret("paperclip_admin", {
+        secretName: `isol8-${env}-paperclip-db-credentials`,
+      }),
+      backup: { retention: cdk.Duration.days(7) },
+      storageEncrypted: true,
+      removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
+      clusterIdentifier: `isol8-${env}-paperclip-db`,
+    });
+
+    this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
+
+    new cdk.CfnOutput(this, "PaperclipDbEndpoint", {
+      value: this.paperclipDbCluster.clusterEndpoint.hostname,
+      exportName: `isol8-${env}-paperclip-db-endpoint`,
     });
   }
 }
