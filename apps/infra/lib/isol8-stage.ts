@@ -60,6 +60,10 @@ export class Isol8Stage extends cdk.Stage {
       alb: network.alb,
       albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
+      // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
+      // for cross-stack secret refs to avoid KMS auto-grant cycles.
+      paperclipServiceTokenKeySecretName:
+        auth.paperclipServiceTokenKey.secretName,
     });
 
     // ServiceStack replaces ComputeStack

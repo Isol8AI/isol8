@@ -1,15 +1,29 @@
 """
 Lambda authorizer for WebSocket API Gateway.
 
-Validates Clerk JWTs for browser/frontend WebSocket connections.
+Validates two kinds of bearer tokens for WebSocket $connect:
 
-Returns authorization context (user_id, org_id) for API Gateway to forward to backend.
+1. Paperclip service-token JWTs (HS256, kind=paperclip_service)
+   — Long-lived JWTs minted by the FastAPI backend (core/services/service_token.py),
+     signed with a symmetric secret stored in Secrets Manager
+     (isol8/{env}/paperclip_service_token_key). Used by Paperclip agents to
+     reach a specific user's OpenClaw container via the existing WebSocket
+     gateway. Checked FIRST because symmetric verify is far cheaper than
+     a JWKS round-trip.
+
+2. Clerk JWTs (RS256, browser sessions)
+   — Standard end-user browser auth. Verified against Clerk's JWKS.
+
+Returns IAM policy (WebSocket APIs require this format, not isAuthorized) plus
+authorization context (userId, orgId, authKind) for the backend.
 """
 
-import os
+import json
 import logging
-from typing import Any
+import os
+from typing import Any, Optional
 
+import boto3
 import jwt
 from jwt import PyJWKClient
 
@@ -20,8 +34,46 @@ logger.setLevel(logging.INFO)
 CLERK_JWKS_URL = os.environ.get("CLERK_JWKS_URL", "")
 CLERK_ISSUER = os.environ.get("CLERK_ISSUER", "")
 
+# Paperclip service-token configuration
+SERVICE_TOKEN_KIND = "paperclip_service"
+PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN = os.environ.get(
+    "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN", ""
+)
+
 # Cache JWKS client (reused across invocations)
 _jwks_client = None
+
+# Boto client for Secrets Manager (initialized lazily)
+_secrets_client = None
+
+
+def _get_secrets_client():
+    global _secrets_client
+    if _secrets_client is None:
+        _secrets_client = boto3.client("secretsmanager")
+    return _secrets_client
+
+
+def _load_service_token_key() -> str:
+    """Fetch the Paperclip service-token signing key from Secrets Manager.
+
+    Called once at cold-start. Returns "" on missing config or fetch failure
+    (the service-token branch will then short-circuit to None and the
+    Clerk path runs unchanged).
+    """
+    arn = PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN
+    if not arn:
+        return ""
+    try:
+        resp = _get_secrets_client().get_secret_value(SecretId=arn)
+        return resp.get("SecretString", "") or ""
+    except Exception as e:  # noqa: BLE001 — best-effort cold-start fetch
+        logger.warning(f"Failed to load service-token signing key: {e}")
+        return ""
+
+
+# Cold-start: load the symmetric key once per Lambda container
+PAPERCLIP_SERVICE_TOKEN_KEY = _load_service_token_key()
 
 
 def get_jwks_client() -> PyJWKClient:
@@ -58,11 +110,36 @@ def generate_policy(principal_id: str, effect: str, resource: str, context: dict
     return policy
 
 
+def _try_service_token(token: str) -> Optional[dict]:
+    """Validate a Paperclip service-token JWT.
+
+    Returns the claims dict if the token is a valid service token; returns
+    None if the token is not a service token (so the caller can fall through
+    to the Clerk JWT path) or if signing-key config is missing.
+    """
+    if not PAPERCLIP_SERVICE_TOKEN_KEY:
+        return None
+    try:
+        claims = jwt.decode(
+            token,
+            PAPERCLIP_SERVICE_TOKEN_KEY,
+            algorithms=["HS256"],
+        )
+    except jwt.PyJWTError:
+        return None
+    if claims.get("kind") != SERVICE_TOKEN_KIND:
+        return None
+    if not claims.get("sub"):
+        return None
+    return claims
+
+
 def handler(event: dict, context: Any) -> dict:
     """
     Lambda authorizer handler for WebSocket API.
 
-    Validates Clerk JWTs for browser WebSocket connections.
+    Validates Paperclip service tokens (cheap symmetric verify, checked first)
+    and Clerk JWTs (RS256 via JWKS).
 
     Args:
         event: API Gateway authorizer event containing:
@@ -85,6 +162,22 @@ def handler(event: dict, context: Any) -> dict:
     if not token:
         logger.warning("No token provided in query parameters")
         return generate_policy("unauthorized", "Deny", method_arn)
+
+    # --- Try Paperclip service token first (cheap symmetric verify) ---
+    service_claims = _try_service_token(token)
+    if service_claims:
+        user_id = service_claims["sub"]
+        logger.info(f"Authorized via service token user_id={user_id}")
+        return generate_policy(
+            principal_id=user_id,
+            effect="Allow",
+            resource=method_arn,
+            context={
+                "userId": user_id,
+                "orgId": "",
+                "authKind": SERVICE_TOKEN_KIND,
+            },
+        )
 
     # --- Validate Clerk JWT ---
     try:
@@ -125,6 +218,7 @@ def handler(event: dict, context: Any) -> dict:
             context={
                 "userId": user_id,
                 "orgId": org_id or "",
+                "authKind": "clerk_user",
             }
         )
 

@@ -13,6 +13,7 @@ import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -30,6 +31,14 @@ export interface ApiStackProps extends cdk.StackProps {
   alb: elbv2.IApplicationLoadBalancer;
   albHttpListenerArn: string;
   albSecurityGroup: ec2.ISecurityGroup;
+  /**
+   * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
+   * key. The WebSocket Lambda Authorizer fetches this at cold-start and uses
+   * it to verify HS256 service-token JWTs minted by the FastAPI backend
+   * (core/services/service_token.py). Passed as a plain string to avoid
+   * cross-stack KMS auto-grant cycles — see service-stack.ts comments.
+   */
+  paperclipServiceTokenKeySecretName: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -319,6 +328,22 @@ export class ApiStack extends cdk.Stack {
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
+
+    // --- Paperclip service-token signing key for the WS authorizer ---
+    // The Lambda fetches this secret value at cold-start (via boto3) and
+    // uses it to verify HS256 service-token JWTs minted by the FastAPI
+    // backend. We pass the secret ARN as an env var (rather than the
+    // value) so the secret never appears in CFN templates / deploy logs.
+    const paperclipServiceTokenSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "PaperclipServiceTokenKeyForAuthorizer",
+      props.paperclipServiceTokenKeySecretName,
+    );
+    paperclipServiceTokenSecret.grantRead(authorizerFn);
+    authorizerFn.addEnvironment(
+      "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN",
+      paperclipServiceTokenSecret.secretArn,
+    );
 
     // =========================================================================
     // WebSocket Lambda Functions
