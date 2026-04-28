@@ -57,9 +57,9 @@ async def test_byo_key_anthropic_branch(tmp_path):
     )
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
-    subagent = cfg["agents"]["defaults"]["model"]["subagent"]
+    fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
     assert primary == "anthropic/claude-opus-4-7"
-    assert subagent == "anthropic/claude-sonnet-4-6"
+    assert fallbacks == ["anthropic/claude-sonnet-4-6"]
     env_block = cfg.get("env", {})
     assert "ANTHROPIC_API_KEY" not in env_block
 

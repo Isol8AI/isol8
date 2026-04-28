@@ -325,18 +325,18 @@ def _provider_block(
         # base-schema validator that requires `baseUrl` + `models`.
         return (
             {},
-            {"primary": "openai-codex/gpt-5.5", "subagent": "openai-codex/gpt-5.5"},
+            {"primary": "openai-codex/gpt-5.5", "fallbacks": ["openai-codex/gpt-5.5"]},
             {},
         )
     if provider_choice == "byo_key":
         if byo_provider == "openai":
-            return ({}, {"primary": "openai/gpt-5.4", "subagent": "openai/gpt-5.4"}, {})
+            return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4"]}, {})
         if byo_provider == "anthropic":
             return (
                 {},
                 {
                     "primary": "anthropic/claude-opus-4-7",
-                    "subagent": "anthropic/claude-sonnet-4-6",
+                    "fallbacks": ["anthropic/claude-sonnet-4-6"],
                 },
                 {},
             )
@@ -346,7 +346,7 @@ def _provider_block(
             {},
             {
                 "primary": "amazon-bedrock/anthropic.claude-opus-4-7",
-                "subagent": "amazon-bedrock/anthropic.claude-sonnet-4-6",
+                "fallbacks": ["amazon-bedrock/anthropic.claude-sonnet-4-6"],
             },
             {
                 "amazon-bedrock": {
