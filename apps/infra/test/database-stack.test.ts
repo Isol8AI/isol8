@@ -136,16 +136,23 @@ describe("DatabaseStack — Paperclip Aurora cluster", () => {
     });
   });
 
-  test("Aurora security group has no ingress rules at the DatabaseStack layer", () => {
+  test("Paperclip security group has no ingress rules at this layer", () => {
     // Ingress is granted later by the consuming stacks (backend SG +
     // Paperclip task SG). The SG here must start closed so a misconfigured
     // consumer cannot accidentally make the DB world-reachable.
-    template.hasResourceProperties("AWS::EC2::SecurityGroup", {
-      GroupDescription: Match.stringLikeRegexp("Paperclip Aurora cluster"),
-      SecurityGroupEgress: Match.arrayWith([
-        Match.objectLike({ CidrIp: "255.255.255.255/32" }),
-      ]),
+    //
+    // Assert directly on SecurityGroupIngress (the real contract). The
+    // older check on the allowAllOutbound:false egress sentinel was an
+    // implementation-detail proxy that silently passed any SG — including
+    // wide-open ones — if CDK ever changed the sentinel.
+    const sgs = template.findResources("AWS::EC2::SecurityGroup", {
+      Properties: {
+        GroupDescription: Match.stringLikeRegexp("Paperclip Aurora cluster"),
+      },
     });
+    expect(Object.keys(sgs)).toHaveLength(1);
+    const paperclipSg = Object.values(sgs)[0] as { Properties: any };
+    expect(paperclipSg.Properties.SecurityGroupIngress ?? []).toEqual([]);
   });
 
   test("Aurora cluster has 7-day backup retention", () => {

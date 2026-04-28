@@ -291,6 +291,7 @@ export class DatabaseStack extends cdk.Stack {
       }),
       backup: { retention: cdk.Duration.days(7) },
       storageEncrypted: true,
+      storageEncryptionKey: props.kmsKey,
       removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
       clusterIdentifier: `isol8-${env}-paperclip-db`,
     });
