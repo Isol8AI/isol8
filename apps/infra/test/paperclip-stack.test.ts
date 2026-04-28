@@ -110,7 +110,11 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company-dev.isol8.co");
   });
 
-  test("container has DATABASE_URL-building entrypoint shim", () => {
+  test("container has DATABASE_URL-building entrypoint shim with URL-encoded password", () => {
+    // RDS-generated passwords routinely contain `/`, `+`, `=`, `@`, `:` —
+    // the shim must URL-encode PGPASSWORD via Node's encodeURIComponent
+    // before interpolating into DATABASE_URL, then exec the upstream
+    // entrypoint.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
@@ -118,7 +122,7 @@ describe("PaperclipStack — Fargate service shape", () => {
             "/bin/sh",
             "-c",
             Match.stringLikeRegexp(
-              'export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec docker-entrypoint.sh',
+              'PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec docker-entrypoint.sh',
             ),
           ],
         }),
@@ -177,12 +181,12 @@ describe("PaperclipStack — Fargate service shape", () => {
     );
   });
 
-  test("registers `paperclip` in Cloud Map with A records (10s TTL)", () => {
-    // The FargateService.cloudMapOptions block creates an additional
-    // ServiceDiscovery::Service. Assert at least one such service is
-    // named "paperclip" and uses A records — there may be a second one
-    // we declare directly on the stack for explicit lifecycle, both are
-    // fine.
+  test("registers `paperclip` in Cloud Map exactly once with A records (10s TTL)", () => {
+    // The FargateService.cloudMapOptions block is the SINGLE canonical
+    // registration of `paperclip` in the namespace. A standalone
+    // servicediscovery.Service alongside it would collide on the
+    // namespace Name and fail at first deploy — so we assert exactly one
+    // such service exists.
     const services = template.findResources(
       "AWS::ServiceDiscovery::Service",
       {
@@ -191,7 +195,7 @@ describe("PaperclipStack — Fargate service shape", () => {
         },
       },
     );
-    expect(Object.keys(services).length).toBeGreaterThanOrEqual(1);
+    expect(Object.keys(services)).toHaveLength(1);
     const svc = Object.values(services)[0] as { Properties: any };
     const records = svc.Properties.DnsConfig?.DnsRecords ?? [];
     expect(records).toEqual(

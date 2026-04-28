@@ -60,9 +60,25 @@ export interface PaperclipStackProps extends cdk.StackProps {
 
 export class PaperclipStack extends cdk.Stack {
   public readonly service: ecs.FargateService;
+  // T14 NOTE: T14's proxy router must add an ingress rule on this SG
+  // allowing port 3100 from FastAPI's service SG. PaperclipStack
+  // deliberately does NOT open ingress here — it doesn't have FastAPI's
+  // SG handle, and granting it would create a cross-stack SG cycle.
+  // T14 should add the rule from the service stack side using
+  // `ec2.CfnSecurityGroupIngress` (matching the Aurora-from-Paperclip
+  // pattern below) once it has both SG IDs in scope.
   public readonly taskSecurityGroup: ec2.SecurityGroup;
-  public readonly cloudMapService: servicediscovery.Service;
-  /** Internal URL FastAPI uses to reach Paperclip (T14 reads this). */
+  /**
+   * Internal URL FastAPI uses to reach Paperclip (T14 reads this).
+   *
+   * T14 NOTE: this URL resolves via Cloud Map A records with a 10-second
+   * TTL (see `cloudMapOptions` on the FargateService below). During
+   * rolling ECS deploys, task IPs change, so T14's HTTP client MUST NOT
+   * cache DNS forever. With `aiohttp`, use
+   * `aiohttp.TCPConnector(ttl_dns_cache=10)` (or `use_dns_cache=False`).
+   * With `httpx`, ensure no Python-layer DNS cache is wrapping the client
+   * — httpx itself doesn't cache DNS, but a custom transport might.
+   */
   public readonly internalUrl: string;
 
   constructor(scope: Construct, id: string, props: PaperclipStackProps) {
@@ -228,10 +244,17 @@ export class PaperclipStack extends cdk.Stack {
       // assembles it from PG* env at container start, then exec's the same
       // boot command upstream `docker-entrypoint.sh` runs. Verified against
       // upstream Dockerfile + spec §8 discovery note.
+      //
+      // PGPASSWORD is URL-encoded via Node's `encodeURIComponent` before
+      // interpolation: RDS-generated passwords routinely contain
+      // url-special characters (`/`, `+`, `=`, `@`, `:`) that break
+      // Postgres URL parsing. Node is already in the image — the
+      // entrypoint runs `node server/dist/index.js` — so this adds no
+      // new dependency.
       command: [
         "/bin/sh",
         "-c",
-        'export DATABASE_URL="postgres://${PGUSER}:${PGPASSWORD}@${PGHOST}:${PGPORT}/${PGDATABASE}" && exec docker-entrypoint.sh node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js',
+        "PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec docker-entrypoint.sh node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
       ],
       healthCheck: {
         command: [
@@ -253,25 +276,14 @@ export class PaperclipStack extends cdk.Stack {
     });
 
     // ─────────────────────────────────────────────────────────────────
-    // Cloud Map service — register `paperclip` inside the existing
-    // private namespace so FastAPI can resolve via DNS.
-    // Created in the namespace owned by ContainerStack but registered
-    // from this stack so the DNS lifecycle tracks the service.
-    // ─────────────────────────────────────────────────────────────────
-    this.cloudMapService = new servicediscovery.Service(
-      this,
-      "PaperclipCloudMapService",
-      {
-        namespace: props.cloudMapNamespace,
-        name: "paperclip",
-        dnsRecordType: servicediscovery.DnsRecordType.A,
-        dnsTtl: cdk.Duration.seconds(10),
-        description: `Isol8 ${env} Paperclip service discovery`,
-      },
-    );
-
-    // ─────────────────────────────────────────────────────────────────
     // Fargate service
+    //
+    // Cloud Map registration: we use `cloudMapOptions` on the FargateService
+    // (matching the OpenClaw fleet pattern). This is the single canonical
+    // registration of `paperclip` inside the private namespace owned by
+    // ContainerStack — declaring a standalone `servicediscovery.Service`
+    // on the side would collide on the namespace Name and fail at first
+    // deploy.
     // ─────────────────────────────────────────────────────────────────
     this.service = new ecs.FargateService(this, "PaperclipService", {
       cluster: props.cluster,
