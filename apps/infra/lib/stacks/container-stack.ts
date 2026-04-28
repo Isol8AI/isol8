@@ -8,7 +8,6 @@ import * as efs from "aws-cdk-lib/aws-efs";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
-import * as ssm from "aws-cdk-lib/aws-ssm";
 import { Construct } from "constructs";
 
 // Single source of truth for the pinned OpenClaw container image.
@@ -61,7 +60,6 @@ export class ContainerStack extends cdk.Stack {
   // via ecs.Secret.fromSsmParameter so the value travels through SSM rather
   // than a cross-stack Fn::ImportValue — the Fn::ImportValue path made every
   // task-def bump hit CFN's "export is in use" lock (2026-04-20 incident).
-  public readonly openclawTaskDefArnParam: ssm.StringParameter;
 
   constructor(scope: Construct, id: string, props: ContainerStackProps) {
     super(scope, id, props);
@@ -305,32 +303,12 @@ export class ContainerStack extends cdk.Stack {
       executionRole: this.taskExecutionRole,
     });
 
-    // Carry the revision ARN over to service-stack via SSM rather than
-    // Fn::ImportValue. A cross-stack ImportValue on a value that changes
-    // per task-def revision trips CFN's "export is in use" lock on every
-    // image bump (see 2026-04-20 incident). SSM parameters don't have that
-    // constraint, and ecs.Secret.fromSsmParameter on the consumer side
-    // resolves the value at container start — so the backend always boots
-    // pointing at the latest CDK-managed base.
-    this.openclawTaskDefArnParam = new ssm.StringParameter(
-      this,
-      "OpenClawTaskDefArnParam",
-      {
-        parameterName: `/isol8/${env}/openclaw-task-def-arn`,
-        stringValue: this.openclawTaskDef.taskDefinitionArn,
-        description:
-          "Current CDK-managed OpenClaw task-def ARN. Read by the backend (via ECS secrets valueFrom) instead of cross-stack import.",
-      },
-    );
-
-    // Keep the previously auto-generated CFN export alive across the
-    // transition. Service-stack's LIVE template still holds an
-    // Fn::ImportValue on this export; without exportValue(), CDK emits a
-    // delete for it in the new synth and CFN rejects the delete while the
-    // live consumer still imports it. Leaving this call in is harmless
-    // after the transition (no consumers, value updates freely) — remove it
-    // in a follow-up cleanup PR once both envs have deployed past the drop.
-    this.exportValue(this.openclawTaskDef.taskDefinitionArn);
+    // SSM param + cross-stack export removed in #410. Backend now reads the
+    // latest CDK base revision live via describe_task_definition(family) on
+    // each provision call. The base family is uncontaminated by per-user
+    // clones because EcsManager registers them in `<base>-user`, so a bare
+    // family lookup deterministically returns the most recent CDK base —
+    // no SSM coupling needed and the cache-at-startup bug class is gone.
 
     // Startup command — almost everything (apt packages, pip, npm globals,
     // gh, uv) is now baked into the extended OpenClaw image. We only:
