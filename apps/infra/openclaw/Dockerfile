@@ -81,12 +81,18 @@ RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc \
     apt-get update -qq && apt-get install -y --no-install-recommends 1password-cli && \
     rm -rf /var/lib/apt/lists/*
 
-# ---- Layer 3: GitHub CLI ----
-RUN GH_VER=2.65.0 && \
-    curl -sL https://github.com/cli/cli/releases/download/v${GH_VER}/gh_${GH_VER}_linux_amd64.tar.gz \
-      | tar xz -C /tmp && \
-    install -m 755 /tmp/gh_${GH_VER}_linux_amd64/bin/gh /usr/local/bin/gh && \
-    rm -rf /tmp/gh_${GH_VER}_linux_amd64
+# ---- Layer 3: GitHub CLI (apt repo) ----
+# Was previously a `curl … | tar xz` pipe of the GitHub release tarball,
+# which broke on the bookworm-slim base when the gh tarball download went
+# through GitHub's release-assets redirect. The apt-repo path matches the
+# 1Password setup just above and is what GitHub officially recommends.
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg && \
+    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list && \
+    apt-get update -qq && apt-get install -y --no-install-recommends gh && \
+    rm -rf /var/lib/apt/lists/*
 
 # ---- Layer 4: uv (Python package manager) ----
 RUN curl -sSL https://astral.sh/uv/install.sh | HOME=/tmp sh && \
