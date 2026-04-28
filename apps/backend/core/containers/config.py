@@ -316,9 +316,15 @@ def _provider_block(
         ``(providers_config, default_model, plugin_entries)``.
     """
     if provider_choice == "chatgpt_oauth":
-        codex_home = f"{settings.EFS_MOUNT_PATH.rstrip('/')}/{user_id}/codex"
+        # OpenClaw's openai-codex provider has no JSON config knob for the
+        # auth.json directory — it reads the CODEX_HOME env var (default
+        # ${HOME}/.codex). The per-user CODEX_HOME pointing at the EFS-staged
+        # auth.json is set in ecs_manager._provider_environment_for_user().
+        # We deliberately omit any provider entry so the bundled provider
+        # plugin's defaults apply; writing an empty {} would still trip the
+        # base-schema validator that requires `baseUrl` + `models`.
         return (
-            {"openai-codex": {"codexHome": codex_home}},
+            {},
             {"primary": "openai-codex/gpt-5.5", "subagent": "openai-codex/gpt-5.5"},
             {},
         )
@@ -599,8 +605,9 @@ async def write_openclaw_config(
             ``gateway.auth.mode = "token"``.
         provider_choice: One of ``"chatgpt_oauth"``, ``"byo_key"``,
             ``"bedrock_claude"``.
-        user_id: Owner ID; used to construct the EFS codexHome path
-            for chatgpt_oauth.
+        user_id: Owner ID; surfaced for completeness — the chatgpt_oauth
+            path no longer carries it into the config (auth.json directory
+            is set via the CODEX_HOME env var on the per-user ECS task).
         byo_provider: ``"openai"`` or ``"anthropic"`` — required when
             ``provider_choice == "byo_key"``.
 

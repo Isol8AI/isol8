@@ -2154,6 +2154,16 @@ class TestProvisionUserContainerProviderChoice:
                 f"pre_stage_codex_auth must run before create_service, got order={call_order}"
             )
 
+            # The per-user task def must carry CODEX_HOME pointing at the
+            # in-container view of the EFS-staged auth.json dir. Without this
+            # OpenClaw falls back to ~/.codex (no auth.json there) and refuses
+            # to run inference.
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            envs = reg_kwargs["containerDefinitions"][0].get("environment") or []
+            codex_home = next((e for e in envs if e["name"] == "CODEX_HOME"), None)
+            assert codex_home is not None, "chatgpt_oauth must inject CODEX_HOME on the per-user task"
+            assert codex_home["value"] == "/home/node/.openclaw/codex"
+
     @pytest.mark.asyncio
     async def test_provision_chatgpt_oauth_aborts_when_no_tokens(self, manager, mock_ecs_client, mock_efs_client):
         """If no active OAuth row exists for the user, provisioning aborts

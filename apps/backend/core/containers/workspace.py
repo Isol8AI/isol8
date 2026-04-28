@@ -654,9 +654,12 @@ async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
     """Write the user's ChatGPT OAuth profile to EFS before container start.
 
     The file shape is what OpenClaw's openai-codex provider reads at boot
-    via $CODEX_HOME/auth.json (default ~/.codex/auth.json). Container
-    config sets CODEX_HOME to /mnt/efs/users/{user_id}/codex so this file
-    is found cold. Per spec §5.1.
+    via $CODEX_HOME/auth.json (default ~/.codex/auth.json). The per-user
+    ECS task sets CODEX_HOME=/home/node/.openclaw/codex (the in-container
+    view of `<EFS>/users/{user_id}/codex/` after the access-point chroot
+    mounts /users/{user_id} at /home/node/.openclaw). See
+    ecs_manager.provision_user_container's chatgpt_oauth branch.
+    Per spec §5.1.
 
     Re-OAuth callers can re-invoke this helper; the file is overwritten,
     not merged.

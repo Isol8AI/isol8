@@ -19,8 +19,12 @@ async def test_chatgpt_oauth_branch(tmp_path):
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
     assert primary == "openai-codex/gpt-5.5"
-    # CODEX_HOME points at the user's EFS auth dir.
-    assert cfg["models"]["providers"]["openai-codex"]["codexHome"].endswith("/u_1/codex")
+    # OpenClaw's openai-codex provider has no JSON config knob for the
+    # auth dir — it reads the CODEX_HOME env var (set on the per-user ECS
+    # task in ecs_manager). The provider block is omitted entirely so the
+    # base schema validator (which requires baseUrl + models on a populated
+    # entry) doesn't reject the empty `{}` we'd otherwise emit.
+    assert "openai-codex" not in cfg["models"].get("providers", {})
 
 
 @pytest.mark.asyncio
