@@ -29,6 +29,7 @@ def repo():
                 {"AttributeName": "user_id", "AttributeType": "S"},
                 {"AttributeName": "status", "AttributeType": "S"},
                 {"AttributeName": "scheduled_purge_at", "AttributeType": "S"},
+                {"AttributeName": "org_id", "AttributeType": "S"},
             ],
             BillingMode="PAY_PER_REQUEST",
             GlobalSecondaryIndexes=[
@@ -39,6 +40,16 @@ def repo():
                         {"AttributeName": "scheduled_purge_at", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "KEYS_ONLY"},
+                },
+                {
+                    # Used by get_org_company_id() to find any existing
+                    # row for an org so members joining a known org
+                    # reuse the shared company_id.
+                    "IndexName": "by-org-id",
+                    "KeySchema": [
+                        {"AttributeName": "org_id", "KeyType": "HASH"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
                 },
             ],
         )
@@ -56,8 +67,10 @@ def _make_company(user_id="u1", status="active", **kwargs):
     now = datetime.now(timezone.utc)
     return PaperclipCompany(
         user_id=user_id,
+        org_id=kwargs.get("org_id", f"org_{user_id}"),
         company_id=kwargs.get("company_id", f"co_{user_id}"),
-        board_api_key_encrypted="enc_key",
+        paperclip_user_id=kwargs.get("paperclip_user_id", f"pc_user_{user_id}"),
+        paperclip_password_encrypted=kwargs.get("paperclip_password_encrypted", "enc_pwd"),
         service_token_encrypted="enc_token",
         status=status,
         created_at=kwargs.get("created_at", now),
@@ -68,11 +81,14 @@ def _make_company(user_id="u1", status="active", **kwargs):
 
 
 async def test_put_and_get_round_trips(repo):
-    company = _make_company(user_id="user_123")
+    company = _make_company(user_id="user_123", org_id="org_42")
     await repo.put(company)
     retrieved = await repo.get("user_123")
     assert retrieved is not None
+    assert retrieved.org_id == "org_42"
     assert retrieved.company_id == "co_user_123"
+    assert retrieved.paperclip_user_id == "pc_user_user_123"
+    assert retrieved.paperclip_password_encrypted == "enc_pwd"
     assert retrieved.status == "active"
 
 
@@ -116,3 +132,33 @@ async def test_scan_purge_due_returns_overdue_disabled(repo):
     due = await repo.scan_purge_due(now)
     user_ids = {c.user_id for c in due}
     assert user_ids == {"overdue"}
+
+
+async def test_get_org_company_id_returns_shared_company_id(repo):
+    """Two users in the same org both carry the same company_id and a
+    lookup by org_id returns it (regardless of which row we hit).
+    """
+    shared_company_id = "co_shared_123"
+    await repo.put(
+        _make_company(
+            user_id="user_a",
+            org_id="org_alpha",
+            company_id=shared_company_id,
+        )
+    )
+    await repo.put(
+        _make_company(
+            user_id="user_b",
+            org_id="org_alpha",
+            company_id=shared_company_id,
+        )
+    )
+    found = await repo.get_org_company_id("org_alpha")
+    assert found == shared_company_id
+
+
+async def test_get_org_company_id_returns_none_for_missing_org(repo):
+    """An org with no provisioned rows yet returns None — caller will
+    treat this as "first member, create company"."""
+    found = await repo.get_org_company_id("org_does_not_exist")
+    assert found is None

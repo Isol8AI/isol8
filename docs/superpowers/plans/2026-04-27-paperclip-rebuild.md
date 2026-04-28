@@ -650,6 +650,16 @@ git commit -m "feat(infra): Route 53 + ACM SAN for company.isol8.co"
 
 ### Task 8: paperclip_repo.py (DynamoDB repository)
 
+> **ARCHITECTURE UPDATE 2026-04-27**: T8/T10/T11 auth model pivoted to
+> per-org Paperclip company + per-user Better Auth account +
+> invite-flow chain, replacing the per-user Board API key approach.
+> The `PaperclipCompany` row now carries `org_id`,
+> `paperclip_user_id`, and `paperclip_password_encrypted` instead of
+> `board_api_key_encrypted`. A new `get_org_company_id(org_id)`
+> method (backed by a `by-org-id` GSI) lets member-join lookups
+> reuse the org's shared `company_id`. See spec §4.4 + §4.5 for
+> details.
+
 **Files:**
 - Create: `apps/backend/core/repositories/paperclip_repo.py`
 - Create: `apps/backend/tests/test_paperclip_repo.py`
@@ -1055,6 +1065,16 @@ a specific user's OpenClaw container."
 
 ### Task 10: paperclip_admin_client.py
 
+> **ARCHITECTURE UPDATE 2026-04-27**: T10 no longer exposes
+> `mint_board_api_key` — Paperclip's REST API has no per-user
+> board-key minting endpoint. The client instead exposes Better
+> Auth (`sign_up_user`, `sign_in_user`) plus the invite-flow chain
+> (`create_invite`, `accept_invite`, `approve_join_request`).
+> Existing methods (`create_company`, `create_agent`, `disable_company`,
+> `delete_company`, `create_agent_api_key`) gained an optional
+> `session_token` parameter so callers can act as a specific user
+> rather than the instance admin. See spec §4.4 + §4.5 for details.
+
 **Files:**
 - Create: `apps/backend/core/services/paperclip_admin_client.py`
 - Create: `apps/backend/tests/test_paperclip_admin_client.py`
@@ -1277,6 +1297,15 @@ delete_company. Sends Idempotency-Key on mutations."
 ---
 
 ### Task 11: paperclip_provisioning.py
+
+> **ARCHITECTURE UPDATE 2026-04-27**: T11 splits into two paths
+> matching multi-member orgs: `provision_org` (fired by
+> `organization.created`, signs up the owner + creates the shared
+> Paperclip company) and `provision_member` (fired by
+> `organizationMembership.created`, signs up the new user and runs
+> the invite-flow chain `signUp → createInvite → acceptInvite →
+> approveJoinRequest` to add them to the existing company). See
+> spec §5.1 for both flows.
 
 **Files:**
 - Create: `apps/backend/core/services/paperclip_provisioning.py`
@@ -1514,6 +1543,15 @@ repo status=failed and re-raise for webhook retry."
 
 ### Task 12: Webhook integration (Clerk + Stripe)
 
+> **ARCHITECTURE UPDATE 2026-04-27**: T12 wires THREE Clerk webhook
+> events instead of one: `organization.created` (→
+> `provision_org`), `organizationMembership.created` (→
+> `provision_member`), and `organizationMembership.deleted` (→
+> revoke session + remove membership; full shape TBD in T11). The
+> existing `user.created` handler still runs but no longer drives
+> Paperclip provisioning on its own — provisioning is now keyed
+> off Clerk org events. See spec §4.5 + §5.1 for details.
+
 **Files:**
 - Modify: `apps/backend/routers/webhooks.py`
 - Modify: `apps/backend/core/config.py` (add Paperclip settings)
@@ -1649,6 +1687,16 @@ Retry pass for status=failed provisioning rows."
 ## Phase 3 — Backend proxy
 
 ### Task 14: paperclip_proxy.py — HTTP forwarding + brand-rewrite
+
+> **ARCHITECTURE UPDATE 2026-04-27**: T14 no longer injects
+> `Authorization: Bearer <board_key>`. Instead, the proxy uses the
+> per-user Better Auth session COOKIE: on first hit per session it
+> calls `paperclip_admin_client.sign_in_user(...)` server-to-server
+> with the user's stored Fernet-encrypted password, captures the
+> Set-Cookie response header, and forwards it to the browser
+> scoped to `.isol8.co`. Subsequent requests carry the cookie
+> through the proxy automatically. See spec §4.4 + §5.2 for the
+> full flow.
 
 **Files:**
 - Create: `apps/backend/routers/paperclip_proxy.py`

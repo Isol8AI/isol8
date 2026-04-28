@@ -1,13 +1,39 @@
 """DynamoDB repository for paperclip-companies table.
 
 PK: user_id (S)
-Maps Isol8 user -> Paperclip company + encrypted credentials.
+Maps Isol8 user -> Paperclip Better Auth account + the org-shared
+Paperclip company. Each row is per-USER (not per-org); members of the
+same Isol8 org share the same ``company_id`` value across multiple
+rows.
 
 Async repository following the same pattern as peer repos in
 ``core/repositories/`` (api_key_repo, channel_link_repo, etc.): every
 DynamoDB call is wrapped in ``run_in_thread`` and exposed as ``async def``
 so future async callers (T11 paperclip_provisioning, T13 cleanup cron)
 can ``await`` directly without ``asyncio.to_thread`` at each call site.
+
+**Multi-member org auth model (2026-04-27 pivot).**
+
+Paperclip's REST API has no per-user board-API-key minting endpoint
+(it's only mintable via the CLI auth challenge flow). The right design
+is therefore:
+
+* One Paperclip company per Isol8 *org* (Clerk org). All Isol8 users
+  belonging to the same org share the same ``company_id`` value.
+* One Better Auth account per Isol8 *user*, identified by
+  ``paperclip_user_id`` and authenticated with a per-user random
+  password (Fernet-encrypted at rest as ``paperclip_password_encrypted``).
+* Members are added to the shared company via Paperclip's
+  server-side invite flow:
+  ``signUp → admin createInvite → user acceptInvite → admin approveJoinRequest``.
+* The OpenClaw service token (``service_token_encrypted``) remains
+  per-user — it's how the seeded Paperclip agent reaches the user's
+  own OpenClaw container.
+
+To efficiently find an existing company_id when a new member joins,
+``get_org_company_id`` queries the ``by-org-id`` GSI (PK: org_id).
+For v1 we accept that the GSI projection is small (just company_id +
+keys) since member-join is rare relative to read-by-user lookups.
 """
 
 from __future__ import annotations
@@ -29,10 +55,35 @@ PaperclipCompanyStatus = Literal["provisioning", "active", "failed", "disabled"]
 
 @dataclass
 class PaperclipCompany:
+    """Per-USER row. ``company_id`` is shared across all rows belonging
+    to the same Isol8 org; the other fields are per-user.
+    """
+
     user_id: str
+    """Isol8 user ID (Clerk user)."""
+
+    org_id: str
+    """Isol8 org ID (Clerk org). Identical for all rows in the same org."""
+
     company_id: str
-    board_api_key_encrypted: str
+    """Paperclip company ID. Same value for every Isol8 user in the
+    same org — the Paperclip company is org-scoped, not user-scoped."""
+
+    paperclip_user_id: str
+    """Better Auth user ID inside Paperclip. Created via
+    ``POST /api/auth/sign-up/email`` at provisioning time."""
+
+    paperclip_password_encrypted: str
+    """Fernet-encrypted random password for the Better Auth account.
+    Used by the proxy router to sign the user in (server-to-server)
+    and forward the Set-Cookie back to the browser."""
+
     service_token_encrypted: str
+    """Fernet-encrypted long-lived OpenClaw service-token JWT. Baked
+    into the seeded Paperclip agent's openclaw-gateway adapter so the
+    agent can reach the user's own OpenClaw container via the
+    existing WS gateway."""
+
     status: PaperclipCompanyStatus
     created_at: datetime
     updated_at: datetime
@@ -62,8 +113,10 @@ class PaperclipRepo:
     async def put(self, company: PaperclipCompany) -> None:
         item = {
             "user_id": company.user_id,
+            "org_id": company.org_id,
             "company_id": company.company_id,
-            "board_api_key_encrypted": company.board_api_key_encrypted,
+            "paperclip_user_id": company.paperclip_user_id,
+            "paperclip_password_encrypted": company.paperclip_password_encrypted,
             "service_token_encrypted": company.service_token_encrypted,
             "status": company.status,
             "created_at": company.created_at.isoformat(),
@@ -85,8 +138,10 @@ class PaperclipRepo:
         item = resp["Item"]
         return PaperclipCompany(
             user_id=item["user_id"],
+            org_id=item["org_id"],
             company_id=item["company_id"],
-            board_api_key_encrypted=item["board_api_key_encrypted"],
+            paperclip_user_id=item["paperclip_user_id"],
+            paperclip_password_encrypted=item["paperclip_password_encrypted"],
             service_token_encrypted=item["service_token_encrypted"],
             status=item["status"],
             created_at=datetime.fromisoformat(item["created_at"]),
@@ -96,6 +151,46 @@ class PaperclipRepo:
                 datetime.fromisoformat(item["scheduled_purge_at"]) if item.get("scheduled_purge_at") else None
             ),
         )
+
+    async def get_org_company_id(self, org_id: str) -> Optional[str]:
+        """Return the shared ``company_id`` for any one user in this org.
+
+        Used at member-join time (``organizationMembership.created``):
+        if any other user in the org already has a row, we reuse their
+        company_id rather than creating a new Paperclip company.
+
+        Implementation: queries the ``by-org-id`` GSI (PK: ``org_id``).
+        Returns the first row's ``company_id``. All rows in the same
+        org are required (by the provisioner) to carry the same
+        ``company_id``, so picking any one is correct.
+
+        Why a GSI rather than a scan: while v1 traffic is small enough
+        a scan would work, member-join can fire repeatedly during
+        bulk org imports and a GSI lookup is O(matches) instead of
+        O(table). The GSI is declared in
+        ``database-stack.ts`` alongside the existing ``by-status-purge-at``
+        index, with ``ProjectionType: KEYS_ONLY`` (so reads only need
+        ``user_id`` to chain into a base-table ``get`` if more fields
+        are needed) — but for ``get_org_company_id`` we project
+        ``company_id`` via ``ALL`` so a single GSI query suffices.
+        """
+        kwargs = {
+            "IndexName": "by-org-id",
+            "KeyConditionExpression": Key("org_id").eq(org_id),
+            "Limit": 1,
+        }
+        resp = await run_in_thread(self._table().query, **kwargs)
+        items = resp.get("Items", [])
+        if not items:
+            return None
+        first = items[0]
+        # If the GSI projection only includes keys, fall back to a base
+        # get to retrieve company_id. With ProjectionType=ALL this
+        # branch is a no-op.
+        if "company_id" in first:
+            return first["company_id"]
+        base = await self.get(first["user_id"])
+        return base.company_id if base is not None else None
 
     async def update_status(
         self,

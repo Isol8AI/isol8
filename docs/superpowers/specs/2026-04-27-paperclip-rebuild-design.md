@@ -178,54 +178,170 @@ No `/teams` route, no Paperclip panel components, no `usePaperclip` hooks.
 
 ### 4.4 Auth credentials at rest
 
+> **2026-04-27 architectural pivot — multi-member orgs.** Paperclip's
+> REST API exposes no per-user board-API-key minting endpoint (board
+> keys are mintable only via the CLI auth challenge flow at
+> `server/src/services/board-auth.ts`). The auth model is therefore
+> **PER-ORG Paperclip company, PER-USER Better Auth account, members
+> added via automated server-side invite flow.** See §4.5 for the
+> multi-member story.
+
 | Credential | Storage | Purpose |
 |---|---|---|
-| Instance admin Board API key | Secrets Manager (`paperclip/admin-board-key`) | Backend uses this to call Paperclip admin API. Minted manually once at deploy. |
-| Per-user Board API key | DynamoDB (`paperclip-companies`), Fernet-encrypted | Backend injects as Bearer for that user's proxied requests. |
+| Instance admin Board API key | Secrets Manager (`paperclip/admin-board-key`) | Backend uses this for instance-admin operations only (e.g. listing all users in admin tooling). Minted manually once at deploy. NOT used for per-user proxied traffic. |
+| Per-user Better Auth password | DynamoDB (`paperclip-companies`), Fernet-encrypted | Random 32-byte password generated at provisioning. Backend uses it server-to-server to call `POST /api/auth/sign-in/email` whenever it needs a fresh session token for that user; the resulting Set-Cookie is forwarded to the browser scoped to `.isol8.co`. |
+| Per-user Better Auth user ID | DynamoDB (`paperclip-companies`) | Paperclip-side identifier (`paperclip_user_id`) returned from the sign-up call. Used only for invariant assertions and audit logging — the password is what authenticates. |
 | Per-user OpenClaw service token | DynamoDB (`paperclip-companies`), Fernet-encrypted | Baked into seeded Paperclip agent's `openclaw-gateway` adapter config. Long-lived JWT signed by us (not Clerk), claims include `sub=user_id` + `kind=paperclip_service`. Validated by the extended Lambda Authorizer alongside Clerk JWTs. |
+
+### 4.5 Multi-member org support
+
+Each Isol8 user belongs to exactly one Clerk org (the
+`project_single_org_per_user` invariant). An org may have many users.
+The Paperclip mapping is:
+
+| Concept | Scope | Storage |
+|---|---|---|
+| Paperclip **company** | One per Isol8 **org** | `company_id` is identical for every `paperclip-companies` row whose `org_id` matches. The first user in the org creates it; subsequent members reuse it. |
+| Paperclip **Better Auth account** | One per Isol8 **user** | `paperclip_user_id` + `paperclip_password_encrypted` are per-row. Every user has their own login. |
+| Paperclip **company membership** | Per (user, org) pair | Lives in Paperclip's own `companyMemberships` table. Created by the invite-flow chain at provisioning. |
+| OpenClaw service token | Per Isol8 **user** | `service_token_encrypted` is per-row. Each member's seeded agent reaches *their own* OpenClaw container, not the org owner's. |
+
+**Member-join is fully automated server-side.** When Clerk fires
+`organizationMembership.created` for a user joining an existing org,
+T11 (provisioning) executes:
+
+1. `paperclip_repo.get_org_company_id(org_id)` → existing `company_id`
+   (lookup via the `by-org-id` GSI on the `paperclip-companies` table).
+2. `paperclip_admin_client.sign_up_user(email, password)` → new
+   Better Auth account (`paperclip_user_id` + initial session token).
+3. `paperclip_admin_client.create_invite(session_token=<org_owner>,
+   company_id, email, human_role="member")` → invite token. The
+   org-owner's session token is fetched on-demand via
+   `sign_in_user(owner_email, owner_password_decrypted)`.
+4. `paperclip_admin_client.accept_invite(session_token=<new_member>,
+   invite_token)` → returns the new join_request in
+   `pending_approval`.
+5. `paperclip_admin_client.approve_join_request(
+       session_token=<org_owner>, company_id, request_id)` → membership
+   is now `active`.
+6. `paperclip_repo.put({...new row, company_id=existing,
+   org_id, paperclip_user_id, paperclip_password_encrypted,
+   service_token_encrypted, ...})`.
+
+No emails sent; no human click-through. Paperclip's invite token is
+exchanged programmatically between the admin and member sessions.
+
+**Member-leave** (Clerk `organizationMembership.deleted`): TBD in T11
+implementation. Likely shape: revoke the Better Auth session
+(`POST /api/auth/sign-out` with the user's session token), remove
+the membership from Paperclip via the `companyMemberships` admin
+endpoint, delete the local `paperclip-companies` row. The shared
+`company_id` survives unless the *last* member leaves, in which case
+the org-create / org-delete path takes over (T11 handles the
+`organization.deleted` webhook by archiving the company).
 
 ## 5. Data Flow
 
 ### 5.1 Signup → company provisioned
 
+The flow has two paths; both are fired by Clerk webhooks and routed
+through `paperclip_provisioning`. **Path A** runs once per org;
+**Path B** runs once per user joining an existing org.
+
+#### Path A — `organization.created` (first user in a new org)
+
 ```
-Clerk: user.created webhook
+Clerk: organization.created webhook   (fires alongside user.created
+                                       for the org's creator)
     │
     ▼
 FastAPI: /webhooks/clerk
     │
-    ├─→ existing user creation (DynamoDB users table)
-    │
-    └─→ paperclip_provisioning.provision(user_id, email)
+    └─→ paperclip_provisioning.provision_org(org_id, owner_user_id, owner_email)
             │
-            ├─ 1. paperclip_admin_client.create_company(name=email, owner_email=email)
-            │       └─ returns company_id
+            ├─ 1. random_password = secrets.token_urlsafe(32)
+            │     paperclip_admin_client.sign_up_user(
+            │         email=owner_email, password=random_password)
+            │     → returns {user: {id: paperclip_user_id}, token: session_token}
             │
-            ├─ 2. paperclip_admin_client.mint_board_api_key(user_id, company_id)
-            │       └─ returns board_key (one-shot reveal)
+            ├─ 2. paperclip_admin_client.create_company(
+            │         session_token=session_token,
+            │         name=org_name or owner_email,
+            │     )
+            │     → returns company_id  (owner is the just-signed-up user)
             │
-            ├─ 3. mint_openclaw_service_token(user_id)  (long-lived, Lambda-Authorizer-validated)
+            ├─ 3. mint_openclaw_service_token(owner_user_id)
+            │     (long-lived, Lambda-Authorizer-validated)
             │
-            ├─ 4. paperclip_admin_client.create_agent(company_id, config={
-            │       name: "Main Agent",
-            │       adapter: "openclaw-gateway",
-            │       adapter_config: {
-            │         url: "wss://ws-{env}.isol8.co",
-            │         authToken: <openclaw_service_token>,
-            │         sessionKeyStrategy: "fixed",
-            │         sessionKey: user_id
-            │       }
-            │     })
+            ├─ 4. paperclip_admin_client.create_agent(
+            │         session_token=session_token,
+            │         company_id, name="Main Agent", role="ceo",
+            │         adapter_type="openclaw_gateway",
+            │         adapter_config={
+            │             url: "wss://ws-{env}.isol8.co",
+            │             authToken: <openclaw_service_token>,
+            │             sessionKeyStrategy: "fixed",
+            │             sessionKey: owner_user_id,
+            │         },
+            │     )
             │
             └─ 5. paperclip_repo.put({
-                  user_id, company_id,
-                  board_api_key_encrypted: fernet(board_key),
-                  service_token_encrypted: fernet(svc_token),
-                  status: "active"
-                })
+                    user_id: owner_user_id,
+                    org_id,
+                    company_id,
+                    paperclip_user_id,
+                    paperclip_password_encrypted: fernet(random_password),
+                    service_token_encrypted: fernet(svc_token),
+                    status: "active",
+                  })
 ```
 
-Whole flow runs synchronously in the webhook handler. On failure, webhook returns 5xx so Clerk retries; if exhausted, fall back to enqueue in `pending-updates`. Idempotent on `user_id` (existing row → no-op).
+#### Path B — `organizationMembership.created` (additional member joins)
+
+```
+Clerk: organizationMembership.created
+    │
+    ▼
+FastAPI: /webhooks/clerk
+    │
+    └─→ paperclip_provisioning.provision_member(org_id, user_id, email)
+            │
+            ├─ 1. company_id = paperclip_repo.get_org_company_id(org_id)
+            │     (assert non-None — Path A must have run for the owner first)
+            │
+            ├─ 2. password = secrets.token_urlsafe(32)
+            │     paperclip_admin_client.sign_up_user(email, password)
+            │     → new paperclip_user_id + member_session_token
+            │
+            ├─ 3. owner_row = paperclip_repo.get(<org_owner_user_id>)
+            │     owner_password = fernet_decrypt(owner_row.paperclip_password_encrypted)
+            │     owner_session = paperclip_admin_client.sign_in_user(
+            │         email=<owner_email>, password=owner_password).token
+            │
+            ├─ 4. invite = paperclip_admin_client.create_invite(
+            │         session_token=owner_session,
+            │         company_id, email, human_role="member")
+            │     → returns invite token
+            │
+            ├─ 5. join_req = paperclip_admin_client.accept_invite(
+            │         session_token=member_session_token,
+            │         invite_token=invite.token)
+            │     → returns join_request in "pending_approval"
+            │
+            ├─ 6. paperclip_admin_client.approve_join_request(
+            │         session_token=owner_session,
+            │         company_id, request_id=join_req.id)
+            │     → membership now "active"
+            │
+            ├─ 7. mint_openclaw_service_token(user_id)
+            │     create_agent(...) targeting THIS user's container
+            │
+            └─ 8. paperclip_repo.put({user_id, org_id, company_id,
+                    paperclip_user_id, paperclip_password_encrypted,
+                    service_token_encrypted, status: "active"})
+```
+
+Both paths run synchronously in the webhook handler. On failure, webhook returns 5xx so Clerk retries; if exhausted, fall back to enqueue in `pending-updates`. Idempotent on `(user_id)` — existing row → no-op.
 
 ### 5.2 User clicks "Teams" → Paperclip UI loads
 
@@ -239,12 +355,19 @@ ALB: host rule company.isol8.co → FastAPI target group
    ▼
 FastAPI middleware: Host=company.isol8.co → paperclip_proxy_router
    │
-   ├─ validate Clerk JWT (existing get_current_user)
-   ├─ paperclip_repo.get(user_id) → board_api_key (decrypted)
+   ├─ validate Clerk JWT (existing get_current_user) → user_id
+   ├─ if no Paperclip session cookie yet (or expired):
+   │     paperclip_repo.get(user_id) → row (with paperclip_password_encrypted)
+   │     password = fernet_decrypt(row.paperclip_password_encrypted)
+   │     resp = paperclip_admin_client.sign_in_user(email=user_email, password=password)
+   │     → captures Set-Cookie header
+   │     → forwards Set-Cookie to browser, scoped to ".isol8.co",
+   │       so subsequent requests carry the Paperclip session cookie
+   │       through the proxy automatically
    │
    ▼
 httpx.AsyncClient: GET {PAPERCLIP_INTERNAL_URL}/
-   Headers: Authorization: Bearer <board_api_key>
+   Headers: Cookie: <paperclip-session-cookie from browser>
             X-Forwarded-Host: company.isol8.co
             X-Forwarded-Proto: https
    │
@@ -258,7 +381,9 @@ FastAPI proxy: brand-rewrite pass on HTML
    └─ stream response back to browser
 ```
 
-WebSocket flow (Paperclip live-events): browser opens `wss://company.isol8.co/api/live`. FastAPI accepts the WS upgrade, opens a parallel WS to `{PAPERCLIP_INTERNAL_URL}/api/live` with `Authorization: Bearer`, bidirectionally relays frames. Same shape as `control_ui_proxy.py`'s WS relay.
+The first hit per session does the server-to-server sign-in to mint a Better Auth session cookie; once that cookie is in the browser jar (scoped to `.isol8.co`), subsequent requests just relay it. The proxy never holds the password on the wire — only on disk in DynamoDB, Fernet-encrypted.
+
+WebSocket flow (Paperclip live-events): browser opens `wss://company.isol8.co/api/live`. FastAPI accepts the WS upgrade, opens a parallel WS to `{PAPERCLIP_INTERNAL_URL}/api/live` carrying the same `Cookie` header from the browser (the Better Auth session cookie), bidirectionally relays frames. Same shape as `control_ui_proxy.py`'s WS relay.
 
 ### 5.3 Paperclip agent run → user's OpenClaw container
 
