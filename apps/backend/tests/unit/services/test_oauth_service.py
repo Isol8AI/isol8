@@ -28,6 +28,8 @@ from core.services.oauth_service import (
 
 @pytest.fixture
 def oauth_table(monkeypatch):
+    from core.config import settings as _settings
+
     with mock_aws():
         client = boto3.client("dynamodb", region_name="us-east-1")
         client.create_table(
@@ -37,7 +39,9 @@ def oauth_table(monkeypatch):
             BillingMode="PAY_PER_REQUEST",
         )
         monkeypatch.setenv("OAUTH_TOKENS_TABLE", "test-oauth-tokens")
-        monkeypatch.setenv("ENCRYPTION_KEY", Fernet.generate_key().decode())
+        # core.encryption.get_fernet reads settings.ENCRYPTION_KEY (cached at
+        # import time) — patching the env var alone is insufficient.
+        monkeypatch.setattr(_settings, "ENCRYPTION_KEY", Fernet.generate_key().decode())
         yield
 
 
