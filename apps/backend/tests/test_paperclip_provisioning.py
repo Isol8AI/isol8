@@ -1,0 +1,583 @@
+"""Tests for ``PaperclipProvisioning`` orchestrator.
+
+Strategy:
+
+* The DynamoDB repo is real (moto-backed) so idempotency invariants
+  + GSI lookups are exercised end-to-end.
+* The Paperclip admin client is a plain ``MagicMock`` with ``AsyncMock``
+  methods so we can assert call ordering and shape per scenario.
+* ``ENCRYPTION_KEY`` and ``PAPERCLIP_SERVICE_TOKEN_KEY`` are set via
+  ``conftest.py`` / fixture below so encrypt/mint round-trips work.
+
+``asyncio_mode = "auto"`` (pyproject.toml) is in effect — async tests
+need no decorator.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import boto3
+import pytest
+from moto import mock_aws
+
+from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
+from core.services.paperclip_provisioning import (
+    OrgNotProvisionedError,
+    PaperclipProvisioning,
+    _ws_gateway_url,
+)
+from core.services.paperclip_admin_client import PaperclipApiError
+
+TABLE_NAME = "test-paperclip-companies-prov"
+
+
+@pytest.fixture(autouse=True)
+def _service_token_key(monkeypatch):
+    """Ensure service_token.mint() can run inside provisioning.
+
+    ``service_token.mint`` reads the env var lazily on each call, so it
+    must be present whenever the orchestrator runs.
+    """
+    monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "test-service-token-key")
+
+
+@pytest.fixture
+def repo():
+    """A moto-backed PaperclipRepo with the by-org-id + by-status-purge-at GSIs."""
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        resource.create_table(
+            TableName=TABLE_NAME,
+            KeySchema=[{"AttributeName": "user_id", "KeyType": "HASH"}],
+            AttributeDefinitions=[
+                {"AttributeName": "user_id", "AttributeType": "S"},
+                {"AttributeName": "status", "AttributeType": "S"},
+                {"AttributeName": "scheduled_purge_at", "AttributeType": "S"},
+                {"AttributeName": "org_id", "AttributeType": "S"},
+            ],
+            BillingMode="PAY_PER_REQUEST",
+            GlobalSecondaryIndexes=[
+                {
+                    "IndexName": "by-status-purge-at",
+                    "KeySchema": [
+                        {"AttributeName": "status", "KeyType": "HASH"},
+                        {"AttributeName": "scheduled_purge_at", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "KEYS_ONLY"},
+                },
+                {
+                    "IndexName": "by-org-id",
+                    "KeySchema": [{"AttributeName": "org_id", "KeyType": "HASH"}],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+            ],
+        )
+        with (
+            patch("core.dynamodb._table_prefix", ""),
+            patch("core.dynamodb._dynamodb_resource", resource),
+        ):
+            yield PaperclipRepo(table_name=TABLE_NAME, region="us-east-1")
+
+
+def _make_admin_mock() -> MagicMock:
+    """Build an AsyncMock-backed admin client with sensible default returns.
+
+    Tests override individual methods (e.g. to make ``sign_up_user``
+    raise) per-scenario.
+    """
+    admin = MagicMock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
+    admin.create_company = AsyncMock(return_value={"id": "co_default"})
+    admin.create_agent = AsyncMock(return_value={"id": "agent_default"})
+    admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
+    admin.accept_invite = AsyncMock(return_value={"request_id": "req_default"})
+    admin.approve_join_request = AsyncMock(return_value={})
+    admin.disable_company = AsyncMock(return_value={})
+    return admin
+
+
+# ----------------------------------------------------------------------
+# _ws_gateway_url
+# ----------------------------------------------------------------------
+
+
+def test_ws_gateway_url_prod_drops_suffix():
+    assert _ws_gateway_url("prod") == "wss://ws.isol8.co"
+    assert _ws_gateway_url("production") == "wss://ws.isol8.co"
+
+
+def test_ws_gateway_url_dev_uses_env_suffix():
+    assert _ws_gateway_url("dev") == "wss://ws-dev.isol8.co"
+    assert _ws_gateway_url("staging") == "wss://ws-staging.isol8.co"
+
+
+def test_ws_gateway_url_empty_falls_back_to_localhost():
+    assert _ws_gateway_url("") == "ws://localhost:8000"
+
+
+# ----------------------------------------------------------------------
+# provision_org
+# ----------------------------------------------------------------------
+
+
+async def test_provision_org_happy_path(repo):
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session-1"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_org(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+
+    # API call sequence
+    admin.sign_up_user.assert_awaited_once()
+    sign_up_kwargs = admin.sign_up_user.call_args.kwargs
+    assert sign_up_kwargs["email"] == "owner@acme.test"
+    assert sign_up_kwargs["name"] == "owner@acme.test"
+    assert len(sign_up_kwargs["password"]) >= 32  # token_urlsafe(32) -> ~43 chars
+
+    admin.create_company.assert_awaited_once()
+    cc_kwargs = admin.create_company.call_args.kwargs
+    assert cc_kwargs["name"] == "owner@acme.test"
+    assert cc_kwargs["session_token"] == "owner-session-1"
+    assert cc_kwargs["idempotency_key"] == "user_owner"
+
+    admin.create_agent.assert_awaited_once()
+    agent_kwargs = admin.create_agent.call_args.kwargs
+    assert agent_kwargs["company_id"] == "co_acme"
+    assert agent_kwargs["adapter_type"] == "openclaw-gateway"
+    assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
+    assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
+    assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
+
+    # Persisted row
+    assert row.user_id == "user_owner"
+    assert row.org_id == "org_acme"
+    assert row.company_id == "co_acme"
+    assert row.paperclip_user_id == "pc_user_owner"
+    assert row.status == "active"
+    assert row.paperclip_password_encrypted  # not empty
+    assert row.service_token_encrypted  # not empty
+
+    # Repo round-trip
+    fetched = await repo.get("user_owner")
+    assert fetched is not None
+    assert fetched.company_id == "co_acme"
+    assert fetched.status == "active"
+
+
+async def test_provision_org_idempotent_on_second_call(repo):
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session-1"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    first = await prov.provision_org(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+    second = await prov.provision_org(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+
+    # Second call short-circuits — only ONE sign_up + create_company across both
+    assert admin.sign_up_user.await_count == 1
+    assert admin.create_company.await_count == 1
+    assert first.company_id == second.company_id == "co_acme"
+
+
+async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    admin.create_agent = AsyncMock(side_effect=PaperclipApiError("agent create failed", status_code=500, body="boom"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_org(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+    # Company is still active; the agent seeding is best-effort.
+    assert row.status == "active"
+    assert row.company_id == "co_acme"
+
+
+async def test_provision_org_signup_failure_marks_failed(repo):
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("auth disabled", status_code=403, body="forbidden"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_org(
+            org_id="org_acme",
+            owner_user_id="user_owner",
+            owner_email="owner@acme.test",
+        )
+
+    # Failed-state row persisted for observability
+    failed_row = await repo.get("user_owner")
+    assert failed_row is not None
+    assert failed_row.status == "failed"
+    assert "provision_org failed" in (failed_row.last_error or "")
+    # company_id is empty since we never got that far
+    assert failed_row.company_id == ""
+
+
+async def test_provision_org_create_company_failure_marks_failed(repo):
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.create_company = AsyncMock(side_effect=PaperclipApiError("server err", status_code=500, body="fail"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_org(
+            org_id="org_acme",
+            owner_user_id="user_owner",
+            owner_email="owner@acme.test",
+        )
+
+    failed_row = await repo.get("user_owner")
+    assert failed_row is not None
+    assert failed_row.status == "failed"
+
+
+async def test_provision_org_retries_after_failure(repo):
+    """A failed row should not block a subsequent successful retry."""
+    admin = _make_admin_mock()
+    # First attempt: create_company fails
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.create_company = AsyncMock(side_effect=PaperclipApiError("transient", status_code=500, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_org(
+            org_id="org_acme",
+            owner_user_id="user_owner",
+            owner_email="owner@acme.test",
+        )
+    assert (await repo.get("user_owner")).status == "failed"
+
+    # Second attempt with healthy admin
+    admin.create_company = AsyncMock(return_value={"id": "co_acme"})
+    row = await prov.provision_org(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+    assert row.status == "active"
+    assert row.company_id == "co_acme"
+
+
+# ----------------------------------------------------------------------
+# provision_member
+# ----------------------------------------------------------------------
+
+
+async def _seed_owner(repo, *, org_id="org_acme", owner_user_id="user_owner"):
+    """Seed the org-owner row directly so provision_member has someone to find."""
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    row = PaperclipCompany(
+        user_id=owner_user_id,
+        org_id=org_id,
+        company_id="co_acme",
+        paperclip_user_id="pc_user_owner",
+        paperclip_password_encrypted=encrypt("owner-password-plain"),
+        service_token_encrypted=encrypt("svc-token"),
+        status="active",
+        created_at=now,
+        updated_at=now,
+    )
+    await repo.put(row)
+    return row
+
+
+async def test_provision_member_happy_path(repo):
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.create_invite = AsyncMock(return_value={"token": "invite-secret"})
+    admin.accept_invite = AsyncMock(return_value={"request_id": "req_abc"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    row = await prov.provision_member(
+        org_id="org_acme",
+        user_id="user_member",
+        email="member@acme.test",
+        owner_email="owner@acme.test",
+    )
+
+    # Sequence: signUp, signIn, createInvite, acceptInvite, approveJoinRequest
+    admin.sign_up_user.assert_awaited_once()
+    su_kwargs = admin.sign_up_user.call_args.kwargs
+    assert su_kwargs["email"] == "member@acme.test"
+
+    admin.sign_in_user.assert_awaited_once()
+    si_kwargs = admin.sign_in_user.call_args.kwargs
+    assert si_kwargs["email"] == "owner@acme.test"
+    assert si_kwargs["password"] == "owner-password-plain"
+
+    admin.create_invite.assert_awaited_once()
+    ci_kwargs = admin.create_invite.call_args.kwargs
+    assert ci_kwargs["session_token"] == "owner-session"
+    assert ci_kwargs["company_id"] == "co_acme"
+    assert ci_kwargs["email"] == "member@acme.test"
+
+    admin.accept_invite.assert_awaited_once()
+    ai_kwargs = admin.accept_invite.call_args.kwargs
+    assert ai_kwargs["session_token"] == "member-session"
+    assert ai_kwargs["invite_token"] == "invite-secret"
+
+    admin.approve_join_request.assert_awaited_once()
+    aj_kwargs = admin.approve_join_request.call_args.kwargs
+    assert aj_kwargs["session_token"] == "owner-session"
+    assert aj_kwargs["company_id"] == "co_acme"
+    assert aj_kwargs["request_id"] == "req_abc"
+
+    # Persisted member row reuses the org's company_id
+    assert row.user_id == "user_member"
+    assert row.company_id == "co_acme"
+    assert row.org_id == "org_acme"
+    assert row.paperclip_user_id == "pc_user_member"
+    assert row.status == "active"
+    fetched = await repo.get("user_member")
+    assert fetched is not None
+    assert fetched.company_id == "co_acme"
+
+
+async def test_provision_member_raises_when_org_not_provisioned(repo):
+    """No owner row + no company means we MUST refuse (caller should retry)."""
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(OrgNotProvisionedError):
+        await prov.provision_member(
+            org_id="org_phantom",
+            user_id="user_member",
+            email="member@phantom.test",
+            owner_email="owner@phantom.test",
+        )
+    # No API calls at all
+    admin.sign_up_user.assert_not_awaited()
+
+
+async def test_provision_member_idempotent_on_second_call(repo):
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.accept_invite = AsyncMock(return_value={"request_id": "req_abc"})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    first = await prov.provision_member(
+        org_id="org_acme",
+        user_id="user_member",
+        email="member@acme.test",
+        owner_email="owner@acme.test",
+    )
+    second = await prov.provision_member(
+        org_id="org_acme",
+        user_id="user_member",
+        email="member@acme.test",
+        owner_email="owner@acme.test",
+    )
+    assert first.company_id == second.company_id
+    # Only one full chain — second call short-circuits
+    assert admin.sign_up_user.await_count == 1
+    assert admin.create_invite.await_count == 1
+
+
+async def test_provision_member_signup_failure_marks_failed(repo):
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(side_effect=PaperclipApiError("dup email", status_code=409, body="conflict"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_member(
+            org_id="org_acme",
+            user_id="user_member",
+            email="member@acme.test",
+            owner_email="owner@acme.test",
+        )
+    failed = await repo.get("user_member")
+    assert failed is not None
+    assert failed.status == "failed"
+    # company_id IS known here (from the org lookup) so it's persisted
+    assert failed.company_id == "co_acme"
+    assert "provision_member failed" in (failed.last_error or "")
+
+
+async def test_provision_member_invite_failure_marks_failed(repo):
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.create_invite = AsyncMock(side_effect=PaperclipApiError("perm denied", status_code=403, body="nope"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError):
+        await prov.provision_member(
+            org_id="org_acme",
+            user_id="user_member",
+            email="member@acme.test",
+            owner_email="owner@acme.test",
+        )
+    failed = await repo.get("user_member")
+    assert failed is not None
+    assert failed.status == "failed"
+
+
+async def test_provision_member_accepts_alternate_request_id_shape(repo):
+    """Tolerate ``joinRequest.id`` and ``requestId`` shapes for accept_invite."""
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "ms"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "os"})
+    # Nested shape — Paperclip wraps the join request
+    admin.accept_invite = AsyncMock(return_value={"joinRequest": {"id": "req_nested_42"}})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await prov.provision_member(
+        org_id="org_acme",
+        user_id="user_member",
+        email="member@acme.test",
+        owner_email="owner@acme.test",
+    )
+    aj_kwargs = admin.approve_join_request.call_args.kwargs
+    assert aj_kwargs["request_id"] == "req_nested_42"
+
+
+async def test_provision_member_missing_request_id_raises(repo):
+    await _seed_owner(repo)
+    admin = _make_admin_mock()
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "ms"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "os"})
+    admin.accept_invite = AsyncMock(return_value={})  # missing every flavor
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    with pytest.raises(PaperclipApiError, match="missing request_id"):
+        await prov.provision_member(
+            org_id="org_acme",
+            user_id="user_member",
+            email="member@acme.test",
+            owner_email="owner@acme.test",
+        )
+    # Approve was never called
+    admin.approve_join_request.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------
+# disable + purge
+# ----------------------------------------------------------------------
+
+
+async def test_disable_marks_status_disabled_with_grace_window(repo):
+    await _seed_owner(repo, owner_user_id="user_a")
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    before = datetime.now(timezone.utc)
+    await prov.disable(user_id="user_a", grace_days=7)
+    after = datetime.now(timezone.utc)
+
+    fetched = await repo.get("user_a")
+    assert fetched.status == "disabled"
+    assert fetched.scheduled_purge_at is not None
+    # Within ~7 days (allow generous bounds for test clock drift)
+    delta = (fetched.scheduled_purge_at - before).total_seconds()
+    delta_max = (fetched.scheduled_purge_at - after).total_seconds()
+    assert 6 * 86400 < delta
+    assert delta_max < 8 * 86400
+    # disable_company is NEVER called from disable() — that's purge's job
+    admin.disable_company.assert_not_awaited()
+
+
+async def test_disable_idempotent_for_missing_row(repo):
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    # Should not raise
+    await prov.disable(user_id="user_does_not_exist")
+
+
+async def test_purge_deletes_row_and_archives_company_when_last_member(repo):
+    await _seed_owner(repo, owner_user_id="user_lonely")
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.purge(user_id="user_lonely")
+
+    admin.disable_company.assert_awaited_once()
+    dc_kwargs = admin.disable_company.call_args.kwargs
+    assert dc_kwargs["company_id"] == "co_acme"
+    assert await repo.get("user_lonely") is None
+
+
+async def test_purge_does_not_archive_when_other_members_remain(repo):
+    """If purging a non-owner member, company stays alive."""
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    # Owner row (created earliest)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_owner",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_owner",
+            paperclip_password_encrypted=encrypt("p"),
+            service_token_encrypted=encrypt("t"),
+            status="active",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    # Member row (created later) — this is the one being purged
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_member",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_member",
+            paperclip_password_encrypted=encrypt("p"),
+            service_token_encrypted=encrypt("t"),
+            status="disabled",
+            created_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+            updated_at=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        )
+    )
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.purge(user_id="user_member")
+
+    # Member row gone, owner row still there
+    assert await repo.get("user_member") is None
+    assert await repo.get("user_owner") is not None
+    # Company NOT archived because the owner is still around
+    admin.disable_company.assert_not_awaited()
+
+
+async def test_purge_idempotent_for_missing_row(repo):
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    await prov.purge(user_id="user_does_not_exist")
+    admin.disable_company.assert_not_awaited()
+
+
+async def test_purge_swallows_disable_company_failure(repo):
+    """If Paperclip is down, we still delete the local row (cron retry-safety)."""
+    await _seed_owner(repo, owner_user_id="user_lonely")
+    admin = _make_admin_mock()
+    admin.disable_company = AsyncMock(side_effect=PaperclipApiError("paperclip down", status_code=502, body="x"))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.purge(user_id="user_lonely")
+
+    assert await repo.get("user_lonely") is None
