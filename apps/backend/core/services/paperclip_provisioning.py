@@ -89,33 +89,6 @@ class OrgNotProvisionedError(RuntimeError):
     retryable: bool = True
 
 
-def _annotate_retryable(exc: BaseException) -> BaseException:
-    """Attach a ``retryable: bool`` attribute to a Paperclip-side
-    exception so the webhook caller (T12) can dispatch retries
-    without inspecting status codes directly.
-
-    Classification:
-
-      * ``OrgNotProvisionedError`` -> always retryable (already
-        carries the class-level attr, but we re-set it for symmetry).
-      * ``PaperclipApiError`` -> retryable when status is 5xx or 429
-        (transient server / rate-limit); otherwise not (4xx is a
-        client/state error that won't fix itself).
-      * Anything else -> not retryable (programmer error).
-
-    We annotate via instance attribute rather than modifying the
-    upstream class so the change stays scoped to the provisioning
-    layer (T12 lives downstream of this module).
-    """
-    if isinstance(exc, OrgNotProvisionedError):
-        exc.retryable = True  # type: ignore[attr-defined]
-    elif isinstance(exc, PaperclipApiError):
-        exc.retryable = exc.status_code >= 500 or exc.status_code == 429  # type: ignore[attr-defined]
-    else:
-        exc.retryable = False  # type: ignore[attr-defined]
-    return exc
-
-
 class PaperclipProvisioning:
     """End-to-end provisioning chain for Paperclip companies + members.
 
@@ -251,7 +224,12 @@ class PaperclipProvisioning:
                 org_id=org_id,
                 reason=f"provision_org failed: {e}",
             )
-            raise _annotate_retryable(e)
+            # ``retryable`` is now set automatically:
+            #   - PaperclipApiError sets it in __init__ (5xx/429 → True).
+            #   - OrgNotProvisionedError carries the class attribute.
+            #   - Other exceptions are treated as non-retryable by the
+            #     T12 caller (``getattr(exc, "retryable", False)``).
+            raise
 
     async def provision_member(
         self,
@@ -377,14 +355,16 @@ class PaperclipProvisioning:
             )
             return row
 
-        except Exception as e:
+        except Exception as e:  # noqa: F841 — kept for clarity in future logging
             await self._mark_failed(
                 user_id=user_id,
                 org_id=org_id,
                 reason=f"provision_member failed: {e}",
                 company_id=company_id,
             )
-            raise _annotate_retryable(e)
+            # ``retryable`` is set on the exception itself (see provision_org
+            # for the full rationale).
+            raise
 
     async def disable(self, *, user_id: str, grace_days: int = 30) -> None:
         """Mark a user's Paperclip row disabled with a purge timer.

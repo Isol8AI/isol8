@@ -119,6 +119,28 @@ async def test_4xx_raises_paperclip_api_error(client_factory):
     assert exc.value.status_code == 400
 
 
+def test_paperclip_api_error_retryable_classification():
+    """PaperclipApiError sets ``retryable`` from ``status_code`` directly
+    in __init__. T12's webhook handler dispatches retries based on this
+    attribute without inspecting the status code itself.
+
+    Classification:
+      - 5xx (server error)   -> retryable=True  (transient)
+      - 429 (rate limited)   -> retryable=True  (back off + retry)
+      - everything else      -> retryable=False (4xx state error)
+    """
+    # 5xx — transient server errors, retry.
+    assert PaperclipApiError("server-down", 500, "").retryable is True
+    assert PaperclipApiError("bad-gateway", 502, "").retryable is True
+    assert PaperclipApiError("svc-unavail", 503, "").retryable is True
+    # 429 — rate-limited, retry with backoff.
+    assert PaperclipApiError("rate-limited", 429, "").retryable is True
+    # 4xx (excluding 429) — permanent state errors, do not retry.
+    assert PaperclipApiError("bad-request", 400, "").retryable is False
+    assert PaperclipApiError("not-found", 404, "").retryable is False
+    assert PaperclipApiError("conflict", 409, "").retryable is False
+
+
 async def test_create_agent_api_key_returns_token(client_factory):
     """``POST /api/agents/{id}/keys`` returns ``{id, name, token, createdAt}``.
 

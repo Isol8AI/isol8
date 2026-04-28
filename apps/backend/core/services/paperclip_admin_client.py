@@ -103,12 +103,21 @@ class PaperclipApiError(Exception):
 
     DELETE 404s are NOT raised — callers expect "already gone" to be
     a successful no-op for delete operations.
+
+    The ``retryable`` attribute is auto-classified from ``status_code``:
+    5xx (server errors) and 429 (rate-limit) are transient and should
+    be retried; everything else (4xx state errors) is permanent and
+    must not loop. T12's webhook handler reads ``retryable`` to decide
+    whether to enqueue the failed event for async retry.
     """
 
     def __init__(self, message: str, status_code: int, body: Any):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        # Auto-classify retryability: 5xx + 429 are retryable, everything
+        # else (4xx state errors) is not.
+        self.retryable: bool = status_code >= 500 or status_code == 429
 
 
 class PaperclipAdminClient:
