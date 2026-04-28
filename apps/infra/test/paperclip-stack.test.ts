@@ -228,6 +228,33 @@ describe("PaperclipStack — Fargate service shape", () => {
       RetentionInDays: 14,
     });
   });
+
+  test("migrate one-shot task def is 256/512 with the migrate command", () => {
+    // A SECOND task definition (family `isol8-dev-paperclip-migrate`)
+    // exists alongside the main service one. It runs CREATE EXTENSION
+    // for pgvector, then `pnpm --filter @paperclipai/db migrate`.
+    const migrateDefs = template.findResources("AWS::ECS::TaskDefinition", {
+      Properties: { Family: "isol8-dev-paperclip-migrate" },
+    });
+    expect(Object.keys(migrateDefs)).toHaveLength(1);
+    const td = Object.values(migrateDefs)[0] as { Properties: any };
+    expect(td.Properties.Cpu).toBe("256");
+    expect(td.Properties.Memory).toBe("512");
+    const cmd = td.Properties.ContainerDefinitions[0].Command as string[];
+    expect(cmd[0]).toBe("/bin/sh");
+    expect(cmd[1]).toBe("-c");
+    expect(cmd[2]).toMatch(/CREATE EXTENSION IF NOT EXISTS vector/);
+    expect(cmd[2]).toMatch(/pnpm --filter @paperclipai\/db migrate/);
+    // PGPASSWORD URL-encoding shim (T4 lesson) is also reused here.
+    expect(cmd[2]).toMatch(/encodeURIComponent\(process\.env\.PGPASSWORD\)/);
+  });
+
+  test("migrate task def has its own log group at /isol8/{env}/paperclip-migrate", () => {
+    template.hasResourceProperties("AWS::Logs::LogGroup", {
+      LogGroupName: "/isol8/dev/paperclip-migrate",
+      RetentionInDays: 14,
+    });
+  });
 });
 
 describe("PaperclipStack — prod public URL", () => {

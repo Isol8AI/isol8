@@ -80,6 +80,16 @@ export class PaperclipStack extends cdk.Stack {
    * — httpx itself doesn't cache DNS, but a custom transport might.
    */
   public readonly internalUrl: string;
+  /**
+   * One-shot ECS task definition that runs Drizzle migrations + creates
+   * the pgvector extension. NOT bound to a service; operators invoke it
+   * via `aws ecs run-task` after each deploy. See
+   * apps/infra/paperclip/RUNBOOK.md.
+   *
+   * Exposed publicly so a future custom resource (or admin tooling) can
+   * reference the task-definition ARN without re-deriving it.
+   */
+  public readonly migrateTaskDefinition: ecs.FargateTaskDefinition;
 
   constructor(scope: Construct, id: string, props: PaperclipStackProps) {
     super(scope, id, props);
@@ -314,6 +324,113 @@ export class PaperclipStack extends cdk.Stack {
       targetUtilizationPercent: 70,
       scaleInCooldown: cdk.Duration.minutes(5),
       scaleOutCooldown: cdk.Duration.minutes(2),
+    });
+
+    // ─────────────────────────────────────────────────────────────────
+    // One-shot migration task definition.
+    //
+    // NOT a service — never auto-runs. Operators invoke it manually via
+    // `aws ecs run-task` after every cdk deploy that bumps the Paperclip
+    // image. See apps/infra/paperclip/RUNBOOK.md for the run command +
+    // log-tail incantations.
+    //
+    // The task:
+    //   1. Builds DATABASE_URL from PG* env (PGPASSWORD URL-encoded with
+    //      Node's encodeURIComponent, same as the main service entrypoint
+    //      — RDS passwords routinely contain URL-special chars).
+    //   2. Runs `CREATE EXTENSION IF NOT EXISTS vector;` against the
+    //      `paperclip` database. Idempotent — safe to re-run.
+    //   3. Runs `pnpm --filter @paperclipai/db migrate` from /app, which
+    //      applies the Drizzle schema. Drizzle tracks applied migrations
+    //      in `__drizzle_migrations`, so re-runs after partial failure
+    //      pick up where they left off.
+    //
+    // Sized 256 / 512 — one-shot, doesn't need the full server slice.
+    // Reuses the same task SG so it inherits the existing Aurora ingress
+    // rule (CfnSecurityGroupIngress added above for the main service).
+    // ─────────────────────────────────────────────────────────────────
+    const migrateExecutionRole = new iam.Role(this, "PaperclipMigrateExecutionRole", {
+      assumedBy: new iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+      description: `Isol8 ${env} Paperclip migrate task execution role`,
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          "service-role/AmazonECSTaskExecutionRolePolicy",
+        ),
+      ],
+    });
+    // Same tight-scoped secret-read pattern as the main service — only the
+    // Aurora master secret is needed (no BetterAuth here).
+    migrateExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "PaperclipMigrateExecutionSecretsRead",
+        actions: ["secretsmanager:GetSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8-${env}-paperclip-db-credentials-*`,
+        ],
+      }),
+    );
+
+    const migrateLogGroup = new logs.LogGroup(this, "PaperclipMigrateLogs", {
+      logGroupName: `/isol8/${env}/paperclip-migrate`,
+      retention: logs.RetentionDays.TWO_WEEKS,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+    });
+
+    const migrateTaskDef = new ecs.FargateTaskDefinition(
+      this,
+      "PaperclipMigrateTaskDef",
+      {
+        family: `isol8-${env}-paperclip-migrate`,
+        cpu: 256,
+        memoryLimitMiB: 512,
+        executionRole: migrateExecutionRole,
+      },
+    );
+
+    migrateTaskDef.addContainer("migrate", {
+      image: ecs.ContainerImage.fromRegistry("paperclipai/paperclip:latest"),
+      logging: ecs.LogDrivers.awsLogs({
+        streamPrefix: "paperclip-migrate",
+        logGroup: migrateLogGroup,
+      }),
+      environment: {
+        PGHOST: props.paperclipDbCluster.clusterEndpoint.hostname,
+        PGPORT: "5432",
+        PGUSER: "paperclip_admin",
+        PGDATABASE: "paperclip",
+      },
+      secrets: {
+        PGPASSWORD: ecs.Secret.fromSecretsManager(dbCredsSecret, "password"),
+      },
+      // The upstream image is debian-based (node:lts-trixie-slim) and does
+      // NOT ship `psql`, so we apt-install postgresql-client at run time
+      // for the CREATE EXTENSION step. Drizzle owns the rest of the
+      // schema via its own migration runner.
+      //
+      // Same URL-encoding lesson as the main service: PGPASSWORD passes
+      // through encodeURIComponent before interpolation, since RDS
+      // passwords routinely contain `/`, `+`, `=`, `@`, `:`.
+      command: [
+        "/bin/sh",
+        "-c",
+        [
+          'PGPASSWORD_ENC=$(node -e "process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))")',
+          'export DATABASE_URL="postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}"',
+          "apt-get update && apt-get install -y --no-install-recommends postgresql-client",
+          'PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "CREATE EXTENSION IF NOT EXISTS vector;"',
+          "cd /app && pnpm --filter @paperclipai/db migrate",
+        ].join(" && "),
+      ],
+    });
+
+    this.migrateTaskDefinition = migrateTaskDef;
+
+    new cdk.CfnOutput(this, "PaperclipMigrateTaskDefArn", {
+      value: migrateTaskDef.taskDefinitionArn,
+      description:
+        "One-shot migrate task — run via `aws ecs run-task`. See apps/infra/paperclip/RUNBOOK.md.",
+      exportName: `isol8-${env}-paperclip-migrate-taskdef`,
     });
 
     // ─────────────────────────────────────────────────────────────────
