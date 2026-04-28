@@ -225,26 +225,30 @@ export class ContainerStack extends cdk.Stack {
     //
     // Initialized BEFORE the container task def so the image-selection
     // expression below can dereference it.
-    if (props.environment === "dev") {
-      const repo = new ecr.Repository(this, "OpenclawExtendedRepo", {
-        repositoryName: "isol8/openclaw-extended",
-        imageScanOnPush: true,
-        imageTagMutability: ecr.TagMutability.IMMUTABLE,
-        lifecycleRules: [
-          {
-            description: "Keep the most recent 30 images",
-            maxImageCount: 30,
-          },
-        ],
-        // The repo holds prod-deployed images even when the dev infra stack
-        // gets torn down for redeploy — RETAIN to avoid losing image history.
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-      });
-      this.openclawExtendedRepo = repo;
+    // The ECR repo `isol8/openclaw-extended` is account-scoped and holds
+    // images for both dev and prod. It outlives any individual stack — when
+    // we tear down container-stack to clean up state, the repo (and its
+    // image history) MUST survive. Originally CDK created it with
+    // `RemovalPolicy.RETAIN`, but that leaves an orphan that blocks later
+    // recreation: ECR rejects the create with "already exists" because the
+    // physical resource still exists outside any stack.
+    //
+    // Both dev and prod now treat the repo as an EXISTING resource via
+    // `fromRepositoryName`. Lifecycle rules, immutability, and image-scan
+    // settings are managed once at the AWS level (set on first creation,
+    // not by CDK). To recreate from scratch you'd need to delete the ECR
+    // repo + all images via the AWS CLI/console first.
+    this.openclawExtendedRepo = ecr.Repository.fromRepositoryName(
+      this,
+      "OpenclawExtendedRepo",
+      "isol8/openclaw-extended",
+    );
 
+    if (props.environment === "dev") {
       // OIDC role for the build-openclaw-image workflow. Scoped to this repo
       // so the existing isol8-dev-github-actions role (which only has
       // sts:AssumeRole on cdk-* roles) doesn't need broader ECR perms.
+      // Created in dev only (account-scoped role, single source of truth).
       const oidcProviderArn = `arn:aws:iam::${this.account}:oidc-provider/token.actions.githubusercontent.com`;
       const oidcProvider = iam.OpenIdConnectProvider.fromOpenIdConnectProviderArn(
         this,
@@ -271,14 +275,7 @@ export class ContainerStack extends cdk.Stack {
           resources: ["*"],
         }),
       );
-      repo.grantPullPush(builderRole);
-    } else {
-      // Prod (and any non-dev env) references the same repo by name.
-      this.openclawExtendedRepo = ecr.Repository.fromRepositoryName(
-        this,
-        "OpenclawExtendedRepo",
-        "isol8/openclaw-extended",
-      );
+      this.openclawExtendedRepo.grantPullPush(builderRole);
     }
 
     // Base OpenClaw task definition — the backend clones this per user,
