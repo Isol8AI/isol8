@@ -79,27 +79,120 @@ runner.
 - **After every `cdk deploy`** of `isol8-{env}-paperclip` that bumps the
   Paperclip image tag — a new release may include schema changes.
 
+## Safety net (when migrate is forgotten)
+
+If you skip the migrate step after a `cdk deploy` that bumped the Paperclip
+image, the new task definition lands on the service but the new image hits
+schema `N+1` against a database still at `N`. Paperclip's startup queries
+fail, `/api/health` returns 5xx, ECS detects the unhealthy task, the
+deployment circuit breaker (`circuitBreaker: { rollback: true }`) reverts
+the service to the previous task definition, and the old image keeps
+serving traffic.
+
+**How to spot this** when reviewing a deploy:
+
+```bash
+aws ecs describe-services \
+  --cluster <cluster-arn> \
+  --services isol8-<env>-paperclip-server \
+  --query 'services[0].deployments[*].{status:status,rollout:rolloutState,running:runningCount,failed:failureReason}' \
+  --profile isol8-admin --region us-east-1
+```
+
+A `rolloutState=FAILED` or `failureReason` mentioning circuit breaker is
+the signal.
+
+**Recovery:** run the migrate task (the Run Command section above), then
+force a new deployment so ECS re-applies the latest task definition:
+
+```bash
+aws ecs update-service \
+  --cluster <cluster-arn> \
+  --service isol8-<env>-paperclip-server \
+  --force-new-deployment \
+  --profile isol8-admin --region us-east-1
+```
+
 ## Failure Recovery
 
-If the task exits non-zero:
+### Common failure modes
 
-1. Read the task's container logs in
-   `/isol8/<env>/paperclip-migrate` (the `aws logs tail` command above).
-2. Common failure modes:
-   - **Stale schema lock from a previous failed run.** Connect to the
-     database via `psql` (from a separate one-shot ECS exec session, or
-     a bastion) and inspect `__drizzle_migrations`. The most recent row
-     with no `finished_at` is the partial state.
-   - **`vector` extension not available.** The Aurora cluster must be on
-     a Postgres version that supports `pg_vector`. The cluster is
-     provisioned with engine version pinned in `database-stack.ts`; a
-     downgrade would be unusual.
-   - **Network — task can't reach Aurora.** Verify the migrate task was
-     launched with the Paperclip task SG, and that the `Aurora ←
-     Paperclip` ingress rule exists on the Aurora SG.
-3. Re-run the same `aws ecs run-task` command — Drizzle migrations are
-   idempotent for already-applied steps, so a partial-success retry is
-   safe.
+**1. Stale Drizzle lock from a crashed prior run**
+
+If the migrate task was force-stopped or crashed mid-transaction, Drizzle
+may leave a stale row in `__drizzle_migrations` with `finished_at IS NULL`.
+Postgres rolled back the SQL changes (each file is in a transaction), but
+the lock-tracking row may still be present.
+
+Diagnose:
+
+```sql
+SELECT id, hash, created_at, finished_at
+FROM __drizzle_migrations
+WHERE finished_at IS NULL
+ORDER BY created_at DESC
+LIMIT 5;
+```
+
+If a row exists with `finished_at IS NULL`, recover with:
+
+```sql
+DELETE FROM __drizzle_migrations WHERE finished_at IS NULL;
+```
+
+Then re-run the migrate task — Drizzle will pick up from the last
+fully-committed migration.
+
+**2. Mid-run cancellation**
+
+Drizzle wraps each migration file in a single Postgres transaction. A
+cancelled run leaves the schema at the last fully-committed file boundary;
+no partial DDL is applied. Re-running the migrate task picks up at the
+next unapplied file.
+
+If the cancellation happened mid-multi-file run, you may also see Mode 1
+(stale `finished_at IS NULL` row) — apply that recovery first.
+
+**3. Lock contention from concurrent runs**
+
+Drizzle takes a Postgres advisory lock at the start of each migrate run.
+If two operators kick off `run-task` near-simultaneously, the second run
+blocks until the first finishes (or its connection drops). This is safe
+— Drizzle won't apply the same migration twice — but the second run's
+log will show "waiting for advisory lock" until the first completes.
+
+Avoid by checking for an in-flight migrate task before kicking off a new
+one. Note: there is no ECS service for the migrate task, so list standalone
+tasks via `--family`:
+
+```bash
+aws ecs list-tasks \
+  --cluster <cluster-arn> \
+  --family isol8-<env>-paperclip-migrate \
+  --desired-status RUNNING \
+  --profile isol8-admin --region us-east-1
+```
+
+If `taskArns` is non-empty, wait or use `aws ecs describe-tasks` on the
+returned ARN to see how far along it is.
+
+### General checklist after a failed run
+
+1. Did the task stop cleanly? Check `lastStatus == STOPPED` and
+   `containers[0].exitCode == 0`.
+2. If `exitCode != 0` or `stoppedReason` is anything other than
+   `Essential container in task exited`, pull the CloudWatch logs
+   (`aws logs tail /isol8/<env>/paperclip-migrate`) and read the last
+   ~50 lines.
+3. Common log patterns:
+   - `connection terminated` / `password authentication failed` — secret
+     rotation issue; check the `paperclip_db_credentials` secret.
+   - `extension "vector" is not available` — wrong Aurora engine version;
+     bug in the cluster definition, not a transient failure.
+   - `relation already exists` after a partial-apply — see Mode 1.
+4. Drizzle migrations are idempotent for already-applied steps. Once
+   you've cleared any stale lock row, re-running the same
+   `aws ecs run-task` is always safe.
 
 ## Why Manual?
 

@@ -411,6 +411,11 @@ export class PaperclipStack extends cdk.Stack {
       // Same URL-encoding lesson as the main service: PGPASSWORD passes
       // through encodeURIComponent before interpolation, since RDS
       // passwords routinely contain `/`, `+`, `=`, `@`, `:`.
+      //
+      // TODO: bake postgresql-client into a custom migrate image extending
+      // paperclipai/paperclip:latest so we don't apt-get-install on every run.
+      // Acceptable v1 trade-off given low run frequency (once per deploy);
+      // reconsider once schema-change cadence justifies the custom image.
       command: [
         "/bin/sh",
         "-c",
