@@ -6,6 +6,7 @@ import { ContainerStack } from "./stacks/container-stack";
 import { DatabaseStack } from "./stacks/database-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
+import { PaperclipStack } from "./stacks/paperclip-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 /**
@@ -112,6 +113,24 @@ export class LocalStage extends cdk.Stage {
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
     });
+
+    // PaperclipStack — runs upstream `paperclipai/paperclip:latest` as a
+    // single Fargate service. Reachable via Cloud Map under the existing
+    // private namespace owned by ContainerStack.
+    const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
+      stackName: `isol8-${env}-paperclip`,
+      environment: env,
+      vpc: network.vpc,
+      cluster: container.cluster,
+      cloudMapNamespace: container.cloudMapNamespace,
+      paperclipDbCluster: database.paperclipDbCluster,
+      paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
+      paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
+    });
+    paperclip.addDependency(database);
+    paperclip.addDependency(auth);
+    paperclip.addDependency(container);
+    paperclip.addDependency(network);
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     new ObservabilityStack(this, `isol8-${env}-observability`, {

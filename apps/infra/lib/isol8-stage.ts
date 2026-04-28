@@ -7,6 +7,7 @@ import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
+import { PaperclipStack } from "./stacks/paperclip-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
@@ -109,6 +110,25 @@ export class Isol8Stage extends cdk.Stage {
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
     });
+
+    // PaperclipStack — runs upstream `paperclipai/paperclip:latest` as a
+    // single Fargate service. Reachable from FastAPI via Cloud Map at
+    // `http://paperclip.isol8-${env}.local:3100/`. T6 wires the public
+    // host route on the existing ALB; T14 wires the FastAPI proxy router.
+    const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
+      stackName: `isol8-${env}-paperclip`,
+      environment: env,
+      vpc: network.vpc,
+      cluster: container.cluster,
+      cloudMapNamespace: container.cloudMapNamespace,
+      paperclipDbCluster: database.paperclipDbCluster,
+      paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
+      paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
+    });
+    paperclip.addDependency(database);
+    paperclip.addDependency(auth);
+    paperclip.addDependency(container);
+    paperclip.addDependency(network);
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     new ObservabilityStack(this, `isol8-${env}-observability`, {
