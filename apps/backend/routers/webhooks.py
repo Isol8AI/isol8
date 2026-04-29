@@ -44,6 +44,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
+from core.services.update_service import PAPERCLIP_RETRY_KIND as _PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -105,18 +106,13 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
 # constructing per-request keeps the wiring trivial to override in tests.
 # T14/T15 (proxy router) will introduce a long-lived shared client.
 
-_PAPERCLIP_RETRY_KIND = "paperclip_provision"
-"""``update_type`` value for pending-updates rows that drive Paperclip
-retry from T13's cleanup cron. The ``changes`` payload distinguishes
-the operation:
-
-    {"op": "provision_org",     "org_id": ..., "owner_user_id": ..., "owner_email": ...}
-    {"op": "provision_member",  "org_id": ..., "user_id": ..., "email": ..., "owner_email": ...}
-    {"op": "disable",           "user_id": ...}
-
-T13 reads this back and re-calls the matching PaperclipProvisioning
-entry-point.
-"""
+# The canonical home for ``_PAPERCLIP_RETRY_KIND`` is
+# ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
+# webhook router (which enqueues retries) and the scheduled worker
+# (which consumes them) read the same constant — keeping them in
+# lockstep is the only way the retry cron actually picks up the
+# rows we wrote. The import lives at the top of this file alongside
+# the other ``core.*`` imports.
 
 
 async def _get_paperclip_provisioning():
@@ -255,15 +251,59 @@ def _extract_org_member_email(data: dict) -> Optional[str]:
     return None
 
 
+def _extract_primary_email(data: dict) -> Optional[str]:
+    """Pull a Clerk user's primary email from a ``user.*`` payload.
+
+    Clerk's ``user.created`` / ``user.updated`` payload shape:
+
+        {
+          "data": {
+            "id": "user_xxx",
+            "email_addresses": [
+              {"id": "idn_xxx", "email_address": "u@example.com", ...},
+              ...
+            ],
+            "primary_email_address_id": "idn_xxx",
+            ...
+          }
+        }
+
+    We resolve the entry whose ``id`` matches ``primary_email_address_id``;
+    if that lookup fails (older payload shape, or Clerk omitted the
+    pointer) we fall back to the first email in the array. Returns
+    ``None`` if no usable email is present.
+    """
+    primary_id = data.get("primary_email_address_id")
+    addresses = data.get("email_addresses") or []
+    if primary_id:
+        for entry in addresses:
+            if isinstance(entry, dict) and entry.get("id") == primary_id:
+                addr = entry.get("email_address")
+                if addr:
+                    return addr
+    # Fallback: first email.
+    for entry in addresses:
+        if isinstance(entry, dict):
+            addr = entry.get("email_address")
+            if addr:
+                return addr
+    return None
+
+
 async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -> Optional[str]:
     """Pull the org owner's email so ``provision_member`` can sign them in.
 
     For ``organizationMembership.created`` Clerk's payload includes
     ``data.organization.created_by`` (the owner's user_id), but NOT the
-    owner's email. We don't need to call Clerk's admin API today — the
-    owner email is also persisted on the existing ``users`` row by the
-    ``user.created`` handler. T12 keeps the dependency-graph clean by
-    looking it up via that repo when needed.
+    owner's email. Primary path: read from the ``users`` repo where
+    ``user.created`` (below) persisted it.
+
+    Fallback path: if the row exists without an ``email`` column (rows
+    provisioned before the email column was added — see migration note
+    in the user_repo docstring), or if no row exists at all, hit
+    Clerk's admin API. This makes the rebuild deploy safe for users
+    who signed up under the old schema; once they re-trigger any
+    user.* webhook the row will be backfilled.
     """
     if not fallback_user_id:
         return None
@@ -275,6 +315,29 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
             return row["email"]
     except Exception:
         logger.exception("owner email lookup failed for org=%s", org_id)
+
+    # Fallback: pull from Clerk admin API. Local import keeps the
+    # cold-start light when no Paperclip-bound webhook fires (Clerk
+    # admin client builds an httpx client per call).
+    try:
+        from core.services import clerk_admin
+
+        clerk_user = await clerk_admin.get_user(fallback_user_id)
+        if clerk_user:
+            email = _extract_primary_email(clerk_user)
+            if email:
+                logger.info(
+                    "owner email lookup hit Clerk-admin fallback for user=%s org=%s",
+                    fallback_user_id,
+                    org_id,
+                )
+                return email
+    except Exception:
+        logger.exception(
+            "Clerk-admin fallback failed for user=%s org=%s",
+            fallback_user_id,
+            org_id,
+        )
     return None
 
 
@@ -531,6 +594,34 @@ async def handle_clerk_webhook(request: Request):
     body = await request.body()
     _verify_svix_signature(body, dict(request.headers))
 
+    # Idempotency dedupe — svix will retry on any non-2xx and on its own
+    # at-least-once delivery insurance. Without this, two retries from
+    # svix on a flaky webhook would each call ``provision_org``, the
+    # second of which fails with email-collision (409 from Better Auth,
+    # non-retryable) and marks the row failed forever. Keyed on svix-id
+    # which is unique per genuine Clerk event, identical across retries.
+    svix_id = request.headers.get("svix-id")
+    if svix_id:
+        try:
+            from core.services.webhook_dedup import (
+                WebhookDedupResult,
+                record_event_or_skip,
+            )
+
+            dedup = await record_event_or_skip(svix_id, source="clerk")
+            if dedup is WebhookDedupResult.ALREADY_SEEN:
+                put_metric("clerk.webhook.dedup_skipped")
+                logger.info("clerk webhook duplicate suppressed: %s", svix_id)
+                return {"status": "duplicate"}
+        except Exception:
+            # Dedupe is best-effort — a misconfigured WEBHOOK_DEDUP_TABLE
+            # shouldn't black-hole all Clerk webhooks. Log and continue
+            # so genuine traffic still flows; the worst case (DDB
+            # outage) reverts to the pre-dedupe behavior of double-handling
+            # a retry, which the per-event idempotency in provision_*
+            # already mostly tolerates.
+            logger.exception("clerk webhook dedupe check failed; processing anyway")
+
     try:
         payload = json.loads(body)
     except Exception:
@@ -544,20 +635,33 @@ async def handle_clerk_webhook(request: Request):
         user_id = data.get("id", "")
         logger.info("Clerk user.created webhook received for %s", user_id)
 
+        # Persist user_id + primary email into the users table. The email
+        # column is what ``_lookup_owner_email`` (and the Paperclip
+        # provisioning chain) reads to sign the org owner in to Better
+        # Auth — without this, organization.created webhooks never find
+        # an email and would loop on retries forever. The /users/sync
+        # path also calls user_repo.put but only knows the user_id;
+        # the webhook is the authoritative source of email.
+        if user_id:
+            email = _extract_primary_email(data)
+            try:
+                from core.repositories import user_repo
+
+                await user_repo.put(user_id, email=email)
+            except Exception:
+                # Persistence is non-fatal here — the /users/sync REST
+                # path will write the row again the first time the user
+                # opens the app, and downstream paperclip handlers fall
+                # back to Clerk admin API. Logging is enough.
+                logger.exception("user_repo.put failed for user.created %s", user_id)
+
     elif event_type == "user.updated":
         user_id = data.get("id", "")
         logger.info("Clerk user.updated webhook received for %s", user_id)
 
         # Sync the primary email to the user's Stripe Customer if one exists.
         # Catches receipt / invoice / trial-end emails going to a stale address.
-        new_email = next(
-            (
-                e["email_address"]
-                for e in data.get("email_addresses") or []
-                if e.get("id") == data.get("primary_email_address_id")
-            ),
-            None,
-        )
+        new_email = _extract_primary_email(data)
         if new_email and user_id:
             account = await billing_repo.get_by_owner_id(user_id)
             if account and account.get("stripe_customer_id"):

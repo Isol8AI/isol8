@@ -201,6 +201,23 @@ describe("DatabaseStack — paperclip-companies table", () => {
     });
   });
 
+  test("paperclip-companies has by-org-id GSI with ALL projection", () => {
+    // get_org_company_id, count_org_members, _find_org_owner, and the
+    // organization.deleted webhook sweep all query this GSI. Projection
+    // must be ALL because the org-owner lookup needs full row data
+    // (paperclip_password_encrypted etc).
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-paperclip-companies",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({
+          IndexName: "by-org-id",
+          KeySchema: [{ AttributeName: "org_id", KeyType: "HASH" }],
+          Projection: Match.objectLike({ ProjectionType: "ALL" }),
+        }),
+      ]),
+    });
+  });
+
   test("paperclip-companies uses customer-managed KMS encryption (matches stack posture)", () => {
     template.hasResourceProperties("AWS::DynamoDB::Table", {
       TableName: "isol8-dev-paperclip-companies",

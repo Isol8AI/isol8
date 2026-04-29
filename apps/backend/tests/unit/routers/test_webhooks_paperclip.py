@@ -355,6 +355,197 @@ async def test_user_deleted_calls_disable(async_client, monkeypatch):
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# user.created -> persists email into users repo
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_user_created_persists_email(async_client, monkeypatch):
+    """``user.created`` should extract the primary email from the Clerk
+    payload and persist it via ``user_repo.put`` so subsequent
+    organization.created webhooks can resolve the owner's email
+    without round-tripping Clerk admin.
+    """
+    _bypass_svix(monkeypatch)
+
+    captured_put = AsyncMock(return_value={"user_id": "user_new", "email": "new@example.test"})
+
+    payload = {
+        "type": "user.created",
+        "data": {
+            "id": "user_new",
+            "email_addresses": [
+                {"id": "ea_1", "email_address": "alt@example.test"},
+                {"id": "ea_2", "email_address": "new@example.test"},
+            ],
+            "primary_email_address_id": "ea_2",
+        },
+    }
+
+    with patch("core.repositories.user_repo.put", new=captured_put):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    captured_put.assert_awaited_once()
+    args, kwargs = captured_put.call_args
+    # ``put`` accepts a positional user_id + keyword email.
+    assert args[0] == "user_new"
+    assert kwargs.get("email") == "new@example.test"
+
+
+@pytest.mark.asyncio
+async def test_user_created_persist_failure_is_non_fatal(async_client, monkeypatch):
+    """A DDB hiccup on user_repo.put must NOT bubble out as a 5xx —
+    Clerk would retry the same event and we'd never make progress."""
+    _bypass_svix(monkeypatch)
+
+    failing_put = AsyncMock(side_effect=RuntimeError("ddb-down"))
+
+    payload = {
+        "type": "user.created",
+        "data": {
+            "id": "user_new",
+            "email_addresses": [{"id": "ea_1", "email_address": "x@y.test"}],
+            "primary_email_address_id": "ea_1",
+        },
+    }
+
+    with patch("core.repositories.user_repo.put", new=failing_put):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    failing_put.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------
+# Clerk webhook svix dedupe (I1)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
+    """Two retries from svix on the same Clerk event must NOT both
+    drive ``provision_org`` — the second 409s with email-collision and
+    marks the row failed forever. Verify the second delivery returns
+    early without invoking the provisioning factory.
+    """
+    _bypass_svix(monkeypatch)
+
+    # First call: dedupe says "RECORDED", real handler runs.
+    # Second call: dedupe says "ALREADY_SEEN", handler must skip.
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    dedupe_results = [WebhookDedupResult.RECORDED, WebhookDedupResult.ALREADY_SEEN]
+
+    async def _fake_dedupe(event_id, *, source):
+        assert source == "clerk"
+        return dedupe_results.pop(0)
+
+    monkeypatch.setattr(
+        "core.services.webhook_dedup.record_event_or_skip",
+        _fake_dedupe,
+    )
+
+    mock_provisioning = AsyncMock()
+    mock_provisioning.provision_org = AsyncMock(return_value=None)
+    factory = AsyncMock(return_value=mock_provisioning)
+
+    payload = {
+        "type": "organization.created",
+        "data": {"id": "org_acme", "created_by": "user_owner"},
+    }
+
+    with (
+        patch("routers.webhooks._get_paperclip_provisioning", new=factory),
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
+        ),
+    ):
+        resp1 = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+        resp2 = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp1.status_code == 200
+    assert resp2.status_code == 200
+    # Provisioning ran exactly once across both retries.
+    mock_provisioning.provision_org.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------
+# _lookup_owner_email Clerk-admin fallback (C2)
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_owner_email_falls_back_to_clerk_admin(async_client, monkeypatch):
+    """If the users row has no email column (e.g. provisioned before
+    the email column was added), ``_lookup_owner_email`` should pull
+    from Clerk's admin API rather than enqueueing a permanent retry.
+    """
+    _bypass_svix(monkeypatch)
+
+    # Users repo returns a row with NO email — simulates a pre-fix row.
+    user_get = AsyncMock(return_value={"user_id": "user_owner"})
+
+    # Clerk admin returns a payload with the primary email populated.
+    clerk_get = AsyncMock(
+        return_value={
+            "id": "user_owner",
+            "email_addresses": [
+                {"id": "ea_1", "email_address": "owner@acme.test"},
+            ],
+            "primary_email_address_id": "ea_1",
+        }
+    )
+
+    mock_provisioning = AsyncMock()
+    mock_provisioning.provision_org = AsyncMock(return_value=None)
+
+    payload = {
+        "type": "organization.created",
+        "data": {"id": "org_acme", "created_by": "user_owner"},
+    }
+
+    with (
+        patch("core.repositories.user_repo.get", new=user_get),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    clerk_get.assert_awaited_once_with("user_owner")
+    mock_provisioning.provision_org.assert_awaited_once_with(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="owner@acme.test",
+    )
+
+
 @pytest.mark.asyncio
 async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypatch):
     """``customer.subscription.deleted`` should call

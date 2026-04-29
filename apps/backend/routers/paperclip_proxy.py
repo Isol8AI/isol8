@@ -77,7 +77,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSoc
 from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
-from core.auth import AuthContext, _decode_token, _extract_org_claims, get_current_user
+from core.auth import AuthContext, _decode_token, get_current_user
 from core.config import settings
 from core.encryption import decrypt
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -559,14 +559,16 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         await websocket.close(code=4400, reason="Email claim missing")
         return
 
-    # Resolve the owner the same way ``resolve_owner_id`` does for the
-    # HTTP path, so a user in an org context hits their org's row.
-    org_claims = _extract_org_claims(payload)
-    owner_id = org_claims["org_id"] or user_id
-
     # ---- Step 2: Look up Paperclip company + decrypt password ----
+    # The paperclip-companies table is keyed per-USER (not per-org): every
+    # member, including org owners, gets their own row with their own
+    # Better Auth password. The HTTP path keys lookup on
+    # ``auth.user_id`` for the same reason. An earlier draft of this WS
+    # handler tried to resolve an ``owner_id`` from the org claim and
+    # query that — that key never exists in the table, so any user in an
+    # org context was getting closed with 4503 on every WS upgrade.
     repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
-    company = await repo.get(owner_id)
+    company = await repo.get(user_id)
     if company is None or company.status != "active":
         await websocket.close(code=4503, reason="Paperclip not provisioned")
         return
@@ -575,8 +577,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         password = decrypt(company.paperclip_password_encrypted)
     except ValueError as e:
         logger.error(
-            "paperclip_proxy_ws: failed to decrypt password for owner %s: %s",
-            owner_id,
+            "paperclip_proxy_ws: failed to decrypt password for user %s: %s",
+            user_id,
             e,
         )
         await websocket.close(code=4500, reason="Credential decrypt failed")
@@ -595,8 +597,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
             signin = await admin.sign_in_user(email=email, password=password)
         except PaperclipApiError as e:
             logger.exception(
-                "paperclip_proxy_ws: sign_in failed for owner=%s status=%s body=%s",
-                owner_id,
+                "paperclip_proxy_ws: sign_in failed for user=%s status=%s body=%s",
+                user_id,
                 e.status_code,
                 e.body,
             )
@@ -606,8 +608,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         session_token = signin.get("token") or ""
         if not session_token:
             logger.error(
-                "paperclip_proxy_ws: Better Auth response had no token for owner %s",
-                owner_id,
+                "paperclip_proxy_ws: Better Auth response had no token for user %s",
+                user_id,
             )
             await websocket.close(code=4502, reason="Paperclip auth response malformed")
             return
@@ -659,8 +661,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
                     return
                 except Exception as e:  # noqa: BLE001 - log + bail
                     logger.warning(
-                        "paperclip_proxy_ws: client→upstream relay error owner=%s: %s",
-                        owner_id,
+                        "paperclip_proxy_ws: client→upstream relay error user=%s: %s",
+                        user_id,
                         e,
                     )
 
@@ -677,8 +679,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
                     return
                 except Exception as e:  # noqa: BLE001 - log + bail
                     logger.warning(
-                        "paperclip_proxy_ws: upstream→client relay error owner=%s: %s",
-                        owner_id,
+                        "paperclip_proxy_ws: upstream→client relay error user=%s: %s",
+                        user_id,
                         e,
                     )
 
@@ -689,8 +691,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
             )
     except Exception as e:  # noqa: BLE001 - top-level guard
         logger.exception(
-            "paperclip_proxy_ws: connection failed owner=%s path=%s: %s",
-            owner_id,
+            "paperclip_proxy_ws: connection failed user=%s path=%s: %s",
+            user_id,
             path,
             e,
         )

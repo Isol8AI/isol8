@@ -253,6 +253,15 @@ export class DatabaseStack extends cdk.Stack {
       sortKey: { name: "scheduled_purge_at", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.KEYS_ONLY,
     });
+    // GSI for org-scoped lookups: get_org_company_id, count_org_members,
+    // _find_org_owner, and the organization.deleted webhook sweep all
+    // partition by org_id. Projection ALL because the org-owner lookup
+    // and company_id resolution both consume full row data, not just keys.
+    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
+      indexName: "by-org-id",
+      partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
 
     new cdk.CfnOutput(this, "CreditsTableName", {
       value: this.creditsTable.tableName,

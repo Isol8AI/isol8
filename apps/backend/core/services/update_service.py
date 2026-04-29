@@ -24,8 +24,17 @@ from core.services.config_patcher import patch_openclaw_config
 
 logger = logging.getLogger(__name__)
 
-# Paperclip update_type marker -- must match T12's webhook handler.
-_PAPERCLIP_RETRY_KIND = "paperclip_provision"
+# Canonical Paperclip update_type marker. Single source of truth: both
+# ``routers/webhooks.py`` (which enqueues retries) and this module
+# (which consumes them) import the same constant. If this string ever
+# changes, the retry pass below would silently stop picking up rows
+# the webhook is still writing, so keeping it in one file forever is
+# the right amount of paranoia. Public name (no underscore) since both
+# the webhook router and tests import it.
+PAPERCLIP_RETRY_KIND = "paperclip_provision"
+# Backwards-compat alias for any callers still referencing the old
+# private name. Kept until the next cleanup pass.
+_PAPERCLIP_RETRY_KIND = PAPERCLIP_RETRY_KIND
 
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60

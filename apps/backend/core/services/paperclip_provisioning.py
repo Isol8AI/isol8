@@ -413,6 +413,17 @@ class PaperclipProvisioning:
         member. (The previous implementation incorrectly archived
         the company any time the owner row was purged, even with
         other members still present.)
+
+        GSI consistency caveat: ``count_org_members`` reads from the
+        ``by-org-id`` GSI which is eventually consistent with the row
+        we just deleted. In edge cases the count may be stale (off by
+        one) — for example, the GSI may briefly still see the just-
+        deleted row, causing us to skip ``disable_company`` when this
+        was actually the last member. Acceptable for v1: the next
+        purge run picks up any stranded company (the hard-delete of
+        the local row already happened, so the user's local mapping
+        is gone; the company itself living another day in Paperclip
+        is harmless until the cron sees it again).
         """
         existing = await self._repo.get(user_id)
         if existing is None:
