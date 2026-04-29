@@ -398,9 +398,12 @@ async def run_scheduled_worker() -> None:
                 logger.exception("paperclip_provision_retry_pass crashed")
 
             # T13: Paperclip purge pass — runs once per day. The first
-            # iteration after process start always runs (last_purge_pass_at=0).
+            # iteration after process start always runs (last_purge_pass_at=0.0
+            # is the sentinel; time.monotonic() is process uptime, which on a
+            # fresh container is small so the delta-check alone wouldn't
+            # trigger).
             now = time.monotonic()
-            if now - last_purge_pass_at >= _PURGE_PASS_INTERVAL_SECONDS:
+            if last_purge_pass_at == 0.0 or now - last_purge_pass_at >= _PURGE_PASS_INTERVAL_SECONDS:
                 try:
                     await _paperclip_purge_pass()
                 except Exception:
