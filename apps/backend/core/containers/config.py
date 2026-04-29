@@ -423,6 +423,13 @@ def build_openclaw_config_dict(
         "agents": {
             "defaults": {
                 "model": default_model,
+                # v2026.4.22's zod-schema.agent-defaults.ts requires these
+                # three fields (no .optional()). Empty objects validate
+                # because every nested field IS optional. Required for
+                # config validation; behavior unchanged.
+                "embeddedHarness": {},
+                "contextLimits": {},
+                "heartbeat": {},
                 "workspace": "/home/node/.openclaw/workspaces",
                 "memorySearch": {
                     "enabled": True,
@@ -515,41 +522,26 @@ def build_openclaw_config_dict(
             "entries": plugin_entries,
         },
         # Channels: we ship every supported provider as `enabled: true`
-        # for ALL tiers so the plugin is loaded into the gateway at
-        # startup. OpenClaw's reload plan treats `channels.{id}` as a
-        # hot-reload prefix ONLY when the channel plugin is already
-        # running — on the very first enable of a never-before-loaded
-        # channel it escalates to a full gateway restart (~6 min on
-        # Fargate). Shipping the plugins hot at provision time means
-        # every subsequent token/account change is a fast per-channel
+        # so the plugin is loaded into the gateway at startup.
+        # OpenClaw's reload plan treats `channels.{id}` as a hot-reload
+        # prefix ONLY when the channel plugin is already running — on
+        # the very first enable of a never-before-loaded channel it
+        # escalates to a full gateway restart (~6 min on Fargate).
+        # Shipping the plugins hot at provision time means every
+        # subsequent token/account change is a fast per-channel
         # restart, not a gateway restart. Plugins with no `accounts`
         # entries sit idle safely.
-        #
-        # Free-tier UI is gated client-side (AgentsPanel hides the
-        # Channels tab when planTier === "free"), so idle plugins in
-        # free containers never receive a token or serve traffic. This
-        # also makes the tier-upgrade path work without re-provisioning:
-        # upgrading free → paid just unlocks the UI; the plugins are
-        # already loaded from the initial scaffold.
-        # Channel plugins disabled at scaffold time. Originally we shipped
-        # them all `enabled: true` for hot-reload of tier-upgrade flows;
-        # post-flat-fee that path is gone, and on OpenClaw v2026.4.25 a
-        # no-account `enabled: true` channel plugin blocks
-        # `startGatewaySidecars()` from completing — `getReadiness()` then
-        # blocks every HTTP request indefinitely (see deep dive in dev
-        # 2026-04-28). Channels are re-enabled per-provider in
-        # `channel_link_service.py` when the user actually pairs one.
         "channels": {
             "telegram": {
-                "enabled": False,
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
             "discord": {
-                "enabled": False,
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
             "slack": {
-                "enabled": False,
+                "enabled": True,
                 "dmPolicy": "pairing",
             },
         },
