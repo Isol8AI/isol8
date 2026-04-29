@@ -191,7 +191,7 @@ def _build_paperclip_provisioning():
         base_url=settings.PAPERCLIP_INTERNAL_URL,
         timeout=15.0,
     )
-    admin = PaperclipAdminClient(http_client=http, admin_token=settings.PAPERCLIP_ADMIN_TOKEN)
+    admin = PaperclipAdminClient(http_client=http)
     repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
     return provisioning, http, repo

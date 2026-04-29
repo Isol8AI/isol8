@@ -357,7 +357,7 @@ async def proxy(
         base_url=settings.PAPERCLIP_INTERNAL_URL,
         timeout=30.0,
     ) as client:
-        admin = PaperclipAdminClient(http_client=client, admin_token=settings.PAPERCLIP_ADMIN_TOKEN)
+        admin = PaperclipAdminClient(http_client=client)
         try:
             signin = await admin.sign_in_user(email=email, password=password)
         except PaperclipApiError as e:
@@ -589,10 +589,7 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
         base_url=settings.PAPERCLIP_INTERNAL_URL,
         timeout=15.0,
     ) as client:
-        admin = PaperclipAdminClient(
-            http_client=client,
-            admin_token=settings.PAPERCLIP_ADMIN_TOKEN,
-        )
+        admin = PaperclipAdminClient(http_client=client)
         try:
             signin = await admin.sign_in_user(email=email, password=password)
         except PaperclipApiError as e:

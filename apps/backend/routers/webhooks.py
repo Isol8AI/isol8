@@ -138,7 +138,7 @@ async def _get_paperclip_provisioning():
         base_url=settings.PAPERCLIP_INTERNAL_URL,
         timeout=15.0,
     )
-    admin = PaperclipAdminClient(http_client=http, admin_token=settings.PAPERCLIP_ADMIN_TOKEN)
+    admin = PaperclipAdminClient(http_client=http)
     repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
     # Expose the underlying client for cleanup. Tests that patch
@@ -295,15 +295,10 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
 
     For ``organizationMembership.created`` Clerk's payload includes
     ``data.organization.created_by`` (the owner's user_id), but NOT the
-    owner's email. Primary path: read from the ``users`` repo where
-    ``user.created`` (below) persisted it.
-
-    Fallback path: if the row exists without an ``email`` column (rows
-    provisioned before the email column was added — see migration note
-    in the user_repo docstring), or if no row exists at all, hit
-    Clerk's admin API. This makes the rebuild deploy safe for users
-    who signed up under the old schema; once they re-trigger any
-    user.* webhook the row will be backfilled.
+    owner's email. We read it from the ``users`` repo where the
+    ``user.created`` webhook persisted it. If the row is missing or
+    lacks an email, return None — the caller's existing retry path
+    will re-drive once the row is backfilled.
     """
     if not fallback_user_id:
         return None
@@ -316,28 +311,6 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
     except Exception:
         logger.exception("owner email lookup failed for org=%s", org_id)
 
-    # Fallback: pull from Clerk admin API. Local import keeps the
-    # cold-start light when no Paperclip-bound webhook fires (Clerk
-    # admin client builds an httpx client per call).
-    try:
-        from core.services import clerk_admin
-
-        clerk_user = await clerk_admin.get_user(fallback_user_id)
-        if clerk_user:
-            email = _extract_primary_email(clerk_user)
-            if email:
-                logger.info(
-                    "owner email lookup hit Clerk-admin fallback for user=%s org=%s",
-                    fallback_user_id,
-                    org_id,
-                )
-                return email
-    except Exception:
-        logger.exception(
-            "Clerk-admin fallback failed for user=%s org=%s",
-            fallback_user_id,
-            org_id,
-        )
     return None
 
 

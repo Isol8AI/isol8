@@ -21,7 +21,7 @@ from core.services.paperclip_admin_client import (
 def _make_client(handler: Callable[[httpx.Request], httpx.Response]) -> PaperclipAdminClient:
     transport = httpx.MockTransport(handler)
     http = httpx.AsyncClient(transport=transport, base_url="http://paperclip.test")
-    return PaperclipAdminClient(http_client=http, admin_token="admin-test-key")
+    return PaperclipAdminClient(http_client=http)
 
 
 @pytest.fixture
@@ -44,12 +44,13 @@ async def client_factory():
         await h.aclose()
 
 
-async def test_create_company_sends_admin_bearer_and_idempotency_key(client_factory):
-    """When no session_token is supplied, fall back to the admin Bearer.
+async def test_create_company_sends_session_token_and_idempotency_key(client_factory):
+    """``create_company`` carries the org-owner's session token as
+    Bearer + forwards the caller-supplied ``Idempotency-Key`` header.
 
-    (For real provisioning T11 will pass session_token, but this
-    proves the fallback path still works for instance-admin
-    scenarios such as listing companies in admin tooling.)
+    This is the production path: T11 signs the org-owner up via
+    Better Auth and passes the resulting session token here so the
+    company gets owner-membership for the right user.
     """
     captured: dict = {}
 
@@ -62,11 +63,12 @@ async def test_create_company_sends_admin_bearer_and_idempotency_key(client_fact
 
     client = client_factory(handler)
     company = await client.create_company(
+        session_token="sess_owner",
         name="u@example.com",
         description="provisioned by Isol8",
         idempotency_key="user_123",
     )
-    assert captured["auth"] == "Bearer admin-test-key"
+    assert captured["auth"] == "Bearer sess_owner"
     assert captured["idem"] == "user_123"
     body = _json.loads(captured["body"])
     assert body["name"] == "u@example.com"
@@ -77,35 +79,13 @@ async def test_create_company_sends_admin_bearer_and_idempotency_key(client_fact
     assert company["id"] == "co_abc"
 
 
-async def test_create_company_uses_session_token_when_provided(client_factory):
-    """When ``session_token`` is supplied, it overrides the admin Bearer.
-
-    This is the production path: T11 signs the org-owner up via
-    Better Auth and passes the resulting session token here so the
-    company gets owner-membership for the right user (rather than
-    the instance admin).
-    """
-    captured: dict = {}
-
-    def handler(req: httpx.Request) -> httpx.Response:
-        captured["auth"] = req.headers.get("authorization")
-        return httpx.Response(201, json={"id": "co_abc"})
-
-    client = client_factory(handler)
-    await client.create_company(
-        name="acme.example",
-        session_token="user-session-xyz",
-    )
-    assert captured["auth"] == "Bearer user-session-xyz"
-
-
 async def test_5xx_raises_paperclip_api_error(client_factory):
     def handler(req: httpx.Request) -> httpx.Response:
         return httpx.Response(503, json={"error": "down"})
 
     client = client_factory(handler)
     with pytest.raises(PaperclipApiError) as exc:
-        await client.create_company(name="x")
+        await client.create_company(session_token="sess", name="x")
     assert exc.value.status_code == 503
 
 
@@ -115,7 +95,7 @@ async def test_4xx_raises_paperclip_api_error(client_factory):
 
     client = client_factory(handler)
     with pytest.raises(PaperclipApiError) as exc:
-        await client.create_company(name="")
+        await client.create_company(session_token="sess", name="")
     assert exc.value.status_code == 400
 
 
@@ -163,6 +143,7 @@ async def test_create_agent_api_key_returns_token(client_factory):
 
     client = client_factory(handler)
     result = await client.create_agent_api_key(
+        session_token="sess_owner",
         agent_id="agent_42",
         name="primary",
     )
@@ -186,6 +167,7 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
 
     client = client_factory(handler)
     await client.create_agent(
+        session_token="sess_owner",
         company_id="co_abc",
         name="Main Agent",
         role="ceo",
@@ -215,7 +197,7 @@ async def test_delete_company_swallows_404(client_factory):
 
     client = client_factory(handler)
     # Should NOT raise.
-    await client.delete_company(company_id="co_gone")
+    await client.delete_company(session_token="sess_owner", company_id="co_gone")
 
 
 async def test_disable_company_sends_archive_post(client_factory):
@@ -231,7 +213,7 @@ async def test_disable_company_sends_archive_post(client_factory):
         return httpx.Response(200, json={"id": "co_abc", "status": "archived"})
 
     client = client_factory(handler)
-    await client.disable_company(company_id="co_abc")
+    await client.disable_company(session_token="sess_owner", company_id="co_abc")
     assert captured["method"] == "POST"
     assert "/archive" in captured["url"]
 
@@ -335,8 +317,7 @@ async def test_create_company_as_user_uses_session_token_in_authorization(
     client_factory,
 ):
     """When provisioning the org owner's company, the Bearer must be
-    the user's session token (not the admin Bearer) so the new
-    company is owned by them."""
+    the user's session token so the new company is owned by them."""
     captured: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -346,8 +327,8 @@ async def test_create_company_as_user_uses_session_token_in_authorization(
 
     client = client_factory(handler)
     out = await client.create_company(
-        name="owner@isol8.co",
         session_token="sess_owner",
+        name="owner@isol8.co",
     )
     assert captured["auth"] == "Bearer sess_owner"
     assert "/api/companies" in captured["url"]

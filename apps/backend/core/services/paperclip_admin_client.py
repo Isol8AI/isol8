@@ -1,20 +1,17 @@
 """Typed httpx async client for Paperclip's REST API.
 
-**Two auth modes** (2026-04-27 pivot):
+**Auth model** (2026-04-27 pivot): every call that "acts as" a user
+carries that user's Better Auth session token as
+``Authorization: Bearer <token>``. The session token is returned by
+``/api/auth/sign-up/email`` or ``/api/auth/sign-in/email`` (Better
+Auth accepts either a session cookie *or* the bearer token in the
+header). Used for creating the company, creating an invite from the
+org owner, accepting it as the new member, and approving the
+resulting join request from a board admin.
 
-* **Admin Bearer** — a single instance-admin board API key held in
-  Secrets Manager. Used for instance-admin operations (e.g. listing
-  users) and as the fallback Bearer when no per-user session is
-  supplied. See ``server/src/middleware/auth.ts`` (the ``board_key``
-  source path) for how Paperclip resolves it.
-* **Per-user session token** — a Better Auth session token returned
-  by ``/api/auth/sign-up/email`` or ``/api/auth/sign-in/email`` and
-  carried as ``Authorization: Bearer <token>`` (Better Auth accepts
-  either a session cookie *or* the bearer token in the header). Used
-  for any operation that should "act as" a specific user — creating
-  the company, creating an invite from the org owner, accepting it
-  as the new member, approving the resulting join request from a
-  board admin.
+The two unauthenticated routes — ``sign_up_user`` and
+``sign_in_user`` — hit Better Auth's public endpoints directly and
+don't carry any Bearer at all.
 
 Endpoint surface verified against the local Paperclip checkout at
 ``~/Desktop/paperclip``:
@@ -129,16 +126,13 @@ class PaperclipAdminClient:
     code in T14/T15) and so its base_url + connection pool can be
     configured once per Paperclip instance.
 
-    Most operations that affect a specific company should be invoked
-    with a per-user ``session_token`` so the actor recorded in
-    Paperclip's activity log + permission check is the right user.
-    Only instance-admin operations (e.g. listing all users) fall
-    back to the ``admin_token`` Bearer.
+    Every operation that affects a specific company is invoked with
+    a per-user ``session_token`` so the actor recorded in Paperclip's
+    activity log + permission check is the right user.
     """
 
-    def __init__(self, http_client: httpx.AsyncClient, admin_token: str):
+    def __init__(self, http_client: httpx.AsyncClient):
         self._http = http_client
-        self._admin_token = admin_token
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -146,21 +140,18 @@ class PaperclipAdminClient:
 
     def _headers(
         self,
+        session_token: str,
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict[str, str]:
         """Build request headers.
 
-        If ``session_token`` is provided we authenticate as that user
-        via ``Authorization: Bearer <session_token>`` (Better Auth
-        accepts the session token in either a cookie or the bearer
-        header — see ``server/src/auth/better-auth.ts``). If no
-        session token is provided, fall back to the instance-admin
-        board API key.
+        Authenticates as the user behind ``session_token`` via
+        ``Authorization: Bearer <session_token>`` (Better Auth accepts
+        the session token in either a cookie or the bearer header —
+        see ``server/src/auth/better-auth.ts``).
         """
-        token = session_token if session_token else self._admin_token
         headers = {
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {session_token}",
             "Content-Type": "application/json",
         }
         if idempotency_key:
@@ -171,13 +162,13 @@ class PaperclipAdminClient:
         self,
         path: str,
         json: dict,
+        session_token: str,
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict:
         resp = await self._http.post(
             path,
             json=json,
-            headers=self._headers(idempotency_key, session_token=session_token),
+            headers=self._headers(session_token, idempotency_key=idempotency_key),
         )
         if resp.status_code >= 400:
             raise PaperclipApiError(
@@ -190,11 +181,11 @@ class PaperclipAdminClient:
     async def _delete(
         self,
         path: str,
-        session_token: Optional[str] = None,
+        session_token: str,
     ) -> None:
         resp = await self._http.delete(
             path,
-            headers=self._headers(session_token=session_token),
+            headers=self._headers(session_token),
         )
         # 404 on delete is treated as already-gone (idempotent cleanup).
         if resp.status_code >= 400 and resp.status_code != 404:
@@ -279,11 +270,11 @@ class PaperclipAdminClient:
     async def create_company(
         self,
         *,
+        session_token: str,
         name: str,
         description: Optional[str] = None,
         budget_monthly_cents: int = 0,
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict:
         """Create a Paperclip company.
 
@@ -294,9 +285,7 @@ class PaperclipAdminClient:
         ``name``, ``description``, ``status``, ``budgetMonthlyCents``,
         ``createdAt``, ``updatedAt``. The bearer token's user is
         automatically granted ``owner`` membership on the new company,
-        so callers MUST pass the org-owner's ``session_token`` here —
-        otherwise the company is owned by the instance admin, which
-        is wrong for tenant accounting.
+        so callers MUST pass the org-owner's ``session_token`` here.
         """
         body: dict[str, Any] = {"name": name}
         if description is not None:
@@ -306,16 +295,16 @@ class PaperclipAdminClient:
         return await self._post(
             "/api/companies",
             json=body,
-            idempotency_key=idempotency_key,
             session_token=session_token,
+            idempotency_key=idempotency_key,
         )
 
     async def disable_company(
         self,
         *,
+        session_token: str,
         company_id: str,
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict:
         """Soft-disable a company by archiving it.
 
@@ -327,15 +316,15 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/companies/{company_id}/archive",
             json={},
-            idempotency_key=idempotency_key,
             session_token=session_token,
+            idempotency_key=idempotency_key,
         )
 
     async def delete_company(
         self,
         *,
+        session_token: str,
         company_id: str,
-        session_token: Optional[str] = None,
     ) -> None:
         """Hard-delete a company.
 
@@ -445,6 +434,7 @@ class PaperclipAdminClient:
     async def create_agent(
         self,
         *,
+        session_token: str,
         company_id: str,
         name: str,
         role: str,
@@ -455,7 +445,6 @@ class PaperclipAdminClient:
         reports_to: Optional[str] = None,
         budget_monthly_cents: int = 0,
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict:
         """Create an agent (employee) inside a company.
 
@@ -482,17 +471,17 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/companies/{company_id}/agents",
             json=body,
-            idempotency_key=idempotency_key,
             session_token=session_token,
+            idempotency_key=idempotency_key,
         )
 
     async def create_agent_api_key(
         self,
         *,
+        session_token: str,
         agent_id: str,
         name: str = "default",
         idempotency_key: Optional[str] = None,
-        session_token: Optional[str] = None,
     ) -> dict:
         """Mint a long-lived API key for an agent.
 
@@ -520,6 +509,6 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/agents/{agent_id}/keys",
             json={"name": name},
-            idempotency_key=idempotency_key,
             session_token=session_token,
+            idempotency_key=idempotency_key,
         )

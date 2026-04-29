@@ -113,10 +113,6 @@ class Settings(BaseSettings):
     # and origin checks; T14/T15 introduce the actual proxy). e.g.
     # ``https://company.isol8.co``.
     PAPERCLIP_PUBLIC_URL: str = os.getenv("PAPERCLIP_PUBLIC_URL", "")
-    # Instance-admin board API key for Paperclip. Populated from Secrets Manager
-    # by the CDK service stack at deploy time. Used as the fallback Bearer
-    # when no per-user Better Auth session token is available.
-    PAPERCLIP_ADMIN_TOKEN: str = os.getenv("PAPERCLIP_ADMIN_TOKEN", "")
     # HMAC key for the OpenClaw service-token JWTs the backend mints for
     # seeded Paperclip agents (see core/services/service_token.py). Populated
     # from Secrets Manager + KMS by the CDK service stack at deploy time.

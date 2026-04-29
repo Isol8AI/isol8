@@ -25,7 +25,6 @@ export interface AuthStackProps extends cdk.StackProps {
 export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
-  public readonly paperclipAdminBoardKey: secretsmanager.Secret;
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
 
@@ -86,20 +85,6 @@ export class AuthStack extends cdk.Stack {
     // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through
     // the AuthSecrets struct because they are consumed only by the
     // service-stack's Paperclip-specific wiring + Lambda authorizer (Task 4+).
-    //
-    // The admin Board API key stays standalone (no helper) because it is minted
-    // manually post-deploy on first Paperclip bootstrap (Task 5 captures this in
-    // the runbook) — no generateSecretString and no description-suffix matching
-    // the helper's `Isol8 ${env} ${secretName}` shape.
-    this.paperclipAdminBoardKey = new secretsmanager.Secret(this, "PaperclipAdminBoardKey", {
-      secretName: `isol8/${env}/paperclip_admin_board_key`,
-      description:
-        "Instance-admin Board API key used by FastAPI to call Paperclip admin API",
-      encryptionKey: this.kmsKey,
-      // No generateSecretString — minted manually post-deploy on first
-      // Paperclip bootstrap (Task 5 captures this in the runbook).
-    });
-
     this.paperclipBetterAuthSecret = createSecret(
       "PaperclipBetterAuthSecret",
       "paperclip_better_auth_secret",

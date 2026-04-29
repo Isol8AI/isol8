@@ -488,64 +488,6 @@ async def test_clerk_webhook_dedupes_by_svix_id(async_client, monkeypatch):
     mock_provisioning.provision_org.assert_awaited_once()
 
 
-# ----------------------------------------------------------------------
-# _lookup_owner_email Clerk-admin fallback (C2)
-# ----------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_owner_email_falls_back_to_clerk_admin(async_client, monkeypatch):
-    """If the users row has no email column (e.g. provisioned before
-    the email column was added), ``_lookup_owner_email`` should pull
-    from Clerk's admin API rather than enqueueing a permanent retry.
-    """
-    _bypass_svix(monkeypatch)
-
-    # Users repo returns a row with NO email — simulates a pre-fix row.
-    user_get = AsyncMock(return_value={"user_id": "user_owner"})
-
-    # Clerk admin returns a payload with the primary email populated.
-    clerk_get = AsyncMock(
-        return_value={
-            "id": "user_owner",
-            "email_addresses": [
-                {"id": "ea_1", "email_address": "owner@acme.test"},
-            ],
-            "primary_email_address_id": "ea_1",
-        }
-    )
-
-    mock_provisioning = AsyncMock()
-    mock_provisioning.provision_org = AsyncMock(return_value=None)
-
-    payload = {
-        "type": "organization.created",
-        "data": {"id": "org_acme", "created_by": "user_owner"},
-    }
-
-    with (
-        patch("core.repositories.user_repo.get", new=user_get),
-        patch("core.services.clerk_admin.get_user", new=clerk_get),
-        patch(
-            "routers.webhooks._get_paperclip_provisioning",
-            new=AsyncMock(return_value=mock_provisioning),
-        ),
-    ):
-        resp = await async_client.post(
-            "/api/v1/webhooks/clerk",
-            json=payload,
-            headers=_svix_headers(),
-        )
-
-    assert resp.status_code == 200
-    clerk_get.assert_awaited_once_with("user_owner")
-    mock_provisioning.provision_org.assert_awaited_once_with(
-        org_id="org_acme",
-        owner_user_id="user_owner",
-        owner_email="owner@acme.test",
-    )
-
-
 @pytest.mark.asyncio
 async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypatch):
     """``customer.subscription.deleted`` should call
