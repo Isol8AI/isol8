@@ -60,7 +60,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Stage 2: final — runtime-only image
 # =============================================================================
-FROM alpine/openclaw:2026.4.22
+FROM alpine/openclaw:2026.4.24
 
 USER root
 
