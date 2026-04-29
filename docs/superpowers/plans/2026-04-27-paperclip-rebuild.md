@@ -14,6 +14,68 @@
 
 ---
 
+## ACTUAL IMPLEMENTATION SUMMARY (2026-04-27)
+
+This plan was authored before implementation. As tasks were executed, several
+architectural pivots emerged from concrete reality (no internal ALB, no
+per-user Board-API-key endpoint in Paperclip, multi-member orgs in Clerk).
+The original task text below is preserved for historical reference; each
+task carries an **ACTUAL IMPLEMENTATION (2026-04-27)** subsection at the end
+describing how the shipped code differs.
+
+**Total commits on branch:** 29
+- 3 design + plan commits (spec, plan, plan-annotation)
+- 12 Phase 1 (infrastructure) commits
+- 9 Phase 2 (backend foundations) commits
+- 3 Phase 3 (backend proxy) commits
+- 1 Phase 4 (frontend) commit
+- 2 Phase 5 trailing commits (deploy.yml regen, smoke-test stub)
+
+**Architectural pivots from the plan:**
+
+1. **T6 + T7 merged → API Gateway custom domain.** The original plan added an
+   ALB host rule for `company.isol8.co` and a Route 53 alias to the ALB. This
+   was rejected at implementation time because the ALB is `internetFacing:
+   false` and not directly DNS-addressable. Combined into a single task that
+   adds `company.isol8.co` as a second custom domain on the existing API
+   Gateway HTTP API (reuses wildcard cert), with a parameter mapping to
+   forward the original Host as `X-Forwarded-Host` so the backend can
+   dispatch on it. The aborted T6 ALB-rule commit (`868409d2`) was rolled
+   back.
+
+2. **T7.5 added (deploy.yml regen).** The `cdk-pipelines-github`
+   `GitHubWorkflow` construct in `apps/infra/lib/app.ts` auto-regenerates
+   `.github/workflows/deploy.yml` on every `cdk synth`. To keep individual
+   commits scoped, regenerations were reverted per-task. T7.5 was added at
+   the end of Phase 1 to commit the cumulative regen intentionally.
+
+3. **T10 swapped Board-API-key approach for Better Auth + invite flow.** The
+   plan template assumed a `mint_board_api_key(user_email)` admin endpoint.
+   This endpoint **does not exist** in Paperclip's REST API (verified by
+   reading `~/Desktop/paperclip/server/src/routes/access.ts`). Replaced with
+   Better Auth + invite-flow methods (`sign_up_user`, `sign_in_user`,
+   `create_invite`, `accept_invite`, `approve_join_request`).
+
+4. **T11 redesigned for multi-member orgs.** Following T10's discovery, the
+   provisioning model became per-Isol8-org (not per-user): one Paperclip
+   company per Clerk org, multiple users share via `company_memberships`,
+   each user gets their own Better Auth account with a stored encrypted
+   password. Three entry points: `provision_org`, `provision_member`,
+   `disable` + `purge`.
+
+**Test counts (final verification):**
+- Backend: 1298 passing
+- Infra: 50 passing
+- Frontend: 339 passing (7 unrelated failures pre-exist on `main`)
+
+**Outstanding follow-ups (none blocking):**
+- Smoke-test stub for full provisioning round-trip exists but is skipped by
+  default — needs a live integration environment to enable.
+- The 7 pre-existing frontend failures on `main` should be tracked
+  separately; they were not introduced by this branch.
+
+---
+
 ## File Structure
 
 ### CDK (`apps/infra/`)
@@ -144,6 +206,21 @@ Subnet group on private subnets. Generated credentials in Secrets Manager.
 pgvector extension is created by the drizzle migrations runner."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across two commits: `656800ca` (initial cluster) + `65da3b0b` (fixes).
+
+- **Prop name:** the plan template referenced `props.envName`; the actual
+  codebase uses `props.environment` throughout `database-stack.ts`. Used
+  `props.environment` consistently.
+- **CMK for storage:** the plan template missed `storageEncryptionKey`. The
+  fix commit (`65da3b0b`) added the existing `props.kmsKey` as the storage
+  encryption key so the cluster matches the rest of the stack's encryption
+  posture.
+- **SG ingress test:** the plan template's snapshot/SG ingress test was
+  fragile (matching CDK-generated logical IDs). Tightened the assertion
+  scope to test the rule properties directly.
+
 ---
 
 ### Task 2: paperclip-companies DynamoDB table
@@ -189,6 +266,17 @@ git commit -m "feat(infra): add paperclip-companies DynamoDB table
 PK user_id maps Isol8 user → Paperclip company + encrypted credentials.
 GSI by-status-purge-at supports the cleanup cron."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `08fecc02`.
+
+- **Encryption mode:** the plan template specified `AWS_MANAGED` encryption.
+  Deviated to `CUSTOMER_MANAGED` with `props.kmsKey` to match the rest of
+  the stack (every other DynamoDB table and the Aurora cluster all use the
+  shared CMK). AWS-managed mode would have been an inconsistency.
+- The repo's later evolution under T11 added a `by-org-id` GSI for the
+  multi-member-org model — that migration is documented in the T11 notes.
 
 ---
 
@@ -253,6 +341,19 @@ git commit -m "feat(infra): add Paperclip secrets (admin key, BetterAuth secret,
 All KMS-encrypted. BetterAuth + service-token-key are auto-generated.
 Admin Board API key is minted manually post-first-deploy."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across two commits: `7e8183a9` (initial) + `d898b29f` (naming fix).
+
+- **Naming convention:** the plan template used dash-style names
+  (`isol8-${env}-paperclip-*`). The fix commit switched to slash-style
+  (`isol8/${env}/paperclip_*`) to match the existing `createSecret` helper
+  convention used by every other secret in `auth-stack.ts`.
+- **Helper extension:** the existing `createSecret` helper was extended to
+  accept an optional `generateConfig` parameter so the BetterAuth and
+  service-token-signing secrets can be auto-generated, while the admin
+  Board API key remains a manually-seeded secret.
 
 ---
 
@@ -468,6 +569,27 @@ Internal-only target group on shared ALB; FastAPI is the only
 caller able to reach it."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across `30f0cc9e` (initial) + `ca7e2bae` (review follow-ups).
+
+- **Reachability model — biggest deviation:** the plan template proposed
+  attaching Paperclip to the existing shared ALB as an internal target
+  group, with FastAPI calling it via the ALB's internal DNS. This was
+  rejected: the existing infra has no internal ALB — only the public ALB
+  (`internetFacing: true`) and an NLB for WebSocket. Switched to **Cloud
+  Map service discovery**, the same pattern already used for per-user
+  OpenClaw containers. FastAPI resolves Paperclip via Cloud Map and talks
+  directly over the VPC.
+- **Cross-stack cycle avoidance:** added security-group ingress via
+  `CfnSecurityGroupIngress` (L1 construct) instead of `addIngressRule()`
+  on the SG object. The L2 path created a cross-stack dependency cycle
+  because both stacks would try to mutate each other's SG.
+- **PGPASSWORD URL-encoding:** RDS-generated passwords contain url-special
+  characters. The container entrypoint URL-encodes the password before
+  composing `DATABASE_URL` via a `node -e encodeURIComponent` shell-out
+  (no extra dep, runtime is already Node).
+
 ---
 
 ### Task 5: Drizzle migrations one-shot ECS task
@@ -567,6 +689,23 @@ Separate ECS task definition for migrations. Run manually post-deploy
 per RUNBOOK.md. Creates pgvector extension before running drizzle-kit migrate."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across `3a6a747d` (one-shot task) + `83ac200d` (RUNBOOK expansion).
+
+- **Tighter IAM:** added a separate `migrateExecutionRole` rather than
+  reusing the main Paperclip task role. The migration task only needs to
+  pull the image, read DB credentials, and write to its own log group; it
+  does not need (and now does not have) the broader runtime permissions of
+  the live service.
+- **Separate log group:** carved out a `migrateLogGroup` so migration runs
+  are easy to inspect without trawling the live-service log stream.
+- **Expanded RUNBOOK:** the initial commit shipped a minimal RUNBOOK; the
+  follow-up added a "safety-net" section (verifying the migrations image
+  tag matches the running service tag) and a 3-mode failure-recovery
+  section (transient connectivity, partial migration, schema drift). This
+  was deferred from the initial commit to keep that commit focused.
+
 ---
 
 ### Task 6: ALB host rule for company.isol8.co
@@ -603,6 +742,19 @@ git commit -m "feat(infra): ALB rule for company.isol8.co → FastAPI
 Routes to the same backend target group as api.isol8.co.
 Backend dispatches by Host header (Task 16)."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27) — REJECTED, MERGED INTO T7
+
+This task was **not implemented as planned**. An initial ALB-rule commit
+(`868409d2`) was made and then rolled back when implementation revealed
+that the existing public ALB is `internetFacing: true` but the user's
+browser does not reach the ALB directly — all traffic flows through API
+Gateway HTTP API. Adding an ALB host rule would have had no effect because
+no external client ever resolves to the ALB.
+
+T6 was therefore merged with T7 into a single combined task that adds
+`company.isol8.co` as a second custom domain on the existing API Gateway
+HTTP API. See the T7 actual-implementation note below for what shipped.
 
 ---
 
@@ -643,6 +795,50 @@ new route53.ARecord(this, 'CompanyAlbAlias', {
 git add apps/infra/lib/stacks/dns-stack.ts
 git commit -m "feat(infra): Route 53 + ACM SAN for company.isol8.co"
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27) — COMBINED T6 + T7
+
+Shipped in commit `807c963c` as a single combined task.
+
+- **No ALB host rule.** Per T6 above, the ALB-rule approach was rejected.
+- **API Gateway custom domain instead.** Added `company.isol8.co` as a
+  second custom domain on the existing API Gateway HTTP API. This puts
+  the `company.*` host on the same path that already serves `api.*`.
+- **ACM cert reuse.** Reused the existing wildcard `*.isol8.co` ACM cert —
+  no new SAN issuance was needed.
+- **Parameter mapping for host dispatch.** Added
+  `overwrite:header.X-Forwarded-Host = $context.domainName` to the shared
+  `HttpAlbIntegration` so the backend's host-header middleware (T16) can
+  dispatch on the **original** Host the client used. API Gateway rewrites
+  the integration `Host` header to point at the ALB, so without this
+  mapping the backend would see `<alb-internal-dns>` for every request.
+- **Route 53:** the alias still lives in `dns-stack.ts`, but it points at
+  the API Gateway custom domain (regional endpoint), not the ALB.
+
+---
+
+### Task 7.5: Regenerate deploy.yml for Phase 1
+
+**(Added during implementation; not in original plan.)**
+
+**Files:**
+- Modify: `.github/workflows/deploy.yml` (auto-regenerated by `cdk synth`)
+
+The `cdk-pipelines-github` `GitHubWorkflow` construct in
+`apps/infra/lib/app.ts` regenerates `.github/workflows/deploy.yml` on every
+`cdk synth`. To keep individual Phase 1 commits scoped to their actual
+infra change, the deploy.yml regen was reverted on each per-task commit.
+This task batches the cumulative regen at the end of Phase 1 so CI picks
+up wiring for the new Paperclip stacks (Aurora cluster, paperclip-companies
+table, secrets, ECS service, custom domain) in a single intentional
+commit.
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `283a00f2` ("ci(infra): regenerate deploy.yml for
+Paperclip stacks"). Pure CI-config diff — no infra logic change. A second
+deploy.yml regen later in Phase 2 covers Lambda authorizer wiring
+(commit `8a0a0be4`).
 
 ---
 
@@ -869,6 +1065,32 @@ git commit -m "feat(backend): paperclip-companies DynamoDB repository
 PK user_id. CRUD + scan_purge_due via GSI for the cleanup cron."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across `b163explored` (initial sync version), `5cfa525a` (async
+refactor + pagination), and later extended in `06d8ec6e` for the per-org
+pivot.
+
+- **Sync → async:** the plan template was synchronous. Deviated to async to
+  match the pattern of every other repo in `core/repositories/` (which all
+  use `aioboto3` / async wrappers). A pure-sync repo would have forced
+  blocking calls in the async FastAPI request path.
+- **`scan_purge_due` pagination:** added explicit pagination on the GSI
+  scan to prevent silent data loss when more items are due-to-purge than
+  fit in a single 1MB DynamoDB scan page.
+- **Tighter status field:** `status` was tightened from `str` to
+  `Literal["provisioning"|"active"|"failed"|"disabled"]` for compile-time
+  guarantees against typos in callers.
+- **Test-environment fix:** added a one-time fix to `tests/conftest.py`
+  setting required env vars (`CLERK_ISSUER`, `ENCRYPTION_KEY`, etc.)
+  before any imports. This was a pre-existing test-environment issue
+  (modules at import time would fail without these vars set) that
+  surfaced when the new repo's tests were added.
+- **Per-org pivot extension (commit `06d8ec6e`):** later extended with
+  `org_id`, `paperclip_user_id`, `paperclip_password_encrypted` fields and
+  a `count_org_members` method, plus a `by-org-id` GSI, after T10/T11
+  forced the model to be per-org rather than per-user. See T11 notes.
+
 ---
 
 ### Task 9: service_token.py + Lambda Authorizer extension
@@ -1060,6 +1282,29 @@ HS256 with shared secret. Lambda Authorizer accepts both Clerk JWTs
 and service tokens; service tokens authorize Paperclip agents to reach
 a specific user's OpenClaw container."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped across `4abf34a1` (initial mint+verify) + `91884421` (KMS decrypt
+grant + cold-start metric).
+
+- **Secret-fetch model:** the plan template assumed
+  `PAPERCLIP_SERVICE_TOKEN_KEY` could be set as a plain Lambda env var.
+  Deviated to a **cold-start Secrets Manager fetch**: the env var holds
+  the secret ARN, and the Lambda fetches the actual signing key value at
+  module load time. Plain env vars are visible in the Lambda console and
+  in CloudFormation outputs; Secrets Manager keeps the value out of those
+  surfaces.
+- **Explicit KMS decrypt grant:** `Secret.fromSecretNameV2()` returns an
+  `ISecret` without a KMS-key reference, so `grantRead()` does **not**
+  auto-grant `kms:Decrypt`. The fix commit added an explicit decrypt
+  grant on the auth-stack CMK to the authorizer's role.
+- **`authKind` context surface:** the allow policy now sets a context
+  field `authKind` (`"paperclip_service"` or `"clerk_user"`) so the
+  backend can tell which auth path was taken on a given connection.
+- **EMF metric:** added a CloudWatch EMF metric for cold-start
+  Secret-fetch success/failure, so a misconfigured ARN or KMS denial
+  shows up in dashboards rather than silently failing every request.
 
 ---
 
@@ -1293,6 +1538,40 @@ git commit -m "feat(backend): typed httpx client for Paperclip admin API
 create_company, mint_board_api_key, create_agent, disable_company,
 delete_company. Sends Idempotency-Key on mutations."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27) — MAJOR ARCHITECTURAL PIVOT
+
+Shipped in commit `545d3b2e`.
+
+The plan template assumed an admin endpoint `mint_board_api_key(user_email)`
+that issues per-user Board API keys for Paperclip. **This endpoint does
+not exist.** The implementer verified by reading
+`~/Desktop/paperclip/server/src/routes/access.ts` directly. Paperclip's
+actual surface is Better Auth + an invite flow; there is no admin path
+that issues a board-scoped API key bound to a specific user identity.
+
+**Pivot:** the client surface changed from board-key minting to Better
+Auth + invite-flow primitives:
+
+| Removed | Added |
+|---------|-------|
+| `mint_board_api_key(user_email)` | `sign_up_user(email, password)` |
+|  | `sign_in_user(email, password)` → returns session cookie |
+|  | `create_invite(company_id, email)` |
+|  | `accept_invite(invite_token)` |
+|  | `approve_join_request(company_id, user_id)` |
+
+Existing methods retained: `create_company`, `disable_company`,
+`delete_company`. `create_agent` was retained on the surface but its
+auth model now flows through the per-user Better Auth session, not a
+board key.
+
+**Downstream effect:** the architecture pivots from "per-user Board API
+key" to "per-user Better Auth account with stored encrypted password".
+The encrypted password is stored in `paperclip-companies` so the proxy
+can re-authenticate on each request (T14). This cascades into T11
+(provisioning), T8 (extra repo fields), T14 (proxy auth model), and
+T15 (proxy WS auth).
 
 ---
 
@@ -1539,6 +1818,39 @@ provision/disable/purge flows. Idempotent on user_id. Failures mark
 repo status=failed and re-raise for webhook retry."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27) — MULTI-MEMBER ORG REDESIGN
+
+Shipped across `06d8ec6e` (per-org refactor of T8 fields), `29eefddf`
+(orchestrator), and `fcd1c45e` (review follow-ups).
+
+Following T10's discovery that Paperclip has no admin board-key endpoint,
+the provisioning model was redesigned for multi-member orgs:
+
+- **Three entry points instead of one `provision`:**
+  - `provision_org(org_id, owner_email)` — fired by Clerk
+    `organization.created`. Creates the Paperclip company, signs up the
+    owner via Better Auth, links them as the company owner.
+  - `provision_member(org_id, user_email)` — fired by Clerk
+    `organizationMembership.created`. Runs the full invite-flow chain:
+    `signUp → createInvite → acceptInvite → approveJoinRequest`. Each
+    member gets their own Better Auth account but shares the org's
+    Paperclip company via `company_memberships`.
+  - `disable(org_id)` + `purge(org_id)` — fired on org deletion / sub
+    cancellation. Disable is reversible; purge is the post-grace-period
+    hard delete.
+- **One Paperclip company per Isol8 org**, not per user. Multiple Isol8
+  users in the same Clerk org share one Paperclip company.
+- **Repo extension (T8):** `paperclip-companies` gained `org_id`,
+  `paperclip_user_id`, `paperclip_password_encrypted`, plus a
+  `count_org_members` method used by `purge` to detect "last member
+  leaving the org" before tearing down the shared company.
+- **`OrgNotProvisionedError`** carries `retryable=True` so T12's webhook
+  dispatch knows to enqueue a retry rather than 500 the webhook.
+- **Review follow-ups (commit `fcd1c45e`):** cleaned up an awkward
+  `_annotate_retryable` helper that was being applied to caught
+  `PaperclipApiError`s; replaced by adding `retryable: bool` directly to
+  `PaperclipApiError.__init__` so callers don't need to wrap.
+
 ---
 
 ### Task 12: Webhook integration (Clerk + Stripe)
@@ -1625,6 +1937,28 @@ user.created → PaperclipProvisioning.provision (eager, async retry on failure)
 user.deleted + Stripe subscription cancellation → disable with 30-day grace."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `afda233d`.
+
+- **Webhook coverage broadened beyond plan template.** Wired:
+  - `organization.created` → `provision_org`
+  - `organizationMembership.created` → `provision_member` (full
+    invite-flow chain)
+  - `organization.deleted` → belt-and-braces sweep via the `by-org-id`
+    GSI to disable any orphan rows, then teardown
+  - `organizationMembership.deleted` → remove the user's Better Auth
+    membership from the shared company (org keeps the company if other
+    members remain)
+  - `user.deleted` → cascade to disable any remaining orgs they own
+  - Stripe `customer.subscription.deleted` and `.canceled` → disable
+    with 30-day grace
+- **Owner email lookup:** Clerk webhook payloads for `organization.*`
+  events do not include the owner's email. Looked up via `user_repo` keyed
+  by Clerk user_id from the membership payload.
+- **Retry queue:** uses the existing `update_repo` (pending-updates) with
+  `update_type="paperclip_provision"`. T13's worker pass consumes it.
+
 ---
 
 ### Task 13: Cleanup cron extension
@@ -1681,6 +2015,26 @@ git commit -m "feat(backend): cleanup + retry pass for Paperclip in scheduled wo
 Daily purge of disabled companies past their grace window.
 Retry pass for status=failed provisioning rows."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `f5c5f8c8`.
+
+- **Two periodic passes** added to the existing `update_service.run_scheduled_worker`:
+  1. **Daily Paperclip purge** — scans the `by-status-purge-at` GSI for
+     `status=disabled, purge_at <= now`, calls
+     `provisioning.purge(org_id)`.
+  2. **Provisioning retry consumer** — pulls `pending-updates` rows with
+     `update_type="paperclip_provision"`, re-runs
+     `provisioning.provision_member` (or `provision_org` depending on
+     payload), marks each as applied or failed.
+- **Repo extensions:** `update_repo` previously only had `mark_applied`.
+  Added `list_pending_by_type(update_type)` and
+  `mark_failed(owner_id, update_id, reason)` so the retry pass can both
+  enumerate and finalize.
+- **Per-pass `httpx.AsyncClient`:** each pass instantiates and properly
+  closes its own client (rather than sharing one process-wide), so a
+  hung connection in one pass doesn't poison the other.
 
 ---
 
@@ -1926,6 +2280,32 @@ HTML responses get brand-rewrite. Failed-status users see a 503 onboarding page.
 Circuit breaker opens for 60s if upstream 5xx rate > 50% in 30s window."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `0edbfa00`.
+
+- **Auth model changed** per the T10/T11 pivot: the proxy no longer
+  injects a Board API key. Instead, on each request the proxy:
+  1. Reads the user's email from the Clerk JWT claim (`auth.email`).
+  2. Looks up the user's encrypted Better Auth password from
+     `paperclip-companies` and decrypts via Fernet.
+  3. Calls `admin_client.sign_in_user(email, password)` to get a
+     Better Auth session cookie.
+  4. Forwards the request with that cookie set.
+- **Email source change:** the plan template implied looking up email via
+  `user_repo`. The Isol8 `users` table only stores `user_id` +
+  `created_at`; emails are not persisted there. Read from the Clerk
+  JWT claim instead.
+- **Set-Cookie domain rewrite to `.isol8.co`:** Better Auth issues
+  cookies bound to its own domain. The proxy rewrites the cookie
+  `Domain` attribute on the response so the cookie is shared across
+  `*.isol8.co` (chat + company subdomains), avoiding a fresh sign-in
+  for every cross-subdomain navigation.
+- **Multi-Set-Cookie preservation:** used `httpx.Headers.get_list` to
+  capture multiple Set-Cookie headers individually (Python's `dict`
+  collapses duplicate headers, which would lose all but the last
+  cookie).
+
 ---
 
 ### Task 15: paperclip_proxy.py — WebSocket relay
@@ -2016,6 +2396,28 @@ Bidirectional WS relay for Paperclip live-events. Auth via Clerk cookie
 on the upgrade request, then Bearer-injection on the upstream connection."
 ```
 
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `00fb442f`.
+
+- **Mirrors `control_ui_proxy.py` WS pattern** — the existing OpenClaw
+  control-ui proxy already has a working pattern for bidirectional WS
+  relay; reused that shape rather than inventing a new one.
+- **Explicit WS close codes** for the auth/decryption failure modes:
+  - `4401` — auth missing or invalid
+  - `4400` — Clerk JWT email claim missing
+  - `4500` — Fernet decrypt of stored password failed
+  - `4502` — Paperclip Better Auth sign-in failed
+  - `4503` — user's org is not provisioned
+- **`asyncio.gather(return_exceptions=True)`** for the two relay tasks
+  (client→upstream, upstream→client) instead of
+  `asyncio.wait(FIRST_COMPLETED)`. Cleaner exception isolation: an
+  exception in one direction doesn't poison the other's cleanup, and
+  `gather` hands back both task results in a single tuple.
+- **Auth pivot:** per T10/T11/T14, the upstream connection is
+  authenticated by re-running Better Auth sign-in to get a session
+  cookie, not by injecting a Bearer token.
+
 ---
 
 ### Task 16: Host-header middleware in main.py
@@ -2071,6 +2473,25 @@ git commit -m "feat(backend): host-header dispatcher routes company.isol8.co to 
 Backend handles api.isol8.co (existing) and company.isol8.co (NEW)
 out of the same FastAPI app, dispatched by Host header."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `f2088ed3`.
+
+- **Dispatches on `X-Forwarded-Host`, NOT `Host`.** API Gateway rewrites
+  the `Host` header to the integration target (the ALB), so the backend
+  never sees `company.isol8.co` in `Host`. T6+T7's parameter mapping
+  forwards the original Host as `X-Forwarded-Host`; the middleware reads
+  that.
+- **Pure ASGI middleware over `BaseHTTPMiddleware`.** Used a raw ASGI
+  middleware so the same dispatcher handles both HTTP and WebSocket
+  scope types. `BaseHTTPMiddleware` only sees HTTP requests, which would
+  have left T15's WS proxy unrouted on `company.isol8.co`.
+- **`include_in_schema=False`** on the proxy router mount keeps the
+  internal `/_paperclip_proxy` sentinel prefix out of `/openapi.json`.
+  Without this, schemathesis contract-test fuzzing hits the proxy with
+  arbitrary inputs and fails (the proxy is not designed to honor an
+  OpenAPI contract; it's a transparent passthrough).
 
 ---
 
@@ -2128,6 +2549,18 @@ git commit -m "feat(frontend): Teams link in chat sidebar
 Opens company.isol8.co (per-env via NEXT_PUBLIC_COMPANY_URL).
 User's Clerk session cookie is already scoped to .isol8.co so no re-auth."
 ```
+
+#### ACTUAL IMPLEMENTATION (2026-04-27)
+
+Shipped in commit `db7ee878`.
+
+- **Matches existing `Settings` link pattern.** Reused the existing
+  `sidebar-settings-link` className and `size={18}` icon convention from
+  the adjacent settings link in `ChatLayout.tsx`, so the Teams entry is
+  visually identical and inherits the same theme treatment.
+- **`<a>` not `<Link>`.** Cross-subdomain navigation (`chat.isol8.co` →
+  `company.isol8.co`) requires a full page navigation, not Next.js's
+  client-side router. Used a plain anchor tag.
 
 ---
 
