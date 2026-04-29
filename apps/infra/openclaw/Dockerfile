@@ -9,8 +9,17 @@
 # out of the final image. Targets ~2-3 GB instead of ~8.6 GB so the image fits
 # within Fargate's default 20 GiB ephemeral storage with room to spare.
 #
-# Bump UPSTREAM = `openclaw-version.json#upstream` field. Keep the FROM lines
-# below in sync with that field manually until automation lands.
+# UPSTREAM is sourced from `openclaw-version.json#upstream` and passed in by
+# .github/workflows/build-openclaw-image.yml. Keep this Dockerfile free of any
+# literal `alpine/openclaw:<version>` references — the workflow's drift guard
+# fails the build if one is introduced. Bumping `openclaw-version.json#upstream`
+# is the single source of truth for what base image is built.
+
+# Global ARG — declared before any FROM so it can be expanded in the stage-2
+# FROM line below. No default: passing --build-arg is mandatory, which means
+# `docker build` from a clean checkout fails fast instead of silently picking
+# up a stale or wrong base.
+ARG UPSTREAM
 
 # =============================================================================
 # Stage 1: builder — compiles every Go binary, produces /out/bin
@@ -60,7 +69,7 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Stage 2: final — runtime-only image
 # =============================================================================
-FROM alpine/openclaw:2026.4.22
+FROM alpine/openclaw:${UPSTREAM}
 
 USER root
 

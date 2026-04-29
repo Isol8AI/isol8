@@ -32,7 +32,18 @@ jobs:
           TAG="${UPSTREAM}-${SHORT_SHA}"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "Building ${IMAGE}:${TAG}"
+          echo "upstream=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+          echo "Building ${IMAGE}:${TAG} (FROM alpine/openclaw:${UPSTREAM})"
+
+      - name: Guard against hardcoded openclaw tag
+        # The Dockerfile must source its base image via the UPSTREAM build-arg
+        # so openclaw-version.json#upstream is the only source of truth.
+        # A literal tag in a FROM line means tag drift is back.
+        run: |
+          if grep -nE '^FROM[[:space:]].*alpine/openclaw:[^$]' apps/infra/openclaw/Dockerfile; then
+            echo "::error::Hardcoded openclaw tag in Dockerfile FROM line — must use \${UPSTREAM} build-arg from openclaw-version.json#upstream"
+            exit 1
+          fi
 
       - name: Authenticate Via OIDC Role
         uses: aws-actions/configure-aws-credentials@v4
@@ -48,6 +59,7 @@ jobs:
       - name: Build image
         run: |
           docker build \
+            --build-arg "UPSTREAM=${{ steps.meta.outputs.upstream }}" \
             -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
             apps/infra/openclaw/
 
