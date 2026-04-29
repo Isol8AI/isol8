@@ -39,6 +39,32 @@ class TestBillingServiceCreateCustomer:
         mock_stripe.Customer.create.assert_called_once()
         assert account["owner_id"] == "user_new_123"
         assert account["stripe_customer_id"] == "cus_new_123"
+        _, create_kwargs = mock_stripe.Customer.create.call_args
+        assert "idempotency_key" not in create_kwargs
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_customer_race_keeps_winning_customer_when_create_reuses_same_id(
+        self, mock_stripe, mock_repo, service
+    ):
+        """Never delete the stored winner if the loser received the same Stripe customer id."""
+        from core.repositories.billing_repo import AlreadyExistsError
+
+        mock_repo.AlreadyExistsError = AlreadyExistsError
+        mock_repo.get_by_owner_id = AsyncMock(
+            side_effect=[
+                None,
+                {"owner_id": "user_race", "stripe_customer_id": "cus_same"},
+            ]
+        )
+        mock_stripe.Customer.create.return_value = MagicMock(id="cus_same")
+        mock_repo.create_if_not_exists = AsyncMock(side_effect=AlreadyExistsError("user_race"))
+
+        result = await service.create_customer_for_owner(owner_id="user_race")
+
+        mock_stripe.Customer.delete.assert_not_called()
+        assert result["stripe_customer_id"] == "cus_same"
 
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
