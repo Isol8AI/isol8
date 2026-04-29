@@ -139,7 +139,11 @@ async def _get_paperclip_provisioning():
         timeout=15.0,
     )
     admin = PaperclipAdminClient(http_client=http)
-    repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
+    # Short name only — ``core.dynamodb.get_table`` prepends the env
+    # prefix once (``isol8-{env}-``). Passing the fully-qualified name
+    # would double-prefix at production deploy time (caught in
+    # PR #414 review F1, c778809) and 404 on every lookup.
+    repo = PaperclipRepo(table_name="paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
     # Expose the underlying client for cleanup. Tests that patch
     # _get_paperclip_provisioning return AsyncMock-shaped objects that
@@ -335,9 +339,13 @@ async def _handle_organization_created(data: dict) -> None:
             "organization.created: no email for owner %s; enqueueing retry",
             owner_user_id,
         )
+        # Omit ``owner_email`` entirely (rather than writing ``""``) — the
+        # retry pass re-resolves it from ``user_repo`` at replay time.
+        # Persisting an empty string here would mislead any operator
+        # eyeballing the row and tempt callers to skip the lookup.
         await _enqueue_paperclip_retry(
             op="provision_org",
-            payload={"org_id": org_id, "owner_user_id": owner_user_id, "owner_email": ""},
+            payload={"org_id": org_id, "owner_user_id": owner_user_id},
             owner_id=owner_user_id,
         )
         return
@@ -402,13 +410,17 @@ async def _handle_organization_membership_created(data: dict) -> None:
             org_id,
             owner_user_id,
         )
+        # Omit ``owner_email`` so the retry pass re-resolves it from
+        # ``user_repo`` rather than picking up a misleading blank.
+        # Persist ``owner_user_id`` so the retry pass has the key it
+        # needs to do that lookup.
         await _enqueue_paperclip_retry(
             op="provision_member",
             payload={
                 "org_id": org_id,
                 "user_id": user_id,
                 "email": email,
-                "owner_email": "",
+                "owner_user_id": owner_user_id,
             },
             owner_id=user_id,
         )
@@ -437,12 +449,16 @@ async def _handle_organization_membership_created(data: dict) -> None:
             e,
         )
         if retryable:
+            # Carry ``owner_user_id`` alongside ``owner_email`` so the
+            # retry pass can re-resolve the email from ``user_repo``
+            # if the cached one drifts (e.g. owner email rotates).
             await _enqueue_paperclip_retry(
                 op="provision_member",
                 payload={
                     "org_id": org_id,
                     "user_id": user_id,
                     "email": email,
+                    "owner_user_id": owner_user_id,
                     "owner_email": owner_email,
                 },
                 owner_id=user_id,

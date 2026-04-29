@@ -192,7 +192,10 @@ def _build_paperclip_provisioning():
         timeout=15.0,
     )
     admin = PaperclipAdminClient(http_client=http)
-    repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
+    # Short name only — ``core.dynamodb.get_table`` prepends the env
+    # prefix once. Mirrors ``api_key_repo`` and every other repo in
+    # ``core/repositories/``.
+    repo = PaperclipRepo(table_name="paperclip-companies")
     provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
     return provisioning, http, repo
 
@@ -247,6 +250,45 @@ async def _paperclip_purge_pass() -> None:
             logger.exception("paperclip_purge_pass: http client close failed")
 
 
+async def _resolve_owner_email(payload: dict) -> str | None:
+    """Resolve the org owner's email for a Paperclip retry payload.
+
+    The webhook handlers omit ``owner_email`` from the retry payload
+    when the user_repo lookup miss-fired at enqueue time (the
+    ``user.created`` webhook may not have landed yet). This helper
+    handles both shapes:
+
+    * ``owner_email`` already present + non-empty -> use as-is
+    * ``owner_email`` missing/blank -> look up via ``user_repo`` using
+      ``owner_user_id`` from the payload
+
+    Returns ``None`` if the email is still unresolvable. Callers should
+    leave the retry row pending (NOT mark failed) so a later
+    ``user.created`` redelivery can supply the missing email.
+    """
+    cached = payload.get("owner_email")
+    if cached:
+        return cached
+    owner_user_id = payload.get("owner_user_id")
+    if not owner_user_id:
+        return None
+    # Local import keeps cold-start cheap and mirrors the lazy-import
+    # convention used elsewhere in this module.
+    from core.repositories import user_repo
+
+    try:
+        row = await user_repo.get(owner_user_id)
+    except Exception:
+        logger.exception(
+            "paperclip_provision_retry_pass: user_repo.get failed for owner=%s",
+            owner_user_id,
+        )
+        return None
+    if not row:
+        return None
+    return row.get("email") or None
+
+
 async def _paperclip_provision_retry_pass() -> None:
     """Per-loop pass: consume pending-updates rows of type
     ``paperclip_provision`` and re-call the matching provisioning op.
@@ -291,17 +333,40 @@ async def _paperclip_provision_retry_pass() -> None:
 
             try:
                 if op == "provision_org":
+                    owner_email = await _resolve_owner_email(changes)
+                    if not owner_email:
+                        # Email still unresolvable — leave the row pending
+                        # (do NOT mark failed) so a later user.created
+                        # webhook redelivery / backfill can supply it.
+                        logger.warning(
+                            "paperclip_provision_retry_pass: skipping op=provision_org "
+                            "(owner_email unresolved) owner=%s update=%s",
+                            owner_id,
+                            update_id,
+                        )
+                        retryable_left += 1
+                        continue
                     await provisioning.provision_org(
                         org_id=changes["org_id"],
                         owner_user_id=changes["owner_user_id"],
-                        owner_email=changes["owner_email"],
+                        owner_email=owner_email,
                     )
                 elif op == "provision_member":
+                    owner_email = await _resolve_owner_email(changes)
+                    if not owner_email:
+                        logger.warning(
+                            "paperclip_provision_retry_pass: skipping op=provision_member "
+                            "(owner_email unresolved) owner=%s update=%s",
+                            owner_id,
+                            update_id,
+                        )
+                        retryable_left += 1
+                        continue
                     await provisioning.provision_member(
                         org_id=changes["org_id"],
                         user_id=changes["user_id"],
                         email=changes["email"],
-                        owner_email=changes["owner_email"],
+                        owner_email=owner_email,
                     )
                 elif op == "disable":
                     await provisioning.disable(user_id=changes["user_id"])

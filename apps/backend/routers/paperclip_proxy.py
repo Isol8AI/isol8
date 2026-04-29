@@ -315,7 +315,10 @@ async def proxy(
         return _circuit_breaker_response()
 
     # ---- Look up the user's Paperclip company row ----
-    repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
+    # Pass the short name; ``get_table`` adds the env prefix exactly
+    # once (see ``core.dynamodb.table_name``). Mirrors ``api_key_repo``
+    # and every other repo in this directory.
+    repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
     if company is None or company.status != "active":
         return _provisioning_response()
@@ -567,7 +570,8 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     # handler tried to resolve an ``owner_id`` from the org claim and
     # query that — that key never exists in the table, so any user in an
     # org context was getting closed with 4503 on every WS upgrade.
-    repo = PaperclipRepo(table_name=f"isol8-{settings.ENVIRONMENT}-paperclip-companies")
+    # Pass the short name; ``get_table`` adds the env prefix exactly once.
+    repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(user_id)
     if company is None or company.status != "active":
         await websocket.close(code=4503, reason="Paperclip not provisioned")

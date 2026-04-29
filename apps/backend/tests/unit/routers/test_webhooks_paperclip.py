@@ -169,6 +169,47 @@ async def test_organization_created_non_retryable_does_not_enqueue(async_client,
     captured_create.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_organization_created_missing_owner_email_omits_blank_in_retry(async_client, monkeypatch):
+    """F2: When ``user_repo.get`` returns no email for the owner (the
+    user.created webhook hasn't landed yet), the retry payload MUST NOT
+    include ``owner_email`` at all — not even as ``""``. The retry pass
+    re-resolves it from ``user_repo`` at replay time.
+    """
+    _bypass_svix(monkeypatch)
+
+    captured_create = AsyncMock(return_value={"update_id": "upd_blank"})
+
+    payload = {
+        "type": "organization.created",
+        "data": {"id": "org_pending", "created_by": "user_pending"},
+    }
+
+    # No row yet for the owner -> _lookup_owner_email returns None.
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    captured_create.assert_awaited_once()
+    kwargs = captured_create.call_args.kwargs
+    changes = kwargs["changes"]
+    assert changes["op"] == "provision_org"
+    assert changes["org_id"] == "org_pending"
+    assert changes["owner_user_id"] == "user_pending"
+    # The whole point of F2: do NOT persist a blank email.
+    assert "owner_email" not in changes
+
+
 # ----------------------------------------------------------------------
 # organizationMembership.created -> provision_member
 # ----------------------------------------------------------------------
@@ -276,6 +317,54 @@ async def test_membership_created_org_not_provisioned_enqueues(async_client, mon
     assert kwargs["changes"]["op"] == "provision_member"
     assert kwargs["changes"]["user_id"] == "user_member"
     assert kwargs["changes"]["email"] == "member@acme.test"
+
+
+@pytest.mark.asyncio
+async def test_membership_created_missing_owner_email_omits_blank_in_retry(async_client, monkeypatch):
+    """F2 (membership variant): When the org owner's email isn't
+    backfilled yet, the membership retry payload also drops
+    ``owner_email`` (instead of writing ``""``) and includes
+    ``owner_user_id`` so the retry pass can look the email up later.
+    """
+    _bypass_svix(monkeypatch)
+
+    captured_create = AsyncMock(return_value={"update_id": "upd_member_blank"})
+
+    payload = {
+        "type": "organizationMembership.created",
+        "data": {
+            "id": "orgm_blank",
+            "organization": {"id": "org_acme", "created_by": "user_owner"},
+            "public_user_data": {
+                "user_id": "user_member",
+                "identifier": "member@acme.test",
+            },
+        },
+    }
+
+    # Owner row missing -> _lookup_owner_email returns None.
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    captured_create.assert_awaited_once()
+    kwargs = captured_create.call_args.kwargs
+    changes = kwargs["changes"]
+    assert changes["op"] == "provision_member"
+    assert changes["user_id"] == "user_member"
+    assert changes["email"] == "member@acme.test"
+    assert changes["owner_user_id"] == "user_owner"
+    assert "owner_email" not in changes
 
 
 # ----------------------------------------------------------------------
