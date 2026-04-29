@@ -531,17 +531,25 @@ def build_openclaw_config_dict(
         # also makes the tier-upgrade path work without re-provisioning:
         # upgrading free → paid just unlocks the UI; the plugins are
         # already loaded from the initial scaffold.
+        # Channel plugins disabled at scaffold time. Originally we shipped
+        # them all `enabled: true` for hot-reload of tier-upgrade flows;
+        # post-flat-fee that path is gone, and on OpenClaw v2026.4.25 a
+        # no-account `enabled: true` channel plugin blocks
+        # `startGatewaySidecars()` from completing — `getReadiness()` then
+        # blocks every HTTP request indefinitely (see deep dive in dev
+        # 2026-04-28). Channels are re-enabled per-provider in
+        # `channel_link_service.py` when the user actually pairs one.
         "channels": {
             "telegram": {
-                "enabled": True,
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
             "discord": {
-                "enabled": True,
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
             "slack": {
-                "enabled": True,
+                "enabled": False,
                 "dmPolicy": "pairing",
             },
         },
