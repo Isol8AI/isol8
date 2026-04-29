@@ -395,61 +395,34 @@ class PaperclipProvisioning:
         """Hard-delete a row whose grace window has elapsed.
 
         Designed to be called from the cleanup cron (T13) for each row
-        returned by ``repo.scan_purge_due``. v1 simplification: we
-        always delete the local row but only call
-        ``admin_client.disable_company`` when this is the last
-        remaining member of the org. Paperclip has no per-user
-        member-removal REST endpoint, so non-final members just lose
-        their local mapping; the Paperclip Better Auth account
-        lingers (intentionally — it's still a valid identity for any
-        other org we may add them to later, and v1 doesn't support
-        cross-org users anyway).
+        returned by ``repo.scan_purge_due``. v1: we delete the local
+        mapping row only; we do NOT archive the underlying Paperclip
+        company even when this user was the last member of their org.
+        Reasoning:
 
-        Order matters: we delete THIS user's row FIRST, then count
-        the org's remaining members via the ``by-org-id`` GSI. A
-        post-delete count of 0 unambiguously means "the user we just
-        purged was the last one"; this is correct regardless of
-        whether the purged user was the org owner or a regular
-        member. (The previous implementation incorrectly archived
-        the company any time the owner row was purged, even with
-        other members still present.)
+        - Calling ``disable_company`` requires a Better Auth session
+          token (post per-org architecture pivot in T11), which means
+          signing in as the just-purged user. That works (the Better
+          Auth account survives our local-row deletion), but adds
+          complexity for a non-essential cleanup.
+        - Orphan Paperclip companies are cheap (rows in a shared
+          Aurora cluster) and harmless. An out-of-band admin sweep
+          script can find companies in Paperclip with no matching
+          ``paperclip-companies`` row and archive them periodically.
 
-        GSI consistency caveat: ``count_org_members`` reads from the
-        ``by-org-id`` GSI which is eventually consistent with the row
-        we just deleted. In edge cases the count may be stale (off by
-        one) — for example, the GSI may briefly still see the just-
-        deleted row, causing us to skip ``disable_company`` when this
-        was actually the last member. Acceptable for v1: the next
-        purge run picks up any stranded company (the hard-delete of
-        the local row already happened, so the user's local mapping
-        is gone; the company itself living another day in Paperclip
-        is harmless until the cron sees it again).
+        Treat purge as "remove the user's mapping; let Paperclip-side
+        cleanup ride a separate ops cadence."
         """
         existing = await self._repo.get(user_id)
         if existing is None:
             return
 
-        # Delete first so the count reflects the post-purge state.
         await self._repo.delete(user_id)
-
         remaining_members = await self._repo.count_org_members(existing.org_id)
-        is_last_member = remaining_members == 0
-        if is_last_member:
-            try:
-                await self._admin.disable_company(company_id=existing.company_id)
-            except PaperclipApiError as e:
-                # Archive failure is logged but not fatal — we already
-                # removed the local row so the cron doesn't loop on it.
-                logger.warning(
-                    "paperclip_provisioning.purge: disable_company failed for %s: %s",
-                    existing.company_id,
-                    e,
-                )
         logger.info(
-            "paperclip_provisioning.purge: user %s purged (org_remaining=%d, last_member=%s)",
+            "paperclip_provisioning.purge: user %s purged (org_remaining=%d)",
             user_id,
             remaining_members,
-            is_last_member,
         )
 
     # ------------------------------------------------------------------

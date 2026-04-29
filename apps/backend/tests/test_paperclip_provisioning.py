@@ -499,17 +499,18 @@ async def test_disable_idempotent_for_missing_row(repo):
     await prov.disable(user_id="user_does_not_exist")
 
 
-async def test_purge_deletes_row_and_archives_company_when_last_member(repo):
+async def test_purge_deletes_row_only_does_not_call_paperclip(repo):
+    """v1: purge removes the local mapping but does NOT touch the
+    Paperclip company. Cleanup of orphaned Paperclip companies is
+    deferred to an out-of-band admin sweep (see purge() docstring)."""
     await _seed_owner(repo, owner_user_id="user_lonely")
     admin = _make_admin_mock()
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
     await prov.purge(user_id="user_lonely")
 
-    admin.disable_company.assert_awaited_once()
-    dc_kwargs = admin.disable_company.call_args.kwargs
-    assert dc_kwargs["company_id"] == "co_acme"
     assert await repo.get("user_lonely") is None
+    admin.disable_company.assert_not_awaited()
 
 
 async def test_purge_does_not_archive_when_other_members_remain(repo):
@@ -691,13 +692,6 @@ async def test_paperclip_api_error_annotated_on_provision_member(repo):
     assert getattr(ei.value, "retryable", None) is True
 
 
-async def test_purge_swallows_disable_company_failure(repo):
-    """If Paperclip is down, we still delete the local row (cron retry-safety)."""
-    await _seed_owner(repo, owner_user_id="user_lonely")
-    admin = _make_admin_mock()
-    admin.disable_company = AsyncMock(side_effect=PaperclipApiError("paperclip down", status_code=502, body="x"))
-    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
-
-    await prov.purge(user_id="user_lonely")
-
-    assert await repo.get("user_lonely") is None
+# test_purge_swallows_disable_company_failure removed — purge no longer calls
+# disable_company in v1 (see purge() docstring; orphan-company cleanup is an
+# out-of-band ops concern, not a per-user purge step).
