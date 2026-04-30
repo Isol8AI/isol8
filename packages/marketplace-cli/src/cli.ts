@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { install } from "./install.js";
 
 const program = new Command();
 program
@@ -14,10 +15,8 @@ program
   .option("--client <name>", "Override client detection: claude-code|cursor|openclaw|copilot")
   .option("--ci", "CI mode — install to ./.isol8/skills/ instead of ~/")
   .action(async (slug, opts) => {
-    // Real implementation lands in T4. For now, stub-print so the bin entry
-    // does something verifiable.
-    console.log(JSON.stringify({ msg: "install stub", slug, opts }));
-    process.exit(0);
+    const code = await install({ slug, ...opts });
+    process.exit(code);
   });
 
 program.parseAsync(process.argv);
