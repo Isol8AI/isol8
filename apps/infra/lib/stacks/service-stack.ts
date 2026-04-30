@@ -51,6 +51,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     webhookDedupTable: dynamodb.Table;
     marketplaceListingsTable: dynamodb.Table;
     marketplaceSearchIndexTable: dynamodb.Table;
+    marketplacePurchasesTable: dynamodb.Table;
+    marketplaceMcpSessionsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -611,6 +613,43 @@ export class ServiceStack extends cdk.Stack {
         resources: [props.kmsKeyArn],
       }),
     );
+
+    // -------------------------------------------------------------------------
+    // Marketplace MCP Fargate Task Definition
+    //
+    // Task-definition only — no FargateService is started in this plan. Plan 3
+    // ships the real container image and service. We register the task def now
+    // so deploy + IAM grants are wired up and Plan 3 only has to swap the
+    // image and add the service.
+    // -------------------------------------------------------------------------
+    const mcpTaskDef = new ecs.FargateTaskDefinition(this, "MarketplaceMcpTaskDef", {
+      family: `isol8-${env}-marketplace-mcp`,
+      cpu: 1024,
+      memoryLimitMiB: 2048,
+      taskRole: this.taskRole,
+      executionRole: taskExecutionRole,
+    });
+
+    // Placeholder image — replaced when Plan 3 ships the MCP service code.
+    // Use a public alpine image so synth + dev deploy succeed; service is not
+    // started in this plan.
+    mcpTaskDef.addContainer("mcp", {
+      image: ecs.ContainerImage.fromRegistry("public.ecr.aws/docker/library/alpine:3.19"),
+      command: ["sh", "-c", "echo 'placeholder — Plan 3 ships the real image' && sleep infinity"],
+      portMappings: [{ containerPort: 3000 }],
+      logging: ecs.LogDriver.awsLogs({ streamPrefix: `marketplace-mcp-${env}` }),
+      environment: {
+        ENV: env,
+        MARKETPLACE_PURCHASES_TABLE: props.database.marketplacePurchasesTable.tableName,
+        MARKETPLACE_LISTINGS_TABLE: props.database.marketplaceListingsTable.tableName,
+        MARKETPLACE_MCP_SESSIONS_TABLE: props.database.marketplaceMcpSessionsTable.tableName,
+        MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
+      },
+    });
+
+    props.database.marketplacePurchasesTable.grantReadData(this.taskRole);
+    props.database.marketplaceMcpSessionsTable.grantReadWriteData(this.taskRole);
+    marketplaceArtifactsBucket.grantRead(this.taskRole);
 
     // -------------------------------------------------------------------------
     // Log Group

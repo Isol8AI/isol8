@@ -87,6 +87,8 @@ export class LocalStage extends cdk.Stage {
         webhookDedupTable: database.webhookDedupTable,
         marketplaceListingsTable: database.marketplaceListingsTable,
         marketplaceSearchIndexTable: database.marketplaceSearchIndexTable,
+        marketplacePurchasesTable: database.marketplacePurchasesTable,
+        marketplaceMcpSessionsTable: database.marketplaceMcpSessionsTable,
       },
       secretNames: {
         clerkIssuer: `isol8/${env}/clerk_issuer`,

@@ -71,6 +71,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       webhookDedupTable: database.webhookDedupTable,
       marketplaceListingsTable: database.marketplaceListingsTable,
       marketplaceSearchIndexTable: database.marketplaceSearchIndexTable,
+      marketplacePurchasesTable: database.marketplacePurchasesTable,
+      marketplaceMcpSessionsTable: database.marketplaceMcpSessionsTable,
     },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
@@ -280,6 +282,18 @@ describe("ServiceStack — search-indexer Lambda", () => {
           }),
         ]),
       }),
+    });
+  });
+});
+
+describe("ServiceStack — marketplace-mcp Fargate task definition", () => {
+  test("creates marketplace-mcp Fargate task definition (1 vCPU / 2 GB)", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-marketplace-mcp",
+      Cpu: "1024",
+      Memory: "2048",
+      NetworkMode: "awsvpc",
+      RequiresCompatibilities: ["FARGATE"],
     });
   });
 });
