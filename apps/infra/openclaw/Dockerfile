@@ -170,6 +170,24 @@ RUN cd /app/dist/extensions/browser && \
     npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev node-edge-tts@^1.2.10 && \
     chown -R node:node /app/dist/extensions
 
+# ---- Layer 8d: pre-download Playwright Chromium browser ----
+# After Layer 8c installs playwright-core, the browser plugin still pays
+# ~6 minutes on cold start downloading + extracting Chromium (~150 MB)
+# the first time it spins up — observed empirically as the gap between
+# `[gateway] starting channels and sidecars...` (T+29s) and
+# `[browser/server] Browser control listening` (T+446s).
+#
+# `playwright-core` is the runtime; the `playwright` package wraps it
+# and provides the `playwright install` CLI. We install playwright
+# alongside playwright-core into the browser plugin's node_modules,
+# then run the CLI with PLAYWRIGHT_BROWSERS_PATH pointing at the
+# default cache location so the binary is ready when the plugin starts.
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
+RUN cd /app/dist/extensions/browser && \
+    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev playwright@1.59.1 && \
+    HOME=/home/node ./node_modules/.bin/playwright install --with-deps chromium && \
+    chown -R node:node /app/dist/extensions/browser /home/node/.cache
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node
