@@ -58,4 +58,24 @@ describe("DatabaseStack — marketplace tables", () => {
       DeletionPolicy: "Delete",
     });
   });
+
+  test("creates marketplace-purchases table with buyer_id PK", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-purchases",
+      KeySchema: [
+        { AttributeName: "buyer_id", KeyType: "HASH" },
+        { AttributeName: "purchase_id", KeyType: "RANGE" },
+      ],
+    });
+  });
+
+  test("marketplace-purchases has listing_id and license_key GSIs", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-purchases",
+      GlobalSecondaryIndexes: Match.arrayWith([
+        Match.objectLike({ IndexName: "listing-created-index" }),
+        Match.objectLike({ IndexName: "license-key-index" }),
+      ]),
+    });
+  });
 });

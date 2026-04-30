@@ -28,6 +28,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly oauthTokensTable: dynamodb.Table;
   public readonly marketplaceListingsTable: dynamodb.Table;
   public readonly marketplaceListingVersionsTable: dynamodb.Table;
+  public readonly marketplacePurchasesTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -274,6 +275,26 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+
+    this.marketplacePurchasesTable = new dynamodb.Table(this, "MarketplacePurchasesTable", {
+      tableName: `isol8-${env}-marketplace-purchases`,
+      partitionKey: { name: "buyer_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "purchase_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
+      indexName: "listing-created-index",
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
+      indexName: "license-key-index",
+      partitionKey: { name: "license_key", type: dynamodb.AttributeType.STRING },
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
