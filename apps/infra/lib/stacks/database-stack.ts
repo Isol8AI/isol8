@@ -26,6 +26,8 @@ export class DatabaseStack extends cdk.Stack {
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
+  public readonly marketplaceListingsTable: dynamodb.Table;
+  public readonly marketplaceListingVersionsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -229,6 +231,49 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "OAuthTokensTableName", {
       value: this.oauthTokensTable.tableName,
       exportName: `${this.stackName}-oauth-tokens-table`,
+    });
+
+    this.marketplaceListingsTable = new dynamodb.Table(this, "MarketplaceListingsTable", {
+      tableName: `isol8-${env}-marketplace-listings`,
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "slug-version-index",
+      partitionKey: { name: "slug", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "seller-created-index",
+      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "status-published-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "tag-published-index",
+      partitionKey: { name: "tag", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.marketplaceListingVersionsTable = new dynamodb.Table(this, "MarketplaceListingVersionsTable", {
+      tableName: `isol8-${env}-marketplace-listing-versions`,
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
