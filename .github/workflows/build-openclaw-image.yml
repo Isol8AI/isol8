@@ -61,6 +61,7 @@ jobs:
       - name: Convert image to SOCI v2 and push
         env:
           SOCI_VERSION: "0.13.0"
+          NERDCTL_VERSION: "2.2.2"
           IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
         # Fargate refuses SOCI Index Manifest v1 for accounts that didn't
         # already use SOCI before 2025-07-03 (per AWS containers blog
@@ -74,6 +75,12 @@ jobs:
           curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
             | sudo tar -xz -C /usr/local/bin/ soci
           sudo chmod +x /usr/local/bin/soci
+
+          # `crazy-max/ghaction-setup-containerd@v3` installs containerd + ctr,
+          # but not nerdctl. Pull the static binary from upstream releases.
+          curl -sSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-${NERDCTL_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ nerdctl
+          sudo chmod +x /usr/local/bin/nerdctl
 
           # Authenticate nerdctl to ECR — both pull and push need this.
           # Upstream openclaw cli-usage.md mandates nerdctl (NOT `ctr image
