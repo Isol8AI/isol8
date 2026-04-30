@@ -29,6 +29,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplaceListingsTable: dynamodb.Table;
   public readonly marketplaceListingVersionsTable: dynamodb.Table;
   public readonly marketplacePurchasesTable: dynamodb.Table;
+  public readonly marketplacePayoutAccountsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -295,6 +296,16 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplacePurchasesTable.addGlobalSecondaryIndex({
       indexName: "license-key-index",
       partitionKey: { name: "license_key", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.marketplacePayoutAccountsTable = new dynamodb.Table(this, "MarketplacePayoutAccountsTable", {
+      tableName: `isol8-${env}-marketplace-payout-accounts`,
+      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

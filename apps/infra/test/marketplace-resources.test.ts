@@ -78,4 +78,11 @@ describe("DatabaseStack — marketplace tables", () => {
       ]),
     });
   });
+
+  test("creates marketplace-payout-accounts table with seller_id PK", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-payout-accounts",
+      KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
+    });
+  });
 });
