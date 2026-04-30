@@ -123,6 +123,64 @@ RUN npm i -g --ignore-scripts \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl
 
+# ---- Layer 8b: qmd at openclaw's hardcoded lookup path ----
+# OpenClaw's memory subsystem hardcodes /home/node/.npm-global/bin/qmd
+# (see runtime log: "qmd binary unavailable (...); falling back to builtin").
+# Layer 8 puts qmd at /usr/local/bin/qmd via NPM_CONFIG_PREFIX=/usr/local;
+# this layer symlinks the expected path so the built-in fallback never fires.
+RUN mkdir -p /home/node/.npm-global/bin && \
+    ln -sf /usr/local/bin/qmd /home/node/.npm-global/bin/qmd && \
+    chown -R node:node /home/node/.npm-global
+
+# ---- Layer 8c: pre-bake openclaw plugin runtime deps ----
+# Plugins declare bundledRuntimeDeps in their package.json's `openclaw` config.
+# At first start, openclaw npm-installs each plugin's deps into
+# /app/dist/extensions/<plugin>/node_modules/ unless they already exist with a
+# matching semver. Pre-installing in the image eliminates ~5min of cold-start
+# (browser plugin's Playwright install dominates).
+#
+# Detection logic (upstream src/plugins/bundled-runtime-deps.ts):
+#   readInstalledDependencyVersion() reads <root>/node_modules/<dep>/package.json
+#   and semver-checks against the requested range. Match → skip install.
+#
+# Spec list extracted from the runtime install log:
+#   [plugins] browser installed bundled runtime deps:
+#     @modelcontextprotocol/sdk@1.29.0, commander@^14.0.3, express@^5.2.1,
+#     playwright-core@1.59.1, typebox@1.1.28, undici@8.1.0, ws@^8.20.0
+#   [plugins] deepgram installed bundled runtime deps: ws@^8.20.0
+#   [plugins] elevenlabs installed bundled runtime deps: ws@^8.20.0
+#   [plugins] microsoft installed bundled runtime deps: node-edge-tts@^1.2.10
+#
+# We use a shared `--prefix` for each plugin dir so npm scopes to the plugin's
+# own node_modules without complaining about a missing package.json.
+RUN cd /app/dist/extensions/browser && \
+    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev \
+      @modelcontextprotocol/sdk@1.29.0 \
+      commander@^14.0.3 \
+      express@^5.2.1 \
+      playwright-core@1.59.1 \
+      typebox@1.1.28 \
+      undici@8.1.0 \
+      ws@^8.20.0 && \
+    cd /app/dist/extensions/deepgram && \
+    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ws@^8.20.0 && \
+    cd /app/dist/extensions/elevenlabs && \
+    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ws@^8.20.0 && \
+    cd /app/dist/extensions/microsoft && \
+    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev node-edge-tts@^1.2.10 && \
+    chown -R node:node /app/dist/extensions
+
+# ---- Layer 8d: pre-download Playwright Chromium browser ----
+# playwright-core lazily downloads ~150 MB of Chromium binaries to
+# $PLAYWRIGHT_BROWSERS_PATH (default: ~/.cache/ms-playwright/) on first launch.
+# Bake the browser into the image at the same default path so the browser
+# plugin starts instantly. /home/node/.cache is in the image filesystem (only
+# /home/node/.openclaw is EFS-mounted), so this layer persists across runs.
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
+RUN cd /app/dist/extensions/browser && \
+    HOME=/home/node node_modules/.bin/playwright install chromium && \
+    chown -R node:node /home/node/.cache
+
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node
