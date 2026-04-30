@@ -55,10 +55,37 @@ jobs:
         run: |
           docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
 
+      - name: Generate and push SOCI index
+        # Fargate auto-detects a SOCI index in ECR and switches the image
+        # to lazy-loading: pulls only the index up front (~tens of MB) and
+        # streams individual file pages on demand. Drops cold task pull
+        # from ~3m24s to ~30s for our 5+ GB image.
+        # Spec: docs/superpowers/specs/2026-04-29-openclaw-soci-snapshotter-design.md
+        env:
+          SOCI_VERSION: "0.10.0"
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          echo "Installing SOCI v${SOCI_VERSION}..."
+          curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ soci
+          sudo chmod +x /usr/local/bin/soci
+          soci --version
+
+          echo "Creating SOCI index for ${IMAGE_REF}..."
+          soci create "${IMAGE_REF}"
+
+          echo "Pushing SOCI index to ECR..."
+          soci push "${IMAGE_REF}"
+
+          echo "SOCI index pushed; Fargate will lazy-load this image."
+
       - name: Summary
         run: |
           echo "## Built image" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "\`${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "SOCI index pushed; Fargate will lazy-load on next task start." >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "Bump \`openclaw-version.json#dev.tag\` to \`${{ steps.meta.outputs.tag }}\` in a PR to deploy to dev." >> "$GITHUB_STEP_SUMMARY"
