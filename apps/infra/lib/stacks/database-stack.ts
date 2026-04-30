@@ -30,6 +30,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplaceListingVersionsTable: dynamodb.Table;
   public readonly marketplacePurchasesTable: dynamodb.Table;
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
+  public readonly marketplaceTakedownsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -301,6 +302,17 @@ export class DatabaseStack extends cdk.Stack {
     this.marketplacePayoutAccountsTable = new dynamodb.Table(this, "MarketplacePayoutAccountsTable", {
       tableName: `isol8-${env}-marketplace-payout-accounts`,
       partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    this.marketplaceTakedownsTable = new dynamodb.Table(this, "MarketplaceTakedownsTable", {
+      tableName: `isol8-${env}-marketplace-takedowns`,
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "takedown_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: config.removalPolicy,
       pointInTimeRecovery: true,

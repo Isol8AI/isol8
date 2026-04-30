@@ -85,4 +85,14 @@ describe("DatabaseStack — marketplace tables", () => {
       KeySchema: [{ AttributeName: "seller_id", KeyType: "HASH" }],
     });
   });
+
+  test("creates marketplace-takedowns table with composite key", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-takedowns",
+      KeySchema: [
+        { AttributeName: "listing_id", KeyType: "HASH" },
+        { AttributeName: "takedown_id", KeyType: "RANGE" },
+      ],
+    });
+  });
 });
