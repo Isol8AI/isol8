@@ -246,4 +246,40 @@ describe("ServiceStack — search-indexer Lambda", () => {
       StartingPosition: "LATEST",
     });
   });
+
+  test("Lambda has dynamodb:PutItem permission on search-index table", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: Match.arrayWith(["dynamodb:PutItem"]),
+          }),
+        ]),
+      }),
+    });
+  });
+
+  test("Lambda has dynamodb stream-read permission on listings table", () => {
+    // CDK splits stream-read permissions across two statements:
+    //   1) ListStreams on "*" (stream listing is account-wide, not ARN-scoped)
+    //   2) DescribeStream + GetRecords + GetShardIterator on the stream ARN
+    // We assert both statements exist on the Lambda's service role policy.
+    // (arrayWith matches sequentially, so we keep them in the order CDK emits.)
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::IAM::Policy", {
+      PolicyDocument: Match.objectLike({
+        Statement: Match.arrayWith([
+          Match.objectLike({
+            Action: "dynamodb:ListStreams",
+          }),
+          Match.objectLike({
+            Action: Match.arrayWith([
+              "dynamodb:DescribeStream",
+              "dynamodb:GetRecords",
+              "dynamodb:GetShardIterator",
+            ]),
+          }),
+        ]),
+      }),
+    });
+  });
 });
