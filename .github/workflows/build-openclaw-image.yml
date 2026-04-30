@@ -55,6 +55,23 @@ jobs:
         run: |
           docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
 
+      - name: Set up containerd
+        uses: crazy-max/ghaction-setup-containerd@v3
+
+      - name: Generate and push SOCI index
+        env:
+          SOCI_VERSION: "0.13.0"
+          IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        run: |
+          set -euo pipefail
+          curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin/ soci
+          sudo chmod +x /usr/local/bin/soci
+          ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
+          sudo ctr image pull --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
+          sudo soci create "${IMAGE_REF}"
+          sudo soci push --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
+
       - name: Summary
         run: |
           echo "## Built image" >> "$GITHUB_STEP_SUMMARY"
