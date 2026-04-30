@@ -1,7 +1,7 @@
 # Design: marketplace.isol8.co
 
 **Date:** 2026-04-29
-**Status:** APPROVED (user accepted 2026-04-29 after revision 3; agents-led reframing applied 2026-04-29)
+**Status:** APPROVED (user accepted 2026-04-29 after revision 3; agents-led reframing + plan-eng-review fixes applied 2026-04-29)
 **Mode:** Startup (produced via /office-hours diagnostic)
 **Branch:** main
 **Author:** prabuddhagupta
@@ -392,7 +392,7 @@ Two flavors of takedown:
 
 ### CLI installer: `@isol8/marketplace-cli`
 
-Published to npm. Public, MIT-licensed. `npx @isol8/marketplace install <slug>` does:
+Published to npm via `.github/workflows/publish-marketplace-cli.yml` (added in v1 per plan-eng-review). Workflow triggers on `marketplace-cli-v*` git tags, runs the package's test suite, and publishes via `NPM_TOKEN` secret. Public, MIT-licensed. `npx @isol8/marketplace install <slug>` does:
 
 1. Resolves slug to listing version via `GET marketplace.isol8.co/api/v1/marketplace/listings/:slug`.
 2. If the listing is paid and no license key is in `~/.isol8/marketplace/licenses.json`, prompts the user to log in (Clerk's email magic-link flow, since Clerk does **not** ship device-code OAuth — the CLI opens a browser and polls a short-lived code endpoint) and purchase, or accepts a `--license-key` flag.
@@ -432,9 +432,11 @@ Update flow: `npx @isol8/marketplace update [slug]` queries for new versions of 
 6. Client invokes tools; server dispatches each call through the runtime.
 7. Connection close → session row is updated with `last_activity_at`; runtime returned to pool.
 
-**Two runtimes:**
+**v1 scope cut (applied via /plan-eng-review):** the OpenClaw runtime is **NOT in v1**. OpenClaw containers today are single-tenant by design (per-user EFS access points, per-user state). Adding multi-tenant capability inside OpenClaw to support a marketplace-shared warm pool is 3-4 weeks of engineering inside OpenClaw itself plus a security-review tax — work that wasn't scoped. v1 MCP serves SKILL.md format listings only. OpenClaw-format agents reach buyers via two existing paths: the CLI installer (CLI download + manual deploy) and direct Isol8-container deploy (the existing `catalog_service.deploy()` wrapper for Isol8 users). When OpenClaw multi-tenancy lands in Phase 2, the OpenClaw runtime can join the MCP service.
 
-- **OpenClaw runtime** (for `format = "openclaw"` listings): a warm pool of headless OpenClaw containers on Fargate, sized **per active listing-version, not per license key**. One warm container per `(listing_id, version)` that has had >=1 session in the last 30 minutes; idle containers scale to zero after 30 min. A single warm container serves multiple concurrent buyer sessions; concurrent sessions are isolated via a `session_id` partition inside the container (each session gets its own scratch directory, its own message log, and its own MCP tool-call routing). Buyer A and Buyer B running the same purchased listing share runtime code but never share state.
+**One runtime in v1:**
+
+- **OpenClaw runtime: NOT IN v1.** Listings with `format = "openclaw"` and `delivery_method = "mcp"` are rejected at publish-time validation with a clear seller-facing message. OpenClaw listings publish with `delivery_method = "cli"` only (or `"both"` interpreted as CLI-only).
 - **SKILL.md runtime** (for `format = "skillmd"` listings): SKILL.md is **not** executable code. The runtime exposes the SKILL.md content + tool definitions to the MCP client; the buyer's LLM (Claude/GPT/etc.) does the reasoning. The server's job is only:
   - Return the SKILL.md as the tool's instruction context via MCP's resources protocol.
   - Expose any companion scripts as MCP tools, executed in a sandboxed Bun subprocess with no network and a read-only filesystem mount of the skill's bundled support files.
@@ -443,11 +445,9 @@ Update flow: `npx @isol8/marketplace update [slug]` queries for new versions of 
 
 **Isolation model (corrected from v2 of doc):** the security boundary is "skill code is the same across buyers of the same listing-version, so it is acceptable for them to share runtime code; what must not leak is per-session data." Per-session data (working directory, scratch files, message history, tool-call results) is namespaced by `session_id` in DynamoDB and on the runtime's local filesystem. Cross-session reads are prevented by enforcing path scoping on every runtime read and write.
 
-**Cost math (corrected from v2 of doc):**
+**Cost math (revised after MCP-SKILL.md-only scope cut):**
 
-Assume 100 listings active enough to keep a warm container in the last 30 minutes. Fargate task at 0.5 vCPU / 1GB RAM is ~$15/mo always-on. 100 warm containers ≈ $1500/mo. SKILL.md runtime is multiplexed and cheap (~$50/mo for a small Bun cluster). Total v1 cost estimate: **~$1500-2000/mo at 100 concurrently warm listings**.
-
-This is materially higher than the original $200-400 estimate I gave in v2. Cost scales linearly with concurrent-active-listings count. If launch shows <30 concurrent active listings, cost is ~$500-700/mo. If MCP-format listings prove unpopular, the cost is much lower because the SKILL.md runtime carries most traffic.
+With OpenClaw runtime cut from v1 MCP, the only runtime is the SKILL.md Bun-subprocess cluster. Multiplexable, ephemeral per call. Estimated cost: **~$50-150/mo** for a small Bun cluster behind ALB at the v1 100-concurrent-session target. This is the largest cost reduction from any single eng-review fix in this session.
 
 The cost is passed through to sellers via the platform's per-charge fee (the seller's transferred amount is reduced to cover hosted-execution overhead). Listings using `delivery_method = "cli"` only pay no MCP overhead.
 
@@ -653,7 +653,7 @@ Goal: 3+ replies on each side before the implementation plan is finalized. The r
 
 ## Reviewer Concerns
 
-This doc went through two adversarial review passes (5/10 → 7/10 → revised to address remaining concerns). Convergence reached after iteration 3 per the office-hours skill's max-iteration rule.
+This doc went through two adversarial review passes (5/10 → 7/10 → revised to address remaining concerns), the agents-led reframing pass, and a /plan-eng-review pass (2 issues found, 2 fixed inline; 2 watchpoints captured for the implementation plan). Convergence reached.
 
 **User-accepted risks (explicitly chosen, will not be re-litigated):**
 
@@ -678,14 +678,30 @@ This doc went through two adversarial review passes (5/10 → 7/10 → revised t
 **Carried-forward concerns (live for the implementation plan to address):**
 
 - Stripe held-balance sandbox testing required week 1 of implementation to validate the separate-charges-and-transfers flow end-to-end before code lands.
-- MCP server cost is sensitive to listing mix; instrument from launch and revisit if costs run hot.
-- The 18-24 week effort estimate is optimistic if the OpenClaw runtime requires per-listing customization at scale; revisit at implementation-plan stage.
+- MCP server cost is sensitive to listing mix; instrument from launch.
+- **Watchpoint:** publish-v2 atomic flip on the `marketplace-listings.LATEST` row must use DynamoDB `TransactWriteItems` to update both that row and the `marketplace-listing-versions` row in a single transaction. Spec describes the atomicity requirement; implementation must use the right primitive.
+- **Watchpoint:** `marketplace-search-index.shard_id` must be uniform-random (e.g., CRC32 of listing_id mod 16, or hash of name+timestamp). Naive `listing_id % 16` can cluster on common UUID prefixes and create hot partitions.
+- **Effort estimate:** v1 effort revised from 18-24 weeks down to **15-20 weeks** after the MCP-SKILL.md-only scope cut. CC-hours similarly drop from 80-120 to 60-90. Revisit at implementation-plan stage.
 
 ## Next steps
 
-1. Run `/plan-eng-review` (HOLD SCOPE) on this design to lock architecture, error map, test plan, and rollout sequence.
+1. ~~Run `/plan-eng-review` on this design~~ — done 2026-04-29; 2 issues found and fixed inline (CLI publish CI workflow added to v1; MCP runtime cut to SKILL.md-only). 2 watchpoints captured. Test plan artifact written.
 2. Optional: `/plan-design-review` on the marketplace storefront and publishing UX before frontend work starts.
 3. Then `/superpowers:writing-plans` to convert this into an implementation plan.
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | (de facto via /office-hours diagnostic) |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | (deferred — 3 prior adversarial review iterations covered the same surface) |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 2 issues found, 2 fixed; 2 watchpoints |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | optional next step |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | optional |
+
+- **CROSS-MODEL:** office-hours diagnostic + 2 adversarial-review iterations + agents-led reframing + 1 eng-review pass. Final convergence achieved.
+- **UNRESOLVED:** 0
+- **VERDICT:** ENG CLEARED — ready for `/superpowers:writing-plans` once the customer-conversation assignment lands.
 
 ## What I noticed about how you think
 
