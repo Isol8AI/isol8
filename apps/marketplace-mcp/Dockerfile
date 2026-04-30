@@ -1,6 +1,8 @@
-FROM oven/bun:1.1-alpine
+FROM oven/bun:1.3-alpine
 WORKDIR /app
-COPY package.json bun.lockb* ./
+# Bun 1.2+ writes text-format `bun.lock`; older versions wrote `bun.lockb`.
+# Glob both so the build works against either format.
+COPY package.json bun.lock* bun.lockb* ./
 RUN bun install --production --frozen-lockfile
 COPY . .
 RUN bun build src/index.ts --target=bun --outfile=dist/index.js
