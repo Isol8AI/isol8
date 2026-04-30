@@ -95,4 +95,15 @@ describe("DatabaseStack — marketplace tables", () => {
       ],
     });
   });
+
+  test("creates marketplace-mcp-sessions table with TTL on 'ttl' attribute", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-mcp-sessions",
+      KeySchema: [{ AttributeName: "session_id", KeyType: "HASH" }],
+      TimeToLiveSpecification: {
+        AttributeName: "ttl",
+        Enabled: true,
+      },
+    });
+  });
 });

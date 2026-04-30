@@ -31,6 +31,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePurchasesTable: dynamodb.Table;
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
+  public readonly marketplaceMcpSessionsTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -318,6 +319,17 @@ export class DatabaseStack extends cdk.Stack {
       pointInTimeRecovery: true,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
+    });
+
+    this.marketplaceMcpSessionsTable = new dynamodb.Table(this, "MarketplaceMcpSessionsTable", {
+      tableName: `isol8-${env}-marketplace-mcp-sessions`,
+      partitionKey: { name: "session_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      timeToLiveAttribute: "ttl",
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
