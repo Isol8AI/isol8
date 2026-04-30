@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user
-from core.containers.workspace import delete_codex_auth
+from core.containers.workspace import delete_auth_profile_store
 from core.services.oauth_service import (
     DevicePollPending,
     DevicePollResult,
@@ -77,18 +77,18 @@ async def poll(ctx: AuthContext = Depends(get_current_user)):
     "/disconnect",
     summary="Revoke the user's stored ChatGPT OAuth tokens",
     description=(
-        "Deletes the persisted OAuth row AND the EFS-staged Codex auth.json so "
+        "Deletes the persisted OAuth row AND the EFS-staged auth-profiles.json so "
         "the container can no longer use the tokens cold. After this, /start can "
         "be called again to begin a new OAuth session."
     ),
 )
 async def disconnect(ctx: AuthContext = Depends(get_current_user)):
     await revoke_user_oauth(user_id=ctx.user_id)
-    # Also remove the staged auth.json from EFS — without this the container
-    # keeps the tokens for the rest of its lifetime even after we revoke the
-    # row. Codex P1 on PR #393.
+    # Also remove the staged auth-profiles.json from EFS — without this the
+    # container keeps the tokens for the rest of its lifetime even after we
+    # revoke the row.
     try:
-        await delete_codex_auth(user_id=ctx.user_id)
+        await delete_auth_profile_store(user_id=ctx.user_id)
     except Exception:
         # Best-effort: the row deletion above is the authoritative signal.
         # EFS unlink failures shouldn't 5xx the disconnect.

@@ -2002,7 +2002,7 @@ class TestProvisionUserContainerProviderChoice:
     """Tests for the Plan 2 Task 13 provider_choice plumbing.
 
     Each provider_choice triggers a different pre-task setup:
-      * chatgpt_oauth -> pre_stage_codex_auth runs BEFORE the ECS service
+      * chatgpt_oauth -> pre_stage_auth_profile_store runs BEFORE the ECS service
         is created so the codex auth.json is on EFS at first boot.
       * byo_key       -> per-user Secrets Manager ARN is added to the task
         definition's secrets[] block under OPENAI_API_KEY/ANTHROPIC_API_KEY.
@@ -2145,7 +2145,7 @@ class TestProvisionUserContainerProviderChoice:
         with (
             patch("core.containers.ecs_manager.container_repo") as mock_repo,
             patch("core.services.oauth_service.get_decrypted_tokens", AsyncMock(return_value=tokens)),
-            patch("core.containers.workspace.pre_stage_codex_auth", side_effect=_record_pre_stage),
+            patch("core.containers.workspace.pre_stage_auth_profile_store", side_effect=_record_pre_stage),
             patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
             patch.object(manager, "write_user_configs", new_callable=AsyncMock),
         ):
@@ -2156,21 +2156,26 @@ class TestProvisionUserContainerProviderChoice:
 
             await manager.provision_user_container("user_test_123", provider_choice="chatgpt_oauth")
 
-            assert call_order, "pre_stage_codex_auth and create_service must both be called"
-            # pre_stage_codex_auth runs before create_service.
+            assert call_order, "pre_stage_auth_profile_store and create_service must both be called"
+            # pre_stage_auth_profile_store runs before create_service.
             assert call_order.index("pre_stage") < call_order.index("create_service"), (
-                f"pre_stage_codex_auth must run before create_service, got order={call_order}"
+                f"pre_stage_auth_profile_store must run before create_service, got order={call_order}"
             )
 
-            # The per-user task def must carry CODEX_HOME pointing at the
-            # in-container view of the EFS-staged auth.json dir. Without this
-            # OpenClaw falls back to ~/.codex (no auth.json there) and refuses
-            # to run inference.
+            # The per-user task def MUST NOT carry CODEX_HOME. We used to
+            # inject it pointing at codex/auth.json — that approach was
+            # wrong: OpenClaw's openai-codex provider reads from
+            # <agentDir>/auth-profiles.json, not from $CODEX_HOME/auth.json.
+            # The fix in pre_stage_auth_profile_store writes to the right
+            # place; CODEX_HOME is now dead weight. Asserting absence to
+            # prevent regression to the old approach.
             reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             envs = reg_kwargs["containerDefinitions"][0].get("environment") or []
             codex_home = next((e for e in envs if e["name"] == "CODEX_HOME"), None)
-            assert codex_home is not None, "chatgpt_oauth must inject CODEX_HOME on the per-user task"
-            assert codex_home["value"] == "/home/node/.openclaw/codex"
+            assert codex_home is None, (
+                "chatgpt_oauth must NOT inject CODEX_HOME — credentials go in "
+                "<agentDir>/auth-profiles.json, not codex/auth.json"
+            )
 
     @pytest.mark.asyncio
     async def test_provision_chatgpt_oauth_aborts_when_no_tokens(self, manager, mock_ecs_client, mock_efs_client):

@@ -650,30 +650,48 @@ class Workspace:
         return self.user_path(user_id) / "workspaces" / agent_id
 
 
-async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
+# OpenClaw's auth-profile store schema. Mirrors the upstream
+# AuthProfileStore type defined in src/agents/auth-profiles/types.ts; the
+# version constant is `AUTH_STORE_VERSION = 1` from
+# src/agents/auth-profiles/constants.ts at the openclaw version we're
+# pinned to (2026.4.23-slim). Bump _AUTH_STORE_VERSION here when bumping
+# openclaw-version.json#upstream past a release that changes the schema.
+_AUTH_STORE_VERSION = 1
+
+# Verbatim copy of upstream's CODEX_CLI_PROFILE_ID constant — same file
+# as above. Used as the key in AuthProfileStore.profiles for ChatGPT OAuth
+# credentials so OpenClaw's auth-profile resolver finds the row by its
+# canonical id.
+_CODEX_CLI_PROFILE_ID = "openai-codex:codex-cli"
+
+
+async def pre_stage_auth_profile_store(*, user_id: str, oauth_tokens: dict) -> None:
     """Write the user's ChatGPT OAuth profile to EFS before container start.
 
-    The file shape is what OpenClaw's openai-codex provider reads at boot
-    via $CODEX_HOME/auth.json (default ~/.codex/auth.json). The per-user
-    ECS task sets CODEX_HOME=/home/node/.openclaw/codex (the in-container
-    view of `<EFS>/users/{user_id}/codex/` after the access-point chroot
-    mounts /users/{user_id} at /home/node/.openclaw). See
-    ecs_manager.provision_user_container's chatgpt_oauth branch.
-    Per spec §5.1.
+    Writes ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
+    in OpenClaw's AuthProfileStore JSON shape so the openai-codex provider
+    finds the credentials at boot. The EFS access-point chroots
+    ``/users/{user_id}`` to ``/home/node/.openclaw`` inside the container,
+    so the file is read at ``/home/node/.openclaw/agents/main/agent/auth-profiles.json``
+    — the path OpenClaw's runtime probes for `agent="main"` (the implicit
+    default agent declared in our openclaw.json).
+
+    See ``docs/superpowers/specs/2026-04-29-chatgpt-oauth-auth-profiles-design.md``.
 
     Re-OAuth callers can re-invoke this helper; the file is overwritten,
-    not merged.
+    not merged. After provision, OpenClaw owns the file's lifecycle and
+    refreshes the access token in-place using the long-lived refresh token.
 
     Args:
         user_id: our internal user_id.
-        oauth_tokens: dict with keys access_token, refresh_token, and
-            (optional) account_id. Sourced from oauth_service.poll_device_code.
+        oauth_tokens: dict with required keys ``access_token`` and
+            ``refresh_token``, optional keys ``expires_at`` (ms epoch) and
+            ``email``. Sourced from oauth_service.get_decrypted_tokens.
 
-    Note: tokens are written in plaintext to EFS. This is intentional —
-    OpenClaw's openai-codex provider reads them at boot. Security boundary
-    is EFS encryption-at-rest (KMS) + per-user EFS access point UID/GID
-    isolation, NOT in-file encryption. Don't try to "fix" by encrypting
-    here; the container can't decrypt at boot.
+    Note: tokens are written in plaintext to EFS. Security boundary is
+    EFS encryption-at-rest (KMS) + per-user EFS access point UID/GID
+    isolation, NOT in-file encryption — the container can't decrypt at
+    boot, so encrypting here would just break OpenClaw.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -687,25 +705,45 @@ async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
     if not efs_root:
         raise RuntimeError("EFS_MOUNT_PATH is empty - backend is misconfigured.")
 
-    base = Path(efs_root) / user_id / "codex"
+    # OpenClaw's auth-profile resolver reads <agentDir>/auth-profiles.json
+    # where agentDir for the implicit "main" agent is
+    # <openclaw_home>/agents/main/agent/. Our openclaw.json declares the
+    # main agent in agents.list (see config.py).
+    base = Path(efs_root) / user_id / "agents" / "main" / "agent"
     base.mkdir(parents=True, exist_ok=True)
 
-    payload = {
-        "auth_mode": "chatgpt",
-        "tokens": {
-            "access_token": oauth_tokens["access_token"],
-            "refresh_token": oauth_tokens["refresh_token"],
-        },
+    profile: dict = {
+        "type": "oauth",
+        "provider": "openai-codex",
+        "access": oauth_tokens["access_token"],
+        "refresh": oauth_tokens["refresh_token"],
     }
-    if oauth_tokens.get("account_id"):
-        payload["tokens"]["account_id"] = oauth_tokens["account_id"]
+    # `expires` is a ms-epoch number per upstream OAuthCredentials type.
+    # When absent, OpenClaw treats the access token as already-expired and
+    # refreshes on first use; that's correct behavior for cold provision
+    # since our DDB tokens may have aged.
+    if oauth_tokens.get("expires_at") is not None:
+        profile["expires"] = int(oauth_tokens["expires_at"])
+    if oauth_tokens.get("email"):
+        profile["email"] = oauth_tokens["email"]
+
+    payload = {
+        "version": _AUTH_STORE_VERSION,
+        "profiles": {_CODEX_CLI_PROFILE_ID: profile},
+    }
 
     # Atomic write: write to .tmp + os.replace. Truncate-then-write isn't
     # crash-atomic — a re-OAuth that crashes mid-write would leave OpenClaw
     # with corrupt JSON. os.replace is atomic on POSIX (same filesystem).
-    auth_path = base / "auth.json"
-    tmp_path = base / "auth.json.tmp"
+    auth_path = base / "auth-profiles.json"
+    tmp_path = base / "auth-profiles.json.tmp"
     tmp_path.write_text(json.dumps(payload, indent=2))
+
+    # File contains long-lived OAuth tokens — owner-only.
+    try:
+        os.chmod(str(tmp_path), 0o600)
+    except OSError:
+        pass
 
     # OpenClaw container runs as UID 1000 — match ownership so the
     # in-container token-refresh logic can rotate the file. Best-effort;
@@ -717,24 +755,25 @@ async def pre_stage_codex_auth(*, user_id: str, oauth_tokens: dict) -> None:
 
     os.replace(str(tmp_path), str(auth_path))
 
-    # Chown the parent dir (best-effort, separate from the file).
-    try:
-        os.chown(str(base), 1000, 1000)
-    except (PermissionError, OSError):
-        pass
+    # Chown the parent dirs (best-effort, separate from the file).
+    for dir_path in (base, base.parent, base.parent.parent):
+        try:
+            os.chown(str(dir_path), 1000, 1000)
+        except (PermissionError, OSError):
+            pass
 
     logger.info(
-        "pre_staged_codex_auth",
-        extra={"user_id": user_id, "has_account_id": "account_id" in oauth_tokens},
+        "pre_staged_auth_profile_store",
+        extra={"user_id": user_id, "has_email": "email" in profile},
     )
 
 
-async def delete_codex_auth(*, user_id: str) -> None:
-    """Remove the staged Codex auth.json from the user's EFS workspace.
+async def delete_auth_profile_store(*, user_id: str) -> None:
+    """Remove the staged auth-profiles.json from the user's EFS workspace.
 
-    Paired with pre_stage_codex_auth. Called on OAuth disconnect so the
-    container can no longer read tokens cold even if it doesn't restart.
-    Codex P1/P2 on PR #393.
+    Paired with pre_stage_auth_profile_store. Called on OAuth disconnect
+    so the container can no longer read tokens cold even if it doesn't
+    restart.
     """
     if not _USER_ID_PATTERN.match(user_id):
         raise ValueError(f"user_id contains invalid characters: {user_id!r}")
@@ -743,10 +782,10 @@ async def delete_codex_auth(*, user_id: str) -> None:
     if not efs_root:
         return  # No EFS configured (e.g. tests) — nothing to delete.
 
-    auth_path = Path(efs_root) / user_id / "codex" / "auth.json"
+    auth_path = Path(efs_root) / user_id / "agents" / "main" / "agent" / "auth-profiles.json"
     try:
         auth_path.unlink(missing_ok=True)
     except OSError as e:
-        logger.warning("delete_codex_auth: %s — %s", auth_path, e)
+        logger.warning("delete_auth_profile_store: %s — %s", auth_path, e)
     else:
-        logger.info("deleted_codex_auth", extra={"user_id": user_id})
+        logger.info("deleted_auth_profile_store", extra={"user_id": user_id})
