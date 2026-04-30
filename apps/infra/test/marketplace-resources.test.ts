@@ -1,7 +1,10 @@
 import * as cdk from "aws-cdk-lib";
 import { Match, Template } from "aws-cdk-lib/assertions";
 import * as kms from "aws-cdk-lib/aws-kms";
+import { ContainerStack } from "../lib/stacks/container-stack";
 import { DatabaseStack } from "../lib/stacks/database-stack";
+import { NetworkStack } from "../lib/stacks/network-stack";
+import { ServiceStack } from "../lib/stacks/service-stack";
 
 function buildDbStack(environment: "dev" | "prod"): Template {
   const app = new cdk.App();
@@ -14,6 +17,86 @@ function buildDbStack(environment: "dev" | "prod"): Template {
     kmsKey,
   });
   return Template.fromStack(dbStack);
+}
+
+/**
+ * Builds a real ServiceStack wired to real upstream stacks (Network, Database,
+ * Container). Mirrors the wiring in isol8-stage.ts so the synthesized template
+ * matches what gets deployed.
+ */
+function buildServiceStack(environment: "dev" | "prod"): Template {
+  const app = new cdk.App();
+  const env = { account: "877352799272", region: "us-east-1" };
+
+  // KMS key lives in a separate support stack (mirrors AuthStack).
+  const supportStack = new cdk.Stack(app, `Support-${environment}`, { env });
+  const kmsKey = new kms.Key(supportStack, "KmsKey");
+
+  const network = new NetworkStack(app, `Network-${environment}`, {
+    env,
+    environment,
+  });
+
+  const database = new DatabaseStack(app, `Database-${environment}`, {
+    env,
+    environment,
+    kmsKey,
+  });
+
+  const container = new ContainerStack(app, `Container-${environment}`, {
+    env,
+    environment,
+    vpc: network.vpc,
+    kmsKeyArn: kmsKey.keyArn,
+  });
+
+  const service = new ServiceStack(app, `Service-${environment}`, {
+    env,
+    environment,
+    vpc: network.vpc,
+    targetGroup: network.targetGroup,
+    albSecurityGroup: network.albSecurityGroup,
+    database: {
+      usersTable: database.usersTable,
+      containersTable: database.containersTable,
+      billingTable: database.billingTable,
+      apiKeysTable: database.apiKeysTable,
+      usageCountersTable: database.usageCountersTable,
+      pendingUpdatesTable: database.pendingUpdatesTable,
+      channelLinksTable: database.channelLinksTable,
+      adminActionsTable: database.adminActionsTable,
+      creditsTable: database.creditsTable,
+      creditTransactionsTable: database.creditTransactionsTable,
+      oauthTokensTable: database.oauthTokensTable,
+      webhookDedupTable: database.webhookDedupTable,
+    },
+    secretNames: {
+      clerkIssuer: `isol8/${environment}/clerk_issuer`,
+      clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
+      stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
+      stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
+      encryptionKey: `isol8/${environment}/encryption_key`,
+      posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
+    },
+    kmsKeyArn: kmsKey.keyArn,
+    container: {
+      cluster: container.cluster,
+      cloudMapNamespace: container.cloudMapNamespace,
+      cloudMapService: container.cloudMapService,
+      efsFileSystem: container.efsFileSystem,
+      efsSecurityGroup: container.efsSecurityGroup,
+      containerSecurityGroup: container.containerSecurityGroup,
+      taskExecutionRole: container.taskExecutionRole,
+      taskRole: container.taskRole,
+      openclawTaskDef: container.openclawTaskDef,
+    },
+    managementApiUrl: "https://example.execute-api.us-east-1.amazonaws.com",
+    connectionsTableName: `isol8-${environment}-ws-connections`,
+    wsApiId: "test-ws-api-id",
+    wsStage: "prod",
+  });
+
+  return Template.fromStack(service);
 }
 
 describe("DatabaseStack — marketplace tables", () => {
@@ -114,6 +197,28 @@ describe("DatabaseStack — marketplace tables", () => {
         { AttributeName: "shard_id", KeyType: "HASH" },
         { AttributeName: "published_listing", KeyType: "RANGE" },
       ],
+    });
+  });
+});
+
+describe("ServiceStack — marketplace S3 bucket", () => {
+  const template = buildServiceStack("dev");
+
+  test("creates isol8-dev-marketplace-artifacts bucket with versioning + S3-managed encryption + block-all-public", () => {
+    template.hasResourceProperties("AWS::S3::Bucket", {
+      BucketName: "isol8-dev-marketplace-artifacts",
+      VersioningConfiguration: { Status: "Enabled" },
+      BucketEncryption: {
+        ServerSideEncryptionConfiguration: [
+          { ServerSideEncryptionByDefault: { SSEAlgorithm: "AES256" } },
+        ],
+      },
+      PublicAccessBlockConfiguration: {
+        BlockPublicAcls: true,
+        BlockPublicPolicy: true,
+        IgnorePublicAcls: true,
+        RestrictPublicBuckets: true,
+      },
     });
   });
 });

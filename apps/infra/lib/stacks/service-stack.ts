@@ -516,6 +516,26 @@ export class ServiceStack extends cdk.Stack {
     agentCatalogBucket.grantReadWrite(this.taskRole);
 
     // -------------------------------------------------------------------------
+    // Marketplace Artifacts S3 Bucket
+    //
+    // Stores artifacts uploaded for marketplace listings (agent bundles,
+    // screenshots, manifests, signed receipts). Versioned so a bad publish
+    // can be rolled back without losing buyer history. Blocked from public
+    // access; bytes are served via signed URLs from the marketplace API.
+    // -------------------------------------------------------------------------
+    const marketplaceArtifactsBucket = new s3.Bucket(this, "MarketplaceArtifactsBucket", {
+      bucketName: `isol8-${env}-marketplace-artifacts`,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
+    });
+
+    marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
+
+    // -------------------------------------------------------------------------
     // Task Execution Role
     // -------------------------------------------------------------------------
     const taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
