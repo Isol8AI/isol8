@@ -308,6 +308,11 @@ from routers import admin as admin_router  # noqa: E402
 
 app.include_router(admin_router.router, prefix="/api/v1")
 
+# Marketplace listings (Plan 2) — router carries its own /api/v1/marketplace prefix.
+from routers import marketplace_listings  # noqa: E402
+
+app.include_router(marketplace_listings.router)
+
 
 @app.get(
     "/",
