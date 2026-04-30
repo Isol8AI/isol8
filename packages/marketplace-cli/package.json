@@ -1,0 +1,27 @@
+{
+  "name": "@isol8/marketplace",
+  "version": "0.1.0",
+  "description": "Install AI agents and skills from marketplace.isol8.co",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "isol8-marketplace": "./dist/cli.js"
+  },
+  "files": ["dist/", "README.md"],
+  "scripts": {
+    "build": "bun build src/cli.ts --target=node --outfile=dist/cli.js",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "commander": "^12.0.0",
+    "tar": "^7.0.0",
+    "open": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/tar": "^6.0.0",
+    "typescript": "~5.6.3"
+  }
+}
