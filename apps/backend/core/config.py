@@ -95,6 +95,23 @@ class Settings(BaseSettings):
     STRIPE_WEBHOOK_SECRET: str = os.getenv("STRIPE_WEBHOOK_SECRET", "")
     STRIPE_FLAT_PRICE_ID: str = ""
 
+    # Marketplace (set by CDK ServiceStack — empty default lets the backend
+    # boot in non-marketplace contexts like local unit tests).
+    MARKETPLACE_LISTINGS_TABLE: str = os.getenv("MARKETPLACE_LISTINGS_TABLE", "")
+    MARKETPLACE_LISTING_VERSIONS_TABLE: str = os.getenv("MARKETPLACE_LISTING_VERSIONS_TABLE", "")
+    MARKETPLACE_PURCHASES_TABLE: str = os.getenv("MARKETPLACE_PURCHASES_TABLE", "")
+    MARKETPLACE_PAYOUT_ACCOUNTS_TABLE: str = os.getenv("MARKETPLACE_PAYOUT_ACCOUNTS_TABLE", "")
+    MARKETPLACE_TAKEDOWNS_TABLE: str = os.getenv("MARKETPLACE_TAKEDOWNS_TABLE", "")
+    MARKETPLACE_MCP_SESSIONS_TABLE: str = os.getenv("MARKETPLACE_MCP_SESSIONS_TABLE", "")
+    MARKETPLACE_SEARCH_INDEX_TABLE: str = os.getenv("MARKETPLACE_SEARCH_INDEX_TABLE", "")
+    MARKETPLACE_ARTIFACTS_BUCKET: str = os.getenv("MARKETPLACE_ARTIFACTS_BUCKET", "")
+
+    # Stripe Connect (seller payout onboarding) — environment-specific URLs
+    # set by CDK so the marketplace UI can return the user back to the right
+    # host after Stripe-hosted onboarding.
+    STRIPE_CONNECT_REFRESH_URL: str = os.getenv("STRIPE_CONNECT_REFRESH_URL", "")
+    STRIPE_CONNECT_RETURN_URL: str = os.getenv("STRIPE_CONNECT_RETURN_URL", "")
+
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 
