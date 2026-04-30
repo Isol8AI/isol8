@@ -85,6 +85,8 @@ export class LocalStage extends cdk.Stage {
         creditTransactionsTable: database.creditTransactionsTable,
         oauthTokensTable: database.oauthTokensTable,
         webhookDedupTable: database.webhookDedupTable,
+        marketplaceListingsTable: database.marketplaceListingsTable,
+        marketplaceSearchIndexTable: database.marketplaceSearchIndexTable,
       },
       secretNames: {
         clerkIssuer: `isol8/${env}/clerk_issuer`,

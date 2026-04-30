@@ -69,6 +69,8 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       creditTransactionsTable: database.creditTransactionsTable,
       oauthTokensTable: database.oauthTokensTable,
       webhookDedupTable: database.webhookDedupTable,
+      marketplaceListingsTable: database.marketplaceListingsTable,
+      marketplaceSearchIndexTable: database.marketplaceSearchIndexTable,
     },
     secretNames: {
       clerkIssuer: `isol8/${environment}/clerk_issuer`,
@@ -201,8 +203,13 @@ describe("DatabaseStack — marketplace tables", () => {
   });
 });
 
+// Hoist a single ServiceStack synthesis and reuse across describe blocks. CDK
+// asset bundling for the marketplace-search-indexer Lambda makes synthesis
+// non-trivial, so we synthesize once.
+const SERVICE_TEMPLATE_DEV = buildServiceStack("dev");
+
 describe("ServiceStack — marketplace S3 bucket", () => {
-  const template = buildServiceStack("dev");
+  const template = SERVICE_TEMPLATE_DEV;
 
   test("creates isol8-dev-marketplace-artifacts bucket with versioning + S3-managed encryption + block-all-public", () => {
     template.hasResourceProperties("AWS::S3::Bucket", {
@@ -219,6 +226,24 @@ describe("ServiceStack — marketplace S3 bucket", () => {
         IgnorePublicAcls: true,
         RestrictPublicBuckets: true,
       },
+    });
+  });
+});
+
+describe("ServiceStack — search-indexer Lambda", () => {
+  const template = SERVICE_TEMPLATE_DEV;
+
+  test("creates marketplace-search-indexer Lambda", () => {
+    template.hasResourceProperties("AWS::Lambda::Function", {
+      FunctionName: "isol8-dev-marketplace-search-indexer",
+      Runtime: "python3.12",
+      Handler: "index.handler",
+    });
+  });
+
+  test("Lambda is subscribed to listings table DDB stream", () => {
+    template.hasResourceProperties("AWS::Lambda::EventSourceMapping", {
+      StartingPosition: "LATEST",
     });
   });
 });

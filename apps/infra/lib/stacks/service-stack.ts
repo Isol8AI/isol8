@@ -7,6 +7,8 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as lambdaEventSources from "aws-cdk-lib/aws-lambda-event-sources";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as s3 from "aws-cdk-lib/aws-s3";
@@ -47,6 +49,8 @@ export interface ServiceStackProps extends cdk.StackProps {
     creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
+    marketplaceListingsTable: dynamodb.Table;
+    marketplaceSearchIndexTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -534,6 +538,45 @@ export class ServiceStack extends cdk.Stack {
     });
 
     marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
+
+    // -------------------------------------------------------------------------
+    // Marketplace Search Indexer Lambda
+    //
+    // Subscribes to the marketplace-listings DDB stream and writes denormalized
+    // rows to the search-index table for published listings. CRC32-sharded
+    // across 16 shards to avoid hot partitions.
+    // -------------------------------------------------------------------------
+    // No bundling: requirements.txt currently has zero runtime deps (boto3 is
+    // provided by the Lambda runtime). If a third-party dep is ever added, wire
+    // up bundling via lambda.Code.fromAsset with a `bundling` block (see
+    // websocket-authorizer in api-stack.ts for the pattern).
+    const searchIndexerFn = new lambda.Function(this, "MarketplaceSearchIndexerFn", {
+      functionName: `isol8-${env}-marketplace-search-indexer`,
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "..", "..", "lambda", "marketplace-search-indexer"),
+      ),
+      environment: {
+        MARKETPLACE_SEARCH_INDEX_TABLE:
+          props.database.marketplaceSearchIndexTable.tableName,
+      },
+      timeout: cdk.Duration.seconds(30),
+    });
+
+    props.database.marketplaceSearchIndexTable.grantWriteData(searchIndexerFn);
+    props.database.marketplaceListingsTable.grantStreamRead(searchIndexerFn);
+
+    searchIndexerFn.addEventSource(
+      new lambdaEventSources.DynamoEventSource(
+        props.database.marketplaceListingsTable,
+        {
+          startingPosition: lambda.StartingPosition.LATEST,
+          batchSize: 25,
+          retryAttempts: 3,
+        },
+      ),
+    );
 
     // -------------------------------------------------------------------------
     // Task Execution Role
