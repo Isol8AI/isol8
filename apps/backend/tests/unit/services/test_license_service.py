@@ -31,6 +31,8 @@ async def test_validate_revoked_key_returns_revoked(mock_table):
                 "listing_id": "l1",
                 "listing_version_at_purchase": 3,
                 "entitlement_version_floor": 3,
+                "purchase_id": "p1",
+                "buyer_id": "b1",
             }
         ],
     }
@@ -56,6 +58,8 @@ async def test_validate_rate_limit_unique_ips(mock_table):
                 "listing_version_at_purchase": 1,
                 "entitlement_version_floor": 1,
                 "install_log": install_log,
+                "purchase_id": "p1",
+                "buyer_id": "b1",
             }
         ],
     }
@@ -63,7 +67,10 @@ async def test_validate_rate_limit_unique_ips(mock_table):
     result = await license_service.validate(license_key="iml_xxx", source_ip="10.0.0.99")
     assert result.status == "rate_limited"
 
-    # 11th install but same IP as one of the existing — accepted
+    # 11th install but same IP as one of the existing — accepted; this also
+    # triggers record_install (validate now logs successful installs so the
+    # rate-limit window actually advances). The mock_table's update_item is
+    # auto-mocked so the call succeeds.
     result2 = await license_service.validate(license_key="iml_xxx", source_ip="10.0.0.0")
     assert result2.status == "valid"
 

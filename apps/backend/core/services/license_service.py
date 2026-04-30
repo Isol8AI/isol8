@@ -77,6 +77,17 @@ async def validate(*, license_key: str, source_ip: str) -> ValidationResult:
     if source_ip not in unique_ips and len(unique_ips) >= 10:
         return ValidationResult(status="rate_limited")
 
+    # Record this install before returning so the rate-limit window actually
+    # advances. Without this, install_log never grows and the 10-unique-IPs
+    # cap is a no-op. Recorded inside validate() so callers don't have to
+    # remember to invoke record_install separately. Records the (ip, ts)
+    # used for THIS validate call, not a future one.
+    await record_install(
+        purchase_id=purchase["purchase_id"],
+        buyer_id=purchase["buyer_id"],
+        source_ip=source_ip,
+    )
+
     return ValidationResult(
         status="valid",
         listing_id=purchase["listing_id"],
