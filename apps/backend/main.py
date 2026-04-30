@@ -323,6 +323,16 @@ from routers import marketplace_install  # noqa: E402
 
 app.include_router(marketplace_install.router)
 
+# Marketplace payouts (Plan 2) — Stripe Connect Express onboarding + dashboard.
+from routers import marketplace_payouts  # noqa: E402
+
+app.include_router(marketplace_payouts.router)
+
+# Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
+from routers import marketplace_admin  # noqa: E402
+
+app.include_router(marketplace_admin.router)
+
 
 @app.get(
     "/",
