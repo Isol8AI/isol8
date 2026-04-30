@@ -72,11 +72,18 @@ jobs:
           sudo chmod +x /usr/local/bin/soci
           soci --version
 
+          # SOCI's content store lives at /var/lib/soci-snapshotter-grpc/
+          # by default and requires root to mkdir on first use, so both
+          # `create` and `push` run under sudo. Pass through the AWS env
+          # so the inherited Docker config (set up by ecr-login) and AWS
+          # credentials are visible to the elevated process.
           echo "Creating SOCI index for ${IMAGE_REF}..."
-          soci create "${IMAGE_REF}"
+          sudo --preserve-env=AWS_DEFAULT_REGION,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,HOME \
+            soci create "${IMAGE_REF}"
 
           echo "Pushing SOCI index to ECR..."
-          soci push "${IMAGE_REF}"
+          sudo --preserve-env=AWS_DEFAULT_REGION,AWS_REGION,AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY,AWS_SESSION_TOKEN,HOME \
+            soci push "${IMAGE_REF}"
 
           echo "SOCI index pushed; Fargate will lazy-load this image."
 
