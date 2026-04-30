@@ -36,6 +36,13 @@ export interface ServiceStackProps extends cdk.StackProps {
   vpc: ec2.IVpc;
   targetGroup: elbv2.IApplicationTargetGroup;
   albSecurityGroup: ec2.ISecurityGroup;
+  /**
+   * ARN of the ALB's HTTP listener. Used to attach the marketplace-mcp
+   * listener rule for /mcp/* routing. Passed as a string (not the listener
+   * construct) to avoid cross-stack KMS/circular-dep cycles, mirroring how
+   * api-stack consumes it.
+   */
+  albHttpListenerArn: string;
   database: {
     usersTable: dynamodb.Table;
     containersTable: dynamodb.Table;
@@ -630,41 +637,140 @@ export class ServiceStack extends cdk.Stack {
     );
 
     // -------------------------------------------------------------------------
-    // Marketplace MCP Fargate Task Definition
+    // Marketplace MCP Fargate Task Definition + Service
     //
-    // Task-definition only — no FargateService is started in this plan. Plan 3
-    // ships the real container image and service. We register the task def now
-    // so deploy + IAM grants are wired up and Plan 3 only has to swap the
-    // image and add the service.
+    // Plan 3 ships the real MCP server. The Docker image is built from
+    // apps/marketplace-mcp/ via CDK's DockerImageAsset, the service runs on
+    // the same Fargate cluster as the backend, and traffic at the ALB is
+    // routed to it via a /mcp/* path-pattern listener rule.
     // -------------------------------------------------------------------------
     const mcpTaskDef = new ecs.FargateTaskDefinition(this, "MarketplaceMcpTaskDef", {
       family: `isol8-${env}-marketplace-mcp`,
       cpu: 1024,
       memoryLimitMiB: 2048,
+      // TODO(plan-3-followup): introduce a dedicated mcpTaskRole with
+      // least-privilege grants (read marketplace-purchases, RW
+      // marketplace-mcp-sessions, read artifacts bucket only) instead of
+      // sharing this.taskRole with the backend. Reviewers in Plans 1 + 2
+      // flagged this; deferred per the Plan 3 spec.
       taskRole: this.taskRole,
       executionRole: taskExecutionRole,
     });
 
-    // Placeholder image — replaced when Plan 3 ships the MCP service code.
-    // Use a public alpine image so synth + dev deploy succeed; service is not
-    // started in this plan.
+    const mcpImage = ecs.ContainerImage.fromAsset(
+      path.join(__dirname, "..", "..", "..", "marketplace-mcp"),
+      { platform: Platform.LINUX_AMD64 },
+    );
+
     mcpTaskDef.addContainer("mcp", {
-      image: ecs.ContainerImage.fromRegistry("public.ecr.aws/docker/library/alpine:3.19"),
-      command: ["sh", "-c", "echo 'placeholder — Plan 3 ships the real image' && sleep infinity"],
+      image: mcpImage,
       portMappings: [{ containerPort: 3000 }],
       logging: ecs.LogDriver.awsLogs({ streamPrefix: `marketplace-mcp-${env}` }),
       environment: {
         ENV: env,
+        PORT: "3000",
+        BACKEND_BASE_URL:
+          env === "prod" ? "https://api.isol8.co" : "https://api-dev.isol8.co",
         MARKETPLACE_PURCHASES_TABLE: props.database.marketplacePurchasesTable.tableName,
         MARKETPLACE_LISTINGS_TABLE: props.database.marketplaceListingsTable.tableName,
         MARKETPLACE_MCP_SESSIONS_TABLE: props.database.marketplaceMcpSessionsTable.tableName,
         MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
+      },
+      healthCheck: {
+        command: [
+          "CMD-SHELL",
+          "wget -q -O- http://localhost:3000/health || exit 1",
+        ],
+        interval: cdk.Duration.seconds(30),
+        timeout: cdk.Duration.seconds(5),
+        retries: 3,
       },
     });
 
     props.database.marketplacePurchasesTable.grantReadData(this.taskRole);
     props.database.marketplaceMcpSessionsTable.grantReadWriteData(this.taskRole);
     marketplaceArtifactsBucket.grantRead(this.taskRole);
+
+    // Service security group: ingress on container port from VPC CIDR. We
+    // intentionally use the VPC peer instead of props.albSecurityGroup to
+    // avoid a cyclic stack dependency (ServiceStack already depends on
+    // NetworkStack via the listener-rule ARN; an SG-to-SG reference here
+    // would also force NetworkStack to depend on ServiceStack). The backend
+    // ServiceSecurityGroup follows the same pattern below.
+    const mcpServiceSg = new ec2.SecurityGroup(this, "MarketplaceMcpServiceSg", {
+      vpc: props.vpc,
+      description: `Isol8 ${env} marketplace-mcp service security group`,
+      allowAllOutbound: true,
+    });
+    mcpServiceSg.addIngressRule(
+      ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
+      ec2.Port.tcp(3000),
+      "ALB to marketplace-mcp container (VPC-internal)",
+    );
+
+    const mcpService = new ecs.FargateService(this, "MarketplaceMcpService", {
+      cluster: props.container.cluster,
+      taskDefinition: mcpTaskDef,
+      desiredCount: env === "prod" ? 2 : 1,
+      serviceName: `isol8-${env}-marketplace-mcp`,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+      securityGroups: [mcpServiceSg],
+      assignPublicIp: false,
+      circuitBreaker: { rollback: true },
+      enableExecuteCommand: true,
+    });
+
+    // Dedicated target group for /mcp/* traffic. Health check path matches
+    // the container's HTTP healthcheck for layered defense (ALB will
+    // deregister unhealthy tasks even before ECS does).
+    const mcpTargetGroup = new elbv2.ApplicationTargetGroup(this, "MarketplaceMcpTg", {
+      vpc: props.vpc,
+      port: 3000,
+      protocol: elbv2.ApplicationProtocol.HTTP,
+      targetType: elbv2.TargetType.IP,
+      targets: [mcpService],
+      healthCheck: {
+        path: "/health",
+        interval: cdk.Duration.seconds(30),
+        healthyThresholdCount: 2,
+        unhealthyThresholdCount: 3,
+        timeout: cdk.Duration.seconds(10),
+        healthyHttpCodes: "200",
+      },
+    });
+
+    // Import the ALB's HTTP listener by ARN (string) to avoid cross-stack
+    // construct refs. We deliberately import a stub SG via fromSecurityGroupId
+    // (allowAllOutbound=true) instead of passing props.albSecurityGroup
+    // directly — otherwise CDK auto-adds an egress rule on the real ALB SG
+    // referencing the MCP service SG, which creates a Network <-> Service
+    // cyclic stack dependency. ALB-to-service traffic is already permitted
+    // by the MCP service SG ingress rule above (VPC CIDR on port 3000).
+    const albListenerStubSg = ec2.SecurityGroup.fromSecurityGroupId(
+      this,
+      "AlbHttpListenerStubSg",
+      props.albSecurityGroup.securityGroupId,
+      { allowAllOutbound: true, mutable: false },
+    );
+    const albHttpListener = elbv2.ApplicationListener.fromApplicationListenerAttributes(
+      this,
+      "AlbHttpListenerImport",
+      {
+        listenerArn: props.albHttpListenerArn,
+        securityGroup: albListenerStubSg,
+      },
+    );
+
+    new elbv2.ApplicationListenerRule(this, "MarketplaceMcpListenerRule", {
+      listener: albHttpListener,
+      priority: 10,
+      conditions: [elbv2.ListenerCondition.pathPatterns(["/mcp/*"])],
+      action: elbv2.ListenerAction.forward([mcpTargetGroup]),
+    });
+
+    cdk.Tags.of(mcpService).add("Name", `isol8-${env}-marketplace-mcp`);
+    cdk.Tags.of(mcpService).add("Project", "isol8");
+    cdk.Tags.of(mcpService).add("Environment", env);
 
     // -------------------------------------------------------------------------
     // Log Group

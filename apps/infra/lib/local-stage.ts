@@ -72,6 +72,7 @@ export class LocalStage extends cdk.Stage {
       vpc: network.vpc,
       targetGroup: network.targetGroup,
       albSecurityGroup: network.albSecurityGroup,
+      albHttpListenerArn: network.albHttpListenerArn,
       database: {
         usersTable: database.usersTable,
         containersTable: database.containersTable,

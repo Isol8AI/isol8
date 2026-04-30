@@ -56,6 +56,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
     vpc: network.vpc,
     targetGroup: network.targetGroup,
     albSecurityGroup: network.albSecurityGroup,
+    albHttpListenerArn: network.albHttpListenerArn,
     database: {
       usersTable: database.usersTable,
       containersTable: database.containersTable,
@@ -297,6 +298,37 @@ describe("ServiceStack — marketplace-mcp Fargate task definition", () => {
       Memory: "2048",
       NetworkMode: "awsvpc",
       RequiresCompatibilities: ["FARGATE"],
+    });
+  });
+});
+
+describe("ServiceStack — marketplace-mcp Fargate service + listener rule", () => {
+  test("creates a real FargateService for marketplace-mcp", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::Service", {
+      ServiceName: "isol8-dev-marketplace-mcp",
+      LaunchType: "FARGATE",
+      DesiredCount: 1,
+    });
+  });
+
+  test("ALB has a listener rule routing /mcp/* to the marketplace-mcp target group", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ElasticLoadBalancingV2::ListenerRule", {
+      Priority: 10,
+      Conditions: Match.arrayWith([
+        Match.objectLike({
+          Field: "path-pattern",
+          PathPatternConfig: { Values: ["/mcp/*"] },
+        }),
+      ]),
+    });
+  });
+
+  test("creates a target group on port 3000 with /health health check", () => {
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ElasticLoadBalancingV2::TargetGroup", {
+      Port: 3000,
+      Protocol: "HTTP",
+      TargetType: "ip",
+      HealthCheckPath: "/health",
     });
   });
 });
