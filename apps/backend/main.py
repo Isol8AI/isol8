@@ -313,6 +313,11 @@ from routers import marketplace_listings  # noqa: E402
 
 app.include_router(marketplace_listings.router)
 
+# Marketplace purchases (Plan 2) — checkout, Stripe webhook, refunds, CLI auth.
+from routers import marketplace_purchases  # noqa: E402
+
+app.include_router(marketplace_purchases.router)
+
 
 @app.get(
     "/",

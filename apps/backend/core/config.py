@@ -112,6 +112,11 @@ class Settings(BaseSettings):
     STRIPE_CONNECT_REFRESH_URL: str = os.getenv("STRIPE_CONNECT_REFRESH_URL", "")
     STRIPE_CONNECT_RETURN_URL: str = os.getenv("STRIPE_CONNECT_RETURN_URL", "")
 
+    # Stripe Connect webhook signing secret (separate from STRIPE_WEBHOOK_SECRET
+    # used for the platform-account billing webhook). Verified by the
+    # marketplace purchases router on POST /webhooks/stripe-marketplace.
+    STRIPE_CONNECT_WEBHOOK_SECRET: str = os.getenv("STRIPE_CONNECT_WEBHOOK_SECRET", "")
+
     # Encryption (base64-encoded 32-byte key for Fernet encryption of BYOK API keys)
     ENCRYPTION_KEY: str = os.getenv("ENCRYPTION_KEY", "")
 
