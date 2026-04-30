@@ -57,3 +57,41 @@ async def test_rejects_non_us_country(mock_stripe):
             country="DE",
         )
     mock_stripe.Account.create.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("core.services.payout_service.stripe")
+async def test_refund_with_completed_transfer_reverses_it(mock_stripe):
+    mock_stripe.Refund.create.return_value = MagicMock(id="re_abc")
+    mock_stripe.Transfer.list.return_value = MagicMock(
+        data=[
+            MagicMock(id="tr_xyz", amount=1700, currency="usd"),
+        ]
+    )
+    mock_stripe.Transfer.create_reversal.return_value = MagicMock(id="trr_pqr")
+
+    result = await payout_service.refund_purchase(
+        charge_id="ch_abc",
+        transfer_group="purchase_p1",
+        full_amount_cents=2000,
+    )
+    assert result.refund_id == "re_abc"
+    assert result.reversal_id == "trr_pqr"
+    mock_stripe.Refund.create.assert_called_once()
+    mock_stripe.Transfer.create_reversal.assert_called_once()
+
+
+@pytest.mark.asyncio
+@patch("core.services.payout_service.stripe")
+async def test_refund_without_transfer_skips_reversal(mock_stripe):
+    mock_stripe.Refund.create.return_value = MagicMock(id="re_abc")
+    mock_stripe.Transfer.list.return_value = MagicMock(data=[])
+
+    result = await payout_service.refund_purchase(
+        charge_id="ch_abc",
+        transfer_group="purchase_p1",
+        full_amount_cents=2000,
+    )
+    assert result.refund_id == "re_abc"
+    assert result.reversal_id is None
+    mock_stripe.Transfer.create_reversal.assert_not_called()

@@ -12,6 +12,8 @@ This module owns steps 2 and 3. Step 1 (Charge) lives in marketplace_service
 account.updated to flush held balances.
 """
 
+from dataclasses import dataclass
+
 import stripe
 
 from core.config import settings
@@ -76,3 +78,43 @@ async def transfer_held_balance(*, connect_account_id: str, amount_cents: int, t
         idempotency_key=f"transfer:{connect_account_id}:{transfer_group}",
     )
     return transfer.id
+
+
+@dataclass
+class RefundResult:
+    refund_id: str
+    reversal_id: str | None
+
+
+async def refund_purchase(*, charge_id: str, transfer_group: str, full_amount_cents: int) -> RefundResult:
+    """Refund a buyer's charge. If a Transfer to the seller has happened,
+    reverse it first to claw back the funds.
+
+    Per design doc separate-charges-and-transfers: the original charge is on
+    the platform balance. If the seller hasn't received a Transfer yet (still
+    in held balance), refund alone is sufficient. If a Transfer has happened,
+    we must reverse it before refunding — otherwise the platform eats the cost.
+
+    NOTE: Plan 2 caller (refund router) MUST guard `create_connect_account`
+    via a marketplace-payout-accounts DDB lookup before invocation — Stripe's
+    24h idempotency window will silently produce a NEW account on day 2 of
+    the same call, leaving orphan Connect accounts.
+    """
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+    transfers = stripe.Transfer.list(transfer_group=transfer_group, limit=1)
+    reversal_id: str | None = None
+    if transfers.data:
+        transfer = transfers.data[0]
+        reversal = stripe.Transfer.create_reversal(
+            transfer.id,
+            amount=transfer.amount,
+            idempotency_key=f"reversal:{transfer.id}",
+        )
+        reversal_id = reversal.id
+
+    refund = stripe.Refund.create(
+        charge=charge_id,
+        amount=full_amount_cents,
+        idempotency_key=f"refund:{charge_id}",
+    )
+    return RefundResult(refund_id=refund.id, reversal_id=reversal_id)
