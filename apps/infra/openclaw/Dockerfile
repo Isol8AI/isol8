@@ -116,18 +116,27 @@ RUN ln -s /usr/local/bin/notesmd-cli /usr/local/bin/obsidian-cli
 RUN curl -sSL https://raw.githubusercontent.com/pimalaya/himalaya/master/install.sh | sh
 
 # ---- Layer 8: Node packages ----
+# Layer 8a: most globals install with --ignore-scripts (faster, no build deps).
+# Layer 8b: qmd MUST run postinstall scripts because better-sqlite3 needs to
+# compile its native binding. Without it, qmd dies at runtime with:
+#   Error: Could not locate the bindings file. Tried: ... better_sqlite3.node
+# Layer 8c: symlinks qmd to /home/node/.npm-global/bin/qmd, the path
+# openclaw's memory subsystem hardcodes.
 ENV NPM_CONFIG_PREFIX=/usr/local
 RUN npm i -g --ignore-scripts \
-      mcporter clawhub openai @tobilu/qmd \
+      mcporter clawhub openai \
       @steipete/oracle @steipete/summarize \
       @anthropic-ai/claude-code @google/gemini-cli \
       @xdevplatform/xurl
 
-# ---- Layer 8b: qmd at openclaw's hardcoded lookup path ----
-# OpenClaw's memory subsystem hardcodes /home/node/.npm-global/bin/qmd
-# (see runtime log: "qmd binary unavailable (...); falling back to builtin").
-# Layer 8 puts qmd at /usr/local/bin/qmd via NPM_CONFIG_PREFIX=/usr/local;
-# this layer symlinks the expected path so the built-in fallback never fires.
+# Install build deps for the better-sqlite3 native postinstall, then qmd
+# (with scripts), then remove the build deps to keep the image lean.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+      build-essential python3-dev && \
+    npm i -g @tobilu/qmd && \
+    apt-get purge -y -qq build-essential python3-dev && \
+    apt-get autoremove -y -qq && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /home/node/.npm-global/bin && \
     ln -sf /usr/local/bin/qmd /home/node/.npm-global/bin/qmd && \
     chown -R node:node /home/node/.npm-global
