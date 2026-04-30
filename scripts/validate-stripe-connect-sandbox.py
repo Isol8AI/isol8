@@ -79,12 +79,18 @@ def main() -> int:
         # which is also valid evidence of feasibility.
         print(f"      transfer.id = {transfer.id} (account had transfers enabled)")
     except stripe.error.InvalidRequestError as e:
-        if "transfers" in str(e).lower() or "capability" in str(e).lower():
-            print(f"      expected failure: {e.user_message or e}")
+        # Match on Stripe's stable error code, not message text. Codes are part
+        # of Stripe's API contract; messages are not. Accepting these two codes
+        # as evidence that "transfers capability not yet active" is the actual
+        # cause, vs. silently passing on any error containing the substring.
+        expected_codes = {"insufficient_capabilities_for_transfer", "account_unactivated"}
+        code = getattr(e, "code", None)
+        if code in expected_codes:
+            print(f"      expected failure (code={code}): {e.user_message or e}")
             print("      → confirms held-balance pattern: charges land in platform")
             print("      → balance, transfer would succeed once seller onboards.")
         else:
-            print(f"ERROR: unexpected Stripe error: {e}")
+            print(f"ERROR: unexpected Stripe error code={code}: {e}")
             return 3
 
     # Step 5: Confirm the platform balance reflects the charge.
