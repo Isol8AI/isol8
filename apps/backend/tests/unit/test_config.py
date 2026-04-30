@@ -1,8 +1,14 @@
 """Tests for core.config Settings."""
 
-import importlib
 import os
-from unittest.mock import patch
+
+# Match the codebase pattern (e.g. test_admin_org_resolution.py): seed CLERK_ISSUER
+# before any `core.*` import so Settings() instantiation in conftest doesn't fail
+# when this file is run in isolation.
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+import importlib  # noqa: E402
+from unittest.mock import patch  # noqa: E402
 
 
 @patch.dict(os.environ, {"MARKETPLACE_LISTINGS_TABLE": "isol8-dev-marketplace-listings"})
