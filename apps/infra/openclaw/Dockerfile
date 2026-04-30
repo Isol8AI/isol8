@@ -170,17 +170,6 @@ RUN cd /app/dist/extensions/browser && \
     npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev node-edge-tts@^1.2.10 && \
     chown -R node:node /app/dist/extensions
 
-# ---- Layer 8d: pre-download Playwright Chromium browser ----
-# playwright-core lazily downloads ~150 MB of Chromium binaries to
-# $PLAYWRIGHT_BROWSERS_PATH (default: ~/.cache/ms-playwright/) on first launch.
-# Bake the browser into the image at the same default path so the browser
-# plugin starts instantly. /home/node/.cache is in the image filesystem (only
-# /home/node/.openclaw is EFS-mounted), so this layer persists across runs.
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
-RUN cd /app/dist/extensions/browser && \
-    HOME=/home/node node_modules/.bin/playwright install chromium && \
-    chown -R node:node /home/node/.cache
-
 # ---- Restore runtime context ----
 USER node
 WORKDIR /home/node
