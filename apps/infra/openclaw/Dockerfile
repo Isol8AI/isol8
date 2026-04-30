@@ -60,13 +60,8 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Stage 2: final — runtime-only image
 # =============================================================================
-# Pulled from ghcr.io (upstream's primary registry) instead of docker.io's
-# `alpine/openclaw` mirror because Docker Hub never received the non-slim
-# variant of 2026.4.23 — only the `-slim` tag was mirrored. The slim variant
-# strips bundled plugin runtime deps; the fat image bundles them, removing
-# ~6min of cold-start npm-install/extraction work that the slim image
-# triggers lazily on first plugin use (browser/codex/channels).
-# Anonymous pulls of public ghcr.io packages work without registry auth.
+# Fat (non-slim) variant: bundles plugin runtime deps so first-use of
+# browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
 FROM ghcr.io/openclaw/openclaw:2026.4.23
 
 USER root

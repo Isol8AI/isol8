@@ -7,5 +7,5 @@
   "extendedImage": "877352799272.dkr.ecr.us-east-1.amazonaws.com/isol8/openclaw-extended",
   "dev":  { "tag": "2026.4.23-slim-94ee825" },
   "prod": { "tag": "2026.4.23-slim-94ee825" },
-  "notes": "Two image references coexist during the migration to the extended image. The legacy `image`/`tag`/`full` fields point at the upstream openclaw image used by current container-stack.ts (Task 1-8 of the plan). The new `extendedImage` + per-env `dev.tag`/`prod.tag` fields point at our custom ECR image used after Task 9 lands. dev/prod tags retain the `-slim-` suffix for the currently-deployed extended image; the next CI rebuild will produce a fat-image tag (no `-slim-`) that a follow-up PR promotes to dev. Source registry is ghcr.io/openclaw/openclaw (upstream's primary) — Docker Hub `alpine/openclaw` is a partial mirror that omitted the non-slim variant of 2026.4.23."
+  "notes": "`upstream`/`image`/`tag`/`full` describe the openclaw base image the extended Dockerfile FROMs (and the bootstrap fallback in container-stack.ts). `extendedImage` + per-env `dev.tag`/`prod.tag` are the ECR-published extended image deployed to dev and prod."
 }

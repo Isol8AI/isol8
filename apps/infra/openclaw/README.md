@@ -4,7 +4,7 @@ Custom Docker image extending `ghcr.io/openclaw/openclaw:<UPSTREAM>` with Linux 
 
 Built and pushed to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml` on every push to `main` that touches `Dockerfile` or `openclaw-version.json`.
 
-> Source registry note: we pull from **ghcr.io/openclaw/openclaw** (upstream's primary registry), NOT `docker.io/alpine/openclaw`. The Docker Hub mirror is partial — at 2026.4.23 it only carried the `-slim` variant, which strips bundled plugin runtime deps and forces ~6min of lazy npm-install work on cold start. Anonymous pulls of public ghcr.io packages work without registry auth.
+Source registry is **ghcr.io/openclaw/openclaw** (upstream's primary; anonymous pulls work without registry auth). Use the fat (non-slim) variant — it bundles plugin runtime deps so first-use of browser/codex/channels skips a ~6min lazy npm-install on cold start.
 
 ## Bumping the upstream OpenClaw version
 
