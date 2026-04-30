@@ -1,16 +1,32 @@
 # Design: marketplace.isol8.co
 
 **Date:** 2026-04-29
-**Status:** APPROVED (user accepted 2026-04-29 after revision 3)
+**Status:** APPROVED (user accepted 2026-04-29 after revision 3; agents-led reframing applied 2026-04-29)
 **Mode:** Startup (produced via /office-hours diagnostic)
 **Branch:** main
 **Author:** prabuddhagupta
 
 ## Summary
 
-A public marketplace at `marketplace.isol8.co` where AI agents and skills can be browsed, published, and bought or downloaded for free. Built as a layer on top of the existing Isol8 catalog system. Sellers include both Isol8 paying users (publishing the agents they've already built on the platform) and non-Isol8 sellers (publishing in `SKILL.md` format). Buyers consume what they purchase via two paths chosen per-listing by the seller: a CLI installer (`npx @isol8/marketplace install <slug>`) for client-side install into Claude Code, Cursor, OpenClaw, and Copilot CLI, or via a hosted MCP server that exposes purchased skills as MCP tools to MCP-supporting clients (Claude Desktop, Cursor with MCP, Codex CLI).
+**The marketplace for AI agents.** A public marketplace at `marketplace.isol8.co` where complete AI agents — full workers with identity, workflows, memory, and bundled skills — can be browsed, published, and bought or downloaded for free. Built as a layer on top of the existing Isol8 catalog system.
 
-The strategic thesis is **manufactured sellers**: existing Isol8 paying users currently use their agents privately; giving them a path to publish (free or paid) creates a seller pool the platform did not have before. The competitive thesis is **install simplicity**: every existing skills marketplace (Agensi, Skly, SkillsMP) makes buyers manually unzip into client-specific directories. A one-command installer is the immediate wedge.
+Individual SKILL.md files are also a supported format for sellers who want to publish atomic skills rather than full agents. Skills sit one level below agents in the brand hierarchy: discoverable, listable, but not the headline. The home page and discovery default to agents.
+
+Sellers: Isol8 paying users publish the agents they've already built on the platform; non-Isol8 sellers publish either as agents or as standalone SKILL.md files. Buyers consume purchases via two paths chosen per-listing by the seller: a CLI installer (`npx @isol8/marketplace install <slug>`) for client-side install into Claude Code, Cursor, OpenClaw, and Copilot CLI, or via a hosted MCP server that exposes purchased agents/skills as MCP tools to MCP-supporting clients (Claude Desktop, Cursor with MCP, Codex CLI).
+
+The strategic thesis is **manufactured sellers**: existing Isol8 paying users currently use their agents privately; giving them a path to publish (free or paid) creates a seller pool the platform did not have before. The competitive thesis is **install simplicity AND agents-first positioning**: every existing skills marketplace (Agensi, Skly, SkillsMP) sells skills as commodities and is structurally stuck at $5 price points. Selling complete agents at $20-100 is a different market with no dominant player.
+
+## Positioning
+
+The brand is "the marketplace for AI agents." Agents are products; skills are commodities. Commodities sit at $5 because there is no scarcity. Agents — bundles of identity, workflows, memory, and skills targeted at a specific job — can sell at $20-100 because each one is genuinely different. Agensi, Skly, SkillsMP, LobeHub, agentskill.sh all sell skills. None has a dominant agents marketplace. That is the wedge.
+
+Operational implications:
+
+- **Home page** leads with featured agents. Skills are a tab, not the front door.
+- **Discovery default tab** is "Agents." A "Skills" tab is one click away for buyers who want individual SKILL.md files.
+- **Pricing guidance** in the publishing UX nudges agent sellers toward $20-100 ranges and skill sellers toward $5-20.
+- **Marketing copy and case studies** lead with agents. Skill listings appear in the catalog but not in launch materials.
+- **Architecture is unchanged.** The schema's `format` field still holds `"openclaw"` (agent) or `"skillmd"` (skill). Only the framing, copy, and discovery defaults change.
 
 ## Problem Statement
 
@@ -37,34 +53,45 @@ This is a *thesis-driven* product, not a demand-pull product. Honest framing.
 
 ## Status Quo
 
-Today, an Isol8 user who builds an interesting agent has these options:
+### For agent builders
+
+There is no marketplace for complete AI agents. An Isol8 user who builds an interesting agent today has these options:
 
 - Keep it private (default, what almost everyone does).
 - Manually export the workspace tarball and share with friends (no platform support).
-- Rebuild it as a SKILL.md file and post on GitHub (loses Isol8-specific context).
+- Strip it down to a SKILL.md file and post on GitHub (loses identity, workflows, multi-step memory — the things that make it an agent).
 
-Today, a developer outside Isol8 who builds a Claude Code or Cursor skill has these options:
+The "complete worker that does this specific job" category has no marketplace. Relevance AI Marketplace and ServiceNow Store sell agents but only inside their walled platforms and only for enterprise. There is no Etsy/Gumroad-style independent agent marketplace.
+
+### For skill authors
+
+A developer outside Isol8 who builds a Claude Code or Cursor skill has these options:
 
 - Post on GitHub, hope for stars.
 - List on Agensi/Skly with manual ZIP-based install, charge $5-12.
 - Tweet about it.
 - Submit to one of the 425k-skill aggregators (LobeHub, SkillsMP) where it disappears.
 
-The cost of these workarounds: no monetization, weak discovery, install friction for buyers, no quality signal.
+The skills market is crowded. The agents market is empty. The cost of all current workarounds: no monetization, weak discovery, install friction for buyers, no quality signal.
 
 ## Target User & Narrowest Wedge
 
-### Primary user (v1 sellers): Isol8 paying users
+### Primary user (v1 sellers): Isol8 agent builders
 
-A Pro-tier Isol8 user who has built an agent in their container that does something specific and valuable (sales sequence generator, code review bot, customer-support triage). They use it daily for themselves. Once a "publish to marketplace" toggle exists, a small percentage will publish, some will charge, and the platform learns what's monetizable.
+A Pro-tier Isol8 user who has built a complete agent in their container that does something specific and valuable (sales sequence generator, code review worker, customer-support triage agent). They use it daily for themselves. Once a "publish to marketplace" toggle exists, a small percentage will publish, some will charge $20-100 for a complete agent, and the platform learns what's monetizable. **This is the headline persona.**
 
-### Secondary user (v1 sellers): non-Isol8 SKILL.md authors
+### Secondary user (v1 sellers): non-Isol8 agent and SKILL.md authors
 
-A developer with a polished SKILL.md file (e.g., a Postgres migration helper, a security-audit skill) who currently has no monetization path. They use Claude Code or Cursor as their primary client. They want curated discovery + payments but don't want to use Isol8's platform.
+Two flavors:
+
+- A non-Isol8 developer who has built an agent-shaped artifact for Claude Code, Cursor, or Copilot CLI (multi-step prompt + tool definitions + workflow), wrapped as a SKILL.md package. Charges $10-30.
+- A developer with a single high-quality SKILL.md file (Postgres migration helper, security-audit skill) who wants to monetize an atomic skill at $5-15. Listed in the Skills tab; not on the home page.
+
+Both flavors use the SKILL.md format and reach buyers via CLI install or MCP. The agent-shaped flavor is brand-positioned the same as Isol8 agents; the atomic-skill flavor is honestly framed as a skill, not an agent.
 
 ### Buyers
 
-Anyone using a skill-aware AI client (Claude Code, Cursor, OpenClaw, Copilot CLI). v1 supports four installer targets natively; everything else falls back to a printed manual-install instruction. Buys a free or paid skill, runs `npx @isol8/marketplace install <slug>` or connects the marketplace MCP server, and the skill appears in their toolchain.
+Anyone using a skill-aware AI client (Claude Code, Cursor, OpenClaw, Copilot CLI) plus Isol8 users who want to deploy purchased agents directly into their container. v1 supports four CLI installer targets natively; everything else falls back to a printed manual-install instruction. Buys a free or paid agent (or skill), runs `npx @isol8/marketplace install <slug>` or connects the marketplace MCP server, and the agent/skill appears in their toolchain.
 
 ### Narrowest wedge (recorded, not chosen)
 
@@ -124,7 +151,9 @@ Approach A captures the catalog-reuse advantage (~6-8 weeks of head start vs B a
                 │           marketplace.isol8.co                │
                 │           (Vercel, Next.js 16)                │
                 │                                                │
-                │  /                  browse / search / featured │
+                │  /                  home (Featured agents)     │
+                │  /agents            agents browse (default tab)│
+                │  /skills            skills browse (secondary)  │
                 │  /listing/:slug     detail page + buy/install  │
                 │  /sell              creator publishing UI       │
                 │  /dashboard         creator earnings + listings │
@@ -543,9 +572,9 @@ Holds: TypeScript types for the listing API, the listing card component, the buy
 ### Existing surfaces touched
 
 - `apps/frontend/src/components/control/ControlSidebar.tsx` — add a "Sell on marketplace" entry for paying users.
-- `apps/frontend/src/components/control/panels/AgentsPanel.tsx` — add "Publish to marketplace" action per agent.
+- `apps/frontend/src/components/control/panels/AgentsPanel.tsx` — add "Publish agent to marketplace" action per agent (verb is "agent" because that's the brand framing; the schema-level format is openclaw).
 - `apps/frontend/src/components/chat/Sidebar.tsx` — link to marketplace from the existing Gallery section.
-- `apps/frontend/src/app/admin/marketplace/*` — moderation + takedown queue UI parallel to the existing `apps/frontend/src/app/admin/catalog`.
+- `apps/frontend/src/app/admin/marketplace/*` — moderation + takedown queue UI parallel to the existing `apps/frontend/src/app/admin/catalog`. Admin queue surfaces format alongside listing data so reviewers can apply different bars to agent submissions vs skill submissions.
 
 ## Security & IP
 
@@ -580,11 +609,13 @@ This foreshadowing exists so that v1 is not painted into a corner. Phase 2 sign-
 
 Behavioral signals to track from launch day:
 
-- **Manufactured-seller activation:** number of Isol8 paying users who publish at least one listing within 30 days.
-  - **Strong signal:** >5% of paying base. The thesis is real.
+- **Manufactured-agent-seller activation (headline metric):** number of Isol8 paying users who publish at least one **agent** listing within 30 days.
+  - **Strong signal:** >5% of paying base. The agents-marketplace thesis is real.
   - **Mixed signal (2-5%):** ambiguous — investigate which user segment is publishing and why others aren't. Do not declare success or failure.
   - **Negative signal:** <2%. Thesis is wrong. Marketplace stays small; pivot toward team-sharing/templates as the core offering.
-- **Non-Isol8 seller signup:** number of non-Isol8 sellers who publish at least one listing within 30 days. Target: >25.
+- **Agent-vs-skill mix:** ratio of agent listings to skill listings published in the first 30 days. Target: >40% of total listings are agent-format. Lower means the brand position is fighting the seller pool, and we should revisit positioning at v1.5.
+- **Median agent price vs median skill price:** target median agent price >=$25, median skill price <=$10. If both converge to $5-7, the agents-as-products thesis is undifferentiated and we are an Agensi clone.
+- **Non-Isol8 seller signup:** number of non-Isol8 sellers (any format) who publish within 30 days. Target: >25.
 - **Purchase volume:** total GMV in 30 days. Measured, not gated.
 - **Install success rate:** percentage of CLI install attempts that complete without manual intervention, measured server-side via the validate endpoint reaching the next-expected step. Target: >95%.
 - **MCP session success rate:** percentage of MCP sessions that successfully open and complete at least one tool call without runtime error. Target: >90% v1, >98% v2.
