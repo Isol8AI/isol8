@@ -51,9 +51,14 @@ jobs:
             -t "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}" \
             apps/infra/openclaw/
 
-      - name: Push image
-        run: |
-          docker push "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+      # NOTE: we deliberately do NOT `docker push` here. Our ECR repo has tag
+      # immutability enabled, and the SOCI v2 step below pushes a different
+      # manifest (the SOCI-enabled OCI artifact) under the same tag. If we
+      # docker-pushed first, ECR would lock the tag and reject the SOCI push
+      # with "tag is immutable" (PR #438/#440 builds hit exactly this). The
+      # SOCI step imports the docker-built image into containerd via
+      # `docker save | nerdctl image load` and pushes from there — single
+      # ECR push, immutable tag claimed by the SOCI v2 manifest.
 
       - name: Set up containerd
         uses: crazy-max/ghaction-setup-containerd@v3
@@ -68,8 +73,8 @@ jobs:
         # "improving-amazon-ecs-deployment-consistency-with-soci-index-manifest-v2").
         # We're a new customer, so v1 silently falls back to a full pull.
         # `soci convert` produces a v2 SOCI-enabled image (single OCI artifact
-        # with the index attached); we push it under the original tag,
-        # overwriting the docker-pushed manifest in ECR.
+        # with the index attached). We push it under the deploy tag — the
+        # only push to ECR for this tag (no docker push first).
         run: |
           set -euo pipefail
           curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
@@ -78,31 +83,31 @@ jobs:
 
           # `crazy-max/ghaction-setup-containerd@v3` installs containerd + ctr,
           # but not nerdctl. Pull the static binary from upstream releases.
+          # nerdctl is required (per upstream cli-usage.md) for v2 push —
+          # it uploads child blobs before committing the index manifest,
+          # which is what ECR's strict validation expects.
           curl -sSL "https://github.com/containerd/nerdctl/releases/download/v${NERDCTL_VERSION}/nerdctl-${NERDCTL_VERSION}-linux-amd64.tar.gz" \
             | sudo tar -xz -C /usr/local/bin/ nerdctl
           sudo chmod +x /usr/local/bin/nerdctl
 
-          # Authenticate nerdctl to ECR — both pull and push need this.
-          # Upstream openclaw cli-usage.md mandates nerdctl (NOT `ctr image
-          # push`) for v2 indexes: ctr commits the index manifest before its
-          # child blobs are visible in ECR, which ECR rejects with "manifest
-          # list references to blobs missing in your target registry" (PR
-          # #436's build hit exactly this). nerdctl uploads children-first.
+          # Authenticate nerdctl to ECR.
           ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
           REGISTRY="$(echo "${IMAGE_REF}" | cut -d/ -f1)"
           echo "${ECR_PASSWORD}" | sudo nerdctl login --username AWS --password-stdin "${REGISTRY}"
 
-          # Pull the docker-pushed image into containerd's content store.
-          sudo nerdctl pull --platform linux/amd64 "${IMAGE_REF}"
+          # Import the docker-built image into containerd's content store.
+          # `docker save` streams the image; `nerdctl image load` ingests it.
+          # Both use the same containerd backend so soci convert sees it next.
+          docker save "${IMAGE_REF}" | sudo nerdctl image load
 
           # Convert to a SOCI v2 image. Requires src != dst, so we stage
-          # under a -soci-staging suffix and re-tag onto the original ref.
+          # under a -soci-staging suffix and re-tag onto the deploy ref.
           sudo soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
           sudo nerdctl rmi "${IMAGE_REF}" || true
           sudo nerdctl tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
 
-          # Push the SOCI v2 image — overwrites the docker manifest at the
-          # same tag with the SOCI-enabled OCI artifact.
+          # Push the SOCI v2 image — first push to ECR for this tag, no
+          # immutability conflict.
           sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
       - name: Summary
