@@ -318,6 +318,11 @@ from routers import marketplace_purchases  # noqa: E402
 
 app.include_router(marketplace_purchases.router)
 
+# Marketplace install (Plan 2) — license validate + signed-URL artifact download.
+from routers import marketplace_install  # noqa: E402
+
+app.include_router(marketplace_install.router)
+
 
 @app.get(
     "/",
