@@ -58,19 +58,33 @@ jobs:
       - name: Set up containerd
         uses: crazy-max/ghaction-setup-containerd@v3
 
-      - name: Generate and push SOCI index
+      - name: Convert image to SOCI v2 and push
         env:
           SOCI_VERSION: "0.13.0"
           IMAGE_REF: "${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}"
+        # Fargate refuses SOCI Index Manifest v1 for accounts that didn't
+        # already use SOCI before 2025-07-03 (per AWS containers blog
+        # "improving-amazon-ecs-deployment-consistency-with-soci-index-manifest-v2").
+        # We're a new customer, so v1 silently falls back to a full pull.
+        # `soci convert` produces a v2 SOCI-enabled image (single OCI artifact
+        # with the index attached); we push it under the original tag,
+        # overwriting the docker-pushed manifest in ECR.
         run: |
           set -euo pipefail
           curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
             | sudo tar -xz -C /usr/local/bin/ soci
           sudo chmod +x /usr/local/bin/soci
           ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
+          # Pull the just-pushed image into containerd's content store.
           sudo ctr image pull --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
-          sudo soci create "${IMAGE_REF}"
-          sudo soci push --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
+          # Build SOCI v2 image. `soci convert` requires src != dst, so we
+          # use a -soci-staging suffix and then re-tag onto the original ref.
+          sudo soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
+          sudo ctr image rm "${IMAGE_REF}"
+          sudo ctr image tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
+          # Push the SOCI v2 image to ECR — overwrites the docker manifest
+          # at the same tag with the SOCI-enabled OCI artifact.
+          sudo ctr image push --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
 
       - name: Summary
         run: |
