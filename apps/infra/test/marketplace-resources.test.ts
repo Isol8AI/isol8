@@ -106,4 +106,14 @@ describe("DatabaseStack — marketplace tables", () => {
       },
     });
   });
+
+  test("creates marketplace-search-index table with shard_id PK", () => {
+    template.hasResourceProperties("AWS::DynamoDB::Table", {
+      TableName: "isol8-dev-marketplace-search-index",
+      KeySchema: [
+        { AttributeName: "shard_id", KeyType: "HASH" },
+        { AttributeName: "published_listing", KeyType: "RANGE" },
+      ],
+    });
+  });
 });

@@ -32,6 +32,7 @@ export class DatabaseStack extends cdk.Stack {
   public readonly marketplacePayoutAccountsTable: dynamodb.Table;
   public readonly marketplaceTakedownsTable: dynamodb.Table;
   public readonly marketplaceMcpSessionsTable: dynamodb.Table;
+  public readonly marketplaceSearchIndexTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -330,6 +331,17 @@ export class DatabaseStack extends cdk.Stack {
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: props.kmsKey,
       timeToLiveAttribute: "ttl",
+    });
+
+    this.marketplaceSearchIndexTable = new dynamodb.Table(this, "MarketplaceSearchIndexTable", {
+      tableName: `isol8-${env}-marketplace-search-index`,
+      partitionKey: { name: "shard_id", type: dynamodb.AttributeType.NUMBER },
+      sortKey: { name: "published_listing", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
