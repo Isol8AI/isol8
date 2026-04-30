@@ -982,13 +982,18 @@ class EcsManager:
         return [{"name": env_var_name, "valueFrom": key_row["secret_arn"]}]
 
     async def _pre_stage_oauth_for_user(self, user_id: str) -> None:
-        """Pre-stage the codex auth.json for a chatgpt_oauth user.
+        """Pre-stage the auth-profiles.json for a chatgpt_oauth user.
 
         Fetches the decrypted ChatGPT tokens persisted by ``oauth_service``
-        (Task 7) and writes them to EFS at ``/mnt/efs/users/{user_id}/codex/``
-        BEFORE the ECS service is created so the container reads them cold
-        on first boot. Raises if no active OAuth row exists — caller should
-        gate provisioning on a completed device-code flow.
+        and writes OpenClaw's AuthProfileStore JSON to
+        ``<EFS>/users/{user_id}/agents/main/agent/auth-profiles.json``
+        BEFORE the ECS service is created so the openai-codex provider
+        finds the credentials cold on first boot. Raises if no active
+        OAuth row exists — caller should gate provisioning on a completed
+        device-code flow.
+
+        See spec at
+        ``docs/superpowers/specs/2026-04-29-chatgpt-oauth-auth-profiles-design.md``.
         """
         from core.services.oauth_service import get_decrypted_tokens
 
@@ -998,9 +1003,9 @@ class EcsManager:
                 f"No ChatGPT OAuth tokens for user {user_id} - caller should complete OAuth before provisioning",
                 user_id,
             )
-        from core.containers.workspace import pre_stage_codex_auth
+        from core.containers.workspace import pre_stage_auth_profile_store
 
-        await pre_stage_codex_auth(user_id=user_id, oauth_tokens=tokens)
+        await pre_stage_auth_profile_store(user_id=user_id, oauth_tokens=tokens)
 
     async def provision_user_container(
         self,
@@ -1043,15 +1048,10 @@ class EcsManager:
         environment_for_task: list[dict] = []
         if provider_choice == "chatgpt_oauth":
             await self._pre_stage_oauth_for_user(user_id)
-            # OpenClaw's openai-codex provider reads ${CODEX_HOME}/auth.json
-            # at boot. The EFS access point chroots /users/{user_id} into
-            # /home/node/.openclaw, so the file we staged at
-            # `<EFS>/users/{user_id}/codex/auth.json` lands inside the
-            # container at `/home/node/.openclaw/codex/auth.json`. Point
-            # CODEX_HOME at that dir so OpenClaw finds it cold on first boot.
-            environment_for_task = [
-                {"name": "CODEX_HOME", "value": "/home/node/.openclaw/codex"},
-            ]
+            # OpenClaw reads OAuth credentials from
+            # <agentDir>/auth-profiles.json. _pre_stage_oauth_for_user above
+            # writes that file to EFS. No env var override needed — the
+            # path is resolved from agents.list[*].id in openclaw.json.
         elif provider_choice == "byo_key":
             if byo_provider is None:
                 raise EcsManagerError(
