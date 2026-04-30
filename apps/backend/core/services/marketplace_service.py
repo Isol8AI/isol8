@@ -233,8 +233,16 @@ async def publish_v2(
                         "listing_id": {"S": listing_id},
                         "version": {"N": str(new_version)},
                     },
+                    # Fail loud if the v2 listings row hasn't been seeded yet
+                    # (e.g., via create_draft for the new version). Without
+                    # this guard, DynamoDB Update is upsert-by-default and
+                    # would silently create a v2 row populated only with the
+                    # 4 fields below — half-populated rows surface as broken
+                    # listings in the storefront. Caller MUST insert the full
+                    # v2 row in 'review' state before calling publish_v2.
+                    "ConditionExpression": "attribute_exists(listing_id)",
                     "UpdateExpression": (
-                        "SET #s = :pub, published_at = :now,     s3_prefix = :prefix, manifest_sha256 = :sha"
+                        "SET #s = :pub,     published_at = :now,     s3_prefix = :prefix,     manifest_sha256 = :sha"
                     ),
                     "ExpressionAttributeNames": {"#s": "status"},
                     "ExpressionAttributeValues": {
