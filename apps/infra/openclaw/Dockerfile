@@ -141,42 +141,38 @@ RUN mkdir -p /home/node/.npm-global/bin && \
     ln -sf /usr/local/bin/qmd /home/node/.npm-global/bin/qmd && \
     chown -R node:node /home/node/.npm-global
 
-# ---- Layer 8c: pre-bake openclaw plugin runtime deps ----
+# ---- Layer 8c: pre-bake ALL openclaw plugin runtime deps ----
 # Plugins declare bundledRuntimeDeps in their package.json's `openclaw` config.
-# At first start, openclaw npm-installs each plugin's deps into
-# /app/dist/extensions/<plugin>/node_modules/ unless they already exist with a
-# matching semver. Pre-installing in the image eliminates ~5min of cold-start
-# (browser plugin's Playwright install dominates).
+# At first start, openclaw's plugin loader npm-installs each plugin's deps
+# into /app/dist/extensions/<plugin>/node_modules/ unless a matching version
+# already exists there. Detection logic (upstream
+# src/plugins/bundled-runtime-deps.ts):
+#   readInstalledDependencyVersion() reads <pluginRoot>/node_modules/<dep>/package.json
+#   and semver-checks against the spec. Match → skip install.
 #
-# Detection logic (upstream src/plugins/bundled-runtime-deps.ts):
-#   readInstalledDependencyVersion() reads <root>/node_modules/<dep>/package.json
-#   and semver-checks against the requested range. Match → skip install.
+# Earlier versions of this layer hardcoded a 4-plugin list (browser,
+# deepgram, elevenlabs, microsoft) — but every openclaw upstream version
+# ships a different set of plugins, and several install lazily on first use
+# (e.g. codex activates on ChatGPT sign-in, not on boot), so each test run
+# discovered new plugins missing from the prebake list.
 #
-# Spec list extracted from the runtime install log:
-#   [plugins] browser installed bundled runtime deps:
-#     @modelcontextprotocol/sdk@1.29.0, commander@^14.0.3, express@^5.2.1,
-#     playwright-core@1.59.1, typebox@1.1.28, undici@8.1.0, ws@^8.20.0
-#   [plugins] deepgram installed bundled runtime deps: ws@^8.20.0
-#   [plugins] elevenlabs installed bundled runtime deps: ws@^8.20.0
-#   [plugins] microsoft installed bundled runtime deps: node-edge-tts@^1.2.10
-#
-# We use a shared `--prefix` for each plugin dir so npm scopes to the plugin's
-# own node_modules without complaining about a missing package.json.
-RUN cd /app/dist/extensions/browser && \
-    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev \
-      @modelcontextprotocol/sdk@1.29.0 \
-      commander@^14.0.3 \
-      express@^5.2.1 \
-      playwright-core@1.59.1 \
-      typebox@1.1.28 \
-      undici@8.1.0 \
-      ws@^8.20.0 && \
-    cd /app/dist/extensions/deepgram && \
-    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ws@^8.20.0 && \
-    cd /app/dist/extensions/elevenlabs && \
-    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ws@^8.20.0 && \
-    cd /app/dist/extensions/microsoft && \
-    npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev node-edge-tts@^1.2.10 && \
+# Auto-discover instead: scan every package.json under /app/dist/extensions/,
+# extract bundledRuntimeDeps, and install per plugin. Future upstream bumps
+# pick up new plugins automatically.
+RUN node -e ' \
+    const fs=require("fs"),path=require("path"),{execSync}=require("child_process"); \
+    const root="/app/dist/extensions"; \
+    for (const name of fs.readdirSync(root)) { \
+      const dir=path.join(root,name); \
+      const pkgPath=path.join(dir,"package.json"); \
+      if (!fs.existsSync(pkgPath)) continue; \
+      let pkg; try { pkg=JSON.parse(fs.readFileSync(pkgPath,"utf8")); } catch { continue; } \
+      const deps=pkg.openclaw && pkg.openclaw.bundledRuntimeDeps; \
+      if (!Array.isArray(deps) || deps.length===0) continue; \
+      console.log(`[prebake] ${name}: ${deps.join(" ")}`); \
+      execSync(`npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ${deps.join(" ")}`, \
+        { cwd: dir, stdio: "inherit" }); \
+    }' && \
     chown -R node:node /app/dist/extensions
 
 # ---- Layer 8d: pre-download Playwright Chromium browser ----
