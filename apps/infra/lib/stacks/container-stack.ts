@@ -348,6 +348,14 @@ export class ContainerStack extends cdk.Stack {
         // this, clawhub falls through to agents.defaults.workspace and lands
         // at /home/node/.openclaw/workspaces/skills — a path no scanner checks.
         CLAWHUB_WORKDIR: "/home/node/.openclaw",
+        // Skip mDNS/bonjour service advertising. OpenClaw advertises itself
+        // on the LAN via bonjour for desktop auto-discovery; in Fargate
+        // there's no LAN multicast peer, so the announce gets stuck and
+        // blocks channel/sidecar startup for ~13 minutes before the
+        // bonjour watchdog finally gives up. Verified via runtime logs +
+        // upstream `src/gateway/server-discovery-runtime.ts` — env var
+        // present in image tag 2026.4.23-slim.
+        OPENCLAW_DISABLE_BONJOUR: "true",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
