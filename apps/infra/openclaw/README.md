@@ -1,16 +1,18 @@
 # Extended OpenClaw Image
 
-Custom Docker image extending `alpine/openclaw:<UPSTREAM>` with Linux binaries for the bundled skills that need them.
+Custom Docker image extending `ghcr.io/openclaw/openclaw:<UPSTREAM>` with Linux binaries for the bundled skills that need them.
 
 Built and pushed to ECR `isol8/openclaw-extended` by `.github/workflows/build-openclaw-image.yml` on every push to `main` that touches `Dockerfile` or `openclaw-version.json`.
 
+> Source registry note: we pull from **ghcr.io/openclaw/openclaw** (upstream's primary registry), NOT `docker.io/alpine/openclaw`. The Docker Hub mirror is partial — at 2026.4.23 it only carried the `-slim` variant, which strips bundled plugin runtime deps and forces ~6min of lazy npm-install work on cold start. Anonymous pulls of public ghcr.io packages work without registry auth.
+
 ## Bumping the upstream OpenClaw version
 
-1. Find the new tag at https://hub.docker.com/r/alpine/openclaw/tags
+1. Find the new tag at https://github.com/openclaw/openclaw/pkgs/container/openclaw (or https://github.com/openclaw/openclaw/releases)
 2. Edit `Dockerfile`:
-   - Change `FROM alpine/openclaw:<old>` to `FROM alpine/openclaw:<new>`
+   - Change `FROM ghcr.io/openclaw/openclaw:<old>` to `FROM ghcr.io/openclaw/openclaw:<new>`
 3. Edit `<repo-root>/openclaw-version.json`:
-   - Change `"upstream": "alpine/openclaw:<old>"` to `<new>`
+   - Change `"upstream": "ghcr.io/openclaw/openclaw:<old>"` to `<new>`, plus `image`/`tag`/`full` to match
 4. Build locally to verify (`--platform linux/amd64` is required so the build matches what CI/Fargate run; ARM64 binaries like 1Password CLI's apt repo aren't available):
    ```bash
    docker build --platform linux/amd64 -t openclaw-extended:local apps/infra/openclaw/

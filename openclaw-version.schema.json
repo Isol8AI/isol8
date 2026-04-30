@@ -9,8 +9,8 @@
     "$schema": { "type": "string" },
     "upstream": {
       "type": "string",
-      "description": "Pinned upstream alpine/openclaw image+tag the Dockerfile FROMs.",
-      "pattern": "^alpine/openclaw:[a-zA-Z0-9._-]+$"
+      "description": "Pinned upstream openclaw image+tag the Dockerfile FROMs (registry-qualified, e.g. ghcr.io/openclaw/openclaw:2026.4.23).",
+      "pattern": "^[a-zA-Z0-9._/-]+:[a-zA-Z0-9._-]+$"
     },
     "image": {
       "type": "string",
