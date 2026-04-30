@@ -74,17 +74,29 @@ jobs:
           curl -sSL "https://github.com/awslabs/soci-snapshotter/releases/download/v${SOCI_VERSION}/soci-snapshotter-${SOCI_VERSION}-linux-amd64-static.tar.gz" \
             | sudo tar -xz -C /usr/local/bin/ soci
           sudo chmod +x /usr/local/bin/soci
+
+          # Authenticate nerdctl to ECR — both pull and push need this.
+          # Upstream openclaw cli-usage.md mandates nerdctl (NOT `ctr image
+          # push`) for v2 indexes: ctr commits the index manifest before its
+          # child blobs are visible in ECR, which ECR rejects with "manifest
+          # list references to blobs missing in your target registry" (PR
+          # #436's build hit exactly this). nerdctl uploads children-first.
           ECR_PASSWORD=$(aws ecr get-login-password --region us-east-1)
-          # Pull the just-pushed image into containerd's content store.
-          sudo ctr image pull --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
-          # Build SOCI v2 image. `soci convert` requires src != dst, so we
-          # use a -soci-staging suffix and then re-tag onto the original ref.
+          REGISTRY="$(echo "${IMAGE_REF}" | cut -d/ -f1)"
+          echo "${ECR_PASSWORD}" | sudo nerdctl login --username AWS --password-stdin "${REGISTRY}"
+
+          # Pull the docker-pushed image into containerd's content store.
+          sudo nerdctl pull --platform linux/amd64 "${IMAGE_REF}"
+
+          # Convert to a SOCI v2 image. Requires src != dst, so we stage
+          # under a -soci-staging suffix and re-tag onto the original ref.
           sudo soci convert --platform linux/amd64 "${IMAGE_REF}" "${IMAGE_REF}-soci-staging"
-          sudo ctr image rm "${IMAGE_REF}"
-          sudo ctr image tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
-          # Push the SOCI v2 image to ECR — overwrites the docker manifest
-          # at the same tag with the SOCI-enabled OCI artifact.
-          sudo ctr image push --user "AWS:${ECR_PASSWORD}" "${IMAGE_REF}"
+          sudo nerdctl rmi "${IMAGE_REF}" || true
+          sudo nerdctl tag "${IMAGE_REF}-soci-staging" "${IMAGE_REF}"
+
+          # Push the SOCI v2 image — overwrites the docker manifest at the
+          # same tag with the SOCI-enabled OCI artifact.
+          sudo nerdctl push --platform linux/amd64 "${IMAGE_REF}"
 
       - name: Summary
         run: |
