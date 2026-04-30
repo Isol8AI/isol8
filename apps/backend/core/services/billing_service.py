@@ -32,20 +32,24 @@ class BillingService:
         if existing:
             return existing
 
-        # Create the Stripe customer first, then try to claim the DynamoDB
-        # slot with a conditional write. If another concurrent call already
-        # won the race (webhook + frontend sync fire at the same time), the
-        # conditional put raises AlreadyExistsError — we delete the orphan
-        # Stripe customer and return the winner's record.
+        # Create the Stripe customer fresh on every call. We deliberately do
+        # NOT pass a stable idempotency_key keyed on owner_id: Stripe caches
+        # the response for 24h, so an out-of-band customer delete (dashboard
+        # cleanup, dev reset, racing orphan-cleanup) produces a wedge where
+        # the cached id no longer exists and every subsequent checkout 400s
+        # with `No such customer`. Issue #417 documents the recurring impact.
         #
-        # This replaces the previous Stripe search approach which was
-        # eventually consistent and still produced duplicates within the
-        # same second.
+        # The DDB conditional write below (create_if_not_exists) is the real
+        # dedupe — it's strongly consistent and atomic. Two racing callers
+        # each create their own Stripe customer; only one wins the DDB slot;
+        # the loser deletes its orphan Stripe customer. Because the customer
+        # ids now differ between racers, the orphan-delete is safe (no risk
+        # of nuking the winner's customer the way it could when both racers
+        # received the same id back from the idempotency cache).
         with timing("stripe.api.latency", {"op": "customers.create"}):
             customer = stripe.Customer.create(
                 email=email,
                 metadata={"owner_id": owner_id, "owner_type": owner_type},
-                idempotency_key=f"create_customer:{owner_id}",
             )
 
         try:
@@ -55,8 +59,11 @@ class BillingService:
                 owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
-            # Another call won the race. Delete our orphan Stripe customer
-            # and return the winner's record.
+            winner = await billing_repo.get_by_owner_id(owner_id)
+            if winner and winner.get("stripe_customer_id") == customer.id:
+                # Defensive guard: if anything ever brings stable idempotency
+                # back, our orphan-delete must never nuke the winner's id.
+                return winner
             logger.info(
                 "Billing account race: owner_id=%s already exists, deleting orphan Stripe customer %s",
                 owner_id,
@@ -71,7 +78,7 @@ class BillingService:
             except Exception:
                 put_metric("stripe.api.error", dimensions={"op": "customers.delete", "error_code": "unknown"})
                 logger.warning("Failed to delete orphan Stripe customer %s", customer.id)
-            return await billing_repo.get_by_owner_id(owner_id)
+            return winner
 
     async def create_portal_session(self, billing_account: dict) -> str:
         owner_id = billing_account["owner_id"]

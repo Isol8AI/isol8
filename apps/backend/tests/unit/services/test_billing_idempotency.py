@@ -1,21 +1,10 @@
-"""Confirm the Stripe Customer create site passes an idempotency_key.
+"""Confirm Stripe Customer.create runs WITHOUT a stable idempotency_key.
 
-One representative test that locks the convention. The other Stripe write
-sites in billing_service.py follow the same pattern (see the convention
-table in the Stripe Hardening plan / Task 4 prompt):
-
-    Customer.create                       -> create_customer:{owner_id}
-    Customer.delete                       -> delete_customer:{customer_id}
-    checkout.Session.create               -> checkout:{owner_id}:{5min-bucket}
-    billing_portal.Session.create         -> portal:{owner_id}:{5min-bucket}
-    Subscription.modify                   -> sub_modify:{sub_id}:<short-op>
-    Subscription.delete                   -> sub_cancel:{sub_id}
-    Customer.create_balance_transaction   -> balance_tx:{cust_id}:<hash>
-    Invoice.pay                           -> invoice_pay:{invoice_id}
-
-Retried HTTP calls (network blip, FastAPI request retry, our own self-heal
-logic) must collapse to a single side-effect on Stripe's side rather than
-double-creating customers, double-cancelling subs, double-charging cards.
+Every other Stripe write site uses an idempotency_key (delete_customer,
+checkout, portal, sub_modify, sub_cancel, balance_tx, invoice_pay), but
+Customer.create deliberately does not — the DDB conditional write is the
+canonical dedupe. See issue #417 for the wedge-on-out-of-band-delete
+incident that drove this.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,14 +15,14 @@ import pytest
 @pytest.mark.asyncio
 @patch("core.services.billing_service.billing_repo")
 @patch("core.services.billing_service.stripe")
-async def test_create_customer_passes_idempotency_key(mock_stripe, mock_repo):
-    """BillingService.create_customer_for_owner passes idempotency_key=
-    to stripe.Customer.create, derived from the owner_id.
+async def test_create_customer_does_not_pass_stable_idempotency_key(mock_stripe, mock_repo):
+    """BillingService.create_customer_for_owner must NOT pass a stable
+    idempotency_key keyed on owner_id to stripe.Customer.create.
 
-    The key shape `create_customer:{owner_id}` is deterministic so a
-    retried HTTP call (e.g. transient network error after the SDK already
-    sent the request to Stripe) returns the same Customer instead of
-    creating a duplicate.
+    A stable key collides with Stripe's 24h cache: if the customer is
+    deleted out-of-band (dashboard cleanup, dev reset), Stripe keeps
+    returning the dead id for ~24h and every downstream checkout 400s
+    with `No such customer`. Issue #417 documents the recurring impact.
     """
     from core.services.billing_service import BillingService
 
@@ -50,6 +39,8 @@ async def test_create_customer_passes_idempotency_key(mock_stripe, mock_repo):
     await BillingService().create_customer_for_owner(owner_id="u_1", email="x@y.com")
 
     _, kwargs = mock_stripe.Customer.create.call_args
-    assert kwargs.get("idempotency_key") == "create_customer:u_1", (
-        f"Expected idempotency_key='create_customer:u_1', got {kwargs.get('idempotency_key')!r}"
+    key = kwargs.get("idempotency_key")
+    assert key is None or "owner_id" not in str(key) and "u_1" not in str(key), (
+        f"Customer.create should not receive a stable owner-keyed idempotency_key, "
+        f"got idempotency_key={key!r}. The DDB conditional write is the canonical dedupe."
     )
