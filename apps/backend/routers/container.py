@@ -13,6 +13,7 @@ from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
 from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
+from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, container_repo, user_repo
 
@@ -139,24 +140,39 @@ async def container_status(
     }
 
 
+class _DisconnectedPool:
+    """Stand-in pool that always reports disconnected. Used as a fallback
+    only when the real singleton hasn't been initialized yet (test envs,
+    service start before the lifespan handler hooks the pool up)."""
+
+    @staticmethod
+    def is_user_connected(_user_id: str) -> bool:
+        return False
+
+
 def _safe_phase(container: dict, owner_id: str) -> str:
-    """Wrap _resolve_cold_start_phase so a misconfigured/un-initialized
-    gateway pool (notably in some test envs) downgrades to "starting"
-    instead of 500ing the status endpoint. Status must always answer."""
+    """Wrap _resolve_cold_start_phase so a not-yet-initialized gateway
+    pool downgrades to "starting" instead of 500ing the status endpoint.
+    Status must always answer.
+
+    Catches the specific exception(s) we know surface here:
+      - ManagementApiClientError when WS_MANAGEMENT_API_URL is unset
+        (test envs that don't run the lifespan handler).
+    Anything else bubbles up as a real bug. Logs once per process so a
+    production misconfiguration is visible in CloudWatch instead of
+    silently always reporting "starting".
+    """
     try:
-        return _resolve_cold_start_phase(container, get_gateway_pool(), owner_id)
-    except Exception:
-        return _resolve_cold_start_phase(container, _Pool(connected=False), owner_id)
-
-
-class _Pool:
-    """Minimal duck-type for the resolver's pool argument."""
-
-    def __init__(self, connected: bool) -> None:
-        self._connected = connected
-
-    def is_user_connected(self, _user_id: str) -> bool:
-        return self._connected
+        pool = get_gateway_pool()
+    except ManagementApiClientError as exc:
+        if not getattr(_safe_phase, "_pool_warning_logged", False):
+            logger.warning(
+                "Gateway pool not initialized; status phase falls back to disconnected. Real pool error: %s",
+                exc,
+            )
+            _safe_phase._pool_warning_logged = True  # type: ignore[attr-defined]
+        return _resolve_cold_start_phase(container, _DisconnectedPool(), owner_id)
+    return _resolve_cold_start_phase(container, pool, owner_id)
 
 
 @router.post(

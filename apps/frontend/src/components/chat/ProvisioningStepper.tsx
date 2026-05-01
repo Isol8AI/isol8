@@ -44,6 +44,12 @@ type Phase =
 // gateway/channels-sidecars/agent split). Tuned to the cold-start
 // trace data captured 2026-04-30: gateway-ready ~30 s, sidecars
 // resolves around T+5–6 min, qmd memory armed shortly after.
+//
+// TODO(cold-start-signals): replace this time-based heuristic once we
+// pipe openclaw's startup-trace events through the gateway pool to a
+// real backend signal. Today the frontend can lie ("Wiring up your
+// channels..." while the gateway is actually still booting); a real
+// signal would let us advance the stepper on the actual transition.
 const SUBPHASE_GATEWAY_MS = 45_000;
 const SUBPHASE_CHANNELS_MS = 180_000;
 
@@ -93,10 +99,10 @@ function hasMainBot(links: LinksMeResponse): boolean {
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
-  { phase: "container", label: "Container running", activeLabel: "Provisioning your container..." },
-  { phase: "gateway", label: "Gateway connected", activeLabel: "Booting gateway and plugins..." },
-  { phase: "channels-sidecars", label: "Channels online", activeLabel: "Starting channels and sidecars..." },
-  { phase: "agent", label: "Main agent ready", activeLabel: "Starting up your main agent..." },
+  { phase: "container", label: "Container ready", activeLabel: "Provisioning your container..." },
+  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to your agent's brain..." },
+  { phase: "channels-sidecars", label: "Channels wired up", activeLabel: "Wiring up your channels..." },
+  { phase: "agent", label: "Agent online", activeLabel: "Putting the finishing touches on your agent..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
 
@@ -232,12 +238,22 @@ export function ProvisioningStepper({
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
   }, [providerStepDone, searchParams, router]);
 
-  // Poll container status every 3s once subscribed (incl. trial).
-  const shouldPollContainer = isSubscribed;
+  // Poll container status every 3s while subscribed. The interval is
+  // gated on the *previously observed* phase: as soon as a response
+  // tells us we're ready, the next render drops the interval to 0 and
+  // SWR stops re-fetching — saves a GET every 3 s + a gateway-pool
+  // walk per request. Uses a mirror state instead of reading the
+  // current `container` directly so the gate doesn't reference a value
+  // that's still in its useSWR call frame.
+  const [reachedReady, setReachedReady] = useState(false);
+  const shouldPollContainer = isSubscribed && !reachedReady;
   const { container, refresh: refreshContainer } = useContainerStatus({
     refreshInterval: shouldPollContainer ? 3000 : 0,
-    enabled: shouldPollContainer,
+    enabled: isSubscribed,
   });
+  useEffect(() => {
+    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
+  }, [container?.phase, reachedReady]);
 
   // When container status returns null (404), trigger provisioning once
   // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
@@ -352,6 +368,32 @@ export function ProvisioningStepper({
   // expected budget — gives "still working" instead of an indefinite spinner.
   // Also stamps the start time the first time we enter container/gateway and
   // flips `timedOut` when we cross TIMEOUT_MS, which softens the copy.
+  // Reset cold-start timing state when the user re-enters a pre-ready
+  // phase (e.g., scale-to-zero brought the container back to
+  // provisioning, or a recovery path re-fired). Without this, the
+  // user sees stale elapsedMs and a stuck timedOut banner from a
+  // previous run.
+  const wasPreviouslyAdvancedRef = useRef(false);
+  useEffect(() => {
+    const isColdStartPhase =
+      phase === "container" ||
+      phase === "gateway" ||
+      phase === "channels-sidecars" ||
+      phase === "agent";
+    if (!isColdStartPhase) {
+      wasPreviouslyAdvancedRef.current = phase === "ready" || phase === "channels";
+      return;
+    }
+    // Only reset when re-entering after having previously left this
+    // window — first-time entry handled by the elapsed-tick effect below.
+    if (wasPreviouslyAdvancedRef.current) {
+      provisioningStartRef.current = null;
+      setElapsedMs(0);
+      setTimedOut(false);
+      wasPreviouslyAdvancedRef.current = false;
+    }
+  }, [phase]);
+
   useEffect(() => {
     if (
       phase !== "container" &&
@@ -566,6 +608,28 @@ export function ProvisioningStepper({
         .pod-window {
           width: 20px; height: 10px; background: #a8e6c6; border-radius: 4px;
           margin: 8px auto 0;
+          /* Default flat glow; pulse only switches on once the lid opens, so
+             the window doesn't visibly breathe during the brief pod-closed
+             provisioning phase. */
+          box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
+        }
+        .pod-open .pod-window {
+          /* Slow ambient pulse — visible during the 3+ min stretch where
+             the user is in gateway / channels-sidecars / agent sub-phases.
+             The steam already loops above; this gives the green glow a
+             gentle heartbeat so the eye registers continuous motion even
+             after the open animation has settled. */
+          animation: pod-window-pulse 2.6s ease-in-out infinite;
+        }
+        @keyframes pod-window-pulse {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
+            background: #a8e6c6;
+          }
+          50% {
+            box-shadow: 0 0 14px 2px rgba(168, 230, 198, 0.55);
+            background: #c8f0d6;
+          }
         }
         .pod-lid-l, .pod-lid-r {
           position: absolute; top: 16px; width: 50%; height: 12px;
@@ -721,6 +785,7 @@ export function ProvisioningStepper({
         @media (prefers-reduced-motion: reduce) {
           .anim-key-circle { animation: none; }
           .pod-steam-line { animation: none; }
+          .pod-open .pod-window { animation: none; }
           .check-path { animation: none; stroke-dashoffset: 0; }
           .provision-title, .provision-desc { transition: none; }
         }
@@ -801,7 +866,14 @@ export function ProvisioningStepper({
             </div>
           </div>
 
-          <h2 className="provision-title">{currentStep?.activeLabel || "Setting up..."}</h2>
+          <h2
+            className="provision-title"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {currentStep?.activeLabel || "Setting up..."}
+          </h2>
           <div className="provision-desc provision-desc-ideas">
             <RotatingIdeas
               eyebrow={
