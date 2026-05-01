@@ -39,6 +39,15 @@ router = APIRouter(prefix="/oauth/chatgpt", tags=["oauth"])
     ),
 )
 async def start(ctx: AuthContext = Depends(get_current_user)):
+    # Org-context users cannot use ChatGPT OAuth — see
+    # memory/project_chatgpt_oauth_personal_only.md. Belt-and-suspenders to
+    # the trial-checkout block: a future "reconnect" flow that calls this
+    # endpoint outside trial-checkout still won't bypass the rule.
+    if ctx.is_org_context:
+        raise HTTPException(
+            status_code=403,
+            detail="ChatGPT OAuth is not available for organization workspaces.",
+        )
     try:
         result = await request_device_code(user_id=ctx.user_id)
     except OAuthAlreadyActiveError as e:
