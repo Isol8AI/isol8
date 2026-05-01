@@ -5,6 +5,18 @@ import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { BACKEND_URL } from "@/lib/api";
 
+/**
+ * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
+ * - `provisioning`: ECS task hasn't reached RUNNING yet (image pull, ENI
+ *   attach, container init). Today this can be 60–120 s on a fresh service.
+ * - `starting`: ECS task is RUNNING but the backend's gateway pool hasn't
+ *   completed the OpenClaw 4.5 signed-device handshake + health RPC. This
+ *   is where the long wait lives — gateway boot (≈30 s), then sidecars
+ *   (channels + qmd memory init) which can run several minutes.
+ * - `ready`: pool has a live, healthy connection to openclaw — chat works.
+ */
+export type ColdStartPhase = "provisioning" | "starting" | "ready";
+
 export interface ContainerStatus {
   service_name: string;
   status: string;
@@ -14,6 +26,8 @@ export interface ContainerStatus {
   region: string;
   last_error: string | null;
   last_error_at: string | null;
+  /** Cold-start phase. Optional for backwards compat with old backends. */
+  phase?: ColdStartPhase;
 }
 
 interface UseContainerStatusOptions {

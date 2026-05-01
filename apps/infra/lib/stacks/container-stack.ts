@@ -362,15 +362,6 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
-        // Skip the channels-and-sidecars worker pool at boot. Cold-start
-        // traces showed sidecars.channels eating 5m+ even when no channels
-        // are configured (root cause inside upstream startChannels TBD).
-        // CAVEAT: same env var also makes config-reload skip channel
-        // restart (server-reload-handlers.ts:166), so a user who later
-        // configures a Telegram/Discord/Slack token won't see the bot
-        // come online until the container restarts. Acceptable trade
-        // while we hunt the wedge.
-        OPENCLAW_SKIP_CHANNELS: "true",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({

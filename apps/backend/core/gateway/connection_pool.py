@@ -953,6 +953,20 @@ class GatewayConnectionPool:
         self._lock = asyncio.Lock()
         self._grace_tasks: Dict[str, asyncio.Task] = {}
 
+    def is_user_connected(self, user_id: str) -> bool:
+        """Whether the pool has a live, healthy gateway connection for this user.
+
+        Used by the cold-start phase resolver in the container router. True
+        means TCP+WS+OpenClaw 4.5 signed handshake all completed AND the
+        post-handshake health RPC succeeded — i.e. openclaw is responsive
+        enough to take chat traffic. The 5+min sidecars.channels wedge
+        prevents this from going True until openclaw finishes that phase,
+        which is why we surface the intermediate "starting" phase to the
+        frontend instead of leaving users staring at a blank screen.
+        """
+        conn = self._connections.get(user_id)
+        return conn is not None and conn.is_connected
+
     async def gate_chat(self, *, user_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.
 
