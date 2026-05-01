@@ -22,6 +22,15 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Mirror of openclaw-version.json#tag at the repo root. Used as the
+# `meta.lastTouchedVersion` value openclaw expects in our generated
+# config (defeats `missing-meta-vs-last-good` auto-restore in
+# src/config/io.observe-recovery.ts:425). Must match what openclaw
+# itself self-writes (io.ts:879 uses `VERSION` from package.json).
+# A drift test in tests/unit/containers/test_config.py asserts this
+# stays in sync with openclaw-version.json on every CI run.
+OPENCLAW_UPSTREAM_VERSION = "2026.4.23"
+
 
 # ``fcntl.lockf`` serializes ACROSS processes but not across threads within a
 # single Python process. ``ensure_node_paired_entry`` runs via
@@ -404,13 +413,13 @@ def build_openclaw_config_dict(
 
     config = {
         # Synthetic meta defeats openclaw's "missing-meta-vs-last-good"
-        # auto-restore in src/config/io.observe-recovery.ts: that check
-        # treats every backend overwrite as anomalous (because openclaw
-        # adds its own meta after first boot, our overwrites strip it),
-        # silently restoring the previous .bak and clobbering whatever
-        # we just wrote. hasConfigMeta requires meta to be an object
-        # with at least a string lastTouchedVersion or lastTouchedAt.
-        "meta": {"lastTouchedVersion": "isol8-backend"},
+        # auto-restore in src/config/io.observe-recovery.ts:425. That
+        # check treats every backend overwrite as anomalous (openclaw
+        # adds its own meta after first boot; our overwrites strip it),
+        # silently restoring from .bak and clobbering whatever we wrote.
+        # Use the real upstream version so warnIfConfigFromFuture
+        # (io.ts:885) parses it as semver and short-circuits cleanly.
+        "meta": {"lastTouchedVersion": OPENCLAW_UPSTREAM_VERSION},
         "gateway": {
             "mode": "local",
             "bind": "lan",

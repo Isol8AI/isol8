@@ -14,7 +14,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useContainerStatus } from "@/hooks/useContainerStatus";
+import { useContainerStatus, type ColdStartPhase } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { capture } from "@/lib/analytics";
@@ -23,7 +23,35 @@ import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
 
-type Phase = "payment" | "provider" | "container" | "gateway" | "channels" | "ready";
+// Frontend stepper phases. The cold-start "container", "gateway",
+// "channels-sidecars", and "agent" steps all map to the same backend
+// container.status="running" / gateway pool not-yet-connected window —
+// the backend can only distinguish provisioning / starting / ready.
+// We split that "starting" window into three visible UI steps via
+// elapsed time so the user sees concrete progress during the 5+min
+// upstream sidecars.channels phase instead of an unchanging spinner.
+type Phase =
+  | "payment"
+  | "provider"
+  | "container"
+  | "gateway"
+  | "channels-sidecars"
+  | "agent"
+  | "channels"
+  | "ready";
+
+// Sub-phase boundaries within backend phase="starting" (frontend
+// gateway/channels-sidecars/agent split). Tuned to the cold-start
+// trace data captured 2026-04-30: gateway-ready ~30 s, sidecars
+// resolves around T+5–6 min, qmd memory armed shortly after.
+//
+// TODO(cold-start-signals): replace this time-based heuristic once we
+// pipe openclaw's startup-trace events through the gateway pool to a
+// real backend signal. Today the frontend can lie ("Wiring up your
+// channels..." while the gateway is actually still booting); a real
+// signal would let us advance the stepper on the actual transition.
+const SUBPHASE_GATEWAY_MS = 45_000;
+const SUBPHASE_CHANNELS_MS = 180_000;
 
 type ProviderChoice = "chatgpt_oauth" | "byo_key" | "bedrock_claude";
 
@@ -71,8 +99,10 @@ function hasMainBot(links: LinksMeResponse): boolean {
 
 const STEPS_PAID: { phase: Phase; label: string; activeLabel: string }[] = [
   { phase: "payment", label: "Payment confirmed", activeLabel: "Confirming payment..." },
-  { phase: "container", label: "Container started", activeLabel: "Starting your container (this may take a few minutes)..." },
-  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to AI gateway..." },
+  { phase: "container", label: "Container ready", activeLabel: "Provisioning your container..." },
+  { phase: "gateway", label: "Gateway connected", activeLabel: "Connecting to your agent's brain..." },
+  { phase: "channels-sidecars", label: "Channels wired up", activeLabel: "Wiring up your channels..." },
+  { phase: "agent", label: "Agent online", activeLabel: "Putting the finishing touches on your agent..." },
   { phase: "ready", label: "Ready", activeLabel: "Ready!" },
 ];
 
@@ -208,12 +238,22 @@ export function ProvisioningStepper({
     router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
   }, [providerStepDone, searchParams, router]);
 
-  // Poll container status every 3s once subscribed (incl. trial).
-  const shouldPollContainer = isSubscribed;
+  // Poll container status every 3s while subscribed. The interval is
+  // gated on the *previously observed* phase: as soon as a response
+  // tells us we're ready, the next render drops the interval to 0 and
+  // SWR stops re-fetching — saves a GET every 3 s + a gateway-pool
+  // walk per request. Uses a mirror state instead of reading the
+  // current `container` directly so the gate doesn't reference a value
+  // that's still in its useSWR call frame.
+  const [reachedReady, setReachedReady] = useState(false);
+  const shouldPollContainer = isSubscribed && !reachedReady;
   const { container, refresh: refreshContainer } = useContainerStatus({
     refreshInterval: shouldPollContainer ? 3000 : 0,
-    enabled: shouldPollContainer,
+    enabled: isSubscribed,
   });
+  useEffect(() => {
+    if (container?.phase === "ready" && !reachedReady) setReachedReady(true);
+  }, [container?.phase, reachedReady]);
 
   // When container status returns null (404), trigger provisioning once
   // Trigger provisioning when no container (404) or container is stopped (scale-to-zero)
@@ -270,26 +310,69 @@ export function ProvisioningStepper({
     return findFirstUnlinkedMainProvider(linksData);
   }, [isAdmin, linksData]);
 
-  // Derive phase purely from data
+  // Track previous backend phase via a ref so we can detect regression
+  // edges *during* render. When the backend goes ready -> not-ready
+  // (e.g., scale-to-zero brought it back to provisioning) the
+  // elapsedMs state is still the stale value from the prior cold-start
+  // session — the reset effect below clears it but only after this
+  // render commits. Without this regression detection, the stepper
+  // would flash "agent" / "timed out" for a single frame before
+  // settling onto the correct early sub-phase. Codex P2 on PR #461.
+  const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
+  const isRegressingFromReady =
+    previousBackendPhaseRef.current === "ready" &&
+    container?.phase !== undefined &&
+    container.phase !== "ready";
+  // Mutate the ref during render — refs are React-blessed for this
+  // pattern (derived state from prop transitions).
+  previousBackendPhaseRef.current = container?.phase;
+
+  // Derive phase purely from data. The cold-start window (backend
+  // phase="starting", roughly ECS RUNNING through gateway-pool-connected)
+  // is split into three visible UI sub-phases by elapsed time so the
+  // user sees concrete progress through what is currently a 5+min wait
+  // in upstream's sidecars.channels.
   const phase: Phase = useMemo(() => {
+    // Just regressed from ready -> not-ready? Force the conservative
+    // early step until the reset effect clears stale timing state.
+    if (isRegressingFromReady) return "container";
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription.
     if (trigger !== "recovery" && !isSubscribed) return "payment";
     // Provider-specific signup step runs before container provision.
     if (needsProviderStep) return "provider";
-    if (!container || (container.status === "provisioning" && !containerReady)) return "container";
-    if (container.status === "error") return "container";
-    if (!containerReady || !gatewayHealth) return "gateway";
 
+    // Trust the backend's phase field when it's present; fall back to
+    // the legacy status check for older backends still in flight.
+    const backendPhase = container?.phase;
+
+    if (!container) return "container";
+    if (container.status === "error") return "container";
+    if (backendPhase === "provisioning") return "container";
+    if (backendPhase === undefined && !containerReady) return "container";
+
+    if (backendPhase === "starting" || (backendPhase === undefined && !gatewayHealth)) {
+      // Split the long "starting" window into three sub-steps by elapsed
+      // time so the stepper visibly advances. The transitions are
+      // estimates (we have no real-time signal for gateway-ready or
+      // channels-loaded today) — they're calibrated to the cold-start
+      // trace data captured 2026-04-30.
+      if (elapsedMs < SUBPHASE_GATEWAY_MS) return "gateway";
+      if (elapsedMs < SUBPHASE_CHANNELS_MS) return "channels-sidecars";
+      return "agent";
+    }
+
+    // backend phase="ready" (or legacy: gatewayHealth present) — fall
+    // through to channel onboarding logic.
     if (onboardingComplete) return "ready";
     if (linksError) return "ready";
-    if (!linksData) return "gateway";
+    if (!linksData) return "agent";
 
     if (isAdmin) {
       return hasMainBot(linksData) ? "ready" : "channels";
     }
     return memberLinkTarget !== null ? "channels" : "ready";
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep]);
+  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep, elapsedMs]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition.
   const prevPhaseRef = useRef<Phase | null>(null);
@@ -305,8 +388,41 @@ export function ProvisioningStepper({
   // expected budget — gives "still working" instead of an indefinite spinner.
   // Also stamps the start time the first time we enter container/gateway and
   // flips `timedOut` when we cross TIMEOUT_MS, which softens the copy.
+  // Reset cold-start timing state when the user re-enters a pre-ready
+  // phase (e.g., scale-to-zero brought the container back to
+  // provisioning, or a recovery path re-fired). Without this, the
+  // user sees stale elapsedMs and a stuck timedOut banner from a
+  // previous run.
+  const wasPreviouslyAdvancedRef = useRef(false);
   useEffect(() => {
-    if (phase !== "container" && phase !== "gateway") return;
+    const isColdStartPhase =
+      phase === "container" ||
+      phase === "gateway" ||
+      phase === "channels-sidecars" ||
+      phase === "agent";
+    if (!isColdStartPhase) {
+      wasPreviouslyAdvancedRef.current = phase === "ready" || phase === "channels";
+      return;
+    }
+    // Only reset when re-entering after having previously left this
+    // window — first-time entry handled by the elapsed-tick effect below.
+    if (wasPreviouslyAdvancedRef.current) {
+      provisioningStartRef.current = null;
+      setElapsedMs(0);
+      setTimedOut(false);
+      wasPreviouslyAdvancedRef.current = false;
+    }
+  }, [phase]);
+
+  useEffect(() => {
+    if (
+      phase !== "container" &&
+      phase !== "gateway" &&
+      phase !== "channels-sidecars" &&
+      phase !== "agent"
+    ) {
+      return;
+    }
     if (provisioningStartRef.current === null) {
       provisioningStartRef.current = Date.now();
     }
@@ -512,6 +628,28 @@ export function ProvisioningStepper({
         .pod-window {
           width: 20px; height: 10px; background: #a8e6c6; border-radius: 4px;
           margin: 8px auto 0;
+          /* Default flat glow; pulse only switches on once the lid opens, so
+             the window doesn't visibly breathe during the brief pod-closed
+             provisioning phase. */
+          box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
+        }
+        .pod-open .pod-window {
+          /* Slow ambient pulse — visible during the 3+ min stretch where
+             the user is in gateway / channels-sidecars / agent sub-phases.
+             The steam already loops above; this gives the green glow a
+             gentle heartbeat so the eye registers continuous motion even
+             after the open animation has settled. */
+          animation: pod-window-pulse 2.6s ease-in-out infinite;
+        }
+        @keyframes pod-window-pulse {
+          0%, 100% {
+            box-shadow: 0 0 0 0 rgba(168, 230, 198, 0);
+            background: #a8e6c6;
+          }
+          50% {
+            box-shadow: 0 0 14px 2px rgba(168, 230, 198, 0.55);
+            background: #c8f0d6;
+          }
         }
         .pod-lid-l, .pod-lid-r {
           position: absolute; top: 16px; width: 50%; height: 12px;
@@ -667,6 +805,7 @@ export function ProvisioningStepper({
         @media (prefers-reduced-motion: reduce) {
           .anim-key-circle { animation: none; }
           .pod-steam-line { animation: none; }
+          .pod-open .pod-window { animation: none; }
           .check-path { animation: none; stroke-dashoffset: 0; }
           .provision-title, .provision-desc { transition: none; }
         }
@@ -692,16 +831,36 @@ export function ProvisioningStepper({
               </div>
             </div>
 
-            {/* Step: gateway — pod opening */}
-            <div className={`provision-anim ${phase === "gateway" ? "active" : ""}`}>
-              <div className={`anim-pod ${phase === "gateway" ? "pod-open" : ""}`}>
+            {/* Step: gateway / channels-sidecars / agent — all reuse the
+                pod-opening animation (the long cold-start window) so users
+                see continuous motion as the stepper text advances through
+                "Booting gateway..." -> "Starting channels..." -> "Starting
+                agent...". One animation, three labels. */}
+            <div
+              className={`provision-anim ${
+                phase === "gateway" ||
+                phase === "channels-sidecars" ||
+                phase === "agent"
+                  ? "active"
+                  : ""
+              }`}
+            >
+              <div
+                className={`anim-pod ${
+                  phase === "gateway" ||
+                  phase === "channels-sidecars" ||
+                  phase === "agent"
+                    ? "pod-open"
+                    : ""
+                }`}
+              >
                 <div className="pod-steam-line" /><div className="pod-steam-line" /><div className="pod-steam-line" />
                 <div className="pod-lid-l" /><div className="pod-lid-r" />
                 <div className="pod-body"><div className="pod-window" /></div>
               </div>
             </div>
 
-            {/* Step: channels — gate opening */}
+            {/* Step: channels (channel onboarding wizard, post-cold-start) — gate opening */}
             <div className={`provision-anim ${(phase as string) === "channels" ? "active" : ""}`}>
               <div className={`anim-gate ${(phase as string) === "channels" ? "gate-opening" : ""}`}>
                 <div className="gate-frame">
@@ -727,7 +886,14 @@ export function ProvisioningStepper({
             </div>
           </div>
 
-          <h2 className="provision-title">{currentStep?.activeLabel || "Setting up..."}</h2>
+          <h2
+            className="provision-title"
+            role="status"
+            aria-live="polite"
+            aria-atomic="true"
+          >
+            {currentStep?.activeLabel || "Setting up..."}
+          </h2>
           <div className="provision-desc provision-desc-ideas">
             <RotatingIdeas
               eyebrow={
@@ -750,11 +916,15 @@ export function ProvisioningStepper({
 
           {/* Quiet elapsed counter — present from the start so the user can
               see the clock advancing, not a wall of unchanging spinner. */}
-          {(phase === "container" || phase === "gateway") && elapsedMs > 0 && (
-            <div className="provision-elapsed" aria-live="polite">
-              {formatElapsed(elapsedMs)} · cold starts can take a few minutes
-            </div>
-          )}
+          {(phase === "container" ||
+            phase === "gateway" ||
+            phase === "channels-sidecars" ||
+            phase === "agent") &&
+            elapsedMs > 0 && (
+              <div className="provision-elapsed" aria-live="polite">
+                {formatElapsed(elapsedMs)} · cold starts can take a few minutes
+              </div>
+            )}
 
           {timedOut && (
             <div className="provision-timeout">

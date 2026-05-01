@@ -11,14 +11,39 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.config import settings
-from core.containers import get_ecs_manager
+from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
+from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, container_repo, user_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> str:
+    """Map (DDB container.status, gateway pool connection state) -> phase.
+
+    Phases the frontend renders as a stepper. The gap between
+    `provisioning` and `ready` is normally ~12 min today (5+ min wedge in
+    upstream's sidecars.channels phase), so showing the user *something*
+    during that window is the whole point of this surface.
+
+    Returns:
+      - "provisioning"  ECS task PROVISIONING / PENDING / STOPPED / error
+      - "starting"      ECS task RUNNING but our pool hasn't completed
+                        the OpenClaw handshake + health verification yet.
+                        Covers gateway boot + sidecars.channels + qmd init.
+      - "ready"         pool.is_user_connected() — openclaw is responsive
+                        to RPCs, chat is usable.
+    """
+    status = (container or {}).get("status")
+    if status != "running":
+        return "provisioning"
+    if gateway_pool.is_user_connected(owner_id):
+        return "ready"
+    return "starting"
 
 
 async def _owner_has_subscription(owner_id: str) -> bool:
@@ -109,7 +134,47 @@ async def container_status(
         "region": settings.AWS_REGION,
         "last_error": container.get("last_error"),
         "last_error_at": container.get("last_error_at"),
+        # Cold-start phase for the frontend stepper. See
+        # _resolve_cold_start_phase for the (status, pool) -> phase map.
+        "phase": _safe_phase(container, owner_id),
     }
+
+
+def _safe_phase(container: dict, owner_id: str) -> str:
+    """Wrap _resolve_cold_start_phase so a not-yet-initialized gateway
+    pool doesn't 500 the status endpoint. Status must always answer.
+
+    On pool init failure (ManagementApiClientError when
+    WS_MANAGEMENT_API_URL is unset — typically test envs that skip the
+    lifespan handler) we fall back to a *container-only* phase mapping
+    instead of forcing "starting":
+
+      - ECS RUNNING  -> "ready"        (best guess; chat may or may
+                                        not work — but the frontend will
+                                        surface the real chat error
+                                        instead of trapping the user
+                                        in a never-ending stepper)
+      - anything else -> "provisioning"
+
+    Codex P1 on PR #461: returning "starting" here keeps users stuck
+    in the cold-start UI indefinitely even when the container itself
+    is healthy and usable.
+
+    Anything other than ManagementApiClientError bubbles up as a real
+    bug. Logs once per process so a production misconfiguration shows
+    up in CloudWatch.
+    """
+    try:
+        pool = get_gateway_pool()
+    except ManagementApiClientError as exc:
+        if not getattr(_safe_phase, "_pool_warning_logged", False):
+            logger.warning(
+                "Gateway pool not initialized; status phase falls back to container-only mapping. Real pool error: %s",
+                exc,
+            )
+            _safe_phase._pool_warning_logged = True  # type: ignore[attr-defined]
+        return "ready" if (container or {}).get("status") == "running" else "provisioning"
+    return _resolve_cold_start_phase(container, pool, owner_id)
 
 
 @router.post(
