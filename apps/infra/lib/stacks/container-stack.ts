@@ -5,8 +5,11 @@ import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as efs from "aws-cdk-lib/aws-efs";
+import * as events from "aws-cdk-lib/aws-events";
+import * as targets from "aws-cdk-lib/aws-events-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as logs from "aws-cdk-lib/aws-logs";
 import * as servicediscovery from "aws-cdk-lib/aws-servicediscovery";
 import { Construct } from "constructs";
 
@@ -387,5 +390,46 @@ export class ContainerStack extends cdk.Stack {
       },
     });
 
+    // ---- ECS task lifecycle telemetry ----
+    // ECS retains stopped-task records for only 1 hour, after which we lose
+    // the `stoppedReason`/`stopCode` fields entirely. That window has bitten
+    // us at least once already (2026-05-01 user wedge investigation): the
+    // first task of the day was replaced and we couldn't reconstruct why
+    // because the stopped-task record had aged out.
+    //
+    // EventBridge surfaces `ECS Task State Change` events as they happen.
+    // We forward all transitions on the openclaw cluster to a dedicated log
+    // group so the full event JSON (including stoppedReason, stopCode,
+    // exit codes, attachments) is durable and queryable months later via
+    // CloudWatch Logs Insights.
+    //
+    // Cost: events are ~1 KB each, free tier covers 5 GB/month log ingest.
+    // At our scale this is well under $1/mo.
+    const ecsTaskEventsLogGroup = new logs.LogGroup(
+      this,
+      "EcsTaskEventsLogGroup",
+      {
+        logGroupName: `/isol8/${env}/ecs-task-events`,
+        // Three months — long enough to investigate weekly recurrences
+        // without paying open-ended retention costs.
+        retention: logs.RetentionDays.THREE_MONTHS,
+        removalPolicy: cdk.RemovalPolicy.DESTROY,
+      },
+    );
+
+    new events.Rule(this, "EcsTaskStateChangeRule", {
+      description:
+        `Persist ECS Task State Change events for ${this.cluster.clusterName} to a CloudWatch log group, so we can reconstruct task stop reasons after the 1h ECS retention window expires.`,
+      eventPattern: {
+        source: ["aws.ecs"],
+        detailType: ["ECS Task State Change"],
+        detail: {
+          // Only events from THIS cluster — avoids polluting the log
+          // group with goosetown / paperclip / backend cluster noise.
+          clusterArn: [this.cluster.clusterArn],
+        },
+      },
+      targets: [new targets.CloudWatchLogGroup(ecsTaskEventsLogGroup)],
+    });
   }
 }

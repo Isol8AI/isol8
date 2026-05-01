@@ -499,7 +499,28 @@ async def _process_rpc_background(
         except Exception:
             pass
     except Exception as e:
-        logger.error("RPC %s failed for user %s: %s", method, user_id, e)
+        # Enriched failure log so we can distinguish transient vs persistent
+        # gateway issues across requests. Include error class + last known
+        # heartbeat so a wedged container is obvious in CloudWatch Insights:
+        # "where last_gateway_handshake_at older than 5 min and error_class
+        # is TimeoutError".
+        last_handshake = "?"
+        try:
+            from core.repositories import container_repo as _cr
+
+            _row = await _cr.get_by_owner_id(owner_id)
+            if _row:
+                last_handshake = _row.get("last_gateway_handshake_at") or "never"
+        except Exception:
+            pass
+        logger.error(
+            "RPC %s failed for user %s error_class=%s last_handshake=%s error=%s",
+            method,
+            user_id,
+            type(e).__name__,
+            last_handshake,
+            e,
+        )
         try:
             management_api.send_message(
                 connection_id,
