@@ -1,11 +1,19 @@
 import * as cdk from "aws-cdk-lib";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as kms from "aws-cdk-lib/aws-kms";
+import * as rds from "aws-cdk-lib/aws-rds";
 import { Construct } from "constructs";
 
 export interface DatabaseStackProps extends cdk.StackProps {
   environment: string;
   kmsKey: kms.IKey;
+  /**
+   * VPC for the Paperclip Aurora cluster (Task 1 of paperclip-rebuild).
+   * The DynamoDB tables in this stack are VPC-less; the VPC is consumed
+   * exclusively by the Aurora subnet group + security group.
+   */
+  vpc: ec2.IVpc;
 }
 
 const ENV_CONFIG: Record<string, { removalPolicy: cdk.RemovalPolicy }> = {
@@ -26,6 +34,13 @@ export class DatabaseStack extends cdk.Stack {
   public readonly creditsTable: dynamodb.Table;
   public readonly creditTransactionsTable: dynamodb.Table;
   public readonly oauthTokensTable: dynamodb.Table;
+  public readonly paperclipCompaniesTable: dynamodb.Table;
+
+  // Paperclip Aurora Serverless v2 cluster (Task 1 of paperclip-rebuild).
+  // pgvector extension is created by the drizzle migrations runner in
+  // paperclip-stack.ts (Task 5), not here.
+  public readonly paperclipDbCluster: rds.DatabaseCluster;
+  public readonly paperclipDbSecurityGroup: ec2.SecurityGroup;
 
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
@@ -218,6 +233,36 @@ export class DatabaseStack extends cdk.Stack {
       encryptionKey: props.kmsKey,
     });
 
+    // Paperclip companies — maps Isol8 user_id → their Paperclip company
+    // record + encrypted credentials. GSI by-status-purge-at lets the
+    // cleanup cron find disabled rows past their grace window. Per the
+    // paperclip-rebuild plan (Task 2). Customer-managed KMS to match the
+    // rest of this stack (deviates from the plan template's AWS_MANAGED).
+    this.paperclipCompaniesTable = new dynamodb.Table(this, "PaperclipCompaniesTable", {
+      tableName: `isol8-${env}-paperclip-companies`,
+      partitionKey: { name: "user_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
+      indexName: "by-status-purge-at",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "scheduled_purge_at", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
+    // GSI for org-scoped lookups: get_org_company_id, count_org_members,
+    // _find_org_owner, and the organization.deleted webhook sweep all
+    // partition by org_id. Projection ALL because the org-owner lookup
+    // and company_id resolution both consume full row data, not just keys.
+    this.paperclipCompaniesTable.addGlobalSecondaryIndex({
+      indexName: "by-org-id",
+      partitionKey: { name: "org_id", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     new cdk.CfnOutput(this, "CreditsTableName", {
       value: this.creditsTable.tableName,
       exportName: `${this.stackName}-credits-table`,
@@ -230,10 +275,67 @@ export class DatabaseStack extends cdk.Stack {
       value: this.oauthTokensTable.tableName,
       exportName: `${this.stackName}-oauth-tokens-table`,
     });
+    new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
+      value: this.paperclipCompaniesTable.tableName,
+      exportName: `${this.stackName}-paperclip-companies-table`,
+    });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {
       value: `isol8-${env}-`,
       exportName: `${this.stackName}-table-prefix`,
+    });
+
+    // ─────────────────────────────────────────────────────────────────
+    // Paperclip Aurora Serverless v2 cluster
+    //
+    // Postgres 16.4 with pgvector available. Scale-to-zero (min 0 ACU,
+    // max 4 ACU). Subnet group on private-with-egress subnets. Security
+    // group is restrictive — ingress is granted later (in paperclip-stack
+    // / service-stack) only from the backend SG and the Paperclip task SG.
+    //
+    // Cross-stack note: the props.vpc reference here is the only reason
+    // DatabaseStack now depends on NetworkStack. See isol8-stage.ts for
+    // the wiring.
+    // ─────────────────────────────────────────────────────────────────
+    const paperclipDbSubnetGroup = new rds.SubnetGroup(this, "PaperclipDbSubnets", {
+      vpc: props.vpc,
+      description: "Subnets for Paperclip Aurora cluster",
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_WITH_EGRESS },
+    });
+
+    const paperclipDbSecurityGroup = new ec2.SecurityGroup(this, "PaperclipDbSg", {
+      vpc: props.vpc,
+      description:
+        "Paperclip Aurora cluster - only backend SG and Paperclip task SG may reach 5432 (ASCII only - EC2 rejects non-ASCII)",
+      allowAllOutbound: false,
+    });
+
+    this.paperclipDbCluster = new rds.DatabaseCluster(this, "PaperclipDb", {
+      engine: rds.DatabaseClusterEngine.auroraPostgres({
+        version: rds.AuroraPostgresEngineVersion.VER_16_4,
+      }),
+      serverlessV2MinCapacity: 0, // scale-to-zero
+      serverlessV2MaxCapacity: 4,
+      writer: rds.ClusterInstance.serverlessV2("writer"),
+      vpc: props.vpc,
+      subnetGroup: paperclipDbSubnetGroup,
+      securityGroups: [paperclipDbSecurityGroup],
+      defaultDatabaseName: "paperclip",
+      credentials: rds.Credentials.fromGeneratedSecret("paperclip_admin", {
+        secretName: `isol8-${env}-paperclip-db-credentials`,
+      }),
+      backup: { retention: cdk.Duration.days(7) },
+      storageEncrypted: true,
+      storageEncryptionKey: props.kmsKey,
+      removalPolicy: cdk.RemovalPolicy.SNAPSHOT,
+      clusterIdentifier: `isol8-${env}-paperclip-db`,
+    });
+
+    this.paperclipDbSecurityGroup = paperclipDbSecurityGroup;
+
+    new cdk.CfnOutput(this, "PaperclipDbEndpoint", {
+      value: this.paperclipDbCluster.clusterEndpoint.hostname,
+      exportName: `isol8-${env}-paperclip-db-endpoint`,
     });
   }
 }
