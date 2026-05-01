@@ -1,5 +1,7 @@
 "use client";
 
+import useSWR from "swr";
+import { useApi } from "@/lib/api";
 import { OverviewPanel } from "./panels/OverviewPanel";
 import { InstancesPanel } from "./panels/InstancesPanel";
 import { SessionsPanel } from "./panels/SessionsPanel";
@@ -19,6 +21,10 @@ interface ControlPanelRouterProps {
   panel: string;
 }
 
+type UserMeResponse = {
+  provider_choice?: "chatgpt_oauth" | "byo_key" | "bedrock_claude" | null;
+};
+
 const PANELS: Record<string, React.ComponentType> = {
   overview: OverviewPanel,
   instances: InstancesPanel,
@@ -36,6 +42,21 @@ const PANELS: Record<string, React.ComponentType> = {
 };
 
 export function ControlPanelRouter({ panel }: ControlPanelRouterProps) {
-  const Panel = PANELS[panel] || PANELS.overview;
+  const api = useApi();
+  const { data: me } = useSWR<UserMeResponse>(
+    "/users/me",
+    () => api.get("/users/me") as Promise<UserMeResponse>,
+  );
+
+  // Defense-in-depth: the sidebar already hides the Credits item for
+  // non-Bedrock users, but if the parent's panel state still reads
+  // "credits" (URL param, stale prop), fall back to the overview rather
+  // than render a panel the user isn't supposed to see.
+  let resolvedPanel = panel;
+  if (resolvedPanel === "credits" && me !== undefined && me.provider_choice !== "bedrock_claude") {
+    resolvedPanel = "overview";
+  }
+
+  const Panel = PANELS[resolvedPanel] || PANELS.overview;
   return <Panel />;
 }
