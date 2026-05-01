@@ -142,19 +142,25 @@ describe("PaperclipStack — Fargate service shape", () => {
     expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company-dev.isol8.co");
   });
 
-  test("container has DATABASE_URL-building entrypoint shim with URL-encoded password", () => {
+  test("container has DATABASE_URL-building shim with URL-encoded password and bypasses gosu", () => {
     // RDS-generated passwords routinely contain `/`, `+`, `=`, `@`, `:` —
     // the shim must URL-encode PGPASSWORD via Node's encodeURIComponent
-    // before interpolating into DATABASE_URL, then exec the upstream
-    // entrypoint.
+    // before interpolating into DATABASE_URL, then exec node directly.
+    //
+    // The image's `docker-entrypoint.sh` is bypassed via `entryPoint`
+    // override because Fargate's `NoNewPrivs=1` blocks the gosu setuid
+    // call inside it (`error: failed switching to "node": operation not
+    // permitted`). We run as user 1000 (the same UID the image chowns
+    // /paperclip + /app to) to keep the privilege drop without gosu.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-paperclip-server",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
+          EntryPoint: ["/bin/sh", "-c"],
+          User: "1000:1000",
           Command: [
-            "/bin/sh",
-            "-c",
             Match.stringLikeRegexp(
-              'set -eu && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec docker-entrypoint.sh',
+              'set -eu && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec node ',
             ),
           ],
         }),
@@ -268,6 +274,11 @@ describe("PaperclipStack — Fargate service shape", () => {
     // A SECOND task definition (family `isol8-dev-paperclip-migrate`)
     // exists alongside the main service one. It runs CREATE EXTENSION
     // for pgvector, then `pnpm --filter @paperclipai/db migrate`.
+    //
+    // Migrate uses the same `entryPoint: ["/bin/sh", "-c"]` override as
+    // the main service to bypass the image's gosu-based entrypoint
+    // (Fargate `NoNewPrivs=1` blocks setuid). It runs as root because
+    // apt-get-install postgresql-client requires it.
     const migrateDefs = template.findResources("AWS::ECS::TaskDefinition", {
       Properties: { Family: "isol8-dev-paperclip-migrate" },
     });
@@ -275,13 +286,16 @@ describe("PaperclipStack — Fargate service shape", () => {
     const td = Object.values(migrateDefs)[0] as { Properties: any };
     expect(td.Properties.Cpu).toBe("256");
     expect(td.Properties.Memory).toBe("512");
-    const cmd = td.Properties.ContainerDefinitions[0].Command as string[];
-    expect(cmd[0]).toBe("/bin/sh");
-    expect(cmd[1]).toBe("-c");
-    expect(cmd[2]).toMatch(/CREATE EXTENSION IF NOT EXISTS vector/);
-    expect(cmd[2]).toMatch(/pnpm --filter @paperclipai\/db migrate/);
+    const containerDef = td.Properties.ContainerDefinitions[0];
+    expect(containerDef.EntryPoint).toEqual(["/bin/sh", "-c"]);
+    // No `User` field — migrate runs as root by design (apt-get).
+    expect(containerDef.User).toBeUndefined();
+    const cmd = containerDef.Command as string[];
+    expect(cmd).toHaveLength(1);
+    expect(cmd[0]).toMatch(/CREATE EXTENSION IF NOT EXISTS vector/);
+    expect(cmd[0]).toMatch(/pnpm --filter @paperclipai\/db migrate/);
     // PGPASSWORD URL-encoding shim (T4 lesson) is also reused here.
-    expect(cmd[2]).toMatch(/encodeURIComponent\(process\.env\.PGPASSWORD\)/);
+    expect(cmd[0]).toMatch(/encodeURIComponent\(process\.env\.PGPASSWORD\)/);
   });
 
   test("migrate task def has its own log group at /isol8/{env}/paperclip-migrate", () => {

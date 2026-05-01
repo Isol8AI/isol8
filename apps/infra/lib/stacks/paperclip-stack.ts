@@ -322,26 +322,36 @@ export class PaperclipStack extends cdk.Stack {
         BETTER_AUTH_SECRET: ecs.Secret.fromSecretsManager(betterAuthSecret),
       },
       // Paperclip's image entrypoint expects DATABASE_URL. The shim below
-      // assembles it from PG* env at container start, then exec's the same
-      // boot command upstream `docker-entrypoint.sh` runs. Verified against
-      // upstream Dockerfile + spec §8 discovery note.
+      // assembles it from PG* env at container start, then directly execs
+      // node — bypassing the image's `docker-entrypoint.sh`.
+      //
+      // Why bypass: `docker-entrypoint.sh` ends with `exec gosu node "$@"`
+      // to drop root → node. That requires setuid, which Fargate blocks
+      // via `NoNewPrivs=1` (default, not opt-out-able on Fargate). Result:
+      //   `error: failed switching to "node": operation not permitted`
+      // and the task exits before our shell wrapper ever runs.
+      //
+      // The entrypoint's other job — `chown -R node:node /paperclip` after
+      // a UID remap — is irrelevant on Fargate: no host bind mounts, no
+      // UID mismatch source. Image build already chowns /paperclip and
+      // /app to node, so running as node is safe out of the box.
       //
       // PGPASSWORD is URL-encoded via Node's `encodeURIComponent` before
       // interpolation: RDS-generated passwords routinely contain
       // url-special characters (`/`, `+`, `=`, `@`, `:`) that break
-      // Postgres URL parsing. Node is already in the image — the
-      // entrypoint runs `node server/dist/index.js` — so this adds no
-      // new dependency.
+      // Postgres URL parsing.
       //
       // `set -eu` makes failures loud: without it, a failing `node -e`
       // (or unset PGPASSWORD secret) silently produces an empty
       // PGPASSWORD_ENC and the app dies on Postgres auth with no
       // breadcrumb in the wrapper layer.
+      entryPoint: ["/bin/sh", "-c"],
       command: [
-        "/bin/sh",
-        "-c",
-        "set -eu && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec docker-entrypoint.sh node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+        "set -eu && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
       ],
+      // Match the UID the image's Dockerfile chowns /paperclip + /app to.
+      // Avoids running node as root in production for no upside.
+      user: "1000:1000",
       healthCheck: {
         command: [
           "CMD-SHELL",
@@ -511,9 +521,11 @@ export class PaperclipStack extends cdk.Stack {
       // paperclipai/paperclip:latest so we don't apt-get-install on every run.
       // Acceptable v1 trade-off given low run frequency (once per deploy);
       // reconsider once schema-change cadence justifies the custom image.
+      // Same gosu/Fargate-NoNewPrivs bypass as the main service container.
+      // Migrate runs as root (default — no `user`) because apt-get requires
+      // it for the postgresql-client install.
+      entryPoint: ["/bin/sh", "-c"],
       command: [
-        "/bin/sh",
-        "-c",
         [
           // `set -eu` propagates failures from the URL-encoding subshell
           // and the apt/psql/pnpm chain. Same reasoning as the main
