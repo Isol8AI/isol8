@@ -117,7 +117,8 @@ export class PaperclipStack extends cdk.Stack {
     // ─────────────────────────────────────────────────────────────────
     this.taskSecurityGroup = new ec2.SecurityGroup(this, "PaperclipTaskSg", {
       vpc: props.vpc,
-      description: `Isol8 ${env} Paperclip task SG — Aurora egress + ALB/FastAPI ingress`,
+      // ASCII-only: EC2 GroupDescription rejects non-ASCII (em-dashes, arrows, etc.)
+      description: `Isol8 ${env} Paperclip task SG - Aurora egress + ALB/FastAPI ingress`,
       allowAllOutbound: true,
     });
 
@@ -132,7 +133,8 @@ export class PaperclipStack extends cdk.Stack {
       fromPort: 5432,
       toPort: 5432,
       sourceSecurityGroupId: this.taskSecurityGroup.securityGroupId,
-      description: "Paperclip task → Aurora",
+      // ASCII-only: EC2 SecurityGroupIngress description rejects non-ASCII
+      description: "Paperclip task to Aurora",
     });
 
     // ─────────────────────────────────────────────────────────────────
