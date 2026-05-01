@@ -39,7 +39,7 @@ GATEWAY_PORT = 18789
 # every paying user gets the same 0.5 vCPU / 1 GB box. Kept as constants
 # so the resize/register paths pull from a single place.
 PER_USER_CPU = "512"
-PER_USER_MEMORY_MIB = "1024"
+PER_USER_MEMORY_MIB = "2048"
 
 
 class EcsManagerError(Exception):

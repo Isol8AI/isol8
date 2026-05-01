@@ -293,7 +293,7 @@ export class ContainerStack extends cdk.Stack {
     // Single per-user task size for the flat-fee pivot. Per spec §3.2 / §10.
     // Old per-tier sizing deleted; resize add-ons are out of scope (§3.5).
     // Backend-side _TIER_TASK_RESOURCES collapse is in Task 13 of this plan.
-    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 1024 } as const;
+    const PER_USER_TASK_RESOURCES = { cpu: 512, memoryMiB: 2048 } as const;
 
     this.openclawTaskDef = new ecs.FargateTaskDefinition(this, "OpenClawTaskDef", {
       family: `isol8-${env}-openclaw`,
