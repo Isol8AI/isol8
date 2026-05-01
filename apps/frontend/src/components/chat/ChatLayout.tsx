@@ -69,14 +69,35 @@ export function ChatLayout({
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
 
-  // Cross-subdomain link to the Paperclip company portal. Per-env Vercel env
-  // var: prod points at https://company.isol8.co, dev/staging at
-  // https://company-dev.isol8.co etc. Cross-subdomain navigation must use a
-  // plain <a> (not next/link) — Next's Link is for internal app routing.
-  // The user's Clerk session cookie is scoped to .isol8.co, so the
-  // navigation keeps them signed in; the backend proxy router (T14/T15)
-  // handles the company.isol8.co request flow.
-  const companyUrl = process.env.NEXT_PUBLIC_COMPANY_URL ?? "https://company.isol8.co";
+  // Cross-subdomain link to the Paperclip company portal. Cross-subdomain
+  // navigation must use a plain <a> (not next/link) — Next's Link is for
+  // internal app routing. The user's Clerk session cookie is scoped to
+  // .isol8.co, so the navigation keeps them signed in; the backend proxy
+  // router handles the company.isol8.co request flow.
+  //
+  // We derive the URL from NEXT_PUBLIC_API_URL — already set per-env in
+  // Vercel — instead of requiring a separate NEXT_PUBLIC_COMPANY_URL var.
+  // CLAUDE.md mandates version-controlled config, and adding another env
+  // var that mirrors information already encoded in NEXT_PUBLIC_API_URL
+  // is exactly the kind of drift we want to avoid (the dev frontend
+  // shipped pointing at https://company.isol8.co for weeks because the
+  // env var was never set in Vercel for Preview).
+  //
+  // NEXT_PUBLIC_* is baked at build time, so the value is identical on
+  // SSR and client — no hydration mismatch. The override path
+  // (NEXT_PUBLIC_COMPANY_URL) is kept for explicit overrides like local
+  // dev or a future split-stack.
+  const companyUrl = (() => {
+    const override = process.env.NEXT_PUBLIC_COMPANY_URL;
+    if (override) return override;
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+    // Match `api.isol8.co` for prod (no env suffix); anything else
+    // (api-dev.isol8.co, api-staging.isol8.co, localhost, …) routes
+    // to the dev Paperclip stack since that's the only non-prod
+    // environment we run today.
+    if (/\/\/api\.isol8\.co/.test(apiUrl)) return "https://company.isol8.co";
+    return "https://company-dev.isol8.co";
+  })();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   // Stripe Checkout returns either ?subscription=success (legacy) or
