@@ -27,6 +27,14 @@ export interface SecretNames {
   encryptionKey: string;
   /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
+  /**
+   * Symmetric secret used by the FastAPI Paperclip proxy router to sign
+   * service-token JWTs forwarded to the Paperclip server (Better Auth
+   * verifies them). Must match the secret name AuthStack creates in the
+   * same env. Encrypted under the same CMK as the other auth secrets, so
+   * the existing `KmsDecryptForSecrets` policy already covers it.
+   */
+  paperclipServiceTokenKey: string;
 }
 
 export interface ServiceStackProps extends cdk.StackProps {
@@ -621,6 +629,22 @@ export class ServiceStack extends cdk.Stack {
             : env === "prod"
               ? "https://isol8.co"
               : "https://dev.isol8.co",
+        // Paperclip wiring. Without these the backend's HostDispatcherMiddleware
+        // (apps/backend/main.py) builds an empty dispatch host set, so requests
+        // to `company-{env}.isol8.co` fall through to the default Isol8 API
+        // instead of being rewritten to the paperclip_proxy router. Mirrors
+        // the env-derivation in paperclip-stack.ts so the two stay in lockstep
+        // (keeps ServiceStack independent of PaperclipStack synth order).
+        PAPERCLIP_PUBLIC_URL:
+          env === "prod"
+            ? "https://company.isol8.co"
+            : `https://company-${env}.isol8.co`,
+        // Cloud Map A record published by PaperclipStack at:
+        //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
+        // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
+        // it off the namespace handle keeps this string in lockstep with
+        // ContainerStack rather than hard-coding the env suffix here.
+        PAPERCLIP_INTERNAL_URL: `http://paperclip.${props.container.cloudMapNamespace.namespaceName}:3100`,
         DEBUG: env === "local" ? "true" : "false",
         // LocalStack needs this to redirect boto3 calls inside the ECS container
         ...(env === "local" ? { AWS_ENDPOINT_URL: "http://localhost.localstack.cloud:4566" } : {}),
@@ -688,6 +712,17 @@ export class ServiceStack extends cdk.Stack {
             this,
             "ImportPosthogProjectApiKey",
             props.secretNames.posthogProjectApiKey,
+          ),
+        ),
+        // Symmetric secret used by the paperclip_proxy router to sign
+        // service-token JWTs Paperclip's Better Auth verifies. KMS decrypt
+        // for this secret is covered by the existing `KmsDecryptForSecrets`
+        // policy below — same CMK as the other auth secrets.
+        PAPERCLIP_SERVICE_TOKEN_KEY: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportPaperclipServiceTokenKey",
+            props.secretNames.paperclipServiceTokenKey,
           ),
         ),
       },
