@@ -366,10 +366,10 @@ export class ContainerStack extends cdk.Stack {
       // makes the connect() fail fast with ECONNREFUSED. Our usage runs
       // through Bedrock, not OpenRouter or LiteLLM, so neither host is
       // needed at runtime in user containers.
-      extraHosts: [
-        { hostname: "openrouter.ai", ipAddress: "127.0.0.1" },
-        { hostname: "raw.githubusercontent.com", ipAddress: "127.0.0.1" },
-      ],
+      extraHosts: {
+        "openrouter.ai": "127.0.0.1",
+        "raw.githubusercontent.com": "127.0.0.1",
+      },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
         logGroup: openclawLogGroup,
