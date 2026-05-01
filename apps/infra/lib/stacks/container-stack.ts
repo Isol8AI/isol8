@@ -356,6 +356,12 @@ export class ContainerStack extends cdk.Stack {
         // upstream `src/gateway/server-discovery-runtime.ts` — env var
         // present in image tag 2026.4.23-slim.
         OPENCLAW_DISABLE_BONJOUR: "true",
+        // Emit per-step startup trace lines so we can attribute the multi-minute
+        // post-gateway-ready wedge (channels-and-sidecars phase) to a specific
+        // step. Upstream wraps each phase in measureStartup; with this flag the
+        // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
+        // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
+        OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
