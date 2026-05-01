@@ -297,6 +297,52 @@ def _build_exec_policy() -> dict:
     }
 
 
+def _memory_search_block(*, provider_choice: str, byo_provider: str | None) -> dict:
+    """Build the agents.defaults.memorySearch block matched to the user's auth.
+
+    Without this block, openclaw defaults to ``provider="local"``, which
+    requires a GGUF embedding model file we don't ship in the container
+    image. The qmd memory backend then hangs ~3 min on its first embed
+    attempt (120s timeout + 60s backoff) before giving up — directly
+    visible in cold-start traces. Always pin to a real provider so the
+    very first qmd cycle succeeds.
+
+    Mapping:
+      - ``chatgpt_oauth``        -> openai (ChatGPT auth, text-embedding-3-small)
+      - ``byo_key`` + openai     -> openai (BYOK key via OPENAI_API_KEY env)
+      - ``byo_key`` + anthropic  -> bedrock (Anthropic has no embeddings API)
+      - ``bedrock_claude``       -> bedrock (Titan via task-role IAM)
+    """
+    base = {"enabled": True}
+    if provider_choice == "chatgpt_oauth":
+        return {**base, "provider": "openai", "model": "text-embedding-3-small"}
+    if provider_choice == "byo_key" and byo_provider == "openai":
+        # OPENAI_API_KEY is injected via ECS task-definition secret env
+        # (ecs_manager._provider_secrets_for_user). The openai embedding
+        # adapter reads it directly — no openclaw config plumbing needed.
+        return {**base, "provider": "openai", "model": "text-embedding-3-small"}
+    # byo_key + anthropic OR bedrock_claude OR fallback -> Bedrock Titan
+    # (always reachable via the per-user task-role IAM grant for bedrock).
+    return {**base, "provider": "bedrock", "model": "amazon.titan-embed-text-v2:0"}
+
+
+def _cli_backends_block(*, provider_choice: str) -> dict:
+    """Build the agents.defaults.cliBackends block.
+
+    Without an entry here, ``isConfiguredCliBackendPrimary`` (in upstream
+    src/gateway/server-startup-post-attach.ts) returns false for our
+    ``openai-codex/gpt-5.5`` primary, falling through to the heavy path:
+    ``ensureOpenClawModelsJson`` + ``resolveModelAsync`` make a network
+    call to validate the model — and ChatGPT OAuth tokens aren't accepted
+    by ``api.openai.com``, so the call hangs ~5 min before the wrapping
+    sidecars.channels measureStartup completes. Empty ``{}`` is enough:
+    the upstream check only iterates ``Object.keys(cliBackends)``.
+    """
+    if provider_choice == "chatgpt_oauth":
+        return {"openai-codex": {}}
+    return {}
+
+
 def _provider_block(
     *,
     provider_choice: str,
@@ -431,9 +477,13 @@ def build_openclaw_config_dict(
                 "contextLimits": {},
                 "heartbeat": {},
                 "workspace": "/home/node/.openclaw/workspaces",
-                "memorySearch": {
-                    "enabled": True,
-                },
+                "cliBackends": _cli_backends_block(
+                    provider_choice=provider_choice,
+                ),
+                "memorySearch": _memory_search_block(
+                    provider_choice=provider_choice,
+                    byo_provider=byo_provider,
+                ),
                 "llm": {
                     "idleTimeoutSeconds": 300,
                 },
