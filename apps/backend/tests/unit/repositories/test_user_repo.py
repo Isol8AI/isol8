@@ -45,6 +45,34 @@ async def test_put_and_get(dynamodb_table):
 
 
 @pytest.mark.asyncio
+async def test_put_persists_email_when_supplied(dynamodb_table):
+    """The Clerk user.created webhook supplies the primary email on put;
+    verifying it round-trips through DynamoDB so ``_lookup_owner_email``
+    (the Paperclip provisioning consumer) can read it back."""
+    from core.repositories import user_repo
+
+    result = await user_repo.put("user_email", email="owner@example.test")
+    assert result["email"] == "owner@example.test"
+
+    item = await user_repo.get("user_email")
+    assert item is not None
+    assert item["email"] == "owner@example.test"
+
+
+@pytest.mark.asyncio
+async def test_put_omits_email_when_none(dynamodb_table):
+    """Calls without an email (e.g. /users/sync where only the user_id is
+    known) must NOT write an empty string — that would shadow Clerk's
+    primary email on a later upsert."""
+    from core.repositories import user_repo
+
+    await user_repo.put("user_no_email")
+    item = await user_repo.get("user_no_email")
+    assert item is not None
+    assert "email" not in item
+
+
+@pytest.mark.asyncio
 async def test_get_nonexistent(dynamodb_table):
     from core.repositories import user_repo
 
