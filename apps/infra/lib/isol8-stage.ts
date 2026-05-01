@@ -7,6 +7,7 @@ import { DatabaseStack } from "./stacks/database-stack";
 import { DnsStack } from "./stacks/dns-stack";
 import { NetworkStack } from "./stacks/network-stack";
 import { ObservabilityStack } from "./stacks/observability-stack";
+import { PaperclipStack } from "./stacks/paperclip-stack";
 import { ServiceStack } from "./stacks/service-stack";
 
 export interface Isol8StageProps extends cdk.StageProps {
@@ -39,6 +40,7 @@ export class Isol8Stage extends cdk.Stage {
       stackName: `isol8-${env}-database`,
       environment: env,
       kmsKey: auth.kmsKey,
+      vpc: network.vpc,
     });
 
     const container = new ContainerStack(this, `isol8-${env}-container`, {
@@ -58,6 +60,13 @@ export class Isol8Stage extends cdk.Stage {
       alb: network.alb,
       albHttpListenerArn: network.albHttpListenerArn,
       albSecurityGroup: network.albSecurityGroup,
+      // Pass secret NAME (not ISecret) — same pattern as ServiceStack uses
+      // for cross-stack secret refs to avoid KMS auto-grant cycles.
+      paperclipServiceTokenKeySecretName:
+        auth.paperclipServiceTokenKey.secretName,
+      // Pass KMS key ARN (not Key object) so ApiStack can grant kms:Decrypt
+      // on the authorizer's role without triggering CDK's auto-grant cycle.
+      paperclipKmsKeyArn: auth.kmsKey.keyArn,
     });
 
     // ServiceStack replaces ComputeStack
@@ -108,6 +117,25 @@ export class Isol8Stage extends cdk.Stage {
       wsApiId: api.wsApiId,
       wsStage: api.wsStage,
     });
+
+    // PaperclipStack — runs upstream `paperclipai/paperclip:latest` as a
+    // single Fargate service. Reachable from FastAPI via Cloud Map at
+    // `http://paperclip.isol8-${env}.local:3100/`. T6 wires the public
+    // host route on the existing ALB; T14 wires the FastAPI proxy router.
+    const paperclip = new PaperclipStack(this, `isol8-${env}-paperclip`, {
+      stackName: `isol8-${env}-paperclip`,
+      environment: env,
+      vpc: network.vpc,
+      cluster: container.cluster,
+      cloudMapNamespace: container.cloudMapNamespace,
+      paperclipDbCluster: database.paperclipDbCluster,
+      paperclipDbSecurityGroup: database.paperclipDbSecurityGroup,
+      paperclipBetterAuthSecretName: auth.paperclipBetterAuthSecret.secretName,
+    });
+    paperclip.addDependency(database);
+    paperclip.addDependency(auth);
+    paperclip.addDependency(container);
+    paperclip.addDependency(network);
 
     // ObservabilityStack — alarms, dashboard, canaries, account hardening
     new ObservabilityStack(this, `isol8-${env}-observability`, {

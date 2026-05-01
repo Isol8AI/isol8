@@ -224,3 +224,67 @@ async def mark_applied(owner_id: str, update_id: str) -> bool:
         return True
     except table.meta.client.exceptions.ConditionalCheckFailedException:
         return False
+
+
+async def list_pending_by_type(update_type: str) -> list[dict]:
+    """Scan the table for pending rows of a given ``update_type``.
+
+    Used by the T13 cleanup cron's provisioning-retry pass — rows
+    enqueued by Clerk webhooks (T12) carry ``update_type="paperclip_provision"``
+    and need to be picked up regardless of which ``owner_id`` partition
+    they live in.
+
+    Implementation: a paginated scan with FilterExpression. The
+    ``status-index`` GSI is keyed on ``status`` HASH + ``scheduled_at``
+    RANGE; rows without ``scheduled_at`` (which is the case for
+    webhook-enqueued retries) are excluded from that index, so we
+    cannot use it here. A scan is acceptable because the cron runs
+    infrequently and the pending-updates table stays small (TTL purges
+    applied rows after 30 days).
+    """
+    table = _get_table()
+    out: list[dict] = []
+    last_key: dict | None = None
+    while True:
+        kwargs: dict = {
+            "FilterExpression": Attr("status").eq("pending") & Attr("update_type").eq(update_type),
+        }
+        if last_key is not None:
+            kwargs["ExclusiveStartKey"] = last_key
+        response = await run_in_thread(table.scan, **kwargs)
+        out.extend(response.get("Items", []))
+        last_key = response.get("LastEvaluatedKey")
+        if not last_key:
+            return out
+
+
+async def mark_failed(owner_id: str, update_id: str, reason: str) -> bool:
+    """Mark a pending row as failed with a truncated reason string.
+
+    Used by the T13 retry pass when a Paperclip provisioning op
+    raises a non-retryable exception (or hits an unknown ``op``).
+    Sets a 30-day TTL like ``mark_applied`` so failed rows don't
+    accumulate indefinitely.
+    """
+    table = _get_table()
+    now = utc_now_iso()
+    ttl_epoch = int(time.time()) + (30 * 24 * 60 * 60)
+    truncated = (reason or "")[:1000]
+
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id, "update_id": update_id},
+            UpdateExpression=("SET #s = :status, failure_reason = :reason, updated_at = :now, #t = :ttl"),
+            ExpressionAttributeNames={"#s": "status", "#t": "ttl"},
+            ExpressionAttributeValues={
+                ":status": "failed",
+                ":reason": truncated,
+                ":now": now,
+                ":ttl": ttl_epoch,
+            },
+            ConditionExpression=Attr("status").is_in(["pending", "scheduled", "applying"]),
+        )
+        return True
+    except table.meta.client.exceptions.ConditionalCheckFailedException:
+        return False

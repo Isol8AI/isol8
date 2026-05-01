@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { usePostHog } from "posthog-js/react";
 import { useAuth, useOrganization, useOrganizationList, useUser, UserButton } from "@clerk/nextjs";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2 } from "lucide-react";
+import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Users } from "lucide-react";
 import Link from "next/link";
 
 import { ProvisioningStepper } from "@/components/chat/ProvisioningStepper";
@@ -68,6 +68,15 @@ export function ChatLayout({
   const { refresh: refreshBilling, account, isSubscribed } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
+
+  // Cross-subdomain link to the Paperclip company portal. Per-env Vercel env
+  // var: prod points at https://company.isol8.co, dev/staging at
+  // https://company-dev.isol8.co etc. Cross-subdomain navigation must use a
+  // plain <a> (not next/link) — Next's Link is for internal app routing.
+  // The user's Clerk session cookie is scoped to .isol8.co, so the
+  // navigation keeps them signed in; the backend proxy router (T14/T15)
+  // handles the company.isol8.co request flow.
+  const companyUrl = process.env.NEXT_PUBLIC_COMPANY_URL ?? "https://company.isol8.co";
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   // Stripe Checkout returns either ?subscription=success (legacy) or
@@ -251,6 +260,16 @@ export function ChatLayout({
               <span className="sidebar-logo-8">8</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <a
+                href={companyUrl}
+                target="_self"
+                rel="noopener"
+                className="sidebar-settings-link"
+                aria-label="Teams"
+                title="Teams"
+              >
+                <Users size={18} />
+              </a>
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />
               </Link>

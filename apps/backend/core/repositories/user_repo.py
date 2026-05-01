@@ -20,9 +20,21 @@ async def get(user_id: str) -> dict | None:
 get_by_user_id = get
 
 
-async def put(user_id: str) -> dict:
+async def put(user_id: str, email: str | None = None) -> dict:
+    """Persist a users-table row.
+
+    ``email`` is optional for back-compat with rows written before the
+    column existed; the Paperclip provisioning path needs it (the org
+    owner's email is required to sign them in to Better Auth) and the
+    Clerk ``user.created`` webhook handler now always supplies it.
+    Writing an empty string would shadow Clerk's actual primary email
+    in any future upsert, so we omit the attribute entirely when the
+    caller has nothing to record.
+    """
     table = _get_table()
-    item = {"user_id": user_id, "created_at": utc_now_iso()}
+    item: dict = {"user_id": user_id, "created_at": utc_now_iso()}
+    if email:
+        item["email"] = email
     await run_in_thread(table.put_item, Item=item)
     return item
 
