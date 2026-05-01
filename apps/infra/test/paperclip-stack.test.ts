@@ -15,6 +15,10 @@ import { PaperclipStack } from "../lib/stacks/paperclip-stack";
  * avoids cycles.
  */
 function buildStack(environment: "dev" | "prod"): Template {
+  return Template.fromStack(buildStackInstance(environment).stack);
+}
+
+function buildStackInstance(environment: "dev" | "prod") {
   const app = new cdk.App();
   const env = { account: "877352799272", region: "us-east-1" };
 
@@ -60,9 +64,10 @@ function buildStack(environment: "dev" | "prod"): Template {
     paperclipDbCluster: dbCluster,
     paperclipDbSecurityGroup: dbSg,
     paperclipBetterAuthSecretName: `isol8/${environment}/paperclip_better_auth_secret`,
+    paperclipKmsKeyArn: kmsKey.keyArn,
   });
 
-  return Template.fromStack(stack);
+  return { stack, kmsKeyArn: kmsKey.keyArn };
 }
 
 describe("PaperclipStack — Fargate service shape", () => {
@@ -71,14 +76,33 @@ describe("PaperclipStack — Fargate service shape", () => {
     template = buildStack("dev");
   });
 
-  test("creates the Paperclip task definition with upstream image and 0.5 vCPU / 1 GB", () => {
+  test("creates the Paperclip task definition with upstream GHCR image and 0.5 vCPU / 1 GB", () => {
+    // Image MUST be the GHCR-prefixed name. A bare `paperclipai/paperclip`
+    // resolves to docker.io and fails task launch with
+    // CannotPullContainerError because Paperclip publishes to GHCR, not
+    // Docker Hub. Asserting the literal string here keeps that bug from
+    // sneaking back in.
     template.hasResourceProperties("AWS::ECS::TaskDefinition", {
       Family: "isol8-dev-paperclip-server",
       Cpu: "512",
       Memory: "1024",
       ContainerDefinitions: Match.arrayWith([
         Match.objectLike({
-          Image: "paperclipai/paperclip:latest",
+          Image: "ghcr.io/paperclipai/paperclip:latest",
+        }),
+      ]),
+    });
+  });
+
+  test("migrate task definition uses the same upstream GHCR image", () => {
+    // The migrate task pulls the same image as the main service so the
+    // schema runner picks up code changes Drizzle expects. Same registry
+    // pin applies — bare names break here too.
+    template.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-paperclip-migrate",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Image: "ghcr.io/paperclipai/paperclip:latest",
         }),
       ]),
     });
@@ -206,12 +230,15 @@ describe("PaperclipStack — Fargate service shape", () => {
   });
 
   test("Aurora SG gets ingress from Paperclip task SG on 5432", () => {
-    // sg-on-sg ingress rule, the contract that lets Paperclip reach Postgres.
+    // sg-on-sg ingress rule, the contract that lets Paperclip reach
+    // Postgres. EC2 rejects non-ASCII in description fields, so the
+    // arrow that originally lived here was downgraded to "to" — see
+    // PR #474.
     template.hasResourceProperties("AWS::EC2::SecurityGroupIngress", {
       FromPort: 5432,
       ToPort: 5432,
       IpProtocol: "tcp",
-      Description: "Paperclip task → Aurora",
+      Description: "Paperclip task to Aurora",
     });
   });
 
@@ -254,6 +281,43 @@ describe("PaperclipStack — Fargate service shape", () => {
       LogGroupName: "/isol8/dev/paperclip-migrate",
       RetentionInDays: 14,
     });
+  });
+
+  test("both task execution roles have an explicit kms:Decrypt grant on the AuthStack CMK", () => {
+    // CDK's `secret.grantRead()` only adds `secretsmanager:GetSecretValue`,
+    // not the `kms:Decrypt` that customer-managed keys require for
+    // GetSecretValue to actually return plaintext. Without this explicit
+    // statement, ECS task launch fails:
+    //   ResourceInitializationError: AccessDeniedException: Access to KMS
+    //   is not allowed ... fetching .../paperclip_better_auth_secret
+    // Same pattern as ApiStack T9 (commit 9188442) for the WS authorizer.
+    //
+    // The synthesized policy buckets statements by role; we look for
+    // exactly one IAM::Policy attached to each execution role with a
+    // statement whose Sid starts with KmsDecryptForPaperclipBetterAuth.
+    const policies = template.findResources("AWS::IAM::Policy");
+    const kmsStatements: any[] = [];
+    for (const body of Object.values(policies) as Array<{ Properties: any }>) {
+      const stmts = body.Properties?.PolicyDocument?.Statement ?? [];
+      for (const s of stmts) {
+        if (
+          typeof s === "object" &&
+          s.Sid === "KmsDecryptForPaperclipBetterAuthSecret"
+        ) {
+          kmsStatements.push(s);
+        }
+      }
+    }
+    // One statement per execution role (main + migrate).
+    expect(kmsStatements).toHaveLength(2);
+    for (const s of kmsStatements) {
+      expect(s.Effect).toBe("Allow");
+      expect(s.Action).toBe("kms:Decrypt");
+      // Resource is a Ref/Fn::GetAtt to the support stack's KMS key (the
+      // arn-string we passed in via props), so we check shape rather
+      // than literal value.
+      expect(s.Resource).toBeDefined();
+    }
   });
 });
 
