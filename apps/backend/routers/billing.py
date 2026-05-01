@@ -564,33 +564,6 @@ async def handle_stripe_webhook(
                     account["owner_id"],
                 )
 
-            # Disable Paperclip for this owner with a 30-day grace window —
-            # T13's cleanup cron purges the Paperclip-side artifacts after
-            # the grace elapses. Only THIS user is disabled; if they own a
-            # multi-member org the other members keep access until their
-            # own subscriptions cancel (or the org is deleted in Clerk).
-            from routers.webhooks import (
-                _close_paperclip_http,
-                _get_paperclip_provisioning,
-            )
-
-            provisioning = None
-            try:
-                provisioning = await _get_paperclip_provisioning()
-                await provisioning.disable(user_id=account["owner_id"])
-                put_metric(
-                    "paperclip.webhook.disable",
-                    dimensions={"trigger": "subscription_deleted"},
-                )
-            except Exception:
-                logger.exception(
-                    "Paperclip disable on subscription.deleted failed for owner %s",
-                    account["owner_id"],
-                )
-            finally:
-                if provisioning is not None:
-                    await _close_paperclip_http(provisioning)
-
     elif event_type == "invoice.payment_failed":
         put_metric("stripe.subscription", dimensions={"event": "payment_failed"})
         logger.warning("Payment failed for customer %s", event_data.get("customer"))
