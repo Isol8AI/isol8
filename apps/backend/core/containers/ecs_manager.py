@@ -876,7 +876,34 @@ class EcsManager:
 
         ip = self.discover_ip(container["service_name"])
         if not ip:
+            # DDB row says provisioning/running but ECS has no running task
+            # for the service. Either the task is still pulling the image
+            # (provisioning) or it died and is being replaced (running →
+            # zombie row). Logged so we can correlate against the
+            # /isol8/<env>/ecs-task-events log group to see whether the
+            # task was stopped, by whom, and why.
+            logger.warning(
+                "resolve_running_container ip=None user=%s service=%s ddb_status=%s ddb_substatus=%s last_handshake=%s",
+                user_id,
+                container.get("service_name"),
+                container.get("status"),
+                container.get("substatus"),
+                container.get("last_gateway_handshake_at") or "never",
+            )
             return container, None
+        # Stale-row detection: DDB says running but TCP probe fails. This
+        # is the wedge-class signature — kernel listener bound but gateway
+        # process is in NFS deadlock. Log loudly so the next iteration of
+        # this bug shows up immediately in CloudWatch Insights:
+        #   filter ip_unhealthy=true and ddb_status="running"
+        if container.get("status") == "running" and not self.is_healthy(ip):
+            logger.warning(
+                "resolve_running_container ip_unhealthy=true user=%s service=%s ip=%s last_handshake=%s",
+                user_id,
+                container.get("service_name"),
+                ip,
+                container.get("last_gateway_handshake_at") or "never",
+            )
 
         # Auto-transition provisioning -> running once the task is reachable.
         # Also opportunistically capture the task ARN if we don't already have

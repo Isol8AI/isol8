@@ -9,10 +9,11 @@ req/res/event protocol. Background reader task handles incoming messages:
 """
 
 import asyncio
+import time
 import json
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Set
 
 from websockets import connect as ws_connect
@@ -107,17 +108,97 @@ class GatewayConnection:
         # per-user container setup where the local agent must call its own
         # gateway. We use token mode with a per-container shared secret instead.
         # Network isolation (private VPC) provides the transport-level boundary.
-        self._ws = await ws_connect(
-            uri,
-            open_timeout=_HANDSHAKE_TIMEOUT,
-            close_timeout=5,
+        connect_started = time.monotonic()
+        # Telemetry: capture which phase of the connect succeeds/fails. When
+        # the openclaw process wedges (e.g. EFS NFS deadlock), TCP connect
+        # succeeds but the WS upgrade hangs — we want logs that distinguish
+        # those two states by elapsed time + which phase failed.
+        logger.info(
+            "Gateway connect attempt user=%s ip=%s port=%s timeout=%ss",
+            self.user_id,
+            self.ip,
+            GATEWAY_PORT,
+            _HANDSHAKE_TIMEOUT,
         )
-        await self._handshake()
-        await self._verify_health()
+        try:
+            self._ws = await ws_connect(
+                uri,
+                open_timeout=_HANDSHAKE_TIMEOUT,
+                close_timeout=5,
+            )
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - connect_started) * 1000)
+            logger.warning(
+                "Gateway WS upgrade failed user=%s ip=%s elapsed_ms=%d error_class=%s error=%s",
+                self.user_id,
+                self.ip,
+                elapsed_ms,
+                type(exc).__name__,
+                exc,
+            )
+            put_metric(
+                "gateway.connection",
+                dimensions={"event": "ws_upgrade_failed", "error_class": type(exc).__name__},
+            )
+            raise
+        ws_upgrade_ms = int((time.monotonic() - connect_started) * 1000)
+
+        handshake_started = time.monotonic()
+        try:
+            await self._handshake()
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - handshake_started) * 1000)
+            logger.warning(
+                "Gateway openclaw handshake failed user=%s ip=%s ws_upgrade_ms=%d handshake_ms=%d error_class=%s error=%s",
+                self.user_id,
+                self.ip,
+                ws_upgrade_ms,
+                elapsed_ms,
+                type(exc).__name__,
+                exc,
+            )
+            put_metric(
+                "gateway.connection",
+                dimensions={"event": "handshake_failed", "error_class": type(exc).__name__},
+            )
+            raise
+        handshake_ms = int((time.monotonic() - handshake_started) * 1000)
+
+        verify_started = time.monotonic()
+        try:
+            await self._verify_health()
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - verify_started) * 1000)
+            logger.warning(
+                "Gateway health verify failed user=%s ip=%s ws_upgrade_ms=%d handshake_ms=%d verify_ms=%d error_class=%s error=%s",
+                self.user_id,
+                self.ip,
+                ws_upgrade_ms,
+                handshake_ms,
+                elapsed_ms,
+                type(exc).__name__,
+                exc,
+            )
+            put_metric(
+                "gateway.connection",
+                dimensions={"event": "verify_failed", "error_class": type(exc).__name__},
+            )
+            raise
+        verify_ms = int((time.monotonic() - verify_started) * 1000)
+
         self._reader_task = asyncio.create_task(self._reader_loop())
         put_metric("gateway.connection", dimensions={"event": "connect"})
         self._emit_status_change("HEALTHY", "Gateway connected")
-        logger.info("Gateway connection established for user %s at %s", self.user_id, self.ip)
+        total_ms = int((time.monotonic() - connect_started) * 1000)
+        logger.info(
+            "Gateway connection established user=%s ip=%s total_ms=%d ws_upgrade_ms=%d handshake_ms=%d verify_ms=%d",
+            self.user_id,
+            self.ip,
+            total_ms,
+            ws_upgrade_ms,
+            handshake_ms,
+            verify_ms,
+        )
 
     async def _handshake(self) -> None:
         """Complete OpenClaw 4.5 connect handshake via signed-device auth.
@@ -257,6 +338,24 @@ class GatewayConnection:
                 raise RuntimeError(f"Gateway not healthy: {err}")
 
             logger.debug("Health check passed for user %s", self.user_id)
+            # Write heartbeat to container row. Future watchdog can detect
+            # `last_gateway_handshake_at` going stale (e.g. EFS NFS deadlock
+            # leaves TCP listener bound but no JS runs, so heartbeats stop
+            # while ECS still reports the task RUNNING). Best-effort — never
+            # let a heartbeat write failure break a successful health check.
+            try:
+                from core.repositories import container_repo
+
+                await container_repo.update_fields(
+                    self.user_id,
+                    {"last_gateway_handshake_at": datetime.now(timezone.utc).isoformat()},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "heartbeat write failed user=%s error=%s",
+                    self.user_id,
+                    exc,
+                )
             return
 
     async def send_rpc(self, req_id: str, method: str, params: dict) -> None:
