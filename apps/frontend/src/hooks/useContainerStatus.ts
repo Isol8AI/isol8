@@ -69,7 +69,12 @@ export function useContainerStatus(options: UseContainerStatusOptions = {}) {
     isSignedIn && enabled ? "/container/status" : null,
     fetcher,
     {
-      revalidateOnFocus: false,
+      // Revalidate when the tab regains focus. Without this, the chat
+      // page can show a stale "running" container minutes after the row
+      // is gone — observed when a container is deleted server-side
+      // (admin tooling, scale-to-zero, AWS console cleanup) while the
+      // tab was in the background.
+      revalidateOnFocus: true,
       dedupingInterval: Math.min(refreshInterval || 30000, 30000),
       refreshInterval: refreshInterval || 0,
     },
