@@ -229,6 +229,29 @@ async def ws_message(
         management_api.send_message(x_connection_id, {"type": "pong"})
         return Response(status_code=200)
 
+    # Lazy-register the frontend connection with the gateway pool. The
+    # WS connection registry is in-memory per backend task. /ws/connect
+    # only fires once when the client first opens the WS — but the
+    # client's WS lives on API Gateway and survives backend task rollovers
+    # (deploys, scaling). Each /ws/message can land on a different task,
+    # and any task that handled the original /ws/connect may since be
+    # gone. Without this, openclaw streaming events arrive at a task
+    # whose pool has empty `_frontend_connections` and the `chunk` /
+    # `done` events get silently dropped — chat appears stuck loading.
+    #
+    # add_frontend_connection is idempotent (set semantics on conn_id);
+    # cheap to call on every message.
+    try:
+        pool = get_gateway_pool()
+        pool.add_frontend_connection(owner_id, x_connection_id, member_id=user_id)
+    except Exception as e:
+        logger.warning(
+            "Failed to lazy-register frontend connection user=%s conn=%s: %s",
+            user_id,
+            x_connection_id[:12] if x_connection_id else "?",
+            e,
+        )
+
     # Log all non-ping message types so chat/RPC flow is visible at INFO
     logger.info(
         "[%s] ws msg type=%s owner=%s conn=%s method=%s agent=%s",
