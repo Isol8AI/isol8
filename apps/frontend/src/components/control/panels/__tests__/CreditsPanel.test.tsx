@@ -28,6 +28,7 @@ vi.mock("@/hooks/useCredits", () => ({
 // Stripe is mocked at the module level so the CreditsPanel can import
 // Elements / PaymentElement / useStripe / useElements without dragging in
 // the real Stripe SDK in jsdom (which would fail to load Stripe.js).
+const mockConfirmPayment = vi.fn(() => Promise.resolve({ error: undefined }));
 vi.mock("@stripe/stripe-js", () => ({
   loadStripe: vi.fn(() => Promise.resolve({})),
 }));
@@ -36,7 +37,7 @@ vi.mock("@stripe/react-stripe-js", () => ({
   Elements: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   PaymentElement: () => <div data-testid="stripe-payment-element" />,
   useStripe: () => ({
-    confirmPayment: vi.fn(() => Promise.resolve({ error: undefined })),
+    confirmPayment: mockConfirmPayment,
   }),
   useElements: () => ({}),
 }));
@@ -47,6 +48,8 @@ describe("CreditsPanel", () => {
     mockStartTopUp.mockReset();
     mockSetAutoReload.mockReset();
     mockRefresh.mockReset();
+    mockConfirmPayment.mockReset();
+    mockConfirmPayment.mockImplementation(() => Promise.resolve({ error: undefined }));
   });
 
   it("renders the BALANCE eyebrow + dollar balance from the hook", () => {
@@ -150,5 +153,24 @@ describe("CreditsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
     await waitFor(() => expect(screen.getByText("billing offline")).toBeInTheDocument());
     expect(screen.queryByTestId("stripe-payment-element")).not.toBeInTheDocument();
+  });
+
+  it("clears submitting state and surfaces error when stripe.confirmPayment rejects", async () => {
+    mockBalance.mockReturnValue({ balance_dollars: "0.00", balance_microcents: 0 });
+    mockStartTopUp.mockResolvedValueOnce({ client_secret: "pi_xxx_secret_yyy" });
+    mockConfirmPayment.mockRejectedValueOnce(new Error("stripe sdk down"));
+    render(<CreditsPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /^add \$20$/i }));
+    await waitFor(() =>
+      expect(screen.getByTestId("stripe-payment-element")).toBeInTheDocument(),
+    );
+    const payButton = screen.getByRole("button", { name: /pay \$20/i });
+    fireEvent.submit(payButton.closest("form")!);
+    await waitFor(() => expect(screen.getByText("stripe sdk down")).toBeInTheDocument());
+    // submitting cleared (label flips back from "Processing…")
+    await waitFor(() => expect(payButton).toHaveTextContent(/^Pay \$20$/));
+    // Cancel still works after a stripe error — user isn't stuck.
+    expect(screen.getByRole("button", { name: /cancel/i })).not.toBeDisabled();
+    expect(mockRefresh).not.toHaveBeenCalled();
   });
 });

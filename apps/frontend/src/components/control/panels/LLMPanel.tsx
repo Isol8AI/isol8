@@ -144,10 +144,12 @@ function BedrockBlock({ onManageCredits }: { onManageCredits: () => void }) {
   );
 }
 
-function EmptyStateCard() {
+function EmptyStateCard({ message }: { message?: string }) {
   return (
     <div className={ACTION_CARD}>
-      <p className="text-sm text-[#1a1a1a]">You haven&apos;t picked a provider yet.</p>
+      <p className="text-sm text-[#1a1a1a]">
+        {message ?? "You haven’t picked a provider yet."}
+      </p>
       <Link
         href="/onboarding"
         className="inline-flex rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm"
@@ -186,6 +188,13 @@ export function LLMPanel({ onPanelChange }: LLMPanelProps) {
 
       {user.provider_choice === "byo_key" && user.byo_provider && (
         <ByoKeyBlock byoProvider={user.byo_provider} onReplaced={() => mutate()} />
+      )}
+
+      {/* byo_key without byo_provider — webhook persisted provider_choice but
+          backend never wrote byo_provider (see backend memory). Without this
+          recovery state the panel renders blank for the affected user. */}
+      {user.provider_choice === "byo_key" && !user.byo_provider && (
+        <EmptyStateCard message="Your bring-your-own-key configuration is incomplete. Re-onboard to finish setting up." />
       )}
 
       {user.provider_choice === "bedrock_claude" && (

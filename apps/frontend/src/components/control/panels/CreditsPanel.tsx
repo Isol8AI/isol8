@@ -217,17 +217,26 @@ function TopUpPaymentForm({
     if (!stripe || !elements) return;
     setSubmitting(true);
     setError(null);
-    const { error: stripeError } = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: window.location.href },
-      redirect: "if_required",
-    });
-    if (stripeError) {
-      setError(stripeError.message ?? "Payment failed");
+    // confirmPayment can BOTH return a stripeError AND throw — the latter
+    // happens on SDK/network/integration failures. Without the try/catch the
+    // promise rejection escapes the click handler, leaving submitting=true
+    // forever and producing an unhandled rejection. Codex P2 on PR #479.
+    try {
+      const { error: stripeError } = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: window.location.href },
+        redirect: "if_required",
+      });
+      if (stripeError) {
+        setError(stripeError.message ?? "Payment failed");
+        return;
+      }
+      onSuccess();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Payment failed");
+    } finally {
       setSubmitting(false);
-      return;
     }
-    onSuccess();
   };
 
   return (

@@ -120,8 +120,20 @@ describe("LLMPanel", () => {
   it("renders the empty-state when provider_choice is null", () => {
     mockSWRData.mockReturnValue({ provider_choice: null });
     render(<LLMPanel />);
-    expect(screen.getByText(/haven't picked a provider/i)).toBeInTheDocument();
+    // The empty-state copy uses a typographic apostrophe; match either.
+    expect(screen.getByText(/haven.{1,3}t picked a provider/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /re-onboard/i })).toBeInTheDocument();
+  });
+
+  it("renders the BYOK-incomplete empty-state when provider_choice='byo_key' but byo_provider is missing", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key", byo_provider: null });
+    render(<LLMPanel />);
+    expect(
+      screen.getByText(/bring-your-own-key configuration is incomplete/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /re-onboard/i })).toBeInTheDocument();
+    // Should NOT render the BYO hero/form for an incomplete config.
+    expect(screen.queryByText(/Bring your own (OpenAI|Anthropic) key/)).not.toBeInTheDocument();
   });
 
   it("surfaces a save error from PUT /settings/keys/{provider}", async () => {
