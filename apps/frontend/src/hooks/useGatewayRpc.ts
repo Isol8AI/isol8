@@ -59,6 +59,24 @@ export function useGatewayRpc<T = unknown>(
     {
       revalidateOnFocus: false,
       dedupingInterval: 10000,
+      // SWR's default `onErrorRetry` does exponential backoff
+      // (5s, 10s, 20s, 40s...). Bad for cold-start probing: a single
+      // handshake-timeout on the gateway pool during the openclaw
+      // sidecar window pushes the next probe minutes out, even though
+      // the gateway becomes healthy ~10s later — user gets stuck on
+      // the provisioning stepper waiting for the long-since-recovered
+      // gateway. Retry at a fixed cadence instead, capped so we don't
+      // poll forever on a permanently broken container.
+      errorRetryInterval: 3000,
+      onErrorRetry: (_err, _key, swrCfg, revalidate, opts) => {
+        const retryCount = opts?.retryCount ?? 0;
+        if (retryCount >= 100) return; // ~5 min at 3s
+        const delay =
+          typeof swrCfg.refreshInterval === "number" && swrCfg.refreshInterval > 0
+            ? swrCfg.refreshInterval
+            : swrCfg.errorRetryInterval ?? 3000;
+        setTimeout(() => revalidate({ retryCount: retryCount + 1 }), delay);
+      },
       ...config,
     },
   );
