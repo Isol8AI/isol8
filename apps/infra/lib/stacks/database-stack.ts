@@ -306,7 +306,7 @@ export class DatabaseStack extends cdk.Stack {
     const paperclipDbSecurityGroup = new ec2.SecurityGroup(this, "PaperclipDbSg", {
       vpc: props.vpc,
       description:
-        "Paperclip Aurora cluster — only backend SG and Paperclip task SG may reach 5432",
+        "Paperclip Aurora cluster - only backend SG and Paperclip task SG may reach 5432 (ASCII only - EC2 rejects non-ASCII)",
       allowAllOutbound: false,
     });
 

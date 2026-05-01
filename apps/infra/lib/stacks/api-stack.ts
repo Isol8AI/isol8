@@ -80,9 +80,11 @@ export class ApiStack extends cdk.Stack {
 
     const httpApiDomain = isProd ? "api.isol8.co" : `api-${env}.isol8.co`;
     // Second public custom domain for the same HTTP API (Paperclip surface).
-    // Backend dispatches per-host using X-Forwarded-Host (set below via the
-    // integration's requestParameters). The wildcard *.isol8.co cert in
-    // DnsStack already covers this hostname, so no SAN changes are needed.
+    // Backend dispatches per-host using X-Isol8-Public-Host (set below via the
+    // integration's requestParameters; can't use X-Forwarded-Host because API
+    // Gateway HTTP API restricts parameter mapping on `x-forwarded-*`). The
+    // wildcard *.isol8.co cert in DnsStack already covers this hostname, so
+    // no SAN changes are needed.
     const companyApiDomain = isProd
       ? "company.isol8.co"
       : `company-${env}.isol8.co`;
@@ -127,11 +129,18 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
-    // We set X-Forwarded-Host = $context.domainName so the FastAPI backend
+    // We set X-Isol8-Public-Host = $context.domainName so the FastAPI backend
     // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
     // API Gateway rewrites the upstream Host to the ALB DNS, so the original
-    // requesting host is otherwise lost. The same integration (and so the
-    // same X-Forwarded-Host) serves all custom-domain mappings on this API.
+    // requesting host is otherwise lost.
+    //
+    // NOTE: We deliberately use a custom header name (`X-Isol8-Public-Host`)
+    // rather than `X-Forwarded-Host` — API Gateway HTTP API blocks parameter
+    // mapping on `x-forwarded-*` headers (they're managed by the gateway
+    // itself; AWS rejects with "Operations on header x-forwarded-host are
+    // restricted"). The backend's HostDispatcherMiddleware reads this custom
+    // header. The same integration (and so the same X-Isol8-Public-Host)
+    // serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
       "HttpAlbIntegration",
@@ -145,7 +154,7 @@ export class ApiStack extends cdk.Stack {
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
         requestParameters: {
-          "overwrite:header.X-Forwarded-Host": "$context.domainName",
+          "overwrite:header.X-Isol8-Public-Host": "$context.domainName",
         },
       },
     );
