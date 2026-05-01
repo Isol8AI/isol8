@@ -56,6 +56,16 @@ export interface PaperclipStackProps extends cdk.StackProps {
    * dependency cycle. Same pattern as service-stack.ts.
    */
   paperclipBetterAuthSecretName: string;
+  /**
+   * AuthStack KMS key ARN (NOT a Key object) used to encrypt the Paperclip
+   * BetterAuth secret. The task execution roles (main + migrate) need
+   * `kms:Decrypt` on this key in order for `secretsmanager:GetSecretValue`
+   * to succeed at task launch — `secret.grantRead()` only adds the
+   * SecretsManager action, not the underlying KMS one. Same pattern as
+   * api-stack.ts uses for the Lambda authorizer (T9). Passed as a string
+   * for the same cross-stack reason as `paperclipBetterAuthSecretName`.
+   */
+  paperclipKmsKeyArn: string;
 }
 
 export class PaperclipStack extends cdk.Stack {
@@ -166,6 +176,31 @@ export class PaperclipStack extends cdk.Stack {
       }),
     );
 
+    // KMS decrypt grant on AuthStack's CMK. The BetterAuth secret is
+    // encrypted with the shared customer-managed key, and Secrets Manager
+    // requires the caller to have `kms:Decrypt` on the underlying CMK in
+    // addition to `secretsmanager:GetSecretValue`. CDK's `secret.grantRead`
+    // only adds the SecretsManager action — without this explicit KMS
+    // grant, ECS task launch fails with:
+    //   ResourceInitializationError: AccessDeniedException: Access to KMS
+    //   is not allowed ... fetching arn:aws:secretsmanager:.../paperclip_
+    //   better_auth_secret
+    // Same fix as api-stack.ts T9 (commit 9188442) for the Lambda
+    // authorizer's service-token secret.
+    //
+    // Note: the Aurora master secret uses the AWS-managed
+    // `aws/secretsmanager` KMS key (we never passed an explicit
+    // `encryptionKey` to `rds.Credentials.fromGeneratedSecret`), so it
+    // doesn't need an explicit grant — only the BetterAuth secret does.
+    executionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForPaperclipBetterAuthSecret",
+        effect: iam.Effect.ALLOW,
+        actions: ["kms:Decrypt"],
+        resources: [props.paperclipKmsKeyArn],
+      }),
+    );
+
     // ─────────────────────────────────────────────────────────────────
     // IAM: task role (the container itself; Paperclip doesn't call AWS
     // APIs in normal operation, so this stays minimal — log writes only)
@@ -221,7 +256,20 @@ export class PaperclipStack extends cdk.Stack {
         : `https://company-${env}.isol8.co`;
 
     taskDefinition.addContainer("paperclip", {
-      image: ecs.ContainerImage.fromRegistry("paperclipai/paperclip:latest"),
+      // Paperclip publishes to GitHub Container Registry, not Docker Hub
+      // (see paperclip's `.github/workflows/docker.yml`). Without the
+      // explicit `ghcr.io/` prefix, Docker resolves the bare name to
+      // `docker.io/paperclipai/paperclip` which doesn't exist and ECS
+      // fails task launch with `CannotPullContainerError: pull access
+      // denied`.
+      //
+      // GHCR-auth assumption: paperclipai/paperclip is a public image
+      // (the GitHub repo itself is public), so ECS Fargate platform
+      // version 1.4+ pulls it without `repositoryCredentials`. If a
+      // future rebuild flips visibility we'll wire a Secrets Manager
+      // secret holding a GitHub PAT and reference it via
+      // `repositoryCredentials.credentialsParameter`; not needed today.
+      image: ecs.ContainerImage.fromRegistry("ghcr.io/paperclipai/paperclip:latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "paperclip",
         logGroup,
@@ -372,6 +420,24 @@ export class PaperclipStack extends cdk.Stack {
       }),
     );
 
+    // Defensive parity with the main task execution role: grant
+    // `kms:Decrypt` on AuthStack's CMK so a future change that surfaces
+    // the BetterAuth secret to the migrate task (e.g., if migrations need
+    // to seed BetterAuth state) doesn't silently fail at task launch with
+    // the same KMS AccessDeniedException that bit the main task in this
+    // PR. Today the migrate task only reads the Aurora master secret
+    // (encrypted under AWS-managed `aws/secretsmanager`), so this grant
+    // is currently unused — but mirroring the main role keeps the next
+    // expansion safe.
+    migrateExecutionRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "KmsDecryptForPaperclipBetterAuthSecret",
+        effect: iam.Effect.ALLOW,
+        actions: ["kms:Decrypt"],
+        resources: [props.paperclipKmsKeyArn],
+      }),
+    );
+
     const migrateLogGroup = new logs.LogGroup(this, "PaperclipMigrateLogs", {
       logGroupName: `/isol8/${env}/paperclip-migrate`,
       retention: logs.RetentionDays.TWO_WEEKS,
@@ -391,7 +457,8 @@ export class PaperclipStack extends cdk.Stack {
     );
 
     migrateTaskDef.addContainer("migrate", {
-      image: ecs.ContainerImage.fromRegistry("paperclipai/paperclip:latest"),
+      // Same GHCR-vs-Docker-Hub fix as the main service container above.
+      image: ecs.ContainerImage.fromRegistry("ghcr.io/paperclipai/paperclip:latest"),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "paperclip-migrate",
         logGroup: migrateLogGroup,
