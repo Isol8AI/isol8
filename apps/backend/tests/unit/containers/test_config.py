@@ -53,9 +53,16 @@ class TestOpenclawConfigShape:
         config = _cfg()
         assert config["agents"]["defaults"]["workspace"] == "/home/node/.openclaw/workspaces"
 
-    def test_agents_defaults_memory_search_enabled(self):
+    def test_agents_defaults_memory_search_pinned_to_bedrock(self):
+        # Embedding provider must be pinned to bedrock — the upstream
+        # default is "local" which needs a GGUF model file we don't ship,
+        # and qmd's first embed cycle hangs ~3min on that. Bedrock works
+        # via task-role IAM regardless of the user's chosen auth path.
         config = _cfg()
-        assert config["agents"]["defaults"]["memorySearch"]["enabled"] is True
+        memory_search = config["agents"]["defaults"]["memorySearch"]
+        assert memory_search["enabled"] is True
+        assert memory_search["provider"] == "bedrock"
+        assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
 
     def test_agents_defaults_idle_timeout(self):
         config = _cfg()

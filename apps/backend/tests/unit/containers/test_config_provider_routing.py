@@ -81,44 +81,39 @@ async def test_bedrock_claude_branch(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_chatgpt_oauth_writes_cli_backend_for_codex(tmp_path):
-    """Without `cliBackends['openai-codex']` in agents.defaults, upstream's
-    isConfiguredCliBackendPrimary returns false and prewarmConfiguredPrimaryModel
-    falls through to a network-bound model resolver that hangs ~5min on cold
-    start (ChatGPT OAuth tokens aren't accepted by api.openai.com). Empty
-    `{}` is enough — upstream only iterates the keys."""
+async def test_meta_shim_present_to_defeat_auto_restore(tmp_path):
+    """openclaw's io.observe-recovery flags any write missing meta as
+    `missing-meta-vs-last-good` and silently restores from .bak — silently
+    stripping every backend write. The synthetic meta defeats that check."""
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
         gateway_token="test-token",
-        provider_choice="chatgpt_oauth",
+        provider_choice="bedrock_claude",
         user_id="u_1",
     )
     cfg = json.loads(out.read_text())
-    cli_backends = cfg["agents"]["defaults"].get("cliBackends", {})
-    assert "openai-codex" in cli_backends, (
-        "chatgpt_oauth must register openai-codex as a CLI backend so the "
-        "gateway's isCliProvider check short-circuits prewarm before its "
-        "5-min model-resolution hang"
+    meta = cfg.get("meta")
+    assert isinstance(meta, dict), "meta must be an object"
+    assert isinstance(meta.get("lastTouchedVersion"), str), (
+        "meta.lastTouchedVersion (string) is what hasConfigMeta checks for"
     )
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "provider_choice,byo_provider,expected_provider,expected_model",
+    "provider_choice,byo_provider",
     [
-        ("chatgpt_oauth", None, "openai", "text-embedding-3-small"),
-        ("byo_key", "openai", "openai", "text-embedding-3-small"),
-        ("byo_key", "anthropic", "bedrock", "amazon.titan-embed-text-v2:0"),
-        ("bedrock_claude", None, "bedrock", "amazon.titan-embed-text-v2:0"),
+        ("chatgpt_oauth", None),
+        ("byo_key", "openai"),
+        ("byo_key", "anthropic"),
+        ("bedrock_claude", None),
     ],
 )
-async def test_memory_search_provider_matches_auth_path(
-    tmp_path, provider_choice, byo_provider, expected_provider, expected_model
-):
-    """memorySearch must NEVER be left at upstream default (provider='local')
-    because that requires a GGUF model file we don't ship — qmd then hangs
-    ~3min (120s embed timeout + 60s backoff) on first embed call."""
+async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provider_choice, byo_provider):
+    """qmd's first embed cycle hangs 3min on default `local` embedding model.
+    Pinning to bedrock works for every auth path since the per-user task
+    role has bedrock:InvokeModel via IAM."""
     kwargs = {
         "config_path": tmp_path / "openclaw.json",
         "gateway_token": "test-token",
@@ -130,9 +125,8 @@ async def test_memory_search_provider_matches_auth_path(
     await write_openclaw_config(**kwargs)
     cfg = json.loads((tmp_path / "openclaw.json").read_text())
     memory_search = cfg["agents"]["defaults"]["memorySearch"]
-    assert memory_search["enabled"] is True
-    assert memory_search["provider"] == expected_provider
-    assert memory_search["model"] == expected_model
+    assert memory_search["provider"] == "bedrock"
+    assert memory_search["model"] == "amazon.titan-embed-text-v2:0"
 
 
 @pytest.mark.asyncio
