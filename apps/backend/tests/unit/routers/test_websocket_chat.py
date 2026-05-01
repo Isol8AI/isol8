@@ -223,6 +223,71 @@ class TestMessageEndpoint:
         )
 
     @pytest.mark.asyncio
+    async def test_message_lazy_registers_frontend_connection(
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        mock_gateway_pool,
+    ):
+        """Regression: backend tasks rotate (deploys, scaling) but the
+        client's WS stays open via API Gateway. /ws/connect only fires
+        once on initial WS open — subsequent /ws/message calls land on
+        whichever backend task ALB picks. Without lazy registration in
+        /ws/message, the new task's pool has empty `_frontend_connections`
+        and openclaw streaming events get silently dropped, leaving the
+        chat UI stuck loading. (2026-05-01 incident.)
+        """
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "user_3D8qdjOCXakKFHCsErQHS7q8P9v",
+            "org_id": None,
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "ctMiYcLWoAMCLgg="},
+                # `pong` is a non-ping path that exits early without
+                # touching openclaw; the lazy-register block runs before
+                # that check, so this is sufficient to verify the call.
+                json={"type": "pong"},
+            )
+
+        assert response.status_code == 200
+        mock_gateway_pool.add_frontend_connection.assert_called_once_with(
+            "user_3D8qdjOCXakKFHCsErQHS7q8P9v",
+            "ctMiYcLWoAMCLgg=",
+            member_id="user_3D8qdjOCXakKFHCsErQHS7q8P9v",
+        )
+
+    @pytest.mark.asyncio
+    async def test_message_does_not_register_on_ping(
+        self,
+        test_app,
+        mock_connection_service,
+        mock_management_api,
+        mock_gateway_pool,
+    ):
+        """Ping is the high-frequency keepalive path — registering on
+        every ping would be wasted work. Verify the lazy-register call
+        happens only on non-ping messages.
+        """
+        mock_connection_service.get_connection.return_value = {
+            "user_id": "test-user",
+            "org_id": None,
+        }
+
+        async with AsyncClient(transport=ASGITransport(app=test_app), base_url="http://test") as client:
+            response = await client.post(
+                "/ws/message",
+                headers={"x-connection-id": "test-conn"},
+                json={"type": "ping"},
+            )
+
+        assert response.status_code == 200
+        mock_gateway_pool.add_frontend_connection.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_message_rejects_unknown_connection(self, test_app, mock_connection_service, mock_management_api):
         """Message with unknown connection should return 401."""
         mock_connection_service.get_connection.return_value = None
