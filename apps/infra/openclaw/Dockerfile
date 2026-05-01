@@ -60,7 +60,9 @@ RUN git clone --depth=1 https://github.com/openhue/openhue-cli.git /tmp/openhue 
 # =============================================================================
 # Stage 2: final — runtime-only image
 # =============================================================================
-FROM alpine/openclaw:2026.4.23-slim
+# Fat (non-slim) variant: bundles plugin runtime deps so first-use of
+# browser/codex/channels doesn't pay a ~6min lazy npm-install on cold start.
+FROM ghcr.io/openclaw/openclaw:2026.4.23
 
 USER root
 
