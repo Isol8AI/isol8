@@ -362,6 +362,15 @@ export class ContainerStack extends cdk.Stack {
         // gateway logs `startup trace: <name> <ms>ms total=<ms>ms` per step
         // (src/gateway/server.impl.ts:136). Cheap to leave on permanently.
         OPENCLAW_GATEWAY_STARTUP_TRACE: "1",
+        // Default-skip channels at boot for fast cold start (~30s vs ~6min).
+        // The channels block stays in openclaw.json so plugins are configured
+        // — this env var only gates startChannels() at boot AND
+        // restartChannel() on config-reload (server-reload-handlers.ts:166).
+        // Users opt back in via POST /api/v1/container/channels {enable:true},
+        // which re-registers the per-user task def with this var dropped and
+        // force-deploys the service. ~6min restart, then channels online.
+        // For users who never opt in, container starts in seconds.
+        OPENCLAW_SKIP_CHANNELS: "true",
       },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({

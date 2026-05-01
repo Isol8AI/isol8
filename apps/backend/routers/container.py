@@ -125,6 +125,19 @@ async def container_status(
         container["status"] = "provisioning"
         container["substatus"] = "auto_retry"
 
+    # `channels_at_boot` reflects whether the user's task def has
+    # OPENCLAW_SKIP_CHANNELS=true. Frontend reads it to decide whether to
+    # show a "~6 min restart" confirm dialog before any channel action.
+    # Inverted from the env semantics (skip=True -> at_boot=False).
+    try:
+        channels_skip = await ecs_manager.get_user_channels_skip(owner_id)
+        channels_at_boot = not channels_skip
+    except Exception:
+        # Don't fail the status response if the describe-task-def lookup
+        # blows up — default to False (the safe assumption: warn user
+        # before any channel action).
+        channels_at_boot = False
+
     return {
         "service_name": container.get("service_name"),
         "status": container.get("status"),
@@ -137,6 +150,9 @@ async def container_status(
         # Cold-start phase for the frontend stepper. See
         # _resolve_cold_start_phase for the (status, pool) -> phase map.
         "phase": _safe_phase(container, owner_id),
+        # Whether channels are loaded at boot. False = OPENCLAW_SKIP_CHANNELS
+        # is on; flipping a channel later requires a ~6 min container restart.
+        "channels_at_boot": channels_at_boot,
     }
 
 
@@ -289,3 +305,42 @@ async def container_retry(
         raise HTTPException(status_code=502, detail="Provisioning failed")
 
     return {"ok": True, "service_name": service_name}
+
+
+@router.post(
+    "/channels",
+    summary="Toggle whether the user's container starts messaging channels at boot",
+    description=(
+        "Re-registers the user's task definition with `OPENCLAW_SKIP_CHANNELS` "
+        "set to 'true' (skip — fast boot, ~30s) or 'false' (run — slow boot "
+        "with channels online, ~6min). Force-deploys the service. The active "
+        "task is killed and a new one starts with the new env. Frontend should "
+        "show a `~6 min restart` confirm dialog before calling with `enable=true` "
+        "from the skip-currently-on state."
+    ),
+    operation_id="container_channels_toggle",
+    responses={
+        404: {"description": "No container for this user"},
+        503: {"description": "ECS update failed"},
+    },
+)
+async def container_channels_toggle(
+    payload: dict,
+    auth: AuthContext = Depends(get_current_user),
+):
+    enable = bool(payload.get("enable"))
+    owner_id = resolve_owner_id(auth)
+    ecs_manager = get_ecs_manager()
+    try:
+        new_td_arn = await ecs_manager.set_user_channels_skip(owner_id, skip=not enable)
+    except EcsManagerError as exc:
+        logger.error("Failed to toggle channels for owner %s: %s", owner_id, exc)
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "ok": True,
+        "enabled": enable,
+        "task_definition_arn": new_td_arn,
+        # Frontend uses this to decide whether to show a "your container
+        # is restarting" UI before redirecting to the channels wizard.
+        "restart_in_progress": enable,
+    }

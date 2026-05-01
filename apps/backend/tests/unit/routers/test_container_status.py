@@ -291,3 +291,152 @@ class TestGatewayRestart:
         response = await async_client.post("/api/v1/container/gateway/restart")
         assert response.status_code == 502
         assert "Gateway is not responding" in response.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# POST /container/channels  +  channels_at_boot on GET /container/status
+# ---------------------------------------------------------------------------
+
+
+class TestChannelsAtBootStatusField:
+    """The /status response surfaces channels_at_boot so the frontend
+    knows whether to show a "~6 min restart" confirm dialog before any
+    channel action.
+    """
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_channels_at_boot_false_when_skip_is_true(self, mock_get_ecs, async_client):
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-abc",
+                    "status": "running",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T12:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+        mock_ecs.get_user_channels_skip = AsyncMock(return_value=True)
+
+        response = await async_client.get("/api/v1/container/status")
+        assert response.status_code == 200
+        assert response.json()["channels_at_boot"] is False
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_channels_at_boot_true_when_skip_is_false(self, mock_get_ecs, async_client):
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-abc",
+                    "status": "running",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T12:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+        mock_ecs.get_user_channels_skip = AsyncMock(return_value=False)
+
+        response = await async_client.get("/api/v1/container/status")
+        assert response.status_code == 200
+        assert response.json()["channels_at_boot"] is True
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_channels_at_boot_defaults_false_on_lookup_failure(self, mock_get_ecs, async_client):
+        # If the describe-task-def call blows up, surface the safe value
+        # (False -> "warn the user before any channel action").
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-abc",
+                    "status": "running",
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T12:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+        mock_ecs.get_user_channels_skip = AsyncMock(side_effect=RuntimeError("boom"))
+
+        response = await async_client.get("/api/v1/container/status")
+        assert response.status_code == 200
+        assert response.json()["channels_at_boot"] is False
+
+
+class TestContainerChannelsToggle:
+    """POST /container/channels — re-registers the user's task def with
+    OPENCLAW_SKIP_CHANNELS flipped and force-deploys.
+    """
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_enable_true_calls_set_skip_false(self, mock_get_ecs, async_client):
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.set_user_channels_skip = AsyncMock(return_value="arn:aws:ecs:us-east-1:1:task-definition/x:9")
+
+        response = await async_client.post("/api/v1/container/channels", json={"enable": True})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["ok"] is True
+        assert body["enabled"] is True
+        # restart_in_progress is the signal the frontend uses to show a
+        # "container restarting" UI before redirecting to BotSetupWizard.
+        assert body["restart_in_progress"] is True
+        assert body["task_definition_arn"].endswith(":9")
+        # enable=True -> we want channels to RUN -> skip=False.
+        mock_ecs.set_user_channels_skip.assert_awaited_once()
+        kwargs = mock_ecs.set_user_channels_skip.call_args.kwargs
+        assert kwargs["skip"] is False
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_enable_false_calls_set_skip_true(self, mock_get_ecs, async_client):
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.set_user_channels_skip = AsyncMock(return_value="arn:aws:ecs:us-east-1:1:task-definition/x:10")
+
+        response = await async_client.post("/api/v1/container/channels", json={"enable": False})
+        assert response.status_code == 200
+        body = response.json()
+        assert body["enabled"] is False
+        assert body["restart_in_progress"] is False
+        kwargs = mock_ecs.set_user_channels_skip.call_args.kwargs
+        assert kwargs["skip"] is True
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_returns_503_when_ecs_manager_errors(self, mock_get_ecs, async_client):
+        from core.containers.ecs_manager import EcsManagerError
+
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.set_user_channels_skip = AsyncMock(side_effect=EcsManagerError("boom", "user_test_123"))
+
+        response = await async_client.post("/api/v1/container/channels", json={"enable": True})
+        assert response.status_code == 503
+
+    @pytest.mark.asyncio
+    @patch("routers.container.get_ecs_manager")
+    async def test_missing_enable_treated_as_false(self, mock_get_ecs, async_client):
+        # Defensive: if the field is missing, default to disable rather
+        # than silently flipping channels on.
+        mock_ecs = AsyncMock()
+        mock_get_ecs.return_value = mock_ecs
+        mock_ecs.set_user_channels_skip = AsyncMock(return_value="arn:aws:ecs:us-east-1:1:task-definition/x:11")
+
+        response = await async_client.post("/api/v1/container/channels", json={})
+        assert response.status_code == 200
+        assert response.json()["enabled"] is False
+        kwargs = mock_ecs.set_user_channels_skip.call_args.kwargs
+        assert kwargs["skip"] is True
