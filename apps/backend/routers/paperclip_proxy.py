@@ -10,21 +10,22 @@ window.
 
 This module owns the *router* only. The host-conditional dispatch lives
 in T16's middleware in ``main.py``: when an incoming request carries
-``X-Forwarded-Host: company.isol8.co`` (or the env-specific equivalent)
+``X-Isol8-Public-Host: company.isol8.co`` (or the env-specific equivalent)
 the middleware mounts this router on the request path; for any other
 host the middleware passes through to the normal Isol8 routers.
 
-**Why ``X-Forwarded-Host`` and not ``Host`` / ``request.url.hostname``?**
+**Why ``X-Isol8-Public-Host`` and not ``Host`` / ``request.url.hostname``?**
 API Gateway HTTP API rewrites the upstream ``Host`` header to the
 integration target's DNS name (the ALB), so by the time FastAPI sees
 the request the original ``company.isol8.co`` is gone from ``Host``.
-T6+T7 added a parameter mapping in ``api-stack.ts`` that copies
-``$context.domainName`` into ``X-Forwarded-Host`` so the original
-hostname survives the integration hop. Starlette's
-``request.url.hostname`` reads from the ASGI scope's reconstructed URL
-and reflects the rewritten ``Host``, so it would point at the ALB DNS
-— useless for dispatch. Reading the header directly is the supported
-path.
+``api-stack.ts`` adds a parameter mapping that copies
+``$context.domainName`` into ``X-Isol8-Public-Host`` so the original
+hostname survives the integration hop. (We can't use
+``X-Forwarded-Host`` for this — API Gateway HTTP API blocks parameter
+mapping on ``x-forwarded-*`` headers with "Operations on header
+x-forwarded-host are restricted".) Starlette's ``request.url.hostname``
+reflects the rewritten ``Host`` (the ALB DNS) — useless for dispatch.
+Reading the custom header directly is the supported path.
 
 **Auth model (v1, no session caching).**
 Every proxied request signs the user in to Paperclip from scratch:
@@ -382,12 +383,16 @@ async def proxy(
             raise HTTPException(status_code=502, detail="Paperclip auth response malformed")
 
         # Build forwarding headers. We add X-Forwarded-* so Paperclip's
-        # access logs reflect the real client identity (not the ALB
-        # IP). The original X-Forwarded-Host is preserved if present
-        # so Paperclip can render absolute URLs that point back at
-        # company.isol8.co rather than the ALB.
+        # access logs reflect the real client identity (not the ALB IP).
+        # Source the public hostname from X-Isol8-Public-Host (set by
+        # API Gateway parameter mapping; see module docstring). We forward
+        # it as standard X-Forwarded-Host on the outbound (Paperclip-bound)
+        # request — Paperclip uses that header to render absolute URLs
+        # pointing back at company.isol8.co. (Outbound to an internal
+        # service, no API Gateway in the path, so the x-forwarded-* name
+        # restriction doesn't apply here.)
         forwarded_host = request.headers.get(
-            "x-forwarded-host",
+            "x-isol8-public-host",
             request.headers.get("host", ""),
         )
         client_host = request.client.host if request.client else ""

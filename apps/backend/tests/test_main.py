@@ -1,7 +1,7 @@
 """Unit tests for ``main.py``-level wiring.
 
 Currently exercises the ``HostDispatcherMiddleware`` (T16): when a
-request arrives with ``X-Forwarded-Host`` matching a Paperclip-proxy
+request arrives with ``X-Isol8-Public-Host`` matching a Paperclip-proxy
 host, the middleware rewrites the ASGI scope path to the proxy mount
 prefix so the standard router layer dispatches to ``paperclip_proxy``.
 For any other host (or absence of the header) the middleware passes
@@ -64,7 +64,7 @@ class _CapturingApp:
 
 @pytest.mark.asyncio
 async def test_dispatcher_rewrites_path_for_company_isol8_host():
-    """X-Forwarded-Host: company.isol8.co triggers the proxy prefix rewrite."""
+    """X-Isol8-Public-Host: company.isol8.co triggers the proxy prefix rewrite."""
     inner = _CapturingApp()
     mw = HostDispatcherMiddleware(inner)
     # Override hosts to a known set so the test isn't dependent on the
@@ -74,7 +74,7 @@ async def test_dispatcher_rewrites_path_for_company_isol8_host():
     scope = _make_scope(
         path="/teams/inbox",
         raw_path=b"/teams/inbox",
-        headers=[(b"x-forwarded-host", b"company.isol8.co")],
+        headers=[(b"x-isol8-public-host", b"company.isol8.co")],
     )
     await mw(scope, lambda: None, lambda *_: None)
 
@@ -94,7 +94,7 @@ async def test_dispatcher_rewrites_websocket_scope():
     scope = _make_scope(
         path="/api/socket",
         raw_path=b"/api/socket",
-        headers=[(b"x-forwarded-host", b"company.isol8.co")],
+        headers=[(b"x-isol8-public-host", b"company.isol8.co")],
         scope_type="websocket",
     )
     await mw(scope, lambda: None, lambda *_: None)
@@ -112,7 +112,7 @@ async def test_dispatcher_passthrough_for_api_isol8_host():
 
     scope = _make_scope(
         path="/api/v1/users",
-        headers=[(b"x-forwarded-host", b"api.isol8.co")],
+        headers=[(b"x-isol8-public-host", b"api.isol8.co")],
     )
     await mw(scope, lambda: None, lambda *_: None)
 
@@ -124,8 +124,8 @@ async def test_dispatcher_passthrough_for_api_isol8_host():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_passthrough_when_xfh_header_missing():
-    """No X-Forwarded-Host header → passthrough (e.g. direct ALB hit)."""
+async def test_dispatcher_passthrough_when_xph_header_missing():
+    """No X-Isol8-Public-Host header → passthrough (e.g. direct ALB hit)."""
     inner = _CapturingApp()
     mw = HostDispatcherMiddleware(inner)
     mw._hosts = {"company.isol8.co"}
@@ -138,14 +138,14 @@ async def test_dispatcher_passthrough_when_xfh_header_missing():
 
 @pytest.mark.asyncio
 async def test_dispatcher_strips_port_and_lowercases():
-    """X-Forwarded-Host is normalized: lowercased + port stripped."""
+    """X-Isol8-Public-Host is normalized: lowercased + port stripped."""
     inner = _CapturingApp()
     mw = HostDispatcherMiddleware(inner)
     mw._hosts = {"company.isol8.co"}
 
     scope = _make_scope(
         path="/x",
-        headers=[(b"x-forwarded-host", b"Company.Isol8.Co:443")],
+        headers=[(b"x-isol8-public-host", b"Company.Isol8.Co:443")],
     )
     await mw(scope, lambda: None, lambda *_: None)
 
@@ -154,7 +154,7 @@ async def test_dispatcher_strips_port_and_lowercases():
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_handles_comma_chained_xfh():
+async def test_dispatcher_handles_comma_chained_xph():
     """Multi-proxy chain → take leftmost element (closest to client)."""
     inner = _CapturingApp()
     mw = HostDispatcherMiddleware(inner)
@@ -163,7 +163,7 @@ async def test_dispatcher_handles_comma_chained_xfh():
     # CDN-style chain: ``company.isol8.co, internal.lb.amazonaws.com``
     scope = _make_scope(
         path="/x",
-        headers=[(b"x-forwarded-host", b"company.isol8.co, internal.lb.amazonaws.com")],
+        headers=[(b"x-isol8-public-host", b"company.isol8.co, internal.lb.amazonaws.com")],
     )
     await mw(scope, lambda: None, lambda *_: None)
 
@@ -180,7 +180,7 @@ async def test_dispatcher_skips_non_http_websocket_scopes():
 
     scope = {
         "type": "lifespan",
-        "headers": [(b"x-forwarded-host", b"company.isol8.co")],
+        "headers": [(b"x-isol8-public-host", b"company.isol8.co")],
     }
     await mw(scope, lambda: None, lambda *_: None)
 
