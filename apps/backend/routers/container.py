@@ -140,38 +140,40 @@ async def container_status(
     }
 
 
-class _DisconnectedPool:
-    """Stand-in pool that always reports disconnected. Used as a fallback
-    only when the real singleton hasn't been initialized yet (test envs,
-    service start before the lifespan handler hooks the pool up)."""
-
-    @staticmethod
-    def is_user_connected(_user_id: str) -> bool:
-        return False
-
-
 def _safe_phase(container: dict, owner_id: str) -> str:
     """Wrap _resolve_cold_start_phase so a not-yet-initialized gateway
-    pool downgrades to "starting" instead of 500ing the status endpoint.
-    Status must always answer.
+    pool doesn't 500 the status endpoint. Status must always answer.
 
-    Catches the specific exception(s) we know surface here:
-      - ManagementApiClientError when WS_MANAGEMENT_API_URL is unset
-        (test envs that don't run the lifespan handler).
-    Anything else bubbles up as a real bug. Logs once per process so a
-    production misconfiguration is visible in CloudWatch instead of
-    silently always reporting "starting".
+    On pool init failure (ManagementApiClientError when
+    WS_MANAGEMENT_API_URL is unset — typically test envs that skip the
+    lifespan handler) we fall back to a *container-only* phase mapping
+    instead of forcing "starting":
+
+      - ECS RUNNING  -> "ready"        (best guess; chat may or may
+                                        not work — but the frontend will
+                                        surface the real chat error
+                                        instead of trapping the user
+                                        in a never-ending stepper)
+      - anything else -> "provisioning"
+
+    Codex P1 on PR #461: returning "starting" here keeps users stuck
+    in the cold-start UI indefinitely even when the container itself
+    is healthy and usable.
+
+    Anything other than ManagementApiClientError bubbles up as a real
+    bug. Logs once per process so a production misconfiguration shows
+    up in CloudWatch.
     """
     try:
         pool = get_gateway_pool()
     except ManagementApiClientError as exc:
         if not getattr(_safe_phase, "_pool_warning_logged", False):
             logger.warning(
-                "Gateway pool not initialized; status phase falls back to disconnected. Real pool error: %s",
+                "Gateway pool not initialized; status phase falls back to container-only mapping. Real pool error: %s",
                 exc,
             )
             _safe_phase._pool_warning_logged = True  # type: ignore[attr-defined]
-        return _resolve_cold_start_phase(container, _DisconnectedPool(), owner_id)
+        return "ready" if (container or {}).get("status") == "running" else "provisioning"
     return _resolve_cold_start_phase(container, pool, owner_id)
 
 

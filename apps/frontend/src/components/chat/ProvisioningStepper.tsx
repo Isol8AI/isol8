@@ -14,7 +14,7 @@ import { useOrganization } from "@clerk/nextjs";
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useBilling } from "@/hooks/useBilling";
-import { useContainerStatus } from "@/hooks/useContainerStatus";
+import { useContainerStatus, type ColdStartPhase } from "@/hooks/useContainerStatus";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
 import { capture } from "@/lib/analytics";
@@ -310,12 +310,32 @@ export function ProvisioningStepper({
     return findFirstUnlinkedMainProvider(linksData);
   }, [isAdmin, linksData]);
 
+  // Track previous backend phase via a ref so we can detect regression
+  // edges *during* render. When the backend goes ready -> not-ready
+  // (e.g., scale-to-zero brought it back to provisioning) the
+  // elapsedMs state is still the stale value from the prior cold-start
+  // session — the reset effect below clears it but only after this
+  // render commits. Without this regression detection, the stepper
+  // would flash "agent" / "timed out" for a single frame before
+  // settling onto the correct early sub-phase. Codex P2 on PR #461.
+  const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
+  const isRegressingFromReady =
+    previousBackendPhaseRef.current === "ready" &&
+    container?.phase !== undefined &&
+    container.phase !== "ready";
+  // Mutate the ref during render — refs are React-blessed for this
+  // pattern (derived state from prop transitions).
+  previousBackendPhaseRef.current = container?.phase;
+
   // Derive phase purely from data. The cold-start window (backend
   // phase="starting", roughly ECS RUNNING through gateway-pool-connected)
   // is split into three visible UI sub-phases by elapsed time so the
   // user sees concrete progress through what is currently a 5+min wait
   // in upstream's sidecars.channels.
   const phase: Phase = useMemo(() => {
+    // Just regressed from ready -> not-ready? Force the conservative
+    // early step until the reset effect clears stale timing state.
+    if (isRegressingFromReady) return "container";
     // Pre-signup user lands in payment phase to pick a provider path.
     // Recovery flow skips billing — the user already has a subscription.
     if (trigger !== "recovery" && !isSubscribed) return "payment";
