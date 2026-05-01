@@ -339,11 +339,13 @@ export function ProvisioningStepper({
   // settling onto the correct early sub-phase. Codex P2 on PR #461.
   const previousBackendPhaseRef = useRef<ColdStartPhase | undefined>(undefined);
   const isRegressingFromReady =
+    // eslint-disable-next-line react-hooks/refs
     previousBackendPhaseRef.current === "ready" &&
     container?.phase !== undefined &&
     container.phase !== "ready";
   // Mutate the ref during render — refs are React-blessed for this
   // pattern (derived state from prop transitions).
+  // eslint-disable-next-line react-hooks/refs
   previousBackendPhaseRef.current = container?.phase;
 
   // Derive phase purely from data. The cold-start window (backend
