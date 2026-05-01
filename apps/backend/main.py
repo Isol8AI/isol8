@@ -42,7 +42,6 @@ from routers import (
     desktop_auth,
     integrations,
     oauth,
-    paperclip_proxy,
     settings_keys,
     updates,
     users,
@@ -50,125 +49,8 @@ from routers import (
     websocket_chat,
     workspace_files,
 )
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------
-# Paperclip host dispatch
-# ---------------------------------------------------------------
-#
-# When a request arrives at ``company.isol8.co`` (or the env-suffixed
-# variant ``company-{env}.isol8.co``) we dispatch the entire request to
-# the Paperclip reverse-proxy router instead of the standard ``/api/v1``
-# surface. The dispatch key is ``X-Forwarded-Host``, NOT ``Host``:
-# API Gateway HTTP API rewrites the upstream ``Host`` header to the
-# integration target's DNS (the internal ALB), so by the time we see the
-# request the original public hostname is gone from ``Host``. T6+T7's
-# parameter mapping in ``api-stack.ts`` copies ``$context.domainName``
-# into ``X-Forwarded-Host`` so the dispatch key survives the integration
-# hop.
-#
-# Implementation: rewrite the scope path with a sentinel prefix and
-# mount the paperclip_proxy router at that prefix. The standard FastAPI
-# routing system handles the dispatch from there. The double-underscore
-# prefix is a deliberate choice — it's not a valid path segment for any
-# user-facing route and can never be hit from a normal browser URL.
-#
-# Note on middleware ordering: Starlette runs middleware in LIFO source
-# order on the way IN (the last ``add_middleware`` call wraps outermost
-# and runs first). We register ``HostDispatcherMiddleware`` BEFORE
-# ``ProxyHeadersMiddleware`` so the dispatcher runs AFTER proxy-headers
-# on inbound requests — though we only read X-Forwarded-Host directly
-# from the ASGI scope, so the ordering doesn't matter for correctness.
-# What does matter is that we run before any auth/CORS/etc. middleware
-# we want to skip for proxied traffic, which the placement here gives
-# us automatically.
-
-PAPERCLIP_PROXY_PREFIX = "/__paperclip_proxy__"
-
-
-def _paperclip_dispatch_hosts() -> set[str]:
-    """Hostnames that should be routed to the paperclip_proxy router.
-
-    Built from ``settings.PAPERCLIP_PUBLIC_URL`` (set by CDK in deployed
-    envs to ``https://company.isol8.co`` or ``https://company-{env}.isol8.co``)
-    plus a small allow-list of local-dev hostnames so ``./scripts/local-dev.sh``
-    works without extra config.
-    """
-    hosts: set[str] = {
-        "company.localhost",
-        "company.local",
-    }
-    public = (settings.PAPERCLIP_PUBLIC_URL or "").strip()
-    if public:
-        # Strip scheme + path; we only want the host[:port] part, then
-        # drop the port for a normalized comparison key.
-        from urllib.parse import urlparse
-
-        parsed = urlparse(public if "://" in public else f"https://{public}")
-        if parsed.hostname:
-            hosts.add(parsed.hostname.lower())
-    return hosts
-
-
-class HostDispatcherMiddleware:
-    """Pure ASGI middleware that rewrites the request scope path with a
-    sentinel prefix when the request arrives at a Paperclip-proxy host.
-
-    Reads ``X-Forwarded-Host`` directly off the ASGI scope headers — the
-    canonical Starlette ``ProxyHeadersMiddleware`` only promotes
-    ``X-Forwarded-For`` and ``X-Forwarded-Proto`` onto ``request.client``
-    and ``request.url.scheme``, so ``request.url.hostname`` would still
-    reflect the rewritten ``Host`` (the internal ALB DNS) rather than
-    the public domain we need to dispatch on.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-        # Compute dispatch hosts once; settings are immutable for the
-        # lifetime of the process (CDK redeploys restart the task).
-        self._hosts = _paperclip_dispatch_hosts()
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] not in ("http", "websocket"):
-            await self.app(scope, receive, send)
-            return
-
-        # Walk the raw header list (case-insensitive bytes keys) rather
-        # than building a dict — duplicate header collapse via dict()
-        # would silently drop the second value of any repeated header.
-        xfh_raw: bytes | None = None
-        for name, value in scope.get("headers", ()):
-            if name == b"x-forwarded-host":
-                xfh_raw = value
-                break
-        if xfh_raw is None:
-            await self.app(scope, receive, send)
-            return
-
-        # X-Forwarded-Host may carry a comma-separated chain (multiple
-        # proxies) and may include a port. Take the leftmost, drop port,
-        # lowercase for comparison.
-        xfh_full = xfh_raw.decode("latin-1", errors="replace")
-        xfh = xfh_full.split(",", 1)[0].split(":", 1)[0].strip().lower()
-        if xfh not in self._hosts:
-            await self.app(scope, receive, send)
-            return
-
-        # Dispatch path-rewrite. Preserve query string, headers, and
-        # client. Both ``path`` (decoded str) and ``raw_path`` (bytes)
-        # need updating — Starlette routing reads ``path`` but some
-        # ASGI servers / WS handlers prefer ``raw_path``.
-        new_scope = dict(scope)
-        original_path = scope.get("path", "")
-        new_scope["path"] = PAPERCLIP_PROXY_PREFIX + original_path
-        raw_path = scope.get("raw_path")
-        if raw_path is None:
-            raw_path = original_path.encode("latin-1", errors="replace")
-        new_scope["raw_path"] = PAPERCLIP_PROXY_PREFIX.encode("ascii") + raw_path
-        await self.app(new_scope, receive, send)
 
 
 async def _running_count_gauge_loop():
@@ -315,16 +197,6 @@ from core.observability.middleware import RequestContextMiddleware
 
 app.add_middleware(RequestContextMiddleware)
 
-# Host-dispatch middleware (Paperclip) — rewrites the ASGI scope path to
-# the paperclip_proxy mount prefix when X-Forwarded-Host names a Paperclip
-# domain. Added before ProxyHeadersMiddleware so it sits INSIDE the proxy-
-# headers wrapper on the inbound path (Starlette runs middleware in LIFO
-# source order — last added runs first). The dispatcher reads
-# X-Forwarded-Host directly off the scope, so it doesn't actually depend
-# on ProxyHeadersMiddleware running first; the placement here is about
-# letting CORS/E2E/admin-metrics still see all traffic uniformly.
-app.add_middleware(HostDispatcherMiddleware)
-
 # Proxy-headers middleware — ALB terminates TLS and forwards X-Forwarded-Proto.
 # Without this, FastAPI generates http:// URLs in redirects (e.g. redirect_slashes),
 # which breaks clients behind HTTPS.
@@ -435,24 +307,6 @@ app.include_router(admin_catalog.router, prefix="/api/v1")
 from routers import admin as admin_router  # noqa: E402
 
 app.include_router(admin_router.router, prefix="/api/v1")
-
-# Paperclip proxy router — mounted at the sentinel prefix that
-# HostDispatcherMiddleware rewrites paths to. Never reachable directly
-# from a normal browser URL: API Gateway never sets X-Forwarded-Host to
-# a Paperclip domain unless the request actually arrived at one, and
-# the prefix has a leading double-underscore that no real route uses.
-#
-# include_in_schema=False keeps the sentinel out of /openapi.json. The
-# proxy is an internal dispatch implementation detail — exposing it in
-# the public OpenAPI schema would (a) confuse SDK generators and (b)
-# trip schemathesis contract fuzzing in CI (the fuzzer would hit the
-# real proxy code which needs Paperclip infrastructure that isn't
-# mocked at the contract layer).
-app.include_router(
-    paperclip_proxy.router,
-    prefix=PAPERCLIP_PROXY_PREFIX,
-    include_in_schema=False,
-)
 
 
 @app.get(

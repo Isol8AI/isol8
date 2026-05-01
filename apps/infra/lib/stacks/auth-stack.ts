@@ -25,8 +25,6 @@ export interface AuthStackProps extends cdk.StackProps {
 export class AuthStack extends cdk.Stack {
   public readonly secrets: AuthSecrets;
   public readonly kmsKey: kms.Key;
-  public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
-  public readonly paperclipServiceTokenKey: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -42,26 +40,16 @@ export class AuthStack extends cdk.Stack {
 
     // Helper to create a CDK-managed secret.
     // If secretValues is provided (local dev), use that value instead of random generation.
-    // If generateConfig is provided, CDK will generate a random string per the config
-    // on first create (ignored when an initialValue is seeded for local dev).
-    // Optional description overrides the default `Isol8 ${env} ${secretName}` shape.
     const secretVals = props.secretValues ?? {};
-    const createSecret = (
-      logicalId: string,
-      secretName: string,
-      generateConfig?: secretsmanager.SecretStringGenerator,
-      description?: string,
-    ): secretsmanager.Secret => {
+    const createSecret = (logicalId: string, secretName: string): secretsmanager.Secret => {
       const initialValue = secretVals[secretName];
       return new secretsmanager.Secret(this, logicalId, {
         secretName: `isol8/${env}/${secretName}`,
-        description: description ?? `Isol8 ${env} ${secretName}`,
+        description: `Isol8 ${env} ${secretName}`,
         encryptionKey: this.kmsKey,
         ...(initialValue
           ? { secretStringValue: cdk.SecretValue.unsafePlainText(initialValue) }
-          : generateConfig
-            ? { generateSecretString: generateConfig }
-            : {}),
+          : {}),
       });
     };
 
@@ -81,23 +69,6 @@ export class AuthStack extends cdk.Stack {
       // that defaults to empty in service-stack's environment block.
       posthogProjectApiKey: createSecret("PosthogProjectApiKey", "posthog_project_api_key"),
     };
-
-    // Paperclip secrets (Task 3 — Paperclip rebuild). These do not flow through
-    // the AuthSecrets struct because they are consumed only by the
-    // service-stack's Paperclip-specific wiring + Lambda authorizer (Task 4+).
-    this.paperclipBetterAuthSecret = createSecret(
-      "PaperclipBetterAuthSecret",
-      "paperclip_better_auth_secret",
-      { passwordLength: 64, excludePunctuation: true },
-      "Required by Paperclip server for cookie/session signing; not consumed by Isol8 backend.",
-    );
-
-    this.paperclipServiceTokenKey = createSecret(
-      "PaperclipServiceTokenKey",
-      "paperclip_service_token_key",
-      { passwordLength: 64, excludePunctuation: true },
-      "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
-    );
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that
     // is NOT a valid Fernet key (Fernet wants 32 random bytes encoded as

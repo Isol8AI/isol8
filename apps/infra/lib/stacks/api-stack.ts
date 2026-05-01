@@ -10,11 +10,9 @@ import { WebSocketLambdaAuthorizer } from "aws-cdk-lib/aws-apigatewayv2-authoriz
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as elbv2 from "aws-cdk-lib/aws-elasticloadbalancingv2";
-import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as route53 from "aws-cdk-lib/aws-route53";
-import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import { Construct } from "constructs";
 
 // =============================================================================
@@ -32,23 +30,6 @@ export interface ApiStackProps extends cdk.StackProps {
   alb: elbv2.IApplicationLoadBalancer;
   albHttpListenerArn: string;
   albSecurityGroup: ec2.ISecurityGroup;
-  /**
-   * Secrets Manager name (NOT ISecret) of the Paperclip service-token signing
-   * key. The WebSocket Lambda Authorizer fetches this at cold-start and uses
-   * it to verify HS256 service-token JWTs minted by the FastAPI backend
-   * (core/services/service_token.py). Passed as a plain string to avoid
-   * cross-stack KMS auto-grant cycles — see service-stack.ts comments.
-   */
-  paperclipServiceTokenKeySecretName: string;
-  /**
-   * AuthStack KMS key ARN (NOT a Key object) used to encrypt the Paperclip
-   * service-token secret. The authorizer Lambda needs `kms:Decrypt` on this
-   * key in order for `secretsmanager:GetSecretValue` to succeed at cold-start
-   * — `secret.grantRead()` only adds the SecretsManager action, not the
-   * underlying KMS one. Passed as a string for the same cross-stack reason
-   * as `paperclipServiceTokenKeySecretName`.
-   */
-  paperclipKmsKeyArn: string;
 }
 
 const THROTTLE_CONFIG: Record<
@@ -79,13 +60,6 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const httpApiDomain = isProd ? "api.isol8.co" : `api-${env}.isol8.co`;
-    // Second public custom domain for the same HTTP API (Paperclip surface).
-    // Backend dispatches per-host using X-Forwarded-Host (set below via the
-    // integration's requestParameters). The wildcard *.isol8.co cert in
-    // DnsStack already covers this hostname, so no SAN changes are needed.
-    const companyApiDomain = isProd
-      ? "company.isol8.co"
-      : `company-${env}.isol8.co`;
     const frontendUrl = isProd
       ? "https://isol8.co"
       : `https://${env}.isol8.co`;
@@ -127,11 +101,6 @@ export class ApiStack extends cdk.Stack {
     });
 
     // --- HTTP Integration → ALB via VPC Link ---
-    // We set X-Forwarded-Host = $context.domainName so the FastAPI backend
-    // can dispatch per public hostname (api.isol8.co vs company.isol8.co).
-    // API Gateway rewrites the upstream Host to the ALB DNS, so the original
-    // requesting host is otherwise lost. The same integration (and so the
-    // same X-Forwarded-Host) serves all custom-domain mappings on this API.
     const httpIntegration = new apigatewayv2.CfnIntegration(
       this,
       "HttpAlbIntegration",
@@ -144,9 +113,6 @@ export class ApiStack extends cdk.Stack {
         connectionId: vpcLinkV2.ref,
         payloadFormatVersion: "1.0",
         timeoutInMillis: 30000,
-        requestParameters: {
-          "overwrite:header.X-Forwarded-Host": "$context.domainName",
-        },
       },
     );
 
@@ -225,54 +191,6 @@ export class ApiStack extends cdk.Stack {
         }),
       });
 
-      // --- Second public custom domain: company.isol8.co (Paperclip) ---
-      // Same HTTP API, same VPC Link → ALB → FastAPI integration. The
-      // X-Forwarded-Host header set on the integration above lets the
-      // backend dispatch per-host (T16). The wildcard *.isol8.co cert
-      // already covers this hostname, so we reuse props.certificate.
-      const companyDomainName = new apigatewayv2.CfnDomainName(
-        this,
-        "CompanyHttpDomain",
-        {
-          domainName: companyApiDomain,
-          domainNameConfigurations: [
-            {
-              certificateArn: props.certificate.certificateArn,
-              endpointType: "REGIONAL",
-              securityPolicy: "TLS_1_2",
-            },
-          ],
-        },
-      );
-
-      const companyMapping = new apigatewayv2.CfnApiMapping(
-        this,
-        "CompanyHttpApiMapping",
-        {
-          apiId: httpApi.ref,
-          domainName: companyDomainName.ref,
-          stage: env,
-        },
-      );
-      companyMapping.addDependency(httpStage);
-
-      new route53.ARecord(this, "CompanyHttpApiDnsRecord", {
-        zone: props.hostedZone,
-        recordName: companyApiDomain,
-        target: route53.RecordTarget.fromAlias({
-          bind: () => ({
-            dnsName: cdk.Fn.getAtt(
-              companyDomainName.logicalId,
-              "RegionalDomainName",
-            ).toString(),
-            hostedZoneId: cdk.Fn.getAtt(
-              companyDomainName.logicalId,
-              "RegionalHostedZoneId",
-            ).toString(),
-          }),
-        }),
-      });
-
       this.httpApiUrl = `https://${httpApiDomain}`;
     } else {
       this.httpApiUrl = `https://${httpApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;
@@ -338,34 +256,6 @@ export class ApiStack extends cdk.Stack {
       },
       logRetention: logs.RetentionDays.ONE_MONTH,
     });
-
-    // --- Paperclip service-token signing key for the WS authorizer ---
-    // The Lambda fetches this secret value at cold-start (via boto3) and
-    // uses it to verify HS256 service-token JWTs minted by the FastAPI
-    // backend. We pass the secret ARN as an env var (rather than the
-    // value) so the secret never appears in CFN templates / deploy logs.
-    const paperclipServiceTokenSecret = secretsmanager.Secret.fromSecretNameV2(
-      this,
-      "PaperclipServiceTokenKeyForAuthorizer",
-      props.paperclipServiceTokenKeySecretName,
-    );
-    paperclipServiceTokenSecret.grantRead(authorizerFn);
-    // `grantRead` only adds `secretsmanager:GetSecretValue` — for KMS-encrypted
-    // secrets the caller also needs `kms:Decrypt` on the underlying CMK.
-    // Without this, cold-start get_secret_value returns AccessDeniedException
-    // and the service-token branch silently falls through to Clerk-only.
-    authorizerFn.addToRolePolicy(
-      new iam.PolicyStatement({
-        sid: "KmsDecryptForServiceTokenSecret",
-        effect: iam.Effect.ALLOW,
-        actions: ["kms:Decrypt"],
-        resources: [props.paperclipKmsKeyArn],
-      }),
-    );
-    authorizerFn.addEnvironment(
-      "PAPERCLIP_SERVICE_TOKEN_KEY_SECRET_ARN",
-      paperclipServiceTokenSecret.secretArn,
-    );
 
     // =========================================================================
     // WebSocket Lambda Functions

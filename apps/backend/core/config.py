@@ -105,19 +105,6 @@ class Settings(BaseSettings):
     # record of which backend instance touched which container's secrets.
     CONTAINER_SECRETS_KMS_KEY_ID: str = os.getenv("CONTAINER_SECRETS_KMS_KEY_ID", "")
 
-    # --- Paperclip integration ---
-    # Internal URL the backend uses to reach Paperclip's REST API (private subnet).
-    # e.g. ``http://paperclip.internal.isol8.local`` — set by CDK in deployed envs.
-    PAPERCLIP_INTERNAL_URL: str = os.getenv("PAPERCLIP_INTERNAL_URL", "")
-    # Public-facing URL for browsers (used by the proxy router for cookie scope
-    # and origin checks; T14/T15 introduce the actual proxy). e.g.
-    # ``https://company.isol8.co``.
-    PAPERCLIP_PUBLIC_URL: str = os.getenv("PAPERCLIP_PUBLIC_URL", "")
-    # HMAC key for the OpenClaw service-token JWTs the backend mints for
-    # seeded Paperclip agents (see core/services/service_token.py). Populated
-    # from Secrets Manager + KMS by the CDK service stack at deploy time.
-    PAPERCLIP_SERVICE_TOKEN_KEY: str = os.getenv("PAPERCLIP_SERVICE_TOKEN_KEY", "")
-
     @field_validator("CLERK_ISSUER")
     @classmethod
     def validate_clerk_issuer(cls, v: str) -> str:

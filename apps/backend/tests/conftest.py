@@ -4,16 +4,6 @@ Shared test fixtures for Isol8 backend tests.
 Tests use mocked DynamoDB (via moto or plain mocks) — no real database needed.
 """
 
-import os
-
-# Set required env vars for the test environment before any module imports.
-# core.auth -> core.config constructs Settings() at module load and raises if
-# CLERK_ISSUER is missing, so collection fails without these defaults.
-os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
-os.environ.setdefault("ENCRYPTION_KEY", "wHc3hAOcLlFzWyu3Ph7xIyClIdVQTrIzFOZDtu_pIEY=")
-os.environ.setdefault("AWS_REGION", "us-east-1")
-os.environ.setdefault("AWS_DEFAULT_REGION", "us-east-1")
-
 import json
 from typing import AsyncGenerator, Generator
 from unittest.mock import patch
