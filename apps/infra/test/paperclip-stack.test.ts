@@ -108,7 +108,7 @@ describe("PaperclipStack — Fargate service shape", () => {
     });
   });
 
-  test("container env disables public sign-up and sets non-prod public URL", () => {
+  test("container env carries Paperclip's required runtime vars and dev-only sign-up flag", () => {
     // Pull the single TaskDef out of the template and assert directly
     // against its Environment array. arrayWith()-on-arrayWith() can't
     // express "all of these are present in any order" — it requires
@@ -123,9 +123,17 @@ describe("PaperclipStack — Fargate service shape", () => {
       Value: string;
     }>;
     const envMap = Object.fromEntries(env.map((e) => [e.Name, e.Value]));
-    expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("true");
+    // Dev keeps sign-up enabled so the first admin can bootstrap; prod
+    // covered by a separate test below.
+    expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("false");
     expect(envMap.PAPERCLIP_DEPLOYMENT_MODE).toBe("authenticated");
     expect(envMap.PAPERCLIP_DEPLOYMENT_EXPOSURE).toBe("public");
+    // Without auto-apply, the server refuses to start on a fresh schema.
+    expect(envMap.PAPERCLIP_MIGRATION_AUTO_APPLY).toBe("true");
+    expect(envMap.HEARTBEAT_SCHEDULER_ENABLED).toBe("true");
+    expect(envMap.NODE_ENV).toBe("production");
+    expect(envMap.HOST).toBe("0.0.0.0");
+    expect(envMap.SERVE_UI).toBe("true");
     expect(envMap.PORT).toBe("3100");
     expect(envMap.PGUSER).toBe("paperclip_admin");
     expect(envMap.PGDATABASE).toBe("paperclip");
@@ -146,7 +154,7 @@ describe("PaperclipStack — Fargate service shape", () => {
             "/bin/sh",
             "-c",
             Match.stringLikeRegexp(
-              'PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec docker-entrypoint.sh',
+              'set -eu && PGPASSWORD_ENC=\\$\\(node -e .*encodeURIComponent\\(process\\.env\\.PGPASSWORD\\).*\\) && export DATABASE_URL="postgres://\\$\\{PGUSER\\}:\\$\\{PGPASSWORD_ENC\\}@\\$\\{PGHOST\\}:\\$\\{PGPORT\\}/\\$\\{PGDATABASE\\}".*exec docker-entrypoint.sh',
             ),
           ],
         }),
@@ -339,6 +347,19 @@ describe("PaperclipStack — prod public URL", () => {
     }>;
     const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
     expect(envMap.PAPERCLIP_PUBLIC_URL).toBe("https://company.isol8.co");
+  });
+
+  test("prod blocks public sign-up; admin is provisioned out-of-band", () => {
+    const tasks = template.findResources("AWS::ECS::TaskDefinition", {
+      Properties: { Family: "isol8-prod-paperclip-server" },
+    });
+    const td = Object.values(tasks)[0] as { Properties: any };
+    const envArr = td.Properties.ContainerDefinitions[0].Environment as Array<{
+      Name: string;
+      Value: string;
+    }>;
+    const envMap = Object.fromEntries(envArr.map((e) => [e.Name, e.Value]));
+    expect(envMap.PAPERCLIP_AUTH_DISABLE_SIGN_UP).toBe("true");
   });
 
   test("prod log group uses RETAIN removal policy", () => {

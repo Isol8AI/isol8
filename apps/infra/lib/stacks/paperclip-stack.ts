@@ -276,13 +276,34 @@ export class PaperclipStack extends cdk.Stack {
       }),
       environment: {
         PORT: "3100",
+        // Defensive parity with upstream's docker/.env.aws.example. The
+        // Paperclip Dockerfile sets these in ENV already, but pinning them
+        // here documents intent and survives an upstream image change.
+        NODE_ENV: "production",
+        HOST: "0.0.0.0",
+        SERVE_UI: "true",
         PAPERCLIP_DEPLOYMENT_MODE: "authenticated",
         PAPERCLIP_DEPLOYMENT_EXPOSURE: "public",
         PAPERCLIP_PUBLIC_URL: paperclipPublicUrl,
-        // Critical: blocks public sign-up on company.isol8.co. Provisioning
-        // happens server-side via Board API keys (see paperclip-rebuild
-        // spec §4 — admin Board API key flow).
-        PAPERCLIP_AUTH_DISABLE_SIGN_UP: "true",
+        // CRITICAL: without this, server/src/index.ts refuses to boot on a
+        // fresh Aurora cluster with the error "Refusing to start against a
+        // stale schema." Auto-apply runs Drizzle migrations on startup;
+        // safe (idempotent) on warm clusters too. Matches upstream's
+        // docker/.env.aws.example. The standalone migrate task is still
+        // required for the pgvector CREATE EXTENSION step which lives
+        // outside Drizzle.
+        PAPERCLIP_MIGRATION_AUTO_APPLY: "true",
+        // Drives the remote-agent heartbeat loop. Upstream sets this for
+        // public ECS deploys; without it some scheduler-dependent flows
+        // never fire.
+        HEARTBEAT_SCHEDULER_ENABLED: "true",
+        // First-boot bootstrap: an admin must sign up to mint the Board
+        // API key that drives subsequent server-side provisioning.
+        // Disabling sign-up before bootstrap locks us out. Re-enable once
+        // the admin user exists (one-line CDK change + redeploy). Prod
+        // deploys ship with sign-up off because the admin is provisioned
+        // out-of-band there.
+        PAPERCLIP_AUTH_DISABLE_SIGN_UP: env === "prod" ? "true" : "false",
         PAPERCLIP_BIND: "lan",
         // Postgres connection split: host/port/user/db at synth time;
         // password injected from Secrets Manager at runtime. The entrypoint
@@ -311,10 +332,15 @@ export class PaperclipStack extends cdk.Stack {
       // Postgres URL parsing. Node is already in the image — the
       // entrypoint runs `node server/dist/index.js` — so this adds no
       // new dependency.
+      //
+      // `set -eu` makes failures loud: without it, a failing `node -e`
+      // (or unset PGPASSWORD secret) silently produces an empty
+      // PGPASSWORD_ENC and the app dies on Postgres auth with no
+      // breadcrumb in the wrapper layer.
       command: [
         "/bin/sh",
         "-c",
-        "PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec docker-entrypoint.sh node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
+        "set -eu && PGPASSWORD_ENC=$(node -e 'process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))') && export DATABASE_URL=\"postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}\" && exec docker-entrypoint.sh node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js",
       ],
       healthCheck: {
         command: [
@@ -489,6 +515,10 @@ export class PaperclipStack extends cdk.Stack {
         "/bin/sh",
         "-c",
         [
+          // `set -eu` propagates failures from the URL-encoding subshell
+          // and the apt/psql/pnpm chain. Same reasoning as the main
+          // service wrapper above.
+          "set -eu",
           'PGPASSWORD_ENC=$(node -e "process.stdout.write(encodeURIComponent(process.env.PGPASSWORD))")',
           'export DATABASE_URL="postgres://${PGUSER}:${PGPASSWORD_ENC}@${PGHOST}:${PGPORT}/${PGDATABASE}"',
           "apt-get update && apt-get install -y --no-install-recommends postgresql-client",
