@@ -357,19 +357,6 @@ export class ContainerStack extends cdk.Stack {
         // present in image tag 2026.4.23-slim.
         OPENCLAW_DISABLE_BONJOUR: "true",
       },
-      // Blackhole upstream openclaw's model-pricing fetches. The gateway
-      // unconditionally fetches OpenRouter + LiteLLM model pricing on
-      // startup (src/gateway/model-pricing-cache.ts → started by
-      // server-runtime-services.ts:111). There's no env-var or config
-      // flag to skip it. Each fetch hangs for the full timeout (30s × 2
-      // = 60s wasted) before failing. Mapping the hostnames to 127.0.0.1
-      // makes the connect() fail fast with ECONNREFUSED. Our usage runs
-      // through Bedrock, not OpenRouter or LiteLLM, so neither host is
-      // needed at runtime in user containers.
-      extraHosts: {
-        "openrouter.ai": "127.0.0.1",
-        "raw.githubusercontent.com": "127.0.0.1",
-      },
       portMappings: [{ containerPort: 18789, protocol: ecs.Protocol.TCP }],
       logging: ecs.LogDrivers.awsLogs({
         logGroup: openclawLogGroup,
