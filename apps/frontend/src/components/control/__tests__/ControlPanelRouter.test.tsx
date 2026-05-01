@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { ControlPanelRouter } from "../ControlPanelRouter";
 
@@ -62,5 +62,26 @@ describe("ControlPanelRouter", () => {
     mockSWRData.mockReturnValue(undefined);
     render(<ControlPanelRouter panel="credits" />);
     expect(screen.getByTestId("credits-panel")).toBeInTheDocument();
+  });
+
+  it("calls onPanelChange('overview') when falling back from credits for non-Bedrock", async () => {
+    mockSWRData.mockReturnValue({ provider_choice: "byo_key" });
+    const onPanelChange = vi.fn();
+    render(<ControlPanelRouter panel="credits" onPanelChange={onPanelChange} />);
+    await waitFor(() => expect(onPanelChange).toHaveBeenCalledWith("overview"));
+  });
+
+  it("does NOT call onPanelChange while /users/me is still loading", () => {
+    mockSWRData.mockReturnValue(undefined);
+    const onPanelChange = vi.fn();
+    render(<ControlPanelRouter panel="credits" onPanelChange={onPanelChange} />);
+    expect(onPanelChange).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call onPanelChange when panel='credits' and user is bedrock_claude", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    const onPanelChange = vi.fn();
+    render(<ControlPanelRouter panel="credits" onPanelChange={onPanelChange} />);
+    expect(onPanelChange).not.toHaveBeenCalled();
   });
 });

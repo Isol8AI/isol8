@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import useSWR from "swr";
 import { useApi } from "@/lib/api";
 import { OverviewPanel } from "./panels/OverviewPanel";
@@ -53,10 +54,18 @@ export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterP
   // non-Bedrock users, but if the parent's panel state still reads
   // "credits" (URL param, stale prop), fall back to the overview rather
   // than render a panel the user isn't supposed to see.
-  let resolvedPanel = panel;
-  if (resolvedPanel === "credits" && me !== undefined && me.provider_choice !== "bedrock_claude") {
-    resolvedPanel = "overview";
-  }
+  const shouldFallbackFromCredits =
+    panel === "credits" && me !== undefined && me.provider_choice !== "bedrock_claude";
+  const resolvedPanel = shouldFallbackFromCredits ? "overview" : panel;
+
+  // Sync the parent's panel state so the URL + sidebar match what's actually
+  // rendered. Without this, a non-Bedrock user landing on ?panel=credits sees
+  // OverviewPanel, but the URL stays at ?panel=credits and no sidebar item
+  // highlights — back/refresh keeps reopening the invalid panel. Codex P2 on
+  // PR #479.
+  useEffect(() => {
+    if (shouldFallbackFromCredits) onPanelChange?.("overview");
+  }, [shouldFallbackFromCredits, onPanelChange]);
 
   // LLMPanel needs the panel-switch callback for its "Manage credits →" deep-link;
   // every other panel takes no props.
