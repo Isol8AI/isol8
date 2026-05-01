@@ -1025,7 +1025,7 @@ function StepperDisplay({
   );
 }
 
-function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }) {
+export function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }) {
   const api = useApi();
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1102,6 +1102,10 @@ function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }
     },
   ];
 
+  const visibleCards = isOrg
+    ? cards.filter((c) => c.id !== "chatgpt_oauth")
+    : cards;
+
   return (
     <div className="flex-1 flex items-center justify-center p-8 bg-[#faf7f2]">
       <div className="max-w-5xl w-full space-y-8 text-center">
@@ -1111,7 +1115,7 @@ function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }
             <text x="50" y="68" textAnchor="middle" fontFamily="var(--font-lora-serif), serif" fontStyle="italic" fontSize="52" fill="white">8</text>
           </svg>
           <h2 className="text-2xl font-semibold tracking-tight text-[#1a1a1a] font-lora">
-            One price. Three ways to power it.
+            One price. {isOrg ? "Two" : "Three"} ways to power it.
           </h2>
           <p className="text-[#8a8578] text-sm max-w-md mx-auto">
             {isOrg
@@ -1124,8 +1128,13 @@ function ProviderPicker({ isOrg, orgName }: { isOrg: boolean; orgName?: string }
           <div className="text-sm text-red-600 -mt-4">{error}</div>
         )}
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          {cards.map((card) => (
+        <div
+          className={
+            "grid grid-cols-1 gap-4 " +
+            (isOrg ? "md:grid-cols-2 max-w-3xl mx-auto" : "md:grid-cols-3")
+          }
+        >
+          {visibleCards.map((card) => (
             <div
               key={card.id}
               className={

@@ -270,6 +270,23 @@ async def create_trial_checkout(
     if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         raise HTTPException(status_code=400, detail="unknown provider_choice")
 
+    # Org-context users cannot pick ChatGPT OAuth — see
+    # memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30:
+    # OpenAI Plus terms forbid reselling, so org admins can't route their
+    # teammates' prompts through their personal ChatGPT subscription; orgs
+    # must use Bedrock or BYOK). Frontend ProviderPicker hides the card too,
+    # but a savvy user could call this endpoint directly without server-side
+    # enforcement. Reject before any Stripe Checkout creation so a denied
+    # caller never gets a session URL.
+    if body.provider_choice == "chatgpt_oauth" and auth.is_org_context:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "ChatGPT OAuth is not available for organization workspaces. "
+                "Use Bring-Your-Own-Key or Powered by Claude instead."
+            ),
+        )
+
     # Org-context callers must be admins — without this gate any org member
     # could create a Stripe Checkout against the org's billing account and
     # spawn a parallel subscription. Codex P1 on PR #393.

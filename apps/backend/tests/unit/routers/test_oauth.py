@@ -72,3 +72,59 @@ async def test_disconnect_revokes(async_client):
         resp = await async_client.post("/api/v1/oauth/chatgpt/disconnect")
     assert resp.status_code == 200
     mock_revoke.assert_awaited_once()
+
+
+class TestStartProviderRules:
+    """POST /api/v1/oauth/chatgpt/start — org/personal context rules.
+
+    Per memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30),
+    ChatGPT OAuth is allowed only for personal/single-user workspaces. This
+    endpoint must reject org-context callers with 403 before any device-code
+    request, as belt-and-suspenders to the trial-checkout block: a future
+    "reconnect" flow that calls /start outside trial-checkout still won't
+    bypass the rule.
+    """
+
+    @pytest.fixture
+    def override_org_admin_auth(self, app, mock_org_admin_user):
+        """Swap get_current_user with an org-admin AuthContext for one test."""
+        from core.auth import get_current_user
+
+        app.dependency_overrides[get_current_user] = mock_org_admin_user
+        yield
+        app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_start_rejects_org_context(self, async_client, override_org_admin_auth):
+        """Org-context user calling /oauth/chatgpt/start gets 403 before any device-code request."""
+        fake_resp = DeviceCodeResponse(
+            user_code="TEST-1234",
+            verification_uri="https://chatgpt.com/codex",
+            expires_in=900,
+            interval=5,
+        )
+        with patch(
+            "routers.oauth.request_device_code",
+            new=AsyncMock(return_value=fake_resp),
+        ) as mock_request:
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 403
+        assert "organization" in resp.json()["detail"].lower()
+        mock_request.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_start_allows_personal_context(self, async_client):
+        """Personal user (no org_id) still reaches the device-code request."""
+        # Default async_client uses mock_current_user — personal mode (no org_id).
+        fake_resp = DeviceCodeResponse(
+            user_code="TEST-1234",
+            verification_uri="https://chatgpt.com/codex",
+            expires_in=900,
+            interval=5,
+        )
+        with patch(
+            "routers.oauth.request_device_code",
+            new=AsyncMock(return_value=fake_resp),
+        ):
+            resp = await async_client.post("/api/v1/oauth/chatgpt/start")
+        assert resp.status_code == 200

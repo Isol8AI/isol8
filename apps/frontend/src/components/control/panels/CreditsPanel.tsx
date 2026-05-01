@@ -1,127 +1,265 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import {
+  Elements,
+  PaymentElement,
+  useElements,
+  useStripe,
+} from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
+import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+
+const CARD = "rounded-lg border border-[#e0dbd0] bg-white p-4 space-y-3";
+const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
+
+const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
+
+const STRIPE_PUBLISHABLE_KEY =
+  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
+const stripePromise = STRIPE_PUBLISHABLE_KEY
+  ? loadStripe(STRIPE_PUBLISHABLE_KEY)
+  : null;
 
 export function CreditsPanel() {
   const { balance, startTopUp, setAutoReload, refresh } = useCredits();
   const [topUpAmount, setTopUpAmount] = useState(2000);
+  const [clientSecret, setClientSecret] = useState<string | null>(null);
+  const [topUpSubmitting, setTopUpSubmitting] = useState(false);
+  const [topUpError, setTopUpError] = useState<string | null>(null);
   const [autoEnabled, setAutoEnabled] = useState(false);
-  const [threshold, setThreshold] = useState(500);
-  const [reloadAmount, setReloadAmount] = useState(2000);
-  const [pendingTopUpSecret, setPendingTopUpSecret] = useState<string | null>(
-    null,
-  );
+  const [thresholdCents, setThresholdCents] = useState(500);
+  const [reloadCents, setReloadCents] = useState(2000);
 
   const handleTopUp = async () => {
-    const r = await startTopUp(topUpAmount);
-    setPendingTopUpSecret(r.client_secret);
-    // Frontend would normally hand this off to Stripe Elements; for now,
-    // the panel surfaces the client_secret so the user can complete in
-    // the onboarding-style CreditsStep flow. Wire up a full in-panel
-    // Elements flow in a follow-up task.
+    setTopUpSubmitting(true);
+    setTopUpError(null);
+    try {
+      const r = await startTopUp(topUpAmount);
+      setClientSecret(r.client_secret);
+    } catch (err) {
+      setTopUpError(err instanceof Error ? err.message : "Couldn't start top-up");
+    } finally {
+      setTopUpSubmitting(false);
+    }
+  };
+
+  const handleTopUpSuccess = () => {
+    setClientSecret(null);
     refresh();
+  };
+
+  const handleTopUpCancel = () => {
+    setClientSecret(null);
   };
 
   const handleAutoReloadSave = async () => {
     await setAutoReload({
       enabled: autoEnabled,
-      threshold_cents: autoEnabled ? threshold : undefined,
-      amount_cents: autoEnabled ? reloadAmount : undefined,
+      threshold_cents: autoEnabled ? thresholdCents : undefined,
+      amount_cents: autoEnabled ? reloadCents : undefined,
     });
   };
 
+  const balanceDisplay = balance ? `$${balance.balance_dollars}` : "$0.00";
+
+  const elementsOptions = useMemo(
+    () => (clientSecret ? { clientSecret } : null),
+    [clientSecret],
+  );
+
   return (
-    <div className="p-6 space-y-8">
-      <h2 className="text-xl font-semibold">Claude credits</h2>
+    <div className="p-6 space-y-6">
+      <h2 className="text-lg font-semibold">Claude credits</h2>
 
-      <section>
-        <div className="text-3xl font-bold">
-          {balance ? `$${balance.balance_dollars}` : "$0.00"}
+      <div className={CARD}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Wallet className="h-3.5 w-3.5 text-[#8a8578]" />
+            <span className={EYEBROW}>BALANCE</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => refresh()}
+            aria-label="Refresh"
+            className="text-[#8a8578] hover:text-[#1a1a1a]"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+          </button>
         </div>
-        <div className="text-xs text-muted-foreground">Current balance</div>
-      </section>
+        <div className="text-3xl font-semibold font-mono text-[#1a1a1a]">{balanceDisplay}</div>
+      </div>
 
-      <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Add credits</h3>
-        <div className="flex gap-2">
-          {[1000, 2000, 5000, 10000].map((c) => (
+      <div className={CARD}>
+        <span className={EYEBROW}>ADD CREDITS</span>
+
+        {clientSecret && elementsOptions && stripePromise ? (
+          <Elements stripe={stripePromise} options={elementsOptions}>
+            <TopUpPaymentForm
+              amount={topUpAmount}
+              onSuccess={handleTopUpSuccess}
+              onCancel={handleTopUpCancel}
+            />
+          </Elements>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-2">
+              {QUICK_PICKS_CENTS.map((c) => {
+                const active = topUpAmount === c;
+                return (
+                  <button
+                    key={c}
+                    onClick={() => setTopUpAmount(c)}
+                    className={
+                      "rounded-md border px-3 py-1.5 text-sm transition-colors " +
+                      (active
+                        ? "border-[#06402B] bg-[#06402B]/5 text-[#06402B]"
+                        : "border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]")
+                    }
+                  >
+                    ${c / 100}
+                  </button>
+                );
+              })}
+            </div>
+            {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
+            {!stripePromise && (
+              <p className="text-xs text-[#8a8578]">
+                Stripe is not configured for this environment. Top-up is disabled.
+              </p>
+            )}
             <button
-              key={c}
-              onClick={() => setTopUpAmount(c)}
-              className={
-                "rounded-md border px-3 py-1.5 text-sm " +
-                (topUpAmount === c
-                  ? "border-primary bg-primary/10"
-                  : "border-border")
-              }
+              onClick={handleTopUp}
+              disabled={topUpSubmitting || !stripePromise}
+              className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
             >
-              ${c / 100}
+              {topUpSubmitting ? "Loading…" : `Add $${topUpAmount / 100}`}
             </button>
-          ))}
-        </div>
-        <button
-          onClick={handleTopUp}
-          className="rounded-md bg-primary px-4 py-2 text-primary-foreground text-sm"
-        >
-          Add ${topUpAmount / 100}
-        </button>
-        {pendingTopUpSecret && (
-          <p className="text-xs text-muted-foreground">
-            Top-up initiated. Client secret: {pendingTopUpSecret.slice(0, 24)}…
-            (Stripe Elements UI in a follow-up — for now, complete via the
-            onboarding wizard.)
-          </p>
+          </>
         )}
-      </section>
+      </div>
 
-      <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Auto-reload</h3>
-        <label className="flex items-center gap-2 text-sm">
-          <input
-            type="checkbox"
+      <div className={CARD}>
+        <span className={EYEBROW}>AUTO-RELOAD</span>
+        <label className="flex items-center gap-2 text-sm cursor-pointer">
+          <Checkbox
             checked={autoEnabled}
-            onChange={(e) => setAutoEnabled(e.target.checked)}
+            onCheckedChange={(v) => setAutoEnabled(v === true)}
           />
-          Enabled
+          Automatically top up when balance is low
         </label>
         {autoEnabled && (
-          <div className="space-y-2 text-sm">
-            <label className="block">
-              When balance drops below:
-              <input
-                type="number"
-                min={5}
-                step={5}
-                value={threshold / 100}
-                onChange={(e) =>
-                  setThreshold(Math.round(Number(e.target.value) * 100))
-                }
-                className="ml-2 w-24 rounded-md border border-input px-2 py-1"
-              />
-            </label>
-            <label className="block">
-              Charge me:
-              <input
-                type="number"
-                min={5}
-                step={5}
-                value={reloadAmount / 100}
-                onChange={(e) =>
-                  setReloadAmount(Math.round(Number(e.target.value) * 100))
-                }
-                className="ml-2 w-24 rounded-md border border-input px-2 py-1"
-              />
-            </label>
+          <div className="space-y-3 pt-1">
+            <div className="space-y-1">
+              <label className={EYEBROW}>When balance drops below</label>
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-[#8a8578]">$</span>
+                <Input
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={thresholdCents / 100}
+                  onChange={(e) =>
+                    setThresholdCents(Math.round(Number(e.target.value) * 100))
+                  }
+                  className="w-24"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className={EYEBROW}>Charge me</label>
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-[#8a8578]">$</span>
+                <Input
+                  type="number"
+                  min={5}
+                  step={5}
+                  value={reloadCents / 100}
+                  onChange={(e) =>
+                    setReloadCents(Math.round(Number(e.target.value) * 100))
+                  }
+                  className="w-24"
+                />
+              </div>
+            </div>
           </div>
         )}
         <button
           onClick={handleAutoReloadSave}
-          className="rounded-md bg-secondary px-4 py-2 text-sm"
+          className="rounded-md bg-secondary px-4 py-2 text-sm hover:bg-secondary/90"
         >
           Save
         </button>
-      </section>
+      </div>
     </div>
+  );
+}
+
+function TopUpPaymentForm({
+  amount,
+  onSuccess,
+  onCancel,
+}: {
+  amount: number;
+  onSuccess: () => void;
+  onCancel: () => void;
+}) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!stripe || !elements) return;
+    setSubmitting(true);
+    setError(null);
+    // confirmPayment can BOTH return a stripeError AND throw — the latter
+    // happens on SDK/network/integration failures. Without the try/catch the
+    // promise rejection escapes the click handler, leaving submitting=true
+    // forever and producing an unhandled rejection. Codex P2 on PR #479.
+    try {
+      const { error: stripeError } = await stripe.confirmPayment({
+        elements,
+        confirmParams: { return_url: window.location.href },
+        redirect: "if_required",
+      });
+      if (stripeError) {
+        setError(stripeError.message ?? "Payment failed");
+        return;
+      }
+      onSuccess();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Payment failed");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <PaymentElement />
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      <div className="flex gap-2">
+        <button
+          type="submit"
+          disabled={!stripe || submitting}
+          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+        >
+          {submitting ? "Processing…" : `Pay $${amount / 100}`}
+        </button>
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={submitting}
+          className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
   );
 }
