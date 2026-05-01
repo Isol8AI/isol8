@@ -144,35 +144,44 @@ RUN mkdir -p /home/node/.npm-global/bin && \
     chown -R node:node /home/node/.npm-global
 
 # ---- Layer 8c: pre-bake ALL openclaw plugin runtime deps ----
-# Plugins declare bundledRuntimeDeps in their package.json's `openclaw` config.
 # At first start, openclaw's plugin loader npm-installs each plugin's deps
-# into /app/dist/extensions/<plugin>/node_modules/ unless a matching version
-# already exists there. Detection logic (upstream
-# src/plugins/bundled-runtime-deps.ts):
-#   readInstalledDependencyVersion() reads <pluginRoot>/node_modules/<dep>/package.json
-#   and semver-checks against the spec. Match → skip install.
+# into <pluginRoot>/node_modules/ unless a matching version already exists
+# there. Detection logic (upstream src/plugins/bundled-runtime-deps.ts):
+#   collectRuntimeDeps(packageJson) returns
+#       { ...packageJson.dependencies, ...packageJson.optionalDependencies }
+#   readInstalledDependencyVersion(<pluginRoot>, depName) reads
+#       <pluginRoot>/node_modules/<dep>/package.json and semver-checks
+#       against the spec. Match → skip install.
 #
-# Earlier versions of this layer hardcoded a 4-plugin list (browser,
-# deepgram, elevenlabs, microsoft) — but every openclaw upstream version
-# ships a different set of plugins, and several install lazily on first use
-# (e.g. codex activates on ChatGPT sign-in, not on boot), so each test run
-# discovered new plugins missing from the prebake list.
+# Earlier versions of this layer scanned `package.json#openclaw.bundledRuntimeDeps`,
+# but ZERO upstream plugins declare that field — confirmed via
+# `find ~/Desktop/openclaw/extensions -name package.json -exec grep -l bundledRuntimeDeps {}`
+# returning no matches. The prebake silently no-op'd, leaving deepgram /
+# elevenlabs / microsoft TTS plugins (and any other plugin with deps) to
+# install at first boot — observed as a 5.5 min `sidecars.plugin-services`
+# wedge during cold start (2026-05-01).
 #
-# Auto-discover instead: scan every package.json under /app/dist/extensions/,
-# extract bundledRuntimeDeps, and install per plugin. Future upstream bumps
-# pick up new plugins automatically.
+# Match what openclaw actually checks: scan dependencies + optionalDependencies
+# from each plugin's package.json, filter out workspace/file/link specs (npm
+# rejects those outside a workspace), and install into the plugin's own
+# node_modules so readInstalledDependencyVersion finds the dep first try.
 RUN node -e ' \
     const fs=require("fs"),path=require("path"),{execSync}=require("child_process"); \
     const root="/app/dist/extensions"; \
+    if (!fs.existsSync(root)) { console.log("[prebake] no extensions dir, skipping"); process.exit(0); } \
+    const NON_REGISTRY_PREFIXES=["workspace:","file:","link:","portal:","catalog:"]; \
     for (const name of fs.readdirSync(root)) { \
       const dir=path.join(root,name); \
       const pkgPath=path.join(dir,"package.json"); \
       if (!fs.existsSync(pkgPath)) continue; \
       let pkg; try { pkg=JSON.parse(fs.readFileSync(pkgPath,"utf8")); } catch { continue; } \
-      const deps=pkg.openclaw && pkg.openclaw.bundledRuntimeDeps; \
-      if (!Array.isArray(deps) || deps.length===0) continue; \
-      console.log(`[prebake] ${name}: ${deps.join(" ")}`); \
-      execSync(`npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ${deps.join(" ")}`, \
+      const all={...(pkg.dependencies||{}),...(pkg.optionalDependencies||{})}; \
+      const specs=Object.entries(all) \
+        .filter(([,v])=>typeof v==="string" && !NON_REGISTRY_PREFIXES.some(p=>v.startsWith(p))) \
+        .map(([n,v])=>`${n}@${v}`); \
+      if (specs.length===0) continue; \
+      console.log(`[prebake] ${name}: ${specs.join(" ")}`); \
+      execSync(`npm install --no-save --no-audit --no-fund --no-package-lock --omit=dev ${specs.map(s=>JSON.stringify(s)).join(" ")}`, \
         { cwd: dir, stdio: "inherit" }); \
     }' && \
     chown -R node:node /app/dist/extensions
