@@ -297,8 +297,17 @@ export function ProvisioningStepper({
   // openclaw.json plus a per-member `linked` flag — exactly what we need to
   // decide whether to show the create wizard (admin), the link-only wizard
   // (member needs to pair), or skip channel onboarding entirely.
+  //
+  // Gate the fetch on EITHER the legacy gatewayHealth probe OR the new
+  // backend-reported phase=ready signal. PR #461 stopped polling
+  // /container/status once phase=ready arrived — but that ALSO stopped the
+  // useGatewayRpc("health") fetch (it shares shouldPollContainer). If
+  // gatewayHealth was still null at that moment, this fetch never fired,
+  // dropping the user back into the "agent" cold-start sub-phase forever.
   const { data: linksData, error: linksError } = useSWR<LinksMeResponse>(
-    gatewayHealth && !onboardingComplete ? "/channels/links/me" : null,
+    (gatewayHealth || container?.phase === "ready") && !onboardingComplete
+      ? "/channels/links/me"
+      : null,
     () => api.get("/channels/links/me") as Promise<LinksMeResponse>,
   );
 
@@ -366,7 +375,14 @@ export function ProvisioningStepper({
     // through to channel onboarding logic.
     if (onboardingComplete) return "ready";
     if (linksError) return "ready";
-    if (!linksData) return "agent";
+    // CRITICAL: don't fall back to "agent" (a cold-start sub-phase) while
+    // linksData is still loading. That triggers the regression-reset
+    // effect (which sees us re-enter a cold-start phase and clears
+    // elapsedMs/timedOut), trapping the user behind a stepper with a
+    // freshly-zeroed timer even though the gateway is fully ready.
+    // Render chat optimistically; if linksData later returns and channel
+    // onboarding is needed, the next render flips to "channels".
+    if (!linksData) return "ready";
 
     if (isAdmin) {
       return hasMainBot(linksData) ? "ready" : "channels";
