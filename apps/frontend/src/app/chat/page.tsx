@@ -94,7 +94,7 @@ function ChatPageInner() {
         </div>
         {activeView === "control" && (
           <div className="flex flex-col h-full min-h-0">
-            <ControlPanelRouter panel={activePanel} />
+            <ControlPanelRouter panel={activePanel} onPanelChange={setActivePanel} />
           </div>
         )}
       </ChatLayout>

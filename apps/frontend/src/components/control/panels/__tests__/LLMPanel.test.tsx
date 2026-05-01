@@ -39,13 +39,41 @@ describe("LLMPanel", () => {
     expect(screen.getByRole("button", { name: /disconnect/i })).toBeInTheDocument();
   });
 
-  it("calls disconnect and revalidates SWR when Disconnect is clicked", async () => {
+  it("calls disconnect, then revalidates SWR after it resolves", async () => {
     mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
     mockDisconnect.mockResolvedValueOnce(undefined);
     render(<LLMPanel />);
     fireEvent.click(screen.getByRole("button", { name: /disconnect/i }));
     await waitFor(() => expect(mockDisconnect).toHaveBeenCalledTimes(1));
-    expect(mockMutate).toHaveBeenCalled();
+    await waitFor(() => expect(mockMutate).toHaveBeenCalled());
+    expect(mockDisconnect.mock.invocationCallOrder[0]).toBeLessThan(
+      mockMutate.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("clears busy state and does not revalidate when disconnect fails", async () => {
+    mockSWRData.mockReturnValue({ provider_choice: "chatgpt_oauth" });
+    mockDisconnect.mockRejectedValueOnce(new Error("network"));
+    // The component re-throws the rejection out of the click handler; swallow
+    // it on both window (jsdom) and process (node) so vitest's unhandled-
+    // rejection guard doesn't fail the run.
+    const swallowWin = (e: PromiseRejectionEvent) => e.preventDefault();
+    const swallowProc = () => {};
+    window.addEventListener("unhandledrejection", swallowWin);
+    process.on("unhandledRejection", swallowProc);
+    try {
+      render(<LLMPanel />);
+      const button = screen.getByRole("button", { name: /disconnect/i });
+      fireEvent.click(button);
+      await waitFor(() => expect(mockDisconnect).toHaveBeenCalled());
+      // Busy state cleared (label flips back from "Disconnecting…").
+      await waitFor(() => expect(button).toHaveTextContent(/^Disconnect$/));
+      // mutate should not have been called on the error path.
+      expect(mockMutate).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", swallowWin);
+      process.off("unhandledRejection", swallowProc);
+    }
   });
 
   it("renders the OpenAI hero + Replace key form for byo_key + openai", () => {
@@ -63,11 +91,30 @@ describe("LLMPanel", () => {
     expect(screen.getByPlaceholderText(/sk-ant-/)).toBeInTheDocument();
   });
 
-  it("renders the Bedrock hero + Manage credits button for bedrock_claude", () => {
+  it("calls onPanelChange('credits') from the Bedrock Manage-credits button when prop provided", () => {
     mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
-    render(<LLMPanel />);
+    const onPanelChange = vi.fn();
+    render(<LLMPanel onPanelChange={onPanelChange} />);
     expect(screen.getByText("Powered by Claude")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /manage credits/i })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /manage credits/i }));
+    expect(onPanelChange).toHaveBeenCalledWith("credits");
+  });
+
+  it("falls back to window.location when onPanelChange is omitted on Bedrock", () => {
+    mockSWRData.mockReturnValue({ provider_choice: "bedrock_claude" });
+    const originalLocation = window.location;
+    // jsdom: replace window.location with a writable stub
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, href: "" },
+    });
+    render(<LLMPanel />);
+    fireEvent.click(screen.getByRole("button", { name: /manage credits/i }));
+    expect(window.location.href).toBe("/chat?panel=credits");
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: originalLocation,
+    });
   });
 
   it("renders the empty-state when provider_choice is null", () => {

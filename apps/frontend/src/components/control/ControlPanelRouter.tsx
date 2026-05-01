@@ -19,6 +19,7 @@ import { CreditsPanel } from "./panels/CreditsPanel";
 
 interface ControlPanelRouterProps {
   panel: string;
+  onPanelChange?: (panel: string) => void;
 }
 
 type UserMeResponse = {
@@ -41,7 +42,7 @@ const PANELS: Record<string, React.ComponentType> = {
   credits: CreditsPanel,
 };
 
-export function ControlPanelRouter({ panel }: ControlPanelRouterProps) {
+export function ControlPanelRouter({ panel, onPanelChange }: ControlPanelRouterProps) {
   const api = useApi();
   const { data: me } = useSWR<UserMeResponse>(
     "/users/me",
@@ -55,6 +56,12 @@ export function ControlPanelRouter({ panel }: ControlPanelRouterProps) {
   let resolvedPanel = panel;
   if (resolvedPanel === "credits" && me !== undefined && me.provider_choice !== "bedrock_claude") {
     resolvedPanel = "overview";
+  }
+
+  // LLMPanel needs the panel-switch callback for its "Manage credits →" deep-link;
+  // every other panel takes no props.
+  if (resolvedPanel === "llm") {
+    return <LLMPanel onPanelChange={onPanelChange} />;
   }
 
   const Panel = PANELS[resolvedPanel] || PANELS.overview;
