@@ -28,6 +28,14 @@ export interface ContainerStatus {
   last_error_at: string | null;
   /** Cold-start phase. Optional for backwards compat with old backends. */
   phase?: ColdStartPhase;
+  /**
+   * Whether messaging channels (Telegram/Discord/Slack) are loaded at boot.
+   * False means OPENCLAW_SKIP_CHANNELS=true is on the user's task def, so
+   * any channel toggle requires a ~6 min container restart. The frontend
+   * uses this to (a) gate the onboarding ChannelOptInStep and (b) wrap a
+   * confirm dialog around channel actions in settings.
+   */
+  channels_at_boot?: boolean;
 }
 
 interface UseContainerStatusOptions {

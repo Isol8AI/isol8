@@ -2374,3 +2374,225 @@ class TestPerUserTaskSize:
             reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
             assert reg_kwargs["cpu"] == PER_USER_CPU
             assert reg_kwargs["memory"] == PER_USER_MEMORY_MIB
+
+
+# ---------------------------------------------------------------------------
+# set_user_channels_skip / get_user_channels_skip (channel opt-in toggle)
+# ---------------------------------------------------------------------------
+
+
+class TestSetUserChannelsSkip:
+    """Toggle the OPENCLAW_SKIP_CHANNELS env var on the user's task def
+    and force-deploy. Mirrors the resize path's poller logic — only flip
+    status=provisioning when the service is actually running.
+    """
+
+    @pytest.mark.asyncio
+    async def test_skip_true_writes_env_override_and_force_deploys(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "openclaw-user_test_123-f4ae64abb2db",
+                    "desiredCount": 1,
+                }
+            ]
+        }
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.set_user_channels_skip("user_test_123", skip=True)
+
+            reg_kwargs = mock_ecs_client.register_task_definition.call_args.kwargs
+            env = reg_kwargs["containerDefinitions"][0]["environment"]
+            # Env override must be appended (last-wins over CDK base value).
+            skip_entries = [e for e in env if e["name"] == "OPENCLAW_SKIP_CHANNELS"]
+            assert skip_entries[-1]["value"] == "true"
+
+            update_call = mock_ecs_client.update_service.call_args.kwargs
+            assert update_call["forceNewDeployment"] is True
+            assert update_call["taskDefinition"].endswith(":42")
+
+    @pytest.mark.asyncio
+    async def test_skip_false_writes_false_value(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": [{"desiredCount": 1}]}
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock),
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.set_user_channels_skip("user_test_123", skip=False)
+
+            env = mock_ecs_client.register_task_definition.call_args.kwargs["containerDefinitions"][0]["environment"]
+            skip_entries = [e for e in env if e["name"] == "OPENCLAW_SKIP_CHANNELS"]
+            assert skip_entries[-1]["value"] == "false"
+
+    @pytest.mark.asyncio
+    async def test_skip_fires_poller_when_service_running(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": [{"desiredCount": 1, "runningCount": 1}]}
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.set_user_channels_skip("user_test_123", skip=False)
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+            mock_await.assert_called_once_with("user_test_123")
+
+            # status should be flipped to provisioning so frontend re-enters
+            # the cold-start stepper.
+            update_calls = mock_repo.update_fields.call_args_list
+            assert any(c.args[1].get("status") == "provisioning" for c in update_calls if len(c.args) > 1)
+
+    @pytest.mark.asyncio
+    async def test_skip_does_not_fire_poller_when_service_stopped(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_services.return_value = {"services": [{"desiredCount": 0, "runningCount": 0}]}
+        with (
+            patch("core.containers.ecs_manager.container_repo") as mock_repo,
+            patch.object(manager, "_await_running_transition", new_callable=AsyncMock) as mock_await,
+        ):
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="stopped"))
+            mock_repo.update_fields = AsyncMock(return_value=_make_container_dict())
+
+            await manager.set_user_channels_skip("user_test_123", skip=False)
+
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0)
+            mock_await.assert_not_called()
+
+            # status must NOT be flipped to provisioning while scaled-to-zero,
+            # otherwise the row is wedged with no poller to drain it.
+            for call in mock_repo.update_fields.call_args_list:
+                if len(call.args) > 1:
+                    assert call.args[1].get("status") != "provisioning"
+
+    @pytest.mark.asyncio
+    async def test_no_container_raises(self, manager):
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            with pytest.raises(EcsManagerError, match="No container found"):
+                await manager.set_user_channels_skip("ghost_user", skip=True)
+
+    @pytest.mark.asyncio
+    async def test_no_access_point_raises(self, manager):
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(access_point_id=None))
+            with pytest.raises(EcsManagerError, match="No EFS access point"):
+                await manager.set_user_channels_skip("user_test_123", skip=True)
+
+    @pytest.mark.asyncio
+    async def test_register_failure_wraps_in_ecs_manager_error(self, manager, mock_ecs_client):
+        mock_ecs_client.register_task_definition.side_effect = ClientError(
+            {"Error": {"Code": "InvalidParameterException", "Message": "boom"}},
+            "RegisterTaskDefinition",
+        )
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=_make_container_dict(status="running"))
+            with pytest.raises(EcsManagerError, match="Failed to set channels-skip"):
+                await manager.set_user_channels_skip("user_test_123", skip=True)
+
+
+class TestGetUserChannelsSkip:
+    """Read OPENCLAW_SKIP_CHANNELS off the user's task def. Defaults to
+    True (CDK base default) when the row, ARN, or describe call is missing.
+    """
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_env_value_truthy(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "environment": [
+                            {"name": "OTHER", "value": "x"},
+                            {"name": "OPENCLAW_SKIP_CHANNELS", "value": "true"},
+                        ]
+                    }
+                ]
+            }
+        }
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(task_definition_arn="arn:aws:ecs:us-east-1:1:task-definition/x:1")
+            )
+            assert await manager.get_user_channels_skip("user_test_123") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_false_when_env_value_false(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "environment": [
+                            {"name": "OPENCLAW_SKIP_CHANNELS", "value": "false"},
+                        ]
+                    }
+                ]
+            }
+        }
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(task_definition_arn="arn:aws:ecs:us-east-1:1:task-definition/x:1")
+            )
+            assert await manager.get_user_channels_skip("user_test_123") is False
+
+    @pytest.mark.asyncio
+    async def test_last_value_wins_when_duplicated(self, manager, mock_ecs_client):
+        # Mirrors the ECS env merge: per-user override appended last.
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "containerDefinitions": [
+                    {
+                        "environment": [
+                            {"name": "OPENCLAW_SKIP_CHANNELS", "value": "true"},
+                            {"name": "OPENCLAW_SKIP_CHANNELS", "value": "false"},
+                        ]
+                    }
+                ]
+            }
+        }
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(task_definition_arn="arn:aws:ecs:us-east-1:1:task-definition/x:1")
+            )
+            assert await manager.get_user_channels_skip("user_test_123") is False
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_env_var_absent(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.return_value = {
+            "taskDefinition": {"containerDefinitions": [{"environment": [{"name": "OTHER", "value": "1"}]}]}
+        }
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(task_definition_arn="arn:aws:ecs:us-east-1:1:task-definition/x:1")
+            )
+            assert await manager.get_user_channels_skip("user_test_123") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_no_container_row(self, manager):
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+            assert await manager.get_user_channels_skip("ghost_user") is True
+
+    @pytest.mark.asyncio
+    async def test_returns_true_when_describe_fails(self, manager, mock_ecs_client):
+        mock_ecs_client.describe_task_definition.side_effect = ClientError(
+            {"Error": {"Code": "ClientException", "Message": "nope"}},
+            "DescribeTaskDefinition",
+        )
+        with patch("core.containers.ecs_manager.container_repo") as mock_repo:
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value=_make_container_dict(task_definition_arn="arn:aws:ecs:us-east-1:1:task-definition/x:1")
+            )
+            assert await manager.get_user_channels_skip("user_test_123") is True

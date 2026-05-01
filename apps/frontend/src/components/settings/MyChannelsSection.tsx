@@ -18,8 +18,10 @@ import {
 import { useApi } from "@/lib/api";
 import { type Provider, PROVIDERS, PROVIDER_LABELS, formatBotHandle } from "@/lib/channels";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
+import { RestartForChannelsDialog } from "@/components/channels/RestartForChannelsDialog";
 import { GatewayProvider } from "@/hooks/useGateway";
 import { useBilling } from "@/hooks/useBilling";
+import { useContainerStatus } from "@/hooks/useContainerStatus";
 
 interface BotEntry {
   agent_id: string;
@@ -50,6 +52,8 @@ export function MyChannelsSection() {
 function MyChannelsSectionInner() {
   const api = useApi();
   const { isSubscribed } = useBilling();
+  const { container } = useContainerStatus();
+  const channelsAtBoot = container?.channels_at_boot !== false;
   // bot_username is now populated by the backend via channels.status probe
   const { data, error, isLoading, mutate } = useSWR<LinksMeResponse>(
     "/channels/links/me",
@@ -58,6 +62,15 @@ function MyChannelsSectionInner() {
   const [wizard, setWizard] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinkTarget, setUnlinkTarget] = useState<{ provider: Provider; agentId: string } | null>(null);
   const [unlinking, setUnlinking] = useState(false);
+  const [restartDialogOpen, setRestartDialogOpen] = useState(false);
+
+  const tryOpenWizard = (intent: { provider: Provider; agentId: string }) => {
+    if (!channelsAtBoot) {
+      setRestartDialogOpen(true);
+      return;
+    }
+    setWizard(intent);
+  };
 
   useEffect(() => {
     if (!wizard && !unlinkTarget) return;
@@ -107,6 +120,31 @@ function MyChannelsSectionInner() {
         </p>
       </div>
 
+      {/* Container-wide channel toggle. When channels are off (the default
+          fast-cold-start config), nothing else on this page can succeed —
+          surface that explicitly with a one-click enable, rather than
+          letting the user discover it after clicking Link. */}
+      {!channelsAtBoot && isSubscribed && (
+        <div className="rounded-md border border-amber-300 bg-amber-50 p-3 flex items-start gap-3">
+          <AlertCircle className="h-4 w-4 text-amber-600 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 text-xs text-amber-900">
+            <p className="font-medium mb-1">Channels are turned off</p>
+            <p className="leading-relaxed">
+              Your container started in fast-boot mode, so messaging channels
+              aren&rsquo;t loaded. Enable them to add or link bots — your
+              container restarts (~6 minutes) before channels come online.
+            </p>
+            <Button
+              size="sm"
+              className="mt-3"
+              onClick={() => setRestartDialogOpen(true)}
+            >
+              Enable channels
+            </Button>
+          </div>
+        </div>
+      )}
+
       {PROVIDERS.map((provider) => {
         const bots = data[provider];
         return (
@@ -153,7 +191,7 @@ function MyChannelsSectionInner() {
                     ) : (
                       <Button
                         size="sm"
-                        onClick={() => setWizard({ provider, agentId: bot.agent_id })}
+                        onClick={() => tryOpenWizard({ provider, agentId: bot.agent_id })}
                         aria-label={`Link your ${PROVIDER_LABELS[provider]} to ${bot.bot_username}`}
                       >
                         Link
@@ -192,6 +230,15 @@ function MyChannelsSectionInner() {
         </div>
       )}
 
+      <RestartForChannelsDialog
+        open={restartDialogOpen}
+        onOpenChange={setRestartDialogOpen}
+        onConfirmed={() => {
+          // Container is restarting; the user will see the regression
+          // when they navigate back to /chat. No-op here — channel
+          // actions are picked back up after the restart completes.
+        }}
+      />
       <AlertDialog open={unlinkTarget !== null} onOpenChange={(open) => !open && setUnlinkTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>

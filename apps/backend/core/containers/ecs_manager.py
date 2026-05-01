@@ -661,6 +661,132 @@ class EcsManager:
         except Exception as e:
             raise EcsManagerError(f"Failed to resize container: {e}", user_id)
 
+    async def set_user_channels_skip(self, user_id: str, *, skip: bool) -> str:
+        """Toggle the OPENCLAW_SKIP_CHANNELS env var on the user's task def.
+
+        Re-registers the per-user task definition with the env var explicitly
+        set to "true" (skip) or "false" (run channels), then force-deploys
+        the service so a new task picks it up.
+
+        Why an env var override instead of a re-provision:
+        - openclaw.json on EFS already has the channels block — only the
+          env var gates startChannels() at boot AND restartChannel() on
+          config-reload (server-reload-handlers.ts:166).
+        - "false" overrides "true" in ECS env list (last-wins), so we don't
+          have to mutate the CDK base env. Future CDK base updates flow
+          through cleanly: _build_register_kwargs_from_base reads the base
+          fresh on every call, our override layers on top.
+        - Cold start when flipping skip=False is the same ~6 min the user
+          was warned about — we don't pretend it's faster.
+
+        Returns the new task definition ARN.
+        """
+        container = await container_repo.get_by_owner_id(user_id)
+        if not container:
+            raise EcsManagerError(f"No container found for user {user_id}", user_id)
+
+        access_point_id = container.get("access_point_id")
+        if not access_point_id:
+            raise EcsManagerError(f"No EFS access point for user {user_id}", user_id)
+
+        service_name = self._service_name(user_id)
+
+        # Pass an explicit env override that wins over the CDK base value
+        # (last entry wins per ECS rules — see container-stack.ts).
+        env_override = [
+            {"name": "OPENCLAW_SKIP_CHANNELS", "value": "true" if skip else "false"},
+        ]
+
+        try:
+            reg_kwargs = await asyncio.to_thread(
+                self._build_register_kwargs_from_base,
+                access_point_id,
+                environment_for_task=env_override,
+            )
+            reg_resp = await asyncio.to_thread(self._ecs.register_task_definition, **reg_kwargs)
+            new_task_def_arn = reg_resp["taskDefinition"]["taskDefinitionArn"]
+            logger.info(
+                "Registered channels-skip=%s task definition %s for user %s",
+                skip,
+                new_task_def_arn,
+                user_id,
+            )
+
+            await asyncio.to_thread(
+                self._ecs.update_service,
+                cluster=self._cluster,
+                service=service_name,
+                taskDefinition=new_task_def_arn,
+                forceNewDeployment=True,
+                deploymentConfiguration={
+                    "deploymentCircuitBreaker": {
+                        "enable": True,
+                        "rollback": False,
+                    }
+                },
+            )
+
+            # Mirror the resize path: only flip status=provisioning if the
+            # service is actually running (desiredCount > 0). Scaled-to-zero
+            # services pick up the new task def on next start; no poller
+            # needed (and firing one would orphan-spin per the resize comment).
+            desc_resp = await asyncio.to_thread(
+                self._ecs.describe_services,
+                cluster=self._cluster,
+                services=[service_name],
+            )
+            services = desc_resp.get("services", [])
+            current_desired = services[0].get("desiredCount", 0) if services else 0
+
+            if current_desired > 0:
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                    status="provisioning",
+                )
+                asyncio.create_task(self._await_running_transition(user_id))
+            else:
+                await self._update_container(
+                    user_id,
+                    task_definition_arn=new_task_def_arn,
+                )
+
+            return new_task_def_arn
+
+        except EcsManagerError:
+            raise
+        except Exception as e:
+            raise EcsManagerError(f"Failed to set channels-skip={skip}: {e}", user_id)
+
+    async def get_user_channels_skip(self, user_id: str) -> bool:
+        """Return whether OPENCLAW_SKIP_CHANNELS is currently set on the
+        user's task definition. Defaults to True (the CDK base default)
+        when no per-user override exists or the field can't be read.
+        """
+        container = await container_repo.get_by_owner_id(user_id)
+        if not container:
+            return True
+        td_arn = container.get("task_definition_arn")
+        if not td_arn:
+            return True
+        try:
+            desc = await asyncio.to_thread(self._ecs.describe_task_definition, taskDefinition=td_arn)
+            envs = desc.get("taskDefinition", {}).get("containerDefinitions", [{}])[0].get("environment", [])
+            # Last entry wins — walk in reverse for the effective value.
+            for entry in reversed(envs):
+                if entry.get("name") == "OPENCLAW_SKIP_CHANNELS":
+                    val = (entry.get("value") or "").strip().lower()
+                    return val in {"1", "on", "true", "yes"}
+            # Not present at all -> fall back to CDK base default (skip=true).
+            return True
+        except Exception as exc:
+            logger.warning(
+                "Could not read channels-skip for user %s: %s — defaulting to True",
+                user_id,
+                exc,
+            )
+            return True
+
     async def reprovision_for_user(self, user_id: str) -> dict:
         """Force a fresh deploy: stop then start the ECS service so the
         next task picks up the latest task definition. Less destructive

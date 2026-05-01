@@ -22,6 +22,7 @@ import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics"
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
 import { CreditsStep } from "@/components/chat/CreditsStep";
+import { ChannelOptInStep } from "@/components/chat/ChannelOptInStep";
 
 // Frontend stepper phases. The cold-start "container", "gateway",
 // "channels-sidecars", and "agent" steps all map to the same backend
@@ -37,6 +38,7 @@ type Phase =
   | "gateway"
   | "channels-sidecars"
   | "agent"
+  | "channel-opt-in"
   | "channels"
   | "ready";
 
@@ -204,6 +206,14 @@ export function ProvisioningStepper({
   // of truth for "is the channel onboarding step needed for this user". Cancel
   // hides the wizard for the current session; next mount re-checks the data.
   const [onboardingComplete, setOnboardingComplete] = useState(false);
+  // Tracks the user's answer to the channel opt-in question. null = not asked
+  // yet, "skipped" = chose to chat in browser only (skip the wizard),
+  // "enabling" = picked Yes; backend has been told and the per-user task def
+  // is being redeployed (~6 min). The phase derivation reads this to keep
+  // the user on the cold-start stepper through the second restart.
+  const [optInAnswer, setOptInAnswer] = useState<
+    null | "skipped" | "enabling"
+  >(null);
 
   // Plan 3 (flat-fee pivot): `?provider=` is set by the landing page CTA
   // (/sign-up?provider=chatgpt_oauth|byo_key|bedrock_claude) and preserved
@@ -384,11 +394,24 @@ export function ProvisioningStepper({
     // onboarding is needed, the next render flips to "channels".
     if (!linksData) return "ready";
 
+    // Channels-skip is on AND the user hasn't answered yet → ask. This
+    // sits *before* the BotSetupWizard branch because the wizard's RPC
+    // calls fail when channels aren't loaded in the container.
+    const channelsAtBoot = container?.channels_at_boot;
+    if (
+      isAdmin &&
+      channelsAtBoot === false &&
+      optInAnswer === null &&
+      !hasMainBot(linksData)
+    ) {
+      return "channel-opt-in";
+    }
+
     if (isAdmin) {
       return hasMainBot(linksData) ? "ready" : "channels";
     }
     return memberLinkTarget !== null ? "channels" : "ready";
-  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep, elapsedMs]);
+  }, [trigger, isSubscribed, container, containerReady, gatewayHealth, linksData, linksError, onboardingComplete, isAdmin, memberLinkTarget, needsProviderStep, elapsedMs, optInAnswer]);
 
   // Analytics: fire `onboarding_step_completed` once per step transition.
   const prevPhaseRef = useRef<Phase | null>(null);
@@ -457,6 +480,35 @@ export function ProvisioningStepper({
   // Ready — render children
   if (phase === "ready") {
     return <>{children}</>;
+  }
+
+  // Channel opt-in — only fires when channels_at_boot=false (the default
+  // fast-cold-start configuration). "Yes" hits POST /container/channels
+  // {enable:true} to flip OPENCLAW_SKIP_CHANNELS to false on the user's
+  // task def + force-deploy; the backend phase will regress out of
+  // "ready" while the new task replaces the old one, which the existing
+  // regression-detection logic above will pick up automatically and put
+  // the user back on the cold-start stepper. After it lands ready again,
+  // channels_at_boot flips to true and the wizard branch takes over.
+  if (phase === "channel-opt-in") {
+    return (
+      <ChannelOptInStep
+        onSkip={() => {
+          setOptInAnswer("skipped");
+          setOnboardingComplete(true);
+        }}
+        onEnabled={() => {
+          setOptInAnswer("enabling");
+          // Resume container polling — `reachedReady` was set when the
+          // first cold-start finished and we'd otherwise miss the
+          // ready -> provisioning regression after the redeploy.
+          setReachedReady(false);
+          // Manual refresh kicks off a fetch immediately rather than
+          // waiting up to 3s for the next SWR poll.
+          refreshContainer();
+        }}
+      />
+    );
   }
 
   // Channel onboarding — admins set up the first main-agent bot, members
