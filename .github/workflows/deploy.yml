@@ -311,7 +311,7 @@ jobs:
           role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
       - id: Publish
         name: Publish Assets-FileAsset17
-        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset17-step.sh
+        run: /bin/bash ./cdk.out/assembly-dev/publish-Assets-FileAsset17-step.sh
   Assets-FileAsset18:
     name: Publish Assets Assets-FileAsset18
     needs:
@@ -536,6 +536,34 @@ jobs:
       - id: Publish
         name: Publish Assets-FileAsset24
         run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset24-step.sh
+  Assets-FileAsset25:
+    name: Publish Assets Assets-FileAsset25
+    needs:
+      - Build-Synth
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    outputs:
+      asset-hash: ${{ steps.Publish.outputs.asset-hash }}
+    steps:
+      - name: Download cdk.out
+        uses: actions/download-artifact@v4
+        with:
+          name: cdk.out
+          path: cdk.out
+      - name: Install
+        run: npm install --no-save cdk-assets
+      - name: Authenticate Via OIDC Role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: us-west-2
+          role-duration-seconds: 1800
+          role-skip-session-tagging: true
+          role-to-assume: arn:aws:iam::877352799272:role/isol8-dev-github-actions
+      - id: Publish
+        name: Publish Assets-FileAsset25
+        run: /bin/bash ./cdk.out/assembly-prod/publish-Assets-FileAsset25-step.sh
   Assets-FileAsset3:
     name: Publish Assets Assets-FileAsset3
     needs:
@@ -937,6 +965,7 @@ jobs:
     needs:
       - Build-Synth
       - Assets-FileAsset13
+      - Assets-FileAsset14
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-auth-Deploy
     runs-on: ubuntu-latest
@@ -975,8 +1004,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset14
       - Assets-FileAsset15
+      - Assets-FileAsset16
       - Assets-DockerAsset1
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1008,7 +1037,7 @@ jobs:
         with:
           name: isol8-dev-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset14.outputs.asset-hash }}.json
+            needs.Assets-FileAsset15.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1019,7 +1048,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset16
+      - Assets-FileAsset17
       - dev-isol8-dev-network-Deploy
       - dev-isol8-dev-api-Deploy
       - dev-isol8-dev-container-Deploy
@@ -1050,7 +1079,7 @@ jobs:
         with:
           name: isol8-dev-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset16.outputs.asset-hash }}.json
+            needs.Assets-FileAsset17.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1118,7 +1147,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset17
+      - Assets-FileAsset18
       - Assets-FileAsset2
       - Assets-FileAsset3
       - dev-isol8-dev-auth-Deploy
@@ -1155,7 +1184,7 @@ jobs:
         with:
           name: isol8-prod-auth
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset17.outputs.asset-hash }}.json
+            needs.Assets-FileAsset18.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1166,7 +1195,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset18
+      - Assets-FileAsset19
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
       - dev-isol8-dev-database-Deploy
@@ -1201,7 +1230,7 @@ jobs:
         with:
           name: isol8-prod-dns
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset18.outputs.asset-hash }}.json
+            needs.Assets-FileAsset19.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1212,7 +1241,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset19
+      - Assets-FileAsset20
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
       - dev-isol8-dev-dns-Deploy
@@ -1248,7 +1277,7 @@ jobs:
         with:
           name: isol8-prod-database
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset19.outputs.asset-hash }}.json
+            needs.Assets-FileAsset20.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1259,7 +1288,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset20
+      - Assets-FileAsset21
       - Assets-FileAsset7
       - prod-isol8-prod-dns-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -1296,7 +1325,7 @@ jobs:
         with:
           name: isol8-prod-network
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset20.outputs.asset-hash }}.json
+            needs.Assets-FileAsset21.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1307,7 +1336,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset21
+      - Assets-FileAsset22
       - Assets-FileAsset9
       - Assets-FileAsset2
       - Assets-FileAsset10
@@ -1349,7 +1378,7 @@ jobs:
         with:
           name: isol8-prod-api
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset21.outputs.asset-hash }}.json
+            needs.Assets-FileAsset22.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1360,7 +1389,8 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset22
+      - Assets-FileAsset23
+      - Assets-FileAsset14
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-auth-Deploy
       - dev-isol8-dev-auth-Deploy
@@ -1397,7 +1427,7 @@ jobs:
         with:
           name: isol8-prod-container
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset22.outputs.asset-hash }}.json
+            needs.Assets-FileAsset23.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1408,7 +1438,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset23
+      - Assets-FileAsset24
       - Assets-DockerAsset1
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-container-Deploy
@@ -1449,7 +1479,7 @@ jobs:
         with:
           name: isol8-prod-service
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset23.outputs.asset-hash }}.json
+            needs.Assets-FileAsset24.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
@@ -1460,7 +1490,7 @@ jobs:
       id-token: write
     needs:
       - Build-Synth
-      - Assets-FileAsset24
+      - Assets-FileAsset25
       - prod-isol8-prod-network-Deploy
       - prod-isol8-prod-api-Deploy
       - prod-isol8-prod-container-Deploy
@@ -1500,7 +1530,7 @@ jobs:
         with:
           name: isol8-prod-observability
           template: https://cdk-hnb659fds-assets-877352799272-us-east-1.s3.us-east-1.amazonaws.com/${{
-            needs.Assets-FileAsset24.outputs.asset-hash }}.json
+            needs.Assets-FileAsset25.outputs.asset-hash }}.json
           no-fail-on-empty-changeset: "1"
           capabilities: CAPABILITY_NAMED_IAM,CAPABILITY_AUTO_EXPAND
           role-arn: arn:aws:iam::877352799272:role/cdk-hnb659fds-cfn-exec-role-877352799272-us-east-1
