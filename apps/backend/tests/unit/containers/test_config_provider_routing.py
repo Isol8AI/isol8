@@ -66,6 +66,13 @@ async def test_byo_key_anthropic_branch(tmp_path):
 
 @pytest.mark.asyncio
 async def test_bedrock_claude_branch(tmp_path):
+    """Static catalog (no API discovery) keyed on inference-profile IDs.
+
+    Every Claude 4.x on Bedrock is INFERENCE_PROFILE-only, so model IDs
+    must carry the ``us.`` prefix; bare foundation-model IDs aren't
+    invocable. Discovery is disabled — we ship exactly the models priced
+    in core/billing/bedrock_pricing.py and nothing else.
+    """
     out = tmp_path / "openclaw.json"
     await write_openclaw_config(
         config_path=out,
@@ -74,10 +81,35 @@ async def test_bedrock_claude_branch(tmp_path):
         user_id="u_1",
     )
     cfg = json.loads(out.read_text())
-    primary = cfg["agents"]["defaults"]["model"]["primary"]
-    assert primary == "amazon-bedrock/anthropic.claude-opus-4-7"
+
+    # Primary is Opus 4.7 (matches upstream docs/providers/bedrock.md
+    # example and our pre-cutover default). Fallback is Sonnet 4.6 —
+    # ~5× cheaper than Opus, so a capacity-driven failover REDUCES
+    # spend rather than surprise-increasing it.
+    model_block = cfg["agents"]["defaults"]["model"]
+    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-opus-4-7"
+    assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"]
+
+    # Static provider catalog — exactly Sonnet 4.6 + Opus 4.7. New entries
+    # land here in lockstep with bedrock_pricing._RATES; otherwise the
+    # credit ledger would either skip billing or 500 with UnknownModelError.
+    provider = cfg["models"]["providers"]["amazon-bedrock"]
+    assert provider["api"] == "bedrock-converse-stream"
+    assert provider["auth"] == "aws-sdk"
+    model_ids = {m["id"] for m in provider["models"]}
+    assert model_ids == {
+        "us.anthropic.claude-sonnet-4-6",
+        "us.anthropic.claude-opus-4-7",
+    }
+    # Cost shape matches upstream ModelDefinitionConfig.cost (USD/MTok).
+    for model in provider["models"]:
+        assert set(model["cost"].keys()) == {"input", "output", "cacheRead", "cacheWrite"}
+        assert model["contextWindow"] == 1_000_000
+
+    # Discovery disabled — no bedrock:ListFoundationModels IAM needed on
+    # the per-user container, and no risk of surfacing un-priced models.
     bedrock_cfg = cfg["plugins"]["entries"]["amazon-bedrock"]["config"]
-    assert bedrock_cfg["discovery"]["enabled"] is True
+    assert bedrock_cfg["discovery"]["enabled"] is False
 
 
 @pytest.mark.asyncio

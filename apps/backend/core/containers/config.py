@@ -317,9 +317,9 @@ def _provider_block(
 
     Per spec §4.2 (flat-fee pivot, 2026-04). API keys are NEVER embedded in
     openclaw.json — they're injected via ECS task definition secrets at task
-    start. The Bedrock branch enables plugin discovery (the plugin queries
-    bedrock:ListFoundationModels at startup) since we no longer ship a
-    static per-tier catalog.
+    start. The Bedrock branch ships a static catalog matched to
+    ``bedrock_pricing.py``; discovery is explicitly disabled so we never
+    surface a model we haven't priced.
 
     Returns:
         ``(providers_config, default_model, plugin_entries)``.
@@ -351,17 +351,61 @@ def _provider_block(
             )
         raise ValueError(f"byo_provider must be 'openai' or 'anthropic' for byo_key, got {byo_provider!r}")
     if provider_choice == "bedrock_claude":
-        return (
-            {},
+        # Static catalog — exactly the models we price in
+        # core/billing/bedrock_pricing.py. Discovery is OFF: the per-user
+        # container's task role only has bedrock:InvokeModel, and surfacing
+        # any model we haven't priced would either fail credit deduction
+        # (UnknownModelError) or skip billing entirely. The pricing table
+        # is the source of truth; this catalog mirrors it 1:1.
+        #
+        # IDs use the `us.` inference-profile prefix because every Claude
+        # 4.x on Bedrock is INFERENCE_PROFILE-only — bare foundation-model
+        # IDs (e.g. "anthropic.claude-opus-4-7") return ValidationException
+        # "Invocation … with on-demand throughput isn't supported." The `us.`
+        # form (vs `global.`) matches the canonical example in upstream's
+        # docs/providers/bedrock.md and keeps inference within US regions.
+        # bedrock_pricing.get_rate strips the prefix before lookup so the
+        # rate table stays keyed on the bare model id.
+        bedrock_models = [
             {
-                "primary": "amazon-bedrock/anthropic.claude-opus-4-7",
-                "fallbacks": ["amazon-bedrock/anthropic.claude-sonnet-4-6"],
+                "id": "us.anthropic.claude-opus-4-7",
+                "name": "Claude Opus 4.7",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "cost": {"input": 15.0, "output": 75.0, "cacheRead": 1.5, "cacheWrite": 18.75},
+                "contextWindow": 1_000_000,
+                "maxTokens": 8192,
+            },
+            {
+                "id": "us.anthropic.claude-sonnet-4-6",
+                "name": "Claude Sonnet 4.6",
+                "reasoning": True,
+                "input": ["text", "image"],
+                "cost": {"input": 3.0, "output": 15.0, "cacheRead": 0.3, "cacheWrite": 3.75},
+                "contextWindow": 1_000_000,
+                "maxTokens": 8192,
+            },
+        ]
+        return (
+            {
+                "amazon-bedrock": {
+                    "baseUrl": f"https://bedrock-runtime.{settings.AWS_REGION}.amazonaws.com",
+                    "api": "bedrock-converse-stream",
+                    "auth": "aws-sdk",
+                    "models": bedrock_models,
+                },
+            },
+            {
+                # Opus primary; Sonnet fallback for capacity/throttling failover.
+                # Sonnet is ~5x cheaper than Opus, so a failover quietly REDUCES
+                # spend rather than increasing it — safe direction for surprise
+                # bills. Users can override per-agent via agents.list[*].model.
+                "primary": "amazon-bedrock/us.anthropic.claude-opus-4-7",
+                "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
             },
             {
                 "amazon-bedrock": {
-                    "config": {
-                        "discovery": {"enabled": True, "region": settings.AWS_REGION},
-                    },
+                    "config": {"discovery": {"enabled": False}},
                 },
             },
         )

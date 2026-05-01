@@ -9,10 +9,19 @@ avoid float drift on deduction. 1 dollar = 100 cents = 1,000,000
 microcents. ``cost_microcents`` returns microcents directly; the
 ``get_all_rates`` helper returns USD-per-token floats for the
 ``/billing/pricing`` UI surface.
+
+Rate keys are bare foundation-model ids (e.g. ``anthropic.claude-sonnet-4-6``).
+Lookups normalize the input first to strip:
+  * the ``amazon-bedrock/`` provider prefix (added by the OpenClaw gateway
+    when it emits ``chat.final``), and
+  * inference-profile region prefixes (``us.``/``global.``/``eu.`` etc. —
+    every Claude 4.x model on Bedrock is INFERENCE_PROFILE-only, so the
+    invokable id always carries one of these prefixes).
 """
 
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 
@@ -57,14 +66,38 @@ _RATES: dict[str, ModelRate] = {
 }
 
 
+# Region prefixes used by Bedrock cross-region inference profiles. Mirrors
+# the upstream OpenClaw stripper at extensions/amazon-bedrock/discovery.ts
+# (resolveKnownContextWindow). When AWS adds a new region group, extend this
+# pattern instead of duplicating rate-table entries.
+_INFERENCE_PROFILE_PREFIX_RE = re.compile(r"^(?:us|eu|ap|apac|au|jp|global)\.")
+
+
+def normalize_model_id(model_id: str) -> str:
+    """Strip provider + inference-profile prefixes to the bare foundation-model id.
+
+    Idempotent — callers can pass already-bare ids and get them back unchanged.
+    Centralized here so the credit ledger and usage tracker share one stripper
+    and the rate table stays keyed on a single canonical form.
+    """
+    bare = model_id.split("/", 1)[1] if "/" in model_id else model_id
+    return _INFERENCE_PROFILE_PREFIX_RE.sub("", bare)
+
+
 def get_rate(model_id: str) -> ModelRate:
     """Return the per-token rate entry for *model_id*.
+
+    Accepts any of:
+      * bare foundation-model id (``anthropic.claude-sonnet-4-6``)
+      * inference-profile id (``us.anthropic.claude-sonnet-4-6``)
+      * full openclaw model ref (``amazon-bedrock/us.anthropic.claude-sonnet-4-6``)
 
     Raises:
         UnknownModelError: model_id has no rate entry.
     """
+    bare = normalize_model_id(model_id)
     try:
-        return _RATES[model_id]
+        return _RATES[bare]
     except KeyError:
         raise UnknownModelError(model_id) from None
 

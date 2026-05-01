@@ -7,6 +7,7 @@ from core.billing.bedrock_pricing import (
     cost_microcents,
     get_all_rates,
     get_rate,
+    normalize_model_id,
 )
 
 
@@ -127,3 +128,49 @@ class TestGetRate:
     def test_unknown_model_raises(self):
         with pytest.raises(UnknownModelError):
             get_rate("anthropic.claude-fake-99")
+
+
+class TestNormalizeModelId:
+    """Bedrock 4.x ids are INFERENCE_PROFILE-only; the gateway emits
+    region-prefixed ids (``us.``/``global.``/etc.) that must collapse to
+    the bare foundation-model id used as the rate-table key."""
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            # Already bare — idempotent.
+            ("anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
+            # Provider prefix only.
+            ("amazon-bedrock/anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
+            # Inference-profile prefix only.
+            ("us.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
+            ("global.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
+            ("eu.anthropic.claude-opus-4-7", "anthropic.claude-opus-4-7"),
+            # Both prefixes — the actual shape emitted by chat.final.
+            ("amazon-bedrock/us.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
+            ("amazon-bedrock/global.anthropic.claude-opus-4-7", "anthropic.claude-opus-4-7"),
+        ],
+    )
+    def test_strips_to_bare_id(self, raw, expected):
+        assert normalize_model_id(raw) == expected
+
+    def test_get_rate_accepts_inference_profile_id(self):
+        """get_rate must look up the bare id, not the prefixed one."""
+        rate = get_rate("us.anthropic.claude-sonnet-4-6")
+        assert rate["input"] == 3.0
+        assert rate["output"] == 15.0
+
+    def test_get_rate_accepts_full_openclaw_ref(self):
+        rate = get_rate("amazon-bedrock/us.anthropic.claude-opus-4-7")
+        assert rate["input"] == 15.0
+        assert rate["output"] == 75.0
+
+    def test_cost_microcents_with_inference_profile_id(self):
+        """cost_microcents inherits get_rate's normalization."""
+        result = cost_microcents(
+            model_id="amazon-bedrock/us.anthropic.claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+        # Same answer as the bare-id case in TestCostMicrocents above.
+        assert result == 10_500
