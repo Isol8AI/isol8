@@ -57,7 +57,11 @@ _RATES: dict[str, ModelRate] = {
         "cache_write": 3.75,
         "cache_read": 0.3,
     },
-    "anthropic.claude-opus-4-7": {
+    "anthropic.claude-opus-4-6-v1": {
+        # Opus 4.6 carries our card-3 traffic while AWS holds Opus 4.7
+        # at applied=0 TPM (Service Quotas L-5DB28B7B). Add 4.7 back
+        # here when the quota lifts — pricing is identical so the
+        # ledger math is unchanged.
         "input": 15.0,
         "output": 75.0,
         "cache_write": 18.75,

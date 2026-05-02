@@ -72,7 +72,7 @@ async def test_record_usage_strips_provider_prefix(dynamodb_tables):
     await record_usage(
         owner_id="org_2",
         user_id="user_b",
-        model="amazon-bedrock/anthropic.claude-opus-4-7",
+        model="amazon-bedrock/anthropic.claude-opus-4-6-v1",
         input_tokens=1000,
         output_tokens=500,
         cache_read=0,

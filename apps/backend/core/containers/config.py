@@ -341,10 +341,17 @@ def _provider_block(
         if byo_provider == "openai":
             return ({}, {"primary": "openai/gpt-5.4", "fallbacks": ["openai/gpt-5.4"]}, {})
         if byo_provider == "anthropic":
+            # Opus 4.6 primary, Sonnet 4.6 fallback. Opus 4.7 is omitted
+            # while AWS holds the cross-region TPM quota at applied=0
+            # (Service Quotas L-5DB28B7B); add it back here once the
+            # quota lifts. For byo_key the user pays Anthropic directly
+            # so the Bedrock quota doesn't bind, but we keep the catalog
+            # symmetric across paths to avoid divergent test/runtime
+            # behavior.
             return (
                 {},
                 {
-                    "primary": "anthropic/claude-opus-4-7",
+                    "primary": "anthropic/claude-opus-4-6-v1",
                     "fallbacks": ["anthropic/claude-sonnet-4-6"],
                 },
                 {},
@@ -368,8 +375,8 @@ def _provider_block(
         # rate table stays keyed on the bare model id.
         bedrock_models = [
             {
-                "id": "us.anthropic.claude-opus-4-7",
-                "name": "Claude Opus 4.7",
+                "id": "us.anthropic.claude-opus-4-6-v1",
+                "name": "Claude Opus 4.6",
                 "reasoning": True,
                 "input": ["text", "image"],
                 "cost": {"input": 15.0, "output": 75.0, "cacheRead": 1.5, "cacheWrite": 18.75},
@@ -396,11 +403,27 @@ def _provider_block(
                 },
             },
             {
-                # Opus primary; Sonnet fallback for capacity/throttling failover.
-                # Sonnet is ~5x cheaper than Opus, so a failover quietly REDUCES
-                # spend rather than increasing it — safe direction for surprise
-                # bills. Users can override per-agent via agents.list[*].model.
-                "primary": "amazon-bedrock/us.anthropic.claude-opus-4-7",
+                # Opus 4.6 primary, Sonnet 4.6 fallback.
+                #
+                # Why 4.6 instead of 4.7: AWS ships Opus 4.7 with
+                # `applied = 0` TPM on most accounts pending capacity
+                # rollout (Service Quotas L-5DB28B7B), so 4.7 invokes
+                # throttle on the very first request. Until AWS lifts
+                # the applied limit, 4.6 is the only Opus we can
+                # actually invoke. Pricing is identical between 4.6
+                # and 4.7 on Bedrock list price, so swapping is
+                # cost-neutral. Add 4.7 back to the fallbacks (or
+                # promote to primary) once the quota lands.
+                #
+                # Sonnet 4.6 stays as the capacity/throttling escape
+                # hatch (requires a Marketplace agreement first; see
+                # Bedrock Model Access console). Sonnet is ~5× cheaper
+                # than Opus so a failover quietly REDUCES spend rather
+                # than increasing it — safe direction for surprise
+                # bills.
+                #
+                # Users can override per-agent via agents.list[*].model.
+                "primary": "amazon-bedrock/us.anthropic.claude-opus-4-6-v1",
                 "fallbacks": ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"],
             },
             {
