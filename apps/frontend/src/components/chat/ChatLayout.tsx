@@ -222,6 +222,21 @@ export function ChatLayout({
     return () => clearTimeout(dismissTimer);
   }, [showSubscriptionSuccess, refreshBilling, router, searchParams]);
 
+  // Post-credit-checkout return. Stripe sends users back with
+  // ?credits=success (or =cancel) when they finish the credit top-up
+  // flow. We just strip the param — the credit balance refresh happens
+  // automatically via useCredits' refreshInterval/onFocus, and the
+  // ProvisioningStepper re-evaluates needsProviderStep on URL change so
+  // the wizard advances out of CreditsStep on success.
+  const cameFromCreditsCheckout = searchParams.get("credits") !== null;
+  useEffect(() => {
+    if (!cameFromCreditsCheckout) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("credits");
+    const remaining = params.toString();
+    router.replace(`/chat${remaining ? `?${remaining}` : ""}`, { scroll: false });
+  }, [cameFromCreditsCheckout, router, searchParams]);
+
   // Race against Stripe webhook delivery: the user returns from Checkout
   // before customer.subscription.created lands at our webhook endpoint
   // (typically <2s, but variable). Without polling, the wizard would

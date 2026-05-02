@@ -1,0 +1,213 @@
+"""Tests for /container/provision payment gating (C1 audit fix).
+
+The primary `/container/provision` endpoint historically had no payment
+check — any signed-in Clerk user could spin up an ECS Fargate task at
+our cost. These tests pin down the gating contract:
+
+  - No subscription on file              -> 402
+  - subscription_status not in {active, trialing}
+                                         -> 402
+  - bedrock_claude with $0 balance       -> 402  (no point spinning a
+                                                   container the user
+                                                   can't chat through)
+  - bedrock_claude with > 0 balance      -> 200
+  - chatgpt_oauth / byo_key (any balance) -> 200
+"""
+
+import os
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastapi import HTTPException
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+
+def _auth(user_id: str = "user_paid", org_id: str | None = None) -> MagicMock:
+    auth = MagicMock()
+    auth.user_id = user_id
+    auth.org_id = org_id
+    return auth
+
+
+@pytest.mark.asyncio
+async def test_provision_requires_subscription_row():
+    """No billing row at all -> 402 Payment Required."""
+    from routers.container import container_provision
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await container_provision(auth=_auth())
+    assert exc.value.status_code == 402
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused", "past_due"],
+)
+async def test_provision_rejects_inactive_subscription_status(status):
+    """Subscription exists but status is non-active -> 402."""
+    from routers.container import container_provision
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={
+                "stripe_subscription_id": "sub_123",
+                "subscription_status": status,
+            },
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await container_provision(auth=_auth())
+    assert exc.value.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_provision_rejects_bedrock_with_zero_balance():
+    """bedrock_claude provider + $0 balance -> 402.
+
+    A container spun up before credits are topped up is pure cost — the
+    user can't actually chat through it (gate_chat blocks on $0). Refuse
+    the provision instead of leaking ECS.
+    """
+    from routers.container import container_provision
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={
+                "stripe_subscription_id": "sub_123",
+                "subscription_status": "trialing",
+            },
+        ),
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "bedrock_claude"},
+        ),
+        patch(
+            "core.services.credit_ledger.get_balance",
+            new_callable=AsyncMock,
+            return_value=0,
+        ),
+    ):
+        with pytest.raises(HTTPException) as exc:
+            await container_provision(auth=_auth())
+    assert exc.value.status_code == 402
+
+
+@pytest.mark.asyncio
+async def test_provision_allows_bedrock_with_positive_balance():
+    """bedrock_claude with credits topped up -> provisions normally."""
+    from routers.container import container_provision
+
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={
+                "stripe_subscription_id": "sub_123",
+                "subscription_status": "trialing",
+            },
+        ),
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "bedrock_claude"},
+        ),
+        patch(
+            "core.services.credit_ledger.get_balance",
+            new_callable=AsyncMock,
+            return_value=10_000_000,
+        ),
+        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+    ):
+        result = await container_provision(auth=_auth())
+    assert result["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_choice", ["chatgpt_oauth", "byo_key"])
+async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
+    """chatgpt_oauth / byo_key never need a credit balance — their LLM
+    costs land on the user's own provider account."""
+    from routers.container import container_provision
+
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={
+                "stripe_subscription_id": "sub_123",
+                "subscription_status": "active",
+            },
+        ),
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": provider_choice},
+        ),
+        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+    ):
+        result = await container_provision(auth=_auth())
+    assert result["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
+async def test_provision_existing_container_skips_payment_gate():
+    """Idempotent return for users who already have a container should
+    NOT re-run the gate — billing state can churn (cancel + resubscribe)
+    and we don't want the existing container reported as 402."""
+    from routers.container import container_provision
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"status": "running", "service_name": "openclaw-existing"},
+        ),
+    ):
+        result = await container_provision(auth=_auth())
+    assert result["already_existed"] is True
+    assert result["status"] == "running"

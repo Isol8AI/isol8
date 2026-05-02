@@ -1,13 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import {
-  Elements,
-  PaymentElement,
-  useElements,
-  useStripe,
-} from "@stripe/react-stripe-js";
-import { loadStripe } from "@stripe/stripe-js";
+import { useState } from "react";
 import { Wallet, RefreshCw } from "lucide-react";
 import { useCredits } from "@/hooks/useCredits";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -18,16 +11,15 @@ const EYEBROW = "text-[10px] uppercase tracking-wider text-[#8a8578]/60";
 
 const QUICK_PICKS_CENTS = [1000, 2000, 5000, 10000];
 
-const STRIPE_PUBLISHABLE_KEY =
-  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
-const stripePromise = STRIPE_PUBLISHABLE_KEY
-  ? loadStripe(STRIPE_PUBLISHABLE_KEY)
-  : null;
-
+/**
+ * Control-panel surface for managing Claude credits. Top-ups go through
+ * Stripe Checkout — the user is redirected to checkout.stripe.com and
+ * returned to /chat?credits=success on completion. No publishable key
+ * needed in the bundle; coupon codes work natively on the Checkout page.
+ */
 export function CreditsPanel() {
-  const { balance, startTopUp, setAutoReload, refresh } = useCredits();
+  const { balance, refresh, startTopUp, setAutoReload } = useCredits();
   const [topUpAmount, setTopUpAmount] = useState(2000);
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [topUpSubmitting, setTopUpSubmitting] = useState(false);
   const [topUpError, setTopUpError] = useState<string | null>(null);
   const [autoEnabled, setAutoEnabled] = useState(false);
@@ -39,21 +31,12 @@ export function CreditsPanel() {
     setTopUpError(null);
     try {
       const r = await startTopUp(topUpAmount);
-      setClientSecret(r.client_secret);
+      if (!r?.checkout_url) throw new Error("No checkout_url returned");
+      window.location.href = r.checkout_url;
     } catch (err) {
       setTopUpError(err instanceof Error ? err.message : "Couldn't start top-up");
-    } finally {
       setTopUpSubmitting(false);
     }
-  };
-
-  const handleTopUpSuccess = () => {
-    setClientSecret(null);
-    refresh();
-  };
-
-  const handleTopUpCancel = () => {
-    setClientSecret(null);
   };
 
   const handleAutoReloadSave = async () => {
@@ -65,11 +48,6 @@ export function CreditsPanel() {
   };
 
   const balanceDisplay = balance ? `$${balance.balance_dollars}` : "$0.00";
-
-  const elementsOptions = useMemo(
-    () => (clientSecret ? { clientSecret } : null),
-    [clientSecret],
-  );
 
   return (
     <div className="p-6 space-y-6">
@@ -95,51 +73,36 @@ export function CreditsPanel() {
 
       <div className={CARD}>
         <span className={EYEBROW}>ADD CREDITS</span>
-
-        {clientSecret && elementsOptions && stripePromise ? (
-          <Elements stripe={stripePromise} options={elementsOptions}>
-            <TopUpPaymentForm
-              amount={topUpAmount}
-              onSuccess={handleTopUpSuccess}
-              onCancel={handleTopUpCancel}
-            />
-          </Elements>
-        ) : (
-          <>
-            <div className="flex flex-wrap gap-2">
-              {QUICK_PICKS_CENTS.map((c) => {
-                const active = topUpAmount === c;
-                return (
-                  <button
-                    key={c}
-                    onClick={() => setTopUpAmount(c)}
-                    className={
-                      "rounded-md border px-3 py-1.5 text-sm transition-colors " +
-                      (active
-                        ? "border-[#06402B] bg-[#06402B]/5 text-[#06402B]"
-                        : "border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]")
-                    }
-                  >
-                    ${c / 100}
-                  </button>
-                );
-              })}
-            </div>
-            {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
-            {!stripePromise && (
-              <p className="text-xs text-[#8a8578]">
-                Stripe is not configured for this environment. Top-up is disabled.
-              </p>
-            )}
-            <button
-              onClick={handleTopUp}
-              disabled={topUpSubmitting || !stripePromise}
-              className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
-            >
-              {topUpSubmitting ? "Loading…" : `Add $${topUpAmount / 100}`}
-            </button>
-          </>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {QUICK_PICKS_CENTS.map((c) => {
+            const active = topUpAmount === c;
+            return (
+              <button
+                key={c}
+                onClick={() => setTopUpAmount(c)}
+                className={
+                  "rounded-md border px-3 py-1.5 text-sm transition-colors " +
+                  (active
+                    ? "border-[#06402B] bg-[#06402B]/5 text-[#06402B]"
+                    : "border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6]")
+                }
+              >
+                ${c / 100}
+              </button>
+            );
+          })}
+        </div>
+        {topUpError && <p className="text-sm text-red-600">{topUpError}</p>}
+        <button
+          onClick={handleTopUp}
+          disabled={topUpSubmitting || topUpAmount < 500}
+          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
+        >
+          {topUpSubmitting ? "Loading…" : `Add $${topUpAmount / 100}`}
+        </button>
+        <p className="text-xs text-[#8a8578]">
+          Have a promotion code? Apply it on the Stripe Checkout page after clicking above.
+        </p>
       </div>
 
       <div className={CARD}>
@@ -195,71 +158,5 @@ export function CreditsPanel() {
         </button>
       </div>
     </div>
-  );
-}
-
-function TopUpPaymentForm({
-  amount,
-  onSuccess,
-  onCancel,
-}: {
-  amount: number;
-  onSuccess: () => void;
-  onCancel: () => void;
-}) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!stripe || !elements) return;
-    setSubmitting(true);
-    setError(null);
-    // confirmPayment can BOTH return a stripeError AND throw — the latter
-    // happens on SDK/network/integration failures. Without the try/catch the
-    // promise rejection escapes the click handler, leaving submitting=true
-    // forever and producing an unhandled rejection. Codex P2 on PR #479.
-    try {
-      const { error: stripeError } = await stripe.confirmPayment({
-        elements,
-        confirmParams: { return_url: window.location.href },
-        redirect: "if_required",
-      });
-      if (stripeError) {
-        setError(stripeError.message ?? "Payment failed");
-        return;
-      }
-      onSuccess();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Payment failed");
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  return (
-    <form onSubmit={submit} className="space-y-3">
-      <PaymentElement />
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      <div className="flex gap-2">
-        <button
-          type="submit"
-          disabled={!stripe || submitting}
-          className="rounded-full bg-[#06402B] hover:bg-[#0a5c3e] text-white px-4 py-2 text-sm disabled:opacity-50"
-        >
-          {submitting ? "Processing…" : `Pay $${amount / 100}`}
-        </button>
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={submitting}
-          className="rounded-md border border-[#e0dbd0] text-[#1a1a1a] hover:bg-[#f3efe6] px-3 py-1.5 text-sm disabled:opacity-50"
-        >
-          Cancel
-        </button>
-      </div>
-    </form>
   );
 }

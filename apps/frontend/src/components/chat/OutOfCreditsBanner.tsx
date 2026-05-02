@@ -31,8 +31,18 @@ export function OutOfCreditsBanner() {
       <span className="text-destructive">
         You&apos;re out of Claude credits. Top up to keep chatting.
       </span>
+      {/*
+        Audit C2: previously linked to /chat?panel=credits. That stripped
+        the ?provider= URL param the ProvisioningStepper uses to gate the
+        provider step (ProvisioningStepper.tsx:222), causing the wizard to
+        proceed straight into container provisioning without any payment
+        — and the destination panel (CreditsPanel) is a placeholder that
+        can't actually take a payment. Route to the working CreditsStep
+        flow inside the stepper instead. URL stays inside /chat so we
+        don't lose ChatLayout chrome / the in-flight gateway socket.
+      */}
       <Link
-        href="/chat?panel=credits"
+        href="/chat?provider=bedrock_claude"
         className="rounded-md bg-destructive px-3 py-1 text-destructive-foreground text-xs"
       >
         Top up now

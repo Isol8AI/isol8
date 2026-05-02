@@ -1066,25 +1066,57 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         return conn is not None and conn.is_connected
 
-    async def gate_chat(self, *, user_id: str) -> dict:
+    async def gate_chat(self, *, user_id: str, owner_id: str | None = None) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.
 
-        Per spec §6.3 step 1 + §6.6: blocks chat when card-3 balance ≤ 0.
-        Cards 1 + 2 (chatgpt_oauth, byo_key) are never gated — their LLM
-        cost is on the user's own provider account, not on us.
+        Two layers (audit M1 expanded the second one):
+
+        1. **Subscription status.** When ``owner_id`` is supplied, the
+           billing row's ``subscription_status`` must be ``active`` or
+           ``trialing``. Cards 1 + 2 used to bypass the gate entirely
+           because their LLM cost lives on the user's own provider
+           account — but the *container* itself is on us, so a canceled
+           subscription should still block chat. Without this, an
+           org/personal user whose ``subscription.deleted`` webhook
+           landed could keep talking through the gateway indefinitely
+           on cards 1 + 2.
+        2. **Card-3 balance.** When ``provider_choice`` is
+           ``bedrock_claude``, the credit balance must be > 0. Cards 1
+           + 2 don't draw from prepaid credits, so they're not gated
+           on balance.
+
+        ``owner_id`` is optional for back-compat with old test fixtures
+        and any callers that don't have it; when it's omitted, the
+        subscription check is skipped and only the legacy balance gate
+        runs. New callers should always pass it.
 
         Returns:
             ``{"blocked": False}`` when chat may proceed.
-            ``{"blocked": True, "code": "out_of_credits", "message": ...}``
+            ``{"blocked": True, "code": <code>, "message": ...}``
             when the chat must NOT be forwarded to OpenClaw.
 
-        Read uses ``ConsistentRead=True`` so a top-up that just landed via
-        Stripe webhook unblocks the next message immediately (no
-        eventual-consistency lag on the credits table).
+        Reads use ``ConsistentRead=True`` so a top-up that just landed
+        via Stripe webhook unblocks the next message immediately.
         """
-        from core.repositories import user_repo
+        from core.repositories import billing_repo, user_repo
         from core.services import credit_ledger
 
+        # --- Layer 1: subscription status ----------------------------
+        if owner_id is not None:
+            account = await billing_repo.get_by_owner_id(owner_id)
+            status = (account or {}).get("subscription_status")
+            # Treat a missing billing row as "no subscription". Legacy
+            # rows pre-Plan-3 may have a stripe_subscription_id but no
+            # subscription_status backfilled — those still pass here so
+            # we don't lock out users mid-deploy.
+            if status is not None and status not in ("active", "trialing"):
+                return {
+                    "blocked": True,
+                    "code": "subscription_inactive",
+                    "message": ("Your subscription is not active. Reactivate to continue chatting."),
+                }
+
+        # --- Layer 2: card-3 credit balance --------------------------
         user = await user_repo.get(user_id)
         if not user or user.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}

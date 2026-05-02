@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import uuid
 
 import httpx
 import stripe
@@ -304,14 +303,36 @@ async def create_trial_checkout(
             email=auth.email,
         )
 
-    # Refuse a second trial-checkout when an active/trialing subscription
-    # already exists. Stripe Checkout in mode="subscription" creates a NEW
-    # subscription on every successful return, so a retry past the 5-minute
-    # idempotency-bucket window would charge the customer twice. Codex P1
-    # on PR #393.
+    # Refuse a second trial-checkout for any subscription that exists,
+    # regardless of state. Stripe Checkout in mode="subscription"
+    # creates a NEW subscription on every successful return, so a retry
+    # past the 5-minute idempotency-bucket window would charge the
+    # customer twice (Codex P1 on PR #393).
+    #
+    # Originally this only blocked {active, trialing, past_due}, but
+    # that left a trial-gaming hole (audit C3): a user could complete a
+    # 14-day trial, cancel before day 15 (no charge), and immediately
+    # POST /trial-checkout again to mint a new 14-day trial — repeating
+    # forever. ECS Fargate is recurring on us either way; the trial
+    # itself never charges. We now also block {canceled, incomplete,
+    # incomplete_expired, unpaid, paused}. A user who legitimately wants
+    # to re-subscribe after cancel must go through customer support so
+    # we can verify they're not gaming the trial.
+    _BLOCKED_REPEAT_STATUSES = frozenset(
+        {
+            "active",
+            "trialing",
+            "past_due",
+            "canceled",
+            "incomplete",
+            "incomplete_expired",
+            "unpaid",
+            "paused",
+        }
+    )
     existing_status = account.get("subscription_status")
     has_legacy_sub = bool(account.get("stripe_subscription_id"))
-    if existing_status in ("active", "trialing", "past_due"):
+    if existing_status in _BLOCKED_REPEAT_STATUSES:
         raise HTTPException(
             status_code=409,
             detail=f"already_subscribed:{existing_status}",
@@ -335,7 +356,10 @@ async def create_trial_checkout(
                 owner_id,
             )
         else:
-            if live_sub.get("status") in ("active", "trialing", "past_due"):
+            # Same expanded blocklist as the local-row path — a stale
+            # canceled/incomplete subscription in Stripe is still a
+            # "this account already trialed" signal (audit C3).
+            if live_sub.get("status") in _BLOCKED_REPEAT_STATUSES:
                 raise HTTPException(
                     status_code=409,
                     detail=f"already_subscribed:{live_sub.get('status')}",
@@ -362,14 +386,32 @@ async def create_trial_checkout(
 # ---------------------------------------------------------------------------
 
 
+# Hard caps on credit-purchase amounts. These exist as a safety rail
+# (audit C4 / M4) — without an upper bound, a malicious or compromised
+# user could (a) request a $99k off-session auto-reload that locks in a
+# disputable charge, or (b) trick a phished user into pre-paying an
+# unreasonable amount via Elements. Stripe will likely reject extremes
+# itself, but defense in depth says we cap server-side too.
+#
+# Values are deliberately conservative; raise via a code change + a
+# pricing-tier conversation rather than user-facing input.
+_TOP_UP_MAX_CENTS = 100_000  # $1,000.00 — single-shot prepay ceiling
+_AUTO_RELOAD_MAX_CENTS = 20_000  # $200.00 — recurring off-session ceiling
+
+
 class TopUpRequest(BaseModel):
-    amount_cents: int = Field(..., ge=500, description="Minimum $5 (500 cents)")
+    amount_cents: int = Field(
+        ...,
+        ge=500,
+        le=_TOP_UP_MAX_CENTS,
+        description="Min $5 (500 cents), max $1,000 (100000 cents).",
+    )
 
 
 class AutoReloadRequest(BaseModel):
     enabled: bool
-    threshold_cents: int | None = Field(default=None, ge=500)
-    amount_cents: int | None = Field(default=None, ge=500)
+    threshold_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
+    amount_cents: int | None = Field(default=None, ge=500, le=_AUTO_RELOAD_MAX_CENTS)
 
 
 @router.get(
@@ -385,41 +427,43 @@ async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
 
 @router.post(
     "/credits/top_up",
-    summary="Buy credits via Stripe PaymentIntent",
+    summary="Start a Stripe Checkout session for a credit top-up",
     description=(
-        "Creates a Stripe PaymentIntent for one-time credit purchase. "
-        "Returns client_secret for Stripe.js confirmation. Minimum $5."
+        "Creates a Stripe Checkout session in mode=payment for a one-shot "
+        "credit purchase. Returns ``checkout_url`` — the frontend redirects "
+        "the browser to it. Stripe handles card collection, 3DS, Apple Pay, "
+        "saved cards, and promotion-code application. The credit grant "
+        "happens asynchronously when Stripe fires checkout.session.completed."
     ),
+    operation_id="credits_top_up_checkout",
 )
 async def top_up_credits(
     body: TopUpRequest,
     ctx: AuthContext = Depends(get_current_user),
 ):
-    if body.amount_cents < 500:
-        raise HTTPException(status_code=400, detail="Minimum top-up is $5 (500 cents)")
-    account = await billing_repo.get_by_owner_id(ctx.user_id)
-    if not account or not account.get("stripe_customer_id"):
-        raise HTTPException(status_code=400, detail="No Stripe customer on file")
+    """Replaces the previous inline-Elements PaymentIntent flow.
 
-    # Idempotency key is a per-request UUID so two legitimate top-ups of the
-    # same amount (even within the same minute) create distinct PaymentIntents.
-    # The double-submit guard is a frontend concern (the Pay button disables
-    # itself + the page reloads on success). Codex P2 on PR #393 — using a
-    # minute bucket meant a second top-up could collapse onto the first
-    # PaymentIntent and silently skip the credit grant.
-    with timing("stripe.api.latency", {"op": "payment_intent.create"}):
-        pi = stripe.PaymentIntent.create(
-            amount=body.amount_cents,
-            currency="usd",
-            customer=account["stripe_customer_id"],
-            automatic_payment_methods={"enabled": True},
-            metadata={
-                "purpose": "credit_top_up",
-                "user_id": ctx.user_id,
-            },
-            idempotency_key=f"top_up:{ctx.user_id}:{uuid.uuid4().hex}",
+    Why Checkout > Elements for our usage:
+      - Native promotion-code support → internal 100%-off coupon works.
+      - Auto-reload (off-session) is unaffected — that path stays
+        on direct PaymentIntents because there's no UI step.
+      - No client-side Stripe SDK / publishable key required.
+    """
+    from core.services.billing_service import (
+        BillingServiceError,
+        create_credit_top_up_checkout,
+    )
+
+    owner_id = resolve_owner_id(ctx)
+    try:
+        session = await create_credit_top_up_checkout(
+            owner_id=owner_id,
+            user_id=ctx.user_id,
+            amount_cents=body.amount_cents,
         )
-    return {"client_secret": pi.client_secret, "payment_intent_id": pi.id}
+    except BillingServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"checkout_url": session.url}
 
 
 @router.put(
@@ -615,29 +659,47 @@ async def handle_stripe_webhook(
     elif event_type == "invoice.paid":
         logger.info("Payment succeeded for customer %s", event_data.get("customer"))
 
-    elif event_type == "payment_intent.succeeded":
-        pi = event["data"]["object"]
-        if pi.get("metadata", {}).get("purpose") != "credit_top_up":
-            # Some other payment intent (e.g. Stripe-internal). Ignore.
+    elif event_type == "checkout.session.completed":
+        session = event["data"]["object"]
+        # We piggyback on the same webhook for two distinct flows; only
+        # credit-top-up sessions need ledger work here. Trial-checkout
+        # sessions get their state from customer.subscription.created
+        # / .updated above.
+        if session.get("metadata", {}).get("purpose") != "credit_top_up":
             return Response(status_code=200)
 
-        user_id = pi["metadata"].get("user_id")
-        if not user_id:
-            logger.error("Credit top-up webhook missing user_id metadata: %s", pi["id"])
+        user_id = session["metadata"].get("user_id")
+        amount_cents_str = session["metadata"].get("amount_cents")
+        if not user_id or not amount_cents_str:
+            logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
             return Response(status_code=200)
 
-        # 1 cent = 10_000 microcents. PaymentIntent.amount is in cents.
-        amount_microcents = int(pi["amount"]) * 10_000
+        # Credit the *requested* amount, not what Stripe actually charged.
+        # If the user redeemed a 100%-off internal coupon, Stripe charged
+        # nothing but we still grant the full credit balance — the coupon
+        # is effectively us absorbing the cost so internal teams can fund
+        # their own usage without per-transaction Stripe fees. For partial
+        # discounts the same rule applies: the user paid less, but the
+        # ledger reflects the credits-promised side of the transaction.
+        amount_cents = int(amount_cents_str)
+        amount_microcents = amount_cents * 10_000
         await credit_ledger.top_up(
             user_id,
             amount_microcents=amount_microcents,
-            stripe_payment_intent_id=pi["id"],
+            # Use session id as the idempotency key on the ledger side —
+            # one Checkout completion = one credit grant, even if Stripe
+            # retries the webhook delivery.
+            stripe_payment_intent_id=session.get("id"),
         )
+        amount_total = session.get("amount_total")
         put_metric(
             "credit.top_up",
-            value=pi["amount"] / 100.0,
+            value=(amount_total or 0) / 100.0,
             unit="None",
-            dimensions={"source": "stripe_payment_intent"},
+            dimensions={
+                "source": "stripe_checkout",
+                "discounted": "true" if amount_total != amount_cents else "false",
+            },
         )
 
     return {"status": "ok"}

@@ -52,6 +52,44 @@ async def _owner_has_subscription(owner_id: str) -> bool:
     return account is not None and account.get("stripe_subscription_id") is not None
 
 
+# Subscription statuses that count as "currently paying" for the purpose of
+# provisioning compute. `past_due` is excluded — Stripe is actively trying
+# to recover payment, and we'd rather refuse new infra than rack up cost
+# against a card that's failing.
+_PROVISION_OK_STATUSES = frozenset({"active", "trialing"})
+
+
+async def _assert_provision_allowed(owner_id: str, clerk_user_id: str) -> None:
+    """Raise 402 if the owner cannot afford to provision a new container.
+
+    Two layers of gating:
+
+    1. Subscription must be ``active`` or ``trialing``. A canceled,
+       incomplete, unpaid, paused, or past_due subscription cannot
+       spin up new compute — that's how we prevented arbitrary signed-in
+       users from minting free ECS Fargate tasks (audit C1).
+    2. For ``bedrock_claude``, the credit balance must be > 0. A
+       container with $0 prepaid credits is dead weight: ``gate_chat``
+       blocks every chat anyway, so the user can't use it. Refuse the
+       provision instead of leaking ECS cost.
+    """
+    account = await billing_repo.get_by_owner_id(owner_id)
+    status = (account or {}).get("subscription_status")
+    if status not in _PROVISION_OK_STATUSES:
+        raise HTTPException(status_code=402, detail="Active subscription required")
+
+    provider_choice, _ = await _resolve_provider_choice(clerk_user_id)
+    if provider_choice == "bedrock_claude":
+        from core.services import credit_ledger
+
+        balance = await credit_ledger.get_balance(clerk_user_id)
+        if balance <= 0:
+            raise HTTPException(
+                status_code=402,
+                detail="Top up Claude credits before provisioning",
+            )
+
+
 async def _resolve_provider_choice(clerk_user_id: str) -> tuple[str, str | None]:
     """Look up the user's saved provider_choice (+ byo_provider when applicable).
 
@@ -116,14 +154,22 @@ async def container_status(
     if not container:
         raise HTTPException(status_code=404, detail="No container found")
 
-    # Auto-retry: if container is in a failed/stuck state and user has a subscription,
-    # trigger re-provisioning in the background.
+    # Auto-retry: if container is in a failed/stuck state AND the owner can
+    # currently afford to provision, trigger re-provisioning in the
+    # background. The same gate as /provision (audit C1) — bare
+    # subscription-id existence wasn't enough; we need active/trialing
+    # status, and bedrock_claude users need a positive credit balance.
     retryable_states = ("error", "stopped")
-    if container.get("status") in retryable_states and await _owner_has_subscription(owner_id):
-        await container_repo.update_status(owner_id, "provisioning", "auto_retry")
-        asyncio.create_task(_background_provision(owner_id, auth.user_id))
-        container["status"] = "provisioning"
-        container["substatus"] = "auto_retry"
+    if container.get("status") in retryable_states:
+        try:
+            await _assert_provision_allowed(owner_id, auth.user_id)
+        except HTTPException:
+            pass
+        else:
+            await container_repo.update_status(owner_id, "provisioning", "auto_retry")
+            asyncio.create_task(_background_provision(owner_id, auth.user_id))
+            container["status"] = "provisioning"
+            container["substatus"] = "auto_retry"
 
     return {
         "service_name": container.get("service_name"),
@@ -196,7 +242,10 @@ async def container_provision(
 ):
     owner_id = resolve_owner_id(auth)
 
-    # Check if container already exists (idempotent)
+    # Check if container already exists (idempotent). The payment gate
+    # below is intentionally NOT applied to existing containers — billing
+    # state can churn (cancel + resubscribe) and we don't want a stale
+    # 402 to mask the actual container the caller is asking about.
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing:
         if existing.get("status") == "stopped":
@@ -224,6 +273,11 @@ async def container_provision(
             "owner_id": owner_id,
             "already_existed": True,
         }
+
+    # Payment gate (audit C1). New-container path only — the existing-
+    # container branch above intentionally bypasses this so we don't 402
+    # callers asking about a container they already have.
+    await _assert_provision_allowed(owner_id, auth.user_id)
 
     # Provision new container — read the user's saved provider_choice so the
     # container is configured for the right LLM path (OAuth / BYO key /
@@ -264,8 +318,10 @@ async def container_retry(
     auth: AuthContext = Depends(get_current_user),
 ):
     owner_id = resolve_owner_id(auth)
-    if not await _owner_has_subscription(owner_id):
-        raise HTTPException(status_code=402, detail="Active subscription required")
+    # Audit C1: same hardened gate as /provision — ID existence isn't
+    # enough; status must be active/trialing AND bedrock_claude needs
+    # a positive credit balance.
+    await _assert_provision_allowed(owner_id, auth.user_id)
 
     ecs_manager = get_ecs_manager()
     container = await ecs_manager.get_service_status(owner_id)

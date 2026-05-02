@@ -1,65 +1,64 @@
 "use client";
-import { useMemo, useState } from "react";
-import {
-  Elements,
-  PaymentElement,
-  useElements,
-  useStripe,
-} from "@stripe/react-stripe-js";
-import { loadStripe } from "@stripe/stripe-js";
+import { useEffect, useRef, useState } from "react";
+import { useApi } from "@/lib/api";
 import { useCredits } from "@/hooks/useCredits";
 
 type Props = { onComplete: () => void };
 
-const STRIPE_PUBLISHABLE_KEY =
-  process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? "";
-
-const stripePromise = STRIPE_PUBLISHABLE_KEY
-  ? loadStripe(STRIPE_PUBLISHABLE_KEY)
-  : null;
-
 const PRESET_AMOUNTS_CENTS = [1000, 2000, 5000, 10000]; // $10, $20, $50, $100
 
+/**
+ * Bedrock onboarding step: collect an initial Claude credit top-up via
+ * Stripe Checkout. Replaces the previous inline-Elements implementation
+ * (which required NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY and didn't support
+ * Stripe coupons) with a single button → server-rendered Checkout page.
+ *
+ * Stripe Checkout is a full-page redirect, so the in-flight Promise
+ * doesn't get to call `onComplete` itself. Instead, when the user
+ * returns to /chat the credit balance refresh (via useCredits) flips
+ * positive and we auto-advance the wizard. ChatLayout already strips
+ * the ?credits= param so the URL stays clean.
+ */
 export function CreditsStep({ onComplete }: Props) {
-  const { startTopUp } = useCredits();
+  const api = useApi();
+  const { balance, refresh } = useCredits();
   const [amount, setAmount] = useState<number>(2000);
-  const [clientSecret, setClientSecret] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const advancedRef = useRef(false);
+
+  // On mount and on every balance bump, check whether we already have
+  // credits — if so, the user is returning from a successful Checkout
+  // (or arrived here with a pre-existing balance) and the wizard should
+  // skip past the top-up step.
+  useEffect(() => {
+    if (advancedRef.current) return;
+    if (balance && balance.balance_microcents > 0) {
+      advancedRef.current = true;
+      onComplete();
+    }
+  }, [balance, onComplete]);
+
+  // Force a balance refresh on mount so we don't wait the SWR refresh
+  // interval to detect the post-Checkout webhook landing.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   const beginCheckout = async () => {
     setSubmitting(true);
     setError(null);
     try {
-      const r = await startTopUp(amount);
-      setClientSecret(r.client_secret);
+      const r = (await api.post("/billing/credits/top_up", {
+        amount_cents: amount,
+      })) as { checkout_url?: string };
+      if (!r?.checkout_url) throw new Error("No checkout_url returned");
+      window.location.href = r.checkout_url;
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to start checkout");
-    } finally {
       setSubmitting(false);
     }
   };
-
-  const options = useMemo(
-    () => (clientSecret ? { clientSecret } : null),
-    [clientSecret],
-  );
-
-  if (!stripePromise) {
-    return (
-      <p className="py-8 text-sm text-destructive text-center">
-        NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY is not configured.
-      </p>
-    );
-  }
-
-  if (clientSecret && options) {
-    return (
-      <Elements stripe={stripePromise} options={options}>
-        <PaymentForm onSuccess={onComplete} amount={amount} />
-      </Elements>
-    );
-  }
 
   return (
     <div className="flex flex-col gap-4 py-8 max-w-md mx-auto">
@@ -92,9 +91,7 @@ export function CreditsStep({ onComplete }: Props) {
         min={5}
         step={5}
         value={amount / 100}
-        onChange={(e) =>
-          setAmount(Math.round(Number(e.target.value) * 100))
-        }
+        onChange={(e) => setAmount(Math.round(Number(e.target.value) * 100))}
         className="rounded-md border border-input bg-background px-3 py-2"
       />
 
@@ -108,55 +105,5 @@ export function CreditsStep({ onComplete }: Props) {
         {submitting ? "Loading…" : `Add $${amount / 100}`}
       </button>
     </div>
-  );
-}
-
-function PaymentForm({
-  onSuccess,
-  amount,
-}: {
-  onSuccess: () => void;
-  amount: number;
-}) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!stripe || !elements) return;
-    setSubmitting(true);
-    setError(null);
-    const { error: stripeError } = await stripe.confirmPayment({
-      elements,
-      confirmParams: { return_url: window.location.href },
-      redirect: "if_required",
-    });
-    if (stripeError) {
-      setError(stripeError.message ?? "Payment failed");
-      setSubmitting(false);
-      return;
-    }
-    // Webhook will credit the balance asynchronously; advance the wizard.
-    onSuccess();
-  };
-
-  return (
-    <form
-      onSubmit={submit}
-      className="flex flex-col gap-4 py-8 max-w-md mx-auto"
-    >
-      <h3 className="text-xl font-semibold">Pay ${amount / 100}</h3>
-      <PaymentElement />
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <button
-        type="submit"
-        disabled={!stripe || submitting}
-        className="rounded-md bg-primary px-4 py-2 text-primary-foreground disabled:opacity-50"
-      >
-        {submitting ? "Processing…" : `Pay $${amount / 100}`}
-      </button>
-    </form>
   );
 }
