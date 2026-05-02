@@ -206,13 +206,16 @@ class PaperclipAdminClient:
             "Cookie": session_cookie,
             "Content-Type": "application/json",
         }
-        # Local import to keep the module load light + avoid pulling
-        # the settings singleton into test harnesses that don't need it.
-        import os
+        # Read from the settings singleton (canonical config source —
+        # pydantic loads from .env, tests monkeypatch via
+        # settings.PAPERCLIP_PUBLIC_URL). Reading os.environ would miss
+        # both .env loading and test-suite overrides. Codex P2 on PR #508.
+        # Local import keeps the module load lightweight and avoids a
+        # circular import for tests that bypass settings entirely.
+        from core.config import settings
 
-        public_url = os.environ.get("PAPERCLIP_PUBLIC_URL", "")
-        if public_url:
-            headers["Origin"] = public_url
+        if settings.PAPERCLIP_PUBLIC_URL:
+            headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         return headers
