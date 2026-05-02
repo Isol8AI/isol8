@@ -531,6 +531,46 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
     assert 'http-equiv="refresh"' in resp.text
 
 
+def test_http_disabled_company_redirects_to_chat(monkeypatch):
+    """Cookie path with company.status='disabled' (cancelled subscription)
+    must redirect out to /chat — auto-refresh would loop forever since
+    disabled requires admin/billing intervention to clear. Codex P1 on PR
+    #498: the previous version returned the auto-refresh stub for ALL
+    non-active states, locking disabled users into an 8h refresh loop.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_disabled", email="d@example.com")
+
+    class _DisabledCompany:
+        status = "disabled"
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return _DisabledCompany()
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path",
+        cookies={"isol8_paperclip": cookie},
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "from=teams" in resp.headers["location"]
+    assert "need=reprovision" in resp.headers["location"]
+
+
 def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
     """Programmatic clients (curl / Postman) authenticate via Bearer header.
 

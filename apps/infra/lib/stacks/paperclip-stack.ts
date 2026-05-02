@@ -248,12 +248,15 @@ export class PaperclipStack extends cdk.Stack {
       props.paperclipBetterAuthSecretName,
     );
 
-    // Public URL for Paperclip's own deployment-mode banner / OAuth callback
-    // shape. Maps to T6's host rule on the public ALB.
+    // Public URL for Paperclip's own deployment-mode banner / OAuth
+    // callback shape. Must match the value backend ServiceStack passes
+    // as PAPERCLIP_PUBLIC_URL — Paperclip uses this to build absolute
+    // URLs in HTML responses, and any drift means it emits links to a
+    // host the user can't reach. Codex P2 on PR #497.
     const paperclipPublicUrl =
       env === "prod"
         ? "https://company.isol8.co"
-        : `https://company-${env}.isol8.co`;
+        : `https://${env}.company.isol8.co`;
 
     taskDefinition.addContainer("paperclip", {
       // Paperclip publishes to GitHub Container Registry, not Docker Hub
