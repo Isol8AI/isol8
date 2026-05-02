@@ -1,68 +1,56 @@
 import Link from "next/link";
 
 export const metadata = {
-  title: "Connect MCP — marketplace.isol8.co",
-  description: "Wire purchased SKILL.md skills into Claude Desktop, Cursor, or any MCP-supporting client.",
+  title: "MCP server — coming in v1.1 | marketplace.isol8.co",
+  description:
+    "Live MCP server is on the v1.1 roadmap. Install marketplace skills today via the npx CLI.",
 };
 
 export default function McpSetup() {
-  const claudeDesktopConfig = JSON.stringify(
-    {
-      mcpServers: {
-        "isol8-marketplace": {
-          url: "https://marketplace.isol8.co/mcp/<your-listing-id>/sse",
-          transport: "sse",
-          headers: { Authorization: "Bearer iml_<your-license-key>" },
-        },
-      },
-    },
-    null,
-    2,
-  );
-
   return (
     <main className="max-w-3xl mx-auto px-6 py-12">
-      <h1 className="text-4xl font-bold mb-6">Connect MCP to your AI client</h1>
+      <h1 className="text-4xl font-bold mb-6">MCP server — coming in v1.1</h1>
 
-      <p className="text-zinc-300 mb-8">
-        Once you&apos;ve purchased a SKILL.md skill, you can serve it via MCP to any client
-        that supports the Model Context Protocol — Claude Desktop, Cursor with MCP, Codex CLI.
+      <p className="text-zinc-300 mb-6">
+        We&apos;re building a hosted MCP server so you can connect Claude Desktop,
+        Cursor, or any MCP-supporting client to a purchased SKILL.md skill and run
+        it live on Isol8&apos;s infrastructure. That feature ships in <strong>v1.1</strong>.
+      </p>
+
+      <p className="text-zinc-300 mb-10">
+        For now, every marketplace skill installs directly into your AI tool with a
+        single command — no MCP server required.
       </p>
 
       <section className="mb-10">
-        <h2 className="text-2xl font-semibold mb-3">Claude Desktop</h2>
-        <p className="text-zinc-400 mb-3 text-sm">
-          Add to <code>~/Library/Application Support/Claude/claude_desktop_config.json</code> on macOS,
-          or <code>%APPDATA%\Claude\claude_desktop_config.json</code> on Windows:
-        </p>
+        <h2 className="text-2xl font-semibold mb-3">Use the CLI installer</h2>
         <pre className="bg-zinc-900 px-4 py-3 rounded overflow-x-auto text-sm">
-          <code>{claudeDesktopConfig}</code>
+          <code>npx @isol8/marketplace install &lt;listing-slug&gt;</code>
         </pre>
-      </section>
-
-      <section className="mb-10">
-        <h2 className="text-2xl font-semibold mb-3">Cursor with MCP</h2>
-        <p className="text-zinc-300">
-          Open <strong>Settings → MCP → Add Server</strong>. URL is the same as above; configure
-          the Authorization header per Cursor&apos;s MCP UI.
+        <p className="text-zinc-400 text-sm mt-3">
+          Auto-detects Claude Desktop, Cursor, OpenClaw, and Copilot CLI; drops
+          the skill into the right directory for each. Paid listings prompt for a
+          one-time browser sign-in to confirm your license.
         </p>
       </section>
 
       <section className="mb-10">
-        <h2 className="text-2xl font-semibold mb-3">Where do I find my license key?</h2>
+        <h2 className="text-2xl font-semibold mb-3">License keys</h2>
         <p className="text-zinc-300">
-          After purchase, your license key is shown on the success page and in{" "}
-          <Link href="/buyer" className="text-zinc-100 underline">your purchase history</Link>.
-          Keys are formatted <code>iml_</code> followed by 32 base32 characters.
+          After purchase, your license key shows up in your{" "}
+          <Link href="/buyer" className="text-zinc-100 underline">
+            purchase history
+          </Link>
+          . Keys are formatted <code>iml_</code> followed by 32 base32 characters.
         </p>
       </section>
 
       <section className="mb-10">
-        <h2 className="text-2xl font-semibold mb-3">Limitations (v1)</h2>
+        <h2 className="text-2xl font-semibold mb-3">v1 limits worth knowing</h2>
         <ul className="list-disc pl-6 text-zinc-300 space-y-1">
-          <li>Only SKILL.md format listings can be served via MCP. OpenClaw agents must use the CLI installer or Isol8 direct deploy.</li>
-          <li>Companion scripts run in a sandbox: no network, read-only filesystem, 30s wall-clock cap, 256 MB memory.</li>
-          <li>Install rate limit is 10 unique source IPs per 24h per license key.</li>
+          <li>Install rate limit: 10 unique source IPs per 24h per license key.</li>
+          <li>OpenClaw agents are CLI-install only. SKILL.md skills will gain MCP support in v1.1.</li>
+          <li>Stripe Connect (seller payouts) is US-only in v1.</li>
         </ul>
       </section>
 
