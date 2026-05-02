@@ -821,15 +821,27 @@ def _strip_handoff_param(request: Request) -> str:
     Used for the post-handoff 302: we want the address bar to show the
     real URL the user was navigating to, with the one-shot Clerk JWT
     stripped. Preserves all other query params and the fragment.
+
+    Strips the proxy mount prefix (``/__paperclip_proxy__``) from the
+    path. The backend mounts this router at that prefix so the FastAPI
+    request.url.path includes it, but the browser is at
+    ``<public host>/foo`` (Vercel rewrote ``/foo`` to
+    ``/__paperclip_proxy__/foo`` on the way in, or the legacy
+    HostDispatcherMiddleware did the same). Either way, the 302 needs
+    the bare ``/foo`` so the next request doesn't double-stack the
+    prefix.
     """
     items = [(k, v) for k, v in request.query_params.multi_items() if k != "__t"]
     qs = "&".join(f"{k}={v}" for k, v in items) if items else ""
-    url = request.url.path
+    path = request.url.path
+    prefix = "/__paperclip_proxy__"
+    if path.startswith(prefix):
+        path = path[len(prefix) :] or "/"
     if qs:
-        url += "?" + qs
+        path += "?" + qs
     if request.url.fragment:
-        url += "#" + request.url.fragment
-    return url
+        path += "#" + request.url.fragment
+    return path
 
 
 def _frontend_url() -> str:
