@@ -235,6 +235,28 @@ export class ServiceStack extends cdk.Stack {
       }),
     );
 
+    // Bootstrap admin credentials write (Paperclip service account):
+    // apps/backend/scripts/bootstrap_paperclip_admin.py is invoked via
+    // `aws ecs execute-command` against the backend task. It signs up
+    // admin@isol8.co in Paperclip, then calls PutSecretValue on
+    // isol8/{env}/paperclip_admin_credentials. Without this scoped
+    // grant the put fails with AccessDeniedException after the
+    // Paperclip user is already created — leaves an inconsistent
+    // bootstrap state (user exists but credentials not persisted, so
+    // re-running fails with "user already exists"). Codex P1 on PR #504.
+    // Read of this secret is already covered by the wildcard
+    // SecretsAccess + KmsDecryptForSecrets policies.
+    this.taskRole.addToPolicy(
+      new iam.PolicyStatement({
+        sid: "PaperclipAdminCredentialsWrite",
+        effect: iam.Effect.ALLOW,
+        actions: ["secretsmanager:PutSecretValue"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:isol8/${env}/paperclip_admin_credentials-*`,
+        ],
+      }),
+    );
+
     // Per-user LLM-key secrets (Plan 2 Task 10): backend creates/updates/reads
     // a Secrets Manager secret per user under isol8/{env}/user-keys/*. Scoped
     // tightly to that prefix so the broad SecretsAccess policy above is not
