@@ -225,9 +225,10 @@ class TestCreateFlatFeeCheckout:
         assert kwargs["allow_promotion_codes"] is True
         assert kwargs["customer"] == "cus_test"
         assert kwargs["mode"] == "subscription"
-        # No idempotency_key — every click mints a fresh session so config
-        # changes (e.g. allow_promotion_codes) take effect immediately.
-        assert "idempotency_key" not in kwargs
+        # 5-minute idempotency bucket collapses rapid duplicate clicks and
+        # multi-tab retries to a single Checkout Session, preventing
+        # parallel subscriptions before the webhook + guard catches up.
+        assert kwargs["idempotency_key"].startswith("flat_checkout:u_1:")
         # owner_id threaded into subscription metadata so the webhook can
         # resolve owner unambiguously when one Stripe customer is shared
         # across multiple billing rows.

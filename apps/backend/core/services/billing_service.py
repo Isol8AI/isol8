@@ -168,12 +168,15 @@ async def create_flat_fee_checkout(
         onto the existing Stripe customer.
       - ``allow_promotion_codes=True`` — surfaces the promo-code field so
         internal coupons (e.g. 100%-off launch codes) can be applied.
-
-    No ``idempotency_key`` on the Session.create call: a 5-minute idempotency
-    bucket meant a user who hit the same button after a config change kept
-    getting the cached old session URL (e.g. without the promo-code field
-    after this flag flipped). Stripe Checkout sessions are cheap to create
-    and have a 24h expiry; let every click mint a fresh one.
+      - ``idempotency_key`` bucketed to a 5-minute window: collapses
+        rapid duplicate clicks (and "open Stripe Checkout in two tabs"
+        style retries) to a single Checkout Session, so a user can't
+        accidentally complete two parallel subscriptions before the
+        first ``customer.subscription.created`` webhook lands and the
+        guard in ``create_trial_checkout`` kicks in. Stripe's
+        idempotency does a body-shape compare, so a config change
+        (e.g. ``allow_promotion_codes`` flipping on) naturally
+        bypasses the cached response within the same bucket.
     """
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
@@ -204,6 +207,7 @@ async def create_flat_fee_checkout(
         automatic_tax={"enabled": True},
         customer_update={"address": "auto"},
         subscription_data=subscription_data,
+        idempotency_key=f"flat_checkout:{owner_id}:{provider_choice or '_'}:{int(time.time() // 300)}",
     )
 
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
