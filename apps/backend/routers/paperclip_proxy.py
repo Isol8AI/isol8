@@ -1020,37 +1020,25 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
-    if company is None:
+    if company is None or company.status == "provisioning":
         # Either: (a) handshake just spawned _autoprovision and the row
-        # hasn't been written yet (typical first visit), or (b) cookie
-        # outlived the row (deleted out-of-band). Re-kick provisioning
-        # in case (a) failed silently, then return the auto-refresh
-        # stub. provision_org is idempotent so racing with the handshake's
-        # task is safe. Codex P1 on PR #498 — without this re-kick a stale
-        # cookie locked the user into an 8h refresh loop.
-        if auth.email:
-            asyncio.create_task(_autoprovision(auth))
-        return _provisioning_in_progress_response()
-    if company.status == "provisioning":
-        # In flight — the auto-refresh stub will land on "active" once
-        # the background task completes. No need to re-kick.
-        return _provisioning_in_progress_response()
-    if company.status == "failed":
-        # Last provisioning attempt errored. Try once more (idempotent),
-        # then show the stub. If the underlying issue is persistent the
-        # user eventually closes the tab and re-triggers via /chat.
-        logger.warning(
-            "paperclip_proxy: cookie path saw status=failed for user=%s; retrying",
-            auth.user_id,
-        )
-        if auth.email:
-            asyncio.create_task(_autoprovision(auth))
+        # hasn't been written yet (typical first visit), or (b) it's
+        # actively in-flight. Show the auto-refresh stub; do NOT
+        # re-spawn from this path — the stub reloads every 2s and a
+        # re-spawn each cycle would queue duplicate concurrent provision
+        # runs that race against each other (provision_org is only
+        # safely idempotent for already-active rows; concurrent failed
+        # retries can flip a successful row back to "failed"). Codex P1
+        # on PR #499. If the initial spawn somehow died silently, the
+        # user will eventually close the tab and re-handshake — that's
+        # the recovery path, NOT auto-respawn.
         return _provisioning_in_progress_response()
     if company.status != "active":
-        # Most commonly status="disabled" (cancelled subscription, admin
-        # disable). Send the user back to /chat so they can re-enable
-        # via the normal entry point — auto-refresh would loop forever
-        # since this state requires admin/billing intervention to clear.
+        # status="failed" or status="disabled". Both require user to
+        # re-enter via /chat: failed needs an explicit retry trigger
+        # (re-handshake spawns a fresh provision attempt with no
+        # concurrent races), disabled requires admin/billing to clear.
+        # Either way auto-refresh wouldn't help, so redirect out.
         from fastapi.responses import RedirectResponse
 
         logger.info(
@@ -1136,11 +1124,16 @@ async def proxy(path: str, request: Request) -> Response:
         #      the company host — useless for upstream URL shaping. Kept
         #      as a fallback for legacy direct-to-API-Gateway paths.
         #   3. Host — last-ditch fallback (post-ALB this is the ALB DNS).
-        forwarded_host = (
+        forwarded_host_raw = (
             request.headers.get("x-forwarded-host")
             or request.headers.get("x-isol8-public-host")
             or request.headers.get("host", "")
         )
+        # Multi-hop proxies append to X-Forwarded-Host comma-separated
+        # ("hostA, hostB"); the LEFTMOST value is the original public
+        # host. Without splitting, Paperclip would see an invalid host
+        # token and emit malformed absolute URLs. Codex P2 on PR #499.
+        forwarded_host = forwarded_host_raw.split(",", 1)[0].strip()
         client_host = request.client.host if request.client else ""
         upstream_headers: dict[str, str] = {
             **_filter_request_headers(request),
