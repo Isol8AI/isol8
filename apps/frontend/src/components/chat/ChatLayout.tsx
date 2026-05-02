@@ -91,15 +91,22 @@ export function ChatLayout({
     const override = process.env.NEXT_PUBLIC_COMPANY_URL;
     if (override) return override;
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+    // Local dev (LocalStack/dev backend on host) — proxy through the same
+    // backend port so the developer doesn't bounce out to dev.isol8.co.
+    if (/localhost|127\.0\.0\.1/.test(apiUrl)) return "http://localhost:8000";
     // Match `api.isol8.co` for prod (no env suffix); anything else
-    // (api-dev.isol8.co, api-staging.isol8.co, localhost, …) routes
-    // to the dev Paperclip stack since that's the only non-prod
-    // environment we run today.
+    // (api-dev.isol8.co, api-staging.isol8.co, …) routes to the dev
+    // Paperclip stack since that's the only non-prod env we run today.
     if (/\/\/api\.isol8\.co/.test(apiUrl)) return "https://company.isol8.co";
     return "https://company-dev.isol8.co";
   })();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
+  // Guard against double-clicks on the Teams handoff link. getToken() can
+  // take 200–800ms on stale Clerk sessions; without this a fast double-click
+  // fires two getToken() calls and two location.replace() writes — the
+  // second clobbers the first mid-navigation.
+  const [teamsHandoffPending, setTeamsHandoffPending] = useState(false);
   // Stripe Checkout returns either ?subscription=success (legacy) or
   // ?checkout=success (new trial-checkout flow). Both should trigger the
   // billing-refresh + URL-cleanup effect. Codex P2 on PR #393.
@@ -309,28 +316,41 @@ export function ChatLayout({
                   // Backend strips ?__t= via 302 immediately after minting
                   // the session cookie, so the token leaves the URL bar
                   // within ~50ms. JWT TTL is ~60s (Clerk default).
+                  //
+                  // Use location.replace (not .href) so the JWT-bearing URL
+                  // doesn't land in the browser's back/forward history.
                   e.preventDefault();
+                  if (teamsHandoffPending) return;
+                  setTeamsHandoffPending(true);
+                  posthog?.capture("teams_clicked");
                   try {
                     const token = await getToken();
                     if (!token) {
                       // No active session — fall back to plain navigation;
                       // backend will redirect to /chat with the right hint.
-                      window.location.href = companyUrl;
+                      window.location.replace(companyUrl);
                       return;
                     }
                     const url = new URL(companyUrl);
                     url.searchParams.set("__t", token);
-                    window.location.href = url.toString();
+                    window.location.replace(url.toString());
                   } catch (err) {
                     console.error("Teams handoff: getToken failed", err);
-                    window.location.href = companyUrl;
+                    window.location.replace(companyUrl);
+                  } finally {
+                    // Reset after 5s in case nav was blocked (iOS popup blockers,
+                    // back-button mid-async). Normal nav unmounts before this fires.
+                    setTimeout(() => setTeamsHandoffPending(false), 5000);
                   }
                 }}
                 target="_self"
-                rel="noopener"
+                rel="noopener noreferrer"
+                referrerPolicy="no-referrer"
                 className="sidebar-settings-link"
                 aria-label="Teams"
+                aria-busy={teamsHandoffPending}
                 title="Teams"
+                style={teamsHandoffPending ? { opacity: 0.5, pointerEvents: "none" } : undefined}
               >
                 <Users size={18} />
               </a>

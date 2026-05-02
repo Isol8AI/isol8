@@ -192,19 +192,35 @@ def _circuit_open() -> bool:
 # circuit-breaker). Centered card on a soft background — matches the
 # Goosetown / Clerk-default look so the user doesn't get jarring
 # unstyled HTML when the proxy intercepts a navigation.
+#
+# Includes prefers-color-scheme: dark (so a dark-mode browser doesn't
+# flash white-on-black phishing-page vibes), prefers-reduced-motion
+# (vestibular accessibility — disables the spinner animation), and
+# :focus-visible (keyboard users need a visible focus ring; resetting
+# border:0 on the button strips the browser default).
 _STUB_BASE_CSS = """
   *,*::before,*::after{box-sizing:border-box}
   html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#222;background:#f3f4f6}
-  body{display:flex;align-items:center;justify-content:center;padding:24px}
+  body{display:flex;align-items:center;justify-content:center;padding:max(24px,env(safe-area-inset-top)) 24px}
   .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.06);padding:32px 28px;max-width:420px;width:100%;text-align:center}
   .card h1{font-size:18px;line-height:1.3;margin:0 0 8px;font-weight:600}
-  .card p{font-size:14px;line-height:1.5;color:#555;margin:0 0 20px}
+  .card p{font-size:14px;line-height:1.5;color:#4b5563;margin:0 0 20px}
   .card .spinner{width:18px;height:18px;border:2px solid #e5e7eb;border-top-color:#6b7280;border-radius:50%;display:inline-block;margin-right:8px;vertical-align:-3px;animation:spin 1s linear infinite}
   @keyframes spin{to{transform:rotate(360deg)}}
+  @media (prefers-reduced-motion: reduce){.card .spinner{animation:none;border-top-color:transparent}}
   .btn{appearance:none;border:0;background:#111827;color:#fff;font:inherit;font-size:14px;font-weight:500;padding:10px 18px;border-radius:8px;cursor:pointer}
   .btn:hover{background:#374151}
+  .btn:focus-visible{outline:2px solid #2563eb;outline-offset:2px}
   .btn:disabled{background:#9ca3af;cursor:not-allowed}
   .err{color:#b91c1c;font-size:13px;margin-top:12px}
+  @media (prefers-color-scheme: dark){
+    html,body{background:#0b0b0e;color:#e5e7eb}
+    .card{background:#16161a;box-shadow:0 1px 3px rgba(0,0,0,.4),0 8px 24px rgba(0,0,0,.5)}
+    .card p{color:#a1a1aa}
+    .err{color:#fca5a5}
+    .btn{background:#e5e7eb;color:#0b0b0e}
+    .btn:hover{background:#fff}
+  }
 """
 
 
