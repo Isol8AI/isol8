@@ -466,25 +466,20 @@ def test_http_rejects_missing_auth_for_api_client():
     assert resp.json() == {"detail": "Not authenticated"}
 
 
-def test_http_serves_bootstrap_html_for_browser_nav_no_auth(monkeypatch):
-    """Browser nav (Accept: text/html) with no auth → bootstrap HTML page.
+def test_http_redirects_to_chat_for_browser_nav_no_auth(monkeypatch):
+    """Browser nav (Accept: text/html) with no auth → 302 to dev.isol8.co/chat.
 
-    The bootstrap loads the Clerk SDK and posts a Clerk JWT to /__handshake__
-    to exchange it for a session cookie. Without this, browser nav to
-    company-dev.isol8.co would land on a JSON 401 page (bad UX).
-
-    We also need a publishable key to be configured; mock the settings.
+    The proxy is no longer an entry point of its own; users start from
+    /chat on the Isol8 frontend (Teams button there appends ?__t=jwt).
+    Direct navigation to company.isol8.co with no token is a sign of
+    a bookmarked URL or stale tab; redirecting them home is friendlier
+    than a JSON 401.
     """
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
 
-    monkeypatch.setattr(
-        proxy_mod.settings,
-        "CLERK_PUBLISHABLE_KEY",
-        # Real-shape dev pub key encoding "up-moth-55.clerk.accounts.dev$".
-        "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
-    )
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     app = _build_http_app()
     client = TestClient(app)
@@ -492,30 +487,24 @@ def test_http_serves_bootstrap_html_for_browser_nav_no_auth(monkeypatch):
     resp = client.get(
         "/some/path",
         headers={"Accept": "text/html,application/xhtml+xml"},
+        follow_redirects=False,
     )
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers["content-type"]
-    # Bootstrap mounts Clerk SignIn inline (no redirectToSignIn loop).
-    assert "Sign in to Teams" in resp.text
-    assert "mountSignIn" in resp.text
-    # Clerk SDK script src derived from the publishable key.
-    assert "up-moth-55.clerk.accounts.dev" in resp.text
-    # Must POST to /__handshake__ to exchange the token.
-    assert "/__handshake__" in resp.text
-    # No-store so a stale tab doesn't cache the bootstrap.
-    assert resp.headers.get("cache-control") == "no-store"
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://dev.isol8.co/chat?from=teams"
 
 
-def test_http_accepts_paperclip_session_cookie(monkeypatch):
-    """Once /__handshake__ has set the session cookie, subsequent requests
-    skip Clerk's JWKS roundtrip entirely and authenticate from the cookie.
+def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
+    """Once the handshake has set the session cookie, subsequent requests
+    skip Clerk's JWKS roundtrip and authenticate from the cookie. With no
+    Paperclip company row (race), the proxy redirects to /chat for
+    re-provisioning rather than returning a JSON 503.
     """
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
 
-    # Configure the signing secret + mint a valid cookie.
     monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
     cookie = proxy_mod._mint_paperclip_session(user_id="user_session_path", email="u@example.com")
 
     class _FakeRepo:
@@ -523,27 +512,34 @@ def test_http_accepts_paperclip_session_cookie(monkeypatch):
             pass
 
         async def get(self, _user_id: str):
-            return None  # triggers the 503 provisioning stub past auth.
+            return None  # row missing → race-condition redirect
 
     monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
 
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
-    # We got past auth (no 401) — provisioning stub fires → 503.
-    assert resp.status_code == 503
-    assert "Set up your team workspace" in resp.text
+    resp = client.get(
+        "/some/path",
+        cookies={"isol8_paperclip": cookie},
+        follow_redirects=False,
+    )
+    # Past auth (no 401), missing row → 302 to /chat with reprovision hint.
+    assert resp.status_code == 302
+    assert "from=teams" in resp.headers["location"]
+    assert "need=reprovision" in resp.headers["location"]
 
 
 def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
     """Programmatic clients (curl / Postman) authenticate via Bearer header.
 
-    Bearer is checked AFTER the cookie path; same downstream behavior.
+    Same downstream behavior as the cookie path: missing row → 302.
     """
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
 
     async def _fake_decode(token: str):
         return {"sub": "user_bearer_path", "email": "u@example.com"}
@@ -564,8 +560,9 @@ def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
     resp = client.get(
         "/some/path",
         headers={"Authorization": "Bearer valid.bearer.jwt"},
+        follow_redirects=False,
     )
-    assert resp.status_code == 503
+    assert resp.status_code == 302
 
 
 def test_http_rejects_invalid_clerk_bearer(monkeypatch):
@@ -809,20 +806,91 @@ def test_ws_accepts_paperclip_session_cookie(monkeypatch):
     assert exc_info.value.code == 4503  # not provisioned, not 4401
 
 
-def test_bootstrap_html_renders_error_when_no_publishable_key(monkeypatch):
-    """If CLERK_PUBLISHABLE_KEY isn't configured, render a static error
-    rather than broken JS. Defensive for misconfigured environments.
+def test_http_handoff_token_via_query_param(monkeypatch):
+    """Initial handshake: ?__t=<clerk_jwt> in URL → backend validates,
+    container check passes, auto-provisions if needed, mints cookie,
+    302s to clean URL. The JWT leaves the address bar via the redirect.
     """
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
 
-    monkeypatch.setattr(proxy_mod.settings, "CLERK_PUBLISHABLE_KEY", "")
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_handoff", "email": "h@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    # User has a container.
+    async def _fake_get_container(owner_id: str):
+        return {"owner_id": owner_id, "status": "running"}
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
+
+    # User already has an active Paperclip company → skip autoprovision.
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            class _Co:
+                status = "active"
+
+            return _Co()
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
 
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", headers={"Accept": "text/html"})
-    assert resp.status_code == 200
-    assert "not configured" in resp.text.lower()
-    assert "<script" not in resp.text  # no JS leaked when key is missing
+    resp = client.get(
+        "/some/path?other=keep&__t=valid.clerk.jwt",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    # Token stripped from redirect target; other params preserved.
+    assert "__t=" not in resp.headers["location"]
+    assert "other=keep" in resp.headers["location"]
+    # Session cookie set on the redirect.
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "isol8_paperclip=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Secure" in set_cookie
+
+
+def test_http_handoff_redirects_to_chat_when_no_container(monkeypatch):
+    """Initial handshake: user signed in but has no Isol8 container yet.
+    Redirect to /chat with need=container hint instead of provisioning a
+    Paperclip workspace that would point at a nonexistent OpenClaw.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    monkeypatch.setattr(proxy_mod.settings, "FRONTEND_URL", "https://dev.isol8.co")
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_no_container", "email": "n@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    async def _fake_get_container(owner_id: str):
+        return None  # → 302 to /chat
+
+    monkeypatch.setattr(proxy_mod.container_repo, "get_by_owner_id", _fake_get_container)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/?__t=valid.clerk.jwt",
+        follow_redirects=False,
+    )
+    assert resp.status_code == 302
+    assert "from=teams" in resp.headers["location"]
+    assert "need=container" in resp.headers["location"]
+    # No session cookie should be set.
+    assert "isol8_paperclip=" not in resp.headers.get("set-cookie", "")
