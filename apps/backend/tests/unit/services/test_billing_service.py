@@ -99,6 +99,61 @@ class TestBillingServiceCreateCustomer:
     @pytest.mark.asyncio
     @patch("core.services.billing_service.billing_repo")
     @patch("core.services.billing_service.stripe")
+    async def test_create_customer_race_on_create_path_deletes_orphan(self, mock_stripe, mock_repo, service):
+        """If two callers race on the create-path (both miss the email
+        lookup, e.g. brand-new email), each mints a separate Stripe
+        customer. Only one DDB write wins — the loser's customer must be
+        deleted so the email→customer invariant holds."""
+        from core.repositories.billing_repo import AlreadyExistsError
+
+        mock_repo.AlreadyExistsError = AlreadyExistsError
+        mock_repo.get_by_owner_id = AsyncMock(
+            side_effect=[
+                None,
+                {"owner_id": "user_race", "stripe_customer_id": "cus_winner"},
+            ]
+        )
+        mock_stripe.Customer.list.return_value = MagicMock(data=[])
+        mock_stripe.Customer.create.return_value = MagicMock(id="cus_loser")
+        mock_repo.create_if_not_exists = AsyncMock(side_effect=AlreadyExistsError("user_race"))
+
+        result = await service.create_customer_for_owner(
+            owner_id="user_race",
+            email="race@example.com",
+        )
+
+        mock_stripe.Customer.create.assert_called_once()
+        mock_stripe.Customer.delete.assert_called_once()
+        delete_args, delete_kwargs = mock_stripe.Customer.delete.call_args
+        assert delete_args[0] == "cus_loser"
+        assert delete_kwargs.get("idempotency_key") == "delete_customer:cus_loser"
+        assert result["stripe_customer_id"] == "cus_winner"
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
+    async def test_create_customer_normalizes_email_case_and_whitespace(self, mock_stripe, mock_repo, service):
+        """``Customer.list(email=...)`` is exact-match, so we normalize
+        email (strip + lowercase) before any Stripe call. Without this, a
+        single human signing in as ``User@Example.com`` once and
+        ``user@example.com`` later would create two Stripe customers."""
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_stripe.Customer.list.return_value = MagicMock(data=[MagicMock(id="cus_norm")])
+        mock_repo.create_if_not_exists = AsyncMock(
+            return_value={"owner_id": "u_norm", "stripe_customer_id": "cus_norm"}
+        )
+
+        await service.create_customer_for_owner(
+            owner_id="u_norm",
+            email="  User@Example.COM  ",
+        )
+
+        mock_stripe.Customer.list.assert_called_once_with(email="user@example.com", limit=1)
+        mock_stripe.Customer.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("core.services.billing_service.billing_repo")
+    @patch("core.services.billing_service.stripe")
     async def test_create_customer_idempotent(self, mock_stripe, mock_repo, service):
         existing = {
             "owner_id": "user_idem",

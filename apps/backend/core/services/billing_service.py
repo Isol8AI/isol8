@@ -52,10 +52,17 @@ class BillingService:
         if existing:
             return existing
 
+        # Normalize so a single human typing/signing in with mixed case
+        # ("User@Example.com" vs "user@example.com") still maps to one
+        # Stripe customer. Stripe's Customer.list email filter is exact
+        # match, so without normalization we'd silently create duplicates.
+        normalized_email = email.strip().lower() if email else None
+
         customer_id: str | None = None
-        if email:
+        created_locally = False
+        if normalized_email:
             with timing("stripe.api.latency", {"op": "customers.list"}):
-                matches = stripe.Customer.list(email=email, limit=1)
+                matches = stripe.Customer.list(email=normalized_email, limit=1)
             if matches and matches.data:
                 customer_id = matches.data[0].id
                 put_metric("stripe.customer.email_dedup", dimensions={"result": "reuse"})
@@ -63,16 +70,17 @@ class BillingService:
                     "Reusing Stripe customer %s for owner_id=%s (email=%s)",
                     customer_id,
                     owner_id,
-                    email,
+                    normalized_email,
                 )
 
         if customer_id is None:
             with timing("stripe.api.latency", {"op": "customers.create"}):
                 customer = stripe.Customer.create(
-                    email=email,
+                    email=normalized_email,
                     metadata={"owner_id": owner_id, "owner_type": owner_type},
                 )
             customer_id = customer.id
+            created_locally = True
             put_metric("stripe.customer.email_dedup", dimensions={"result": "create"})
 
         try:
@@ -82,10 +90,35 @@ class BillingService:
                 owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
-            # Lost the DDB race for this owner_id. The winner already has the
-            # right stripe_customer_id (email lookup is deterministic), so we
-            # don't have an orphan customer to clean up.
-            return await billing_repo.get_by_owner_id(owner_id)
+            # Lost the DDB race for this owner_id. If we took the create
+            # path, two concurrent callers may have both missed the
+            # email-list lookup and each minted a fresh Stripe customer —
+            # the loser's customer is now orphaned (no DDB row points at
+            # it). Delete it so the email→customer invariant holds.
+            winner = await billing_repo.get_by_owner_id(owner_id)
+            if (
+                created_locally
+                and winner
+                and winner.get("stripe_customer_id")
+                and winner["stripe_customer_id"] != customer_id
+            ):
+                logger.info(
+                    "Lost DDB race for owner_id=%s; deleting orphan Stripe customer %s (winner=%s)",
+                    owner_id,
+                    customer_id,
+                    winner["stripe_customer_id"],
+                )
+                try:
+                    with timing("stripe.api.latency", {"op": "customers.delete"}):
+                        stripe.Customer.delete(
+                            customer_id,
+                            idempotency_key=f"delete_customer:{customer_id}",
+                        )
+                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "ok"})
+                except Exception:
+                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "error"})
+                    logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
+            return winner
 
     async def create_portal_session(self, billing_account: dict) -> str:
         owner_id = billing_account["owner_id"]
