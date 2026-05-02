@@ -110,14 +110,16 @@ class TestOpenclawConfigShape:
         assert main_entry["default"] is True
         assert main_entry["reasoningDefault"] == "stream"
 
-    def test_memory_qmd_backend(self):
+    def test_memory_builtin_backend(self):
+        """qmd backend was removed 2026-05-02 (EFS NFS deadlock class).
+        Builtin = flat MEMORY.md files in agent workspace, no sqlite."""
         config = _cfg()
         memory = config["memory"]
-        assert memory["backend"] == "qmd"
+        assert memory["backend"] == "builtin"
         assert memory["citations"] == "auto"
-        assert memory["qmd"]["command"] == "/home/node/.npm-global/bin/qmd"
-        assert memory["qmd"]["includeDefaultMemory"] is True
-        assert memory["qmd"]["searchMode"] == "search"
+        # qmd block must be entirely absent — leftover keys would resurrect
+        # the old codepath if openclaw ever tolerates them.
+        assert "qmd" not in memory
 
     def test_tools_full_profile_denies_canvas_nodes(self):
         """`nodes` is toggled to enabled at runtime by node_proxy.py when a
@@ -248,7 +250,7 @@ class TestWriteOpenclawConfigAsync:
         # Sanity-check one field from each major section.
         assert cfg["gateway"]["auth"]["token"] == "t-1"
         assert cfg["agents"]["defaults"]["llm"]["idleTimeoutSeconds"] == 300
-        assert cfg["memory"]["backend"] == "qmd"
+        assert cfg["memory"]["backend"] == "builtin"
         assert cfg["tools"]["exec"]["security"] == "allowlist"
         assert cfg["channels"]["telegram"]["enabled"] is True
         assert cfg["browser"]["defaultProfile"] == "user"
