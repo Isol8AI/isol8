@@ -1165,6 +1165,15 @@ async def proxy(path: str, request: Request) -> Response:
             "X-Forwarded-Host": forwarded_host,
             "X-Forwarded-Proto": "https",
         }
+        # Origin fallback. Same-origin browser GET/HEAD requests often
+        # omit Origin entirely. Without it, Better Auth's internal
+        # getSession derives a non-https request URL and looks for the
+        # bare cookie name (no ``__Secure-`` prefix), so the session we
+        # just signed in for is invisible upstream and privileged routes
+        # run as anonymous → 401/403. Stamp PAPERCLIP_PUBLIC_URL when
+        # the inbound request didn't carry an Origin. Codex P1 on PR #507.
+        if "origin" not in {k.lower() for k in upstream_headers} and settings.PAPERCLIP_PUBLIC_URL:
+            upstream_headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
         if client_host:
             upstream_headers["X-Forwarded-For"] = client_host
 
@@ -1406,12 +1415,18 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
 
     await websocket.accept()
 
+    # Origin must match PAPERCLIP_PUBLIC_URL so Better Auth's internal
+    # getSession derives the right request URL and looks for the
+    # __Secure- cookie prefix (otherwise it falls back to the bare
+    # name and the session is not recognized — see admin_client._headers).
+    ws_headers = {"Cookie": session_cookie}
+    if settings.PAPERCLIP_PUBLIC_URL:
+        ws_headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
+
     try:
         async with ws_connect(
             upstream_url,
-            # Cookie auth — Paperclip's Better Auth has no bearer plugin,
-            # so the upstream WS handshake authenticates via Cookie only.
-            additional_headers={"Cookie": session_cookie},
+            additional_headers=ws_headers,
             max_size=_WS_MAX_FRAME_SIZE,
             open_timeout=15,
             close_timeout=5,
