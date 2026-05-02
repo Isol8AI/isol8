@@ -45,27 +45,27 @@ def _service_token_key(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _stub_admin_session(monkeypatch):
-    """Stub get_admin_session_token to return a fake token for all tests.
+    """Stub get_admin_session_cookie to return a fake cookie for all tests.
 
     The real implementation calls Secrets Manager (boto3) + Better Auth
     sign-in (httpx) — both unwanted in unit tests. Stubbing returns
-    ``"admin-token-test"`` so provision_org's calls to admin-bearing
+    ``"admin-cookie-test"`` so provision_org's calls to admin-bearing
     endpoints carry a deterministic value tests can assert on.
     """
 
-    async def _fake_admin_token(_http_client):
-        return "admin-token-test"
+    async def _fake_admin_cookie(_http_client):
+        return "admin-cookie-test"
 
     monkeypatch.setattr(
-        "core.services.paperclip_admin_session.get_admin_session_token",
-        _fake_admin_token,
+        "core.services.paperclip_admin_session.get_admin_session_cookie",
+        _fake_admin_cookie,
     )
     # The provisioning code imports from this module too — patch in case
     # someone re-imports.
     import core.services.paperclip_provisioning as prov_mod
 
-    if hasattr(prov_mod, "get_admin_session_token"):
-        monkeypatch.setattr(prov_mod, "get_admin_session_token", _fake_admin_token, raising=False)
+    if hasattr(prov_mod, "get_admin_session_cookie"):
+        monkeypatch.setattr(prov_mod, "get_admin_session_cookie", _fake_admin_cookie, raising=False)
 
 
 @pytest.fixture
@@ -114,12 +114,16 @@ def _make_admin_mock() -> MagicMock:
     """
     admin = MagicMock()
     # The provisioning code passes ``self._admin._http`` into
-    # get_admin_session_token. Stubbed in _stub_admin_session fixture
+    # get_admin_session_cookie. Stubbed in _stub_admin_session fixture
     # but the attribute access still has to succeed — give it a
     # placeholder.
     admin._http = MagicMock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
+    admin.sign_up_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_default"}, "_session_cookie": "session-default"}
+    )
+    admin.sign_in_user = AsyncMock(
+        return_value={"user": {"id": "pc_user_default"}, "_session_cookie": "session-default"}
+    )
     admin.create_company = AsyncMock(return_value={"id": "co_default"})
     admin.create_agent = AsyncMock(return_value={"id": "agent_default"})
     admin.create_invite = AsyncMock(return_value={"token": "invite-token-default"})
@@ -157,7 +161,7 @@ def test_ws_gateway_url_empty_falls_back_to_localhost():
 
 async def test_provision_org_happy_path(repo):
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session-1"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
@@ -176,25 +180,25 @@ async def test_provision_org_happy_path(repo):
 
     # create_company now runs as the BOOTSTRAP ADMIN (not the new user)
     # because Paperclip's POST /api/companies requires instance_admin.
-    # The admin session token comes from get_admin_session_token, which
-    # the autouse _stub_admin_session fixture pins to "admin-token-test".
+    # The admin session token comes from get_admin_session_cookie, which
+    # the autouse _stub_admin_session fixture pins to "admin-cookie-test".
     admin.create_company.assert_awaited_once()
     cc_kwargs = admin.create_company.call_args.kwargs
     assert cc_kwargs["name"] == "owner@acme.test"
-    assert cc_kwargs["session_token"] == "admin-token-test"
+    assert cc_kwargs["session_cookie"] == "admin-cookie-test"
     assert cc_kwargs["idempotency_key"] == "user_owner"
 
     # New user is added as a co-owner via the invite/accept/approve chain.
     admin.create_invite.assert_awaited_once()
     invite_kwargs = admin.create_invite.call_args.kwargs
     assert invite_kwargs["company_id"] == "co_acme"
-    assert invite_kwargs["session_token"] == "admin-token-test"  # admin invites
+    assert invite_kwargs["session_cookie"] == "admin-cookie-test"  # admin invites
     admin.accept_invite.assert_awaited_once()
     accept_kwargs = admin.accept_invite.call_args.kwargs
-    assert accept_kwargs["session_token"] == "owner-session-1"  # user accepts
+    assert accept_kwargs["session_cookie"] == "owner-session-1"  # user accepts
     admin.approve_join_request.assert_awaited_once()
     approve_kwargs = admin.approve_join_request.call_args.kwargs
-    assert approve_kwargs["session_token"] == "admin-token-test"  # admin approves
+    assert approve_kwargs["session_cookie"] == "admin-cookie-test"  # admin approves
 
     admin.create_agent.assert_awaited_once()
     agent_kwargs = admin.create_agent.call_args.kwargs
@@ -204,7 +208,7 @@ async def test_provision_org_happy_path(repo):
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
     # Agent is owned BY the user (their session) so they can edit it later.
-    assert agent_kwargs["session_token"] == "owner-session-1"
+    assert agent_kwargs["session_cookie"] == "owner-session-1"
 
     # Persisted row
     assert row.user_id == "user_owner"
@@ -224,7 +228,7 @@ async def test_provision_org_happy_path(repo):
 
 async def test_provision_org_idempotent_on_second_call(repo):
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session-1"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session-1"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
@@ -247,7 +251,7 @@ async def test_provision_org_idempotent_on_second_call(repo):
 
 async def test_provision_org_seed_agent_failure_is_not_fatal(repo):
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
     admin.create_company = AsyncMock(return_value={"id": "co_acme"})
     admin.create_agent = AsyncMock(side_effect=PaperclipApiError("agent create failed", status_code=500, body="boom"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -285,7 +289,7 @@ async def test_provision_org_signup_failure_marks_failed(repo):
 
 async def test_provision_org_create_company_failure_marks_failed(repo):
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
     admin.create_company = AsyncMock(side_effect=PaperclipApiError("server err", status_code=500, body="fail"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
@@ -305,7 +309,7 @@ async def test_provision_org_retries_after_failure(repo):
     """A failed row should not block a subsequent successful retry."""
     admin = _make_admin_mock()
     # First attempt: create_company fails
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "tok"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "tok"})
     admin.create_company = AsyncMock(side_effect=PaperclipApiError("transient", status_code=500, body="x"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
@@ -355,8 +359,8 @@ async def _seed_owner(repo, *, org_id="org_acme", owner_user_id="user_owner"):
 async def test_provision_member_happy_path(repo):
     await _seed_owner(repo)
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session"})
     admin.create_invite = AsyncMock(return_value={"token": "invite-secret"})
     admin.accept_invite = AsyncMock(return_value={"id": "req_abc"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
@@ -380,18 +384,18 @@ async def test_provision_member_happy_path(repo):
 
     admin.create_invite.assert_awaited_once()
     ci_kwargs = admin.create_invite.call_args.kwargs
-    assert ci_kwargs["session_token"] == "owner-session"
+    assert ci_kwargs["session_cookie"] == "owner-session"
     assert ci_kwargs["company_id"] == "co_acme"
     assert ci_kwargs["email"] == "member@acme.test"
 
     admin.accept_invite.assert_awaited_once()
     ai_kwargs = admin.accept_invite.call_args.kwargs
-    assert ai_kwargs["session_token"] == "member-session"
+    assert ai_kwargs["session_cookie"] == "member-session"
     assert ai_kwargs["invite_token"] == "invite-secret"
 
     admin.approve_join_request.assert_awaited_once()
     aj_kwargs = admin.approve_join_request.call_args.kwargs
-    assert aj_kwargs["session_token"] == "owner-session"
+    assert aj_kwargs["session_cookie"] == "owner-session"
     assert aj_kwargs["company_id"] == "co_acme"
     assert aj_kwargs["request_id"] == "req_abc"
 
@@ -424,8 +428,8 @@ async def test_provision_member_raises_when_org_not_provisioned(repo):
 async def test_provision_member_idempotent_on_second_call(repo):
     await _seed_owner(repo)
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session"})
     admin.accept_invite = AsyncMock(return_value={"id": "req_abc"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
 
@@ -470,8 +474,8 @@ async def test_provision_member_signup_failure_marks_failed(repo):
 async def test_provision_member_invite_failure_marks_failed(repo):
     await _seed_owner(repo)
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "member-session"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "owner-session"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "member-session"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "owner-session"})
     admin.create_invite = AsyncMock(side_effect=PaperclipApiError("perm denied", status_code=403, body="nope"))
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError):
@@ -499,8 +503,8 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
     """
     await _seed_owner(repo)
     admin = _make_admin_mock()
-    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "token": "ms"})
-    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "token": "os"})
+    admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_member"}, "_session_cookie": "ms"})
+    admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_owner"}, "_session_cookie": "os"})
     admin.accept_invite = AsyncMock(return_value={"unexpected": "shape"})
     prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
     with pytest.raises(PaperclipApiError, match="missing 'id'"):

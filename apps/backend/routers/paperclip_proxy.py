@@ -34,17 +34,19 @@ Every proxied request signs the user in to Paperclip from scratch:
 2. Look up the user's ``PaperclipCompany`` row, decrypt the stored
    password.
 3. Call ``admin_client.sign_in_user(email, password)`` to get a
-   fresh Better Auth session token. Better Auth verifies the password
-   with bcrypt server-side; the call is dominated by network RTT
-   (single-digit ms inside the VPC) — no session cache needed for v1.
+   fresh Better Auth session cookie (``_session_cookie`` field on the
+   response, captured from the upstream ``Set-Cookie`` header). Better
+   Auth verifies the password with bcrypt server-side; the call is
+   dominated by network RTT (single-digit ms inside the VPC) — no
+   session cache needed for v1.
 4. Forward the request to Paperclip with
-   ``Authorization: Bearer <session_token>``. Better Auth accepts the
-   session token in either a cookie or the bearer header.
+   ``Cookie: <session_cookie>``. Paperclip's Better Auth config does
+   NOT enable the bearer() plugin, so cookie is the only auth path
+   that authenticates the upstream call.
 5. Forward the upstream's ``Set-Cookie`` to the browser, scoped to
    ``.isol8.co`` so subsequent in-page AJAX requests carry it on
    their own. (Useful for Paperclip's own client-side fetches that
-   address ``company.isol8.co`` directly without going through us
-   adding the bearer.)
+   address ``company.isol8.co`` directly without going through us.)
 6. If the response is HTML, rewrite the visible brand strings
    (``<title>Paperclip</title>``, ``og:site_name``).
 
@@ -1118,10 +1120,10 @@ async def proxy(path: str, request: Request) -> Response:
             _record_outcome(e.status_code)
             raise HTTPException(status_code=502, detail="Could not authenticate to Paperclip")
 
-        session_token = signin.get("token") or ""
-        if not session_token:
+        session_cookie = signin.get("_session_cookie") or ""
+        if not session_cookie:
             logger.error(
-                "paperclip_proxy: Better Auth response had no token for user %s",
+                "paperclip_proxy: Better Auth response had no Set-Cookie for user %s",
                 auth.user_id,
             )
             raise HTTPException(status_code=502, detail="Paperclip auth response malformed")
@@ -1152,9 +1154,14 @@ async def proxy(path: str, request: Request) -> Response:
         # token and emit malformed absolute URLs. Codex P2 on PR #499.
         forwarded_host = forwarded_host_raw.split(",", 1)[0].strip()
         client_host = request.client.host if request.client else ""
+        # Auth via Cookie, NOT Authorization: Bearer — Paperclip's
+        # Better Auth config does not enable the bearer() plugin, so a
+        # bearer header is silently ignored and the upstream sees the
+        # request as anonymous. session_cookie is the bare ``name=value``
+        # captured from Better Auth's Set-Cookie on sign-in.
         upstream_headers: dict[str, str] = {
             **_filter_request_headers(request),
-            "Authorization": f"Bearer {session_token}",
+            "Cookie": session_cookie,
             "X-Forwarded-Host": forwarded_host,
             "X-Forwarded-Proto": "https",
         }
@@ -1379,10 +1386,10 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
             await websocket.close(code=4502, reason="Paperclip auth failed")
             return
 
-        session_token = signin.get("token") or ""
-        if not session_token:
+        session_cookie = signin.get("_session_cookie") or ""
+        if not session_cookie:
             logger.error(
-                "paperclip_proxy_ws: Better Auth response had no token for user %s",
+                "paperclip_proxy_ws: Better Auth response had no Set-Cookie for user %s",
                 user_id,
             )
             await websocket.close(code=4502, reason="Paperclip auth response malformed")
@@ -1402,7 +1409,9 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     try:
         async with ws_connect(
             upstream_url,
-            additional_headers={"Authorization": f"Bearer {session_token}"},
+            # Cookie auth — Paperclip's Better Auth has no bearer plugin,
+            # so the upstream WS handshake authenticates via Cookie only.
+            additional_headers={"Cookie": session_cookie},
             max_size=_WS_MAX_FRAME_SIZE,
             open_timeout=15,
             close_timeout=5,
