@@ -187,31 +187,119 @@ def _circuit_open() -> bool:
     return False
 
 
+# Shared CSS for all proxy-served stub pages (bootstrap, provisioning,
+# circuit-breaker). Centered card on a soft background — matches the
+# Goosetown / Clerk-default look so the user doesn't get jarring
+# unstyled HTML when the proxy intercepts a navigation.
+_STUB_BASE_CSS = """
+  *,*::before,*::after{box-sizing:border-box}
+  html,body{height:100%;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;color:#222;background:#f3f4f6}
+  body{display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{background:#fff;border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.06);padding:32px 28px;max-width:420px;width:100%;text-align:center}
+  .card h1{font-size:18px;line-height:1.3;margin:0 0 8px;font-weight:600}
+  .card p{font-size:14px;line-height:1.5;color:#555;margin:0 0 20px}
+  .card .spinner{width:18px;height:18px;border:2px solid #e5e7eb;border-top-color:#6b7280;border-radius:50%;display:inline-block;margin-right:8px;vertical-align:-3px;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .btn{appearance:none;border:0;background:#111827;color:#fff;font:inherit;font-size:14px;font-weight:500;padding:10px 18px;border-radius:8px;cursor:pointer}
+  .btn:hover{background:#374151}
+  .btn:disabled{background:#9ca3af;cursor:not-allowed}
+  .err{color:#b91c1c;font-size:13px;margin-top:12px}
+"""
+
+
 def _circuit_breaker_response() -> Response:
-    return Response(
-        content=(
-            b"<!doctype html><html><body>"
-            b"<h1>Teams temporarily unavailable</h1>"
-            b"<p>Try again in a minute.</p>"
-            b"</body></html>"
-        ),
-        status_code=503,
-        media_type="text/html",
-    )
+    body = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Teams temporarily unavailable</title>
+<style>{_STUB_BASE_CSS}</style>
+</head><body>
+<div class="card">
+  <h1>Teams temporarily unavailable</h1>
+  <p>The workspace backend is having trouble. Try again in a minute.</p>
+</div>
+</body></html>
+"""
+    return Response(content=body.encode("utf-8"), status_code=503, media_type="text/html; charset=utf-8")
 
 
 def _provisioning_response() -> Response:
-    """Returned when the user has no Paperclip company yet (or it's not active)."""
-    return Response(
-        content=(
-            b"<!doctype html><html><body>"
-            b"<h1>Your team workspace is being set up</h1>"
-            b"<p>Refresh in a moment.</p>"
-            b"</body></html>"
-        ),
-        status_code=503,
-        media_type="text/html",
-    )
+    """Returned when the user has no Paperclip company yet (or it's not active).
+
+    The page POSTs to ``/__provision__`` to trigger personal-company
+    provisioning (mirrors what the Clerk org.created webhook would do
+    for org users), then auto-polls until the row goes ``status=active``
+    and reloads. Manual refresh also works — backend will return either
+    the same stub or the actual Paperclip UI depending on row state.
+    """
+    body = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setting up Teams…</title>
+<style>{_STUB_BASE_CSS}</style>
+</head><body>
+<div class="card">
+  <h1 id="title">Set up your team workspace</h1>
+  <p id="msg">This takes a few seconds. Click below to provision your workspace.</p>
+  <button id="go" class="btn">Set up workspace</button>
+  <div id="err" class="err" hidden></div>
+</div>
+<script>
+(() => {{
+  const $ = (id) => document.getElementById(id);
+  const setBusy = (msg) => {{
+    $('title').innerHTML = '<span class="spinner"></span>Provisioning…';
+    $('msg').textContent = msg || 'This usually takes 5–10 seconds.';
+    $('go').hidden = true;
+    $('err').hidden = true;
+  }};
+  const setError = (msg) => {{
+    $('err').textContent = msg;
+    $('err').hidden = false;
+    $('go').disabled = false;
+    $('go').textContent = 'Try again';
+    $('title').textContent = 'Set up your team workspace';
+    $('msg').textContent = '';
+  }};
+
+  async function poll(deadlineMs) {{
+    // After provisioning succeeds, the next request to / should proxy
+    // straight through. We poll by issuing a HEAD with no follow so we
+    // can read the status code without re-rendering this page.
+    const start = Date.now();
+    while (Date.now() - start < deadlineMs) {{
+      try {{
+        const r = await fetch('/', {{ method: 'HEAD', credentials: 'include' }});
+        if (r.status !== 503) {{
+          location.replace('/');
+          return;
+        }}
+      }} catch (e) {{ /* keep polling */ }}
+      await new Promise(r => setTimeout(r, 2000));
+    }}
+    setError('Provisioning taking longer than expected. Refresh to retry.');
+  }}
+
+  $('go').addEventListener('click', async () => {{
+    $('go').disabled = true;
+    setBusy('');
+    try {{
+      const r = await fetch('/__provision__', {{ method: 'POST', credentials: 'include' }});
+      if (r.ok) {{
+        await poll(60000);
+      }} else {{
+        const text = await r.text().catch(() => '');
+        setError('Provisioning failed (' + r.status + ')' + (text ? ': ' + text.slice(0, 200) : ''));
+      }}
+    }} catch (e) {{
+      setError('Network error: ' + (e && e.message || e));
+    }}
+  }});
+}})();
+</script>
+</body></html>
+"""
+    return Response(content=body.encode("utf-8"), status_code=503, media_type="text/html; charset=utf-8")
 
 
 def _filter_request_headers(req: Request) -> dict[str, str]:
@@ -443,11 +531,10 @@ def _bootstrap_html() -> bytes:
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Sign in to Teams</title>
-<style>
-  html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fafafa;color:#333}}
-  body{{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem}}
-  #status{{text-align:center;color:#666;font-size:14px}}
-  #signin-root{{min-width:320px}}
+<style>{_STUB_BASE_CSS}
+  body{{flex-direction:column;gap:16px}}
+  #status{{font-size:13px;color:#6b7280}}
+  #signin-root{{display:flex;justify-content:center;width:100%;max-width:480px}}
 </style>
 </head><body>
 <div id="status">Loading…</div>
@@ -639,6 +726,75 @@ async def handshake(request: Request) -> Response:
         path="/",
     )
     return response
+
+
+@router.post("/__provision__")
+async def provision_self(request: Request) -> Response:
+    """Synchronously provision a personal Paperclip company for the caller.
+
+    The Clerk webhooks (``organization.created`` / ``organizationMembership.created``)
+    only provision Paperclip rows for users who go through Clerk's org-creation
+    flow. Users who reach the Teams button on a personal account would otherwise
+    see the "workspace being set up" stub forever. This endpoint is the
+    self-service equivalent: it runs the same provisioning chain (sign up via
+    Better Auth, create company, mint service token, seed Main Agent, persist
+    row) but uses ``user_id`` as the org_id sentinel since the row is keyed
+    per-user anyway.
+
+    Idempotent: returns 204 immediately if the row already exists with
+    ``status="active"``. Otherwise blocks until provisioning completes
+    (typically 5–10s — Better Auth signup + Paperclip company create + agent
+    seed). On failure, returns 502 with the underlying error so the
+    provisioning stub can surface it to the user.
+
+    Auth: same as the proxy itself (cookie or Bearer). The bootstrap sets the
+    cookie before the user ever sees the provisioning stub, so by the time
+    the stub's "Set up workspace" button POSTs here, auth is already in place.
+    """
+    auth = await _get_paperclip_user(request)
+    if not auth.email:
+        raise HTTPException(
+            status_code=400,
+            detail="Email claim missing from auth token; cannot create Paperclip account",
+        )
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    existing = await repo.get(auth.user_id)
+    if existing is not None and existing.status == "active":
+        return Response(status_code=204)
+
+    # Build provisioning chain inline (same shape as the webhook handler's
+    # _get_paperclip_provisioning helper). Per-request httpx.AsyncClient
+    # mirrors the proxy's pattern.
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    async with httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=30.0,
+    ) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
+        try:
+            # Use user_id as org_id sentinel — the row is keyed per-user
+            # already, and the by-org-id GSI partitions cleanly because each
+            # personal user is its own one-member "org".
+            await provisioning.provision_org(
+                org_id=auth.user_id,
+                owner_user_id=auth.user_id,
+                owner_email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001 — surface to caller for stub UI.
+            logger.exception(
+                "paperclip_proxy: self-provision failed for user=%s: %s",
+                auth.user_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Provisioning failed: {type(e).__name__}",
+            )
+    return Response(status_code=204)
 
 
 @router.api_route(
