@@ -418,3 +418,164 @@ def test_ws_rejects_missing_email_claim(monkeypatch):
             pass  # pragma: no cover
 
     assert exc_info.value.code == 4400
+
+
+# ---------------------------------------------------------------
+# HTTP relay — auth gate (cookie-or-bearer)
+# ---------------------------------------------------------------
+#
+# The HTTP path serves cross-subdomain browser navigation (the user
+# clicking the "Teams" link in /chat → ``https://company.isol8.co``).
+# Browser navigation cannot attach an ``Authorization: Bearer`` header,
+# so the only credential the gateway sees is the Clerk ``__session``
+# cookie that's scoped to ``.isol8.co``. The proxy used to use
+# ``Depends(get_current_user)`` (which only reads ``Authorization`` via
+# ``HTTPBearer``) and so every browser navigation lands on a 401
+# "Not authenticated" JSON page. These tests pin the cookie fallback
+# wired in by ``_get_paperclip_user``.
+#
+# We assert at the auth gate only — past auth, ``proxy()`` calls
+# ``PaperclipRepo`` and ``PaperclipAdminClient`` (real DynamoDB +
+# Paperclip server). Mocking the full pipeline would mostly verify
+# mocks against mocks; the integration suite covers the upstream call.
+
+
+def _build_http_app():
+    """Mount the proxy router on a fresh FastAPI app for testing."""
+    from fastapi import FastAPI
+
+    from routers.paperclip_proxy import router
+
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+def test_http_rejects_missing_auth():
+    """No Authorization header AND no __session cookie → 401.
+
+    Reproduces the original symptom (PR #475 follow-up): browser nav
+    with no credentials must surface as 401 rather than crash deeper
+    in the proxy. Asserts the 401 is the auth-gate's, not a downstream
+    failure dressed up as 401.
+    """
+    from fastapi.testclient import TestClient
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path")
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Not authenticated"}
+
+
+def test_http_accepts_clerk_session_cookie(monkeypatch):
+    """Browser nav: __session cookie present, no Authorization header.
+
+    Past the auth gate the proxy looks up a PaperclipCompany row; we
+    mock the repo to return ``None`` so the response is the
+    "provisioning" 503 stub (HTML). The point of this test is that we
+    DON'T see 401 — i.e. the cookie fallback was honored. A 503 with
+    HTML body proves the request reached the post-auth code.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_cookie_path", "email": "u@example.com"}
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return None  # → triggers the 503 "provisioning" stub.
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path", cookies={"__session": "valid.cookie.jwt"})
+    assert resp.status_code == 503
+    assert "team workspace is being set up" in resp.text
+
+
+def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
+    """Programmatic clients: Authorization: Bearer still works.
+
+    Same shape as the cookie test — assert we get past auth (503 from
+    the missing PaperclipCompany row) rather than 401.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_bearer_path", "email": "u@example.com"}
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return None
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path",
+        headers={"Authorization": "Bearer valid.bearer.jwt"},
+    )
+    assert resp.status_code == 503
+
+
+def test_http_rejects_invalid_clerk_token(monkeypatch):
+    """Cookie present but JWT decode raises → 401 (not crash).
+
+    Mirrors ``test_ws_rejects_invalid_clerk_token`` for the HTTP path.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        raise ValueError("not a real jwt")
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path", cookies={"__session": "garbage"})
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid Clerk token"}
+
+
+def test_http_rejects_token_missing_subject(monkeypatch):
+    """JWT decodes but lacks ``sub`` claim → 401.
+
+    Defensive: a malformed Clerk template that drops ``sub`` should fail
+    closed at the proxy edge, not blow up in the DynamoDB lookup.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"email": "u@example.com"}  # no sub.
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path", cookies={"__session": "valid.but.no.sub"})
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Token missing subject"}

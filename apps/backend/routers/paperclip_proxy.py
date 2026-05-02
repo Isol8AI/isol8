@@ -78,7 +78,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSoc
 from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
-from core.auth import AuthContext, _decode_token, get_current_user
+from core.auth import AuthContext, _decode_token
 from core.config import settings
 from core.encryption import decrypt
 from core.repositories.paperclip_repo import PaperclipRepo
@@ -293,6 +293,64 @@ def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co"
     return f"{set_cookie}; Domain={target_domain}"
 
 
+# Clerk's default session-cookie name across their JS SDKs. If a future
+# Clerk upgrade renames it we centralize the constant here. Used by both
+# the HTTP path (``_get_paperclip_user``) and the WebSocket relay
+# (``proxy_ws``) — both rely on the cookie because cross-subdomain
+# navigation and JS-initiated WS upgrades can't carry an
+# ``Authorization`` header.
+_CLERK_SESSION_COOKIE = "__session"
+
+
+# --- Auth ---
+#
+# Top-level browser navigation to ``company.isol8.co`` (the user clicking
+# the "Teams" link from /chat) cannot attach an ``Authorization: Bearer``
+# header — the WebSocket API and the HTML <a> navigation API both lack a
+# hook for it. The only credential the browser sends is the Clerk
+# ``__session`` cookie, which is scoped to ``.isol8.co`` so it survives
+# the cross-subdomain hop. ``get_current_user`` (the standard dependency)
+# only reads ``Authorization`` via ``HTTPBearer``; using it here means
+# every browser nav lands on a 401 "Not authenticated" JSON page.
+#
+# So the HTTP proxy needs the same cookie-or-header dance the WebSocket
+# relay already does (see ``proxy_ws`` below). We prefer ``Authorization``
+# when present so service-to-service callers and explicit fetches still
+# work, and fall back to the cookie for browser navigation.
+
+
+async def _get_paperclip_user(request: Request) -> AuthContext:
+    """Resolve the caller from a Bearer header OR the Clerk session cookie.
+
+    Browser navigation to ``company.isol8.co`` only carries the cookie;
+    programmatic clients can still send ``Authorization: Bearer``. We
+    only read ``sub`` and ``email`` here — the paperclip-companies table
+    is keyed per-user (not per-org), so org claims aren't needed.
+    """
+    token: str | None = None
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip() or None
+    if not token:
+        token = request.cookies.get(_CLERK_SESSION_COOKIE)
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    try:
+        payload = await _decode_token(token)
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 - opaque to caller; we 401.
+        logger.warning("paperclip_proxy: invalid Clerk token: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid Clerk token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject")
+
+    return AuthContext(user_id=user_id, email=payload.get("email"))
+
+
 # --- Routes ---
 
 
@@ -303,7 +361,7 @@ def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co"
 async def proxy(
     path: str,
     request: Request,
-    auth: AuthContext = Depends(get_current_user),
+    auth: AuthContext = Depends(_get_paperclip_user),
 ) -> Response:
     """Forward ``request`` to the internal Paperclip server.
 
@@ -512,13 +570,6 @@ async def proxy(
 # Paperclip auth failed, 4503 not provisioned. They're informational
 # only — the browser usually just sees an immediate close — but they
 # make CloudWatch traces readable.
-
-# Clerk's default cookie name. Verified against ``core/auth.py``: the
-# HTTP path uses Bearer (HTTPAuthorizationCredentials) so there's no
-# direct cookie reference in the codebase, but Clerk's documented
-# session-cookie name across their JS SDKs is ``__session``. If a future
-# Clerk upgrade renames it we centralize the constant here.
-_CLERK_SESSION_COOKIE = "__session"
 
 # Max WebSocket frame size we accept from either side. 10 MB matches
 # Paperclip's own server limit; bigger frames are almost certainly a
