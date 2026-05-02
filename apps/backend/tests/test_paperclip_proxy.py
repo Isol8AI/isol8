@@ -496,8 +496,9 @@ def test_http_redirects_to_chat_for_browser_nav_no_auth(monkeypatch):
 def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
     """Once the handshake has set the session cookie, subsequent requests
     skip Clerk's JWKS roundtrip and authenticate from the cookie. With no
-    Paperclip company row (race), the proxy redirects to /chat for
-    re-provisioning rather than returning a JSON 503.
+    Paperclip company row yet (typical first-visit race against the
+    background autoprovision task), the proxy returns the auto-refresh
+    "setting up" stub instead of a JSON 503.
     """
     from fastapi.testclient import TestClient
 
@@ -512,7 +513,7 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
             pass
 
         async def get(self, _user_id: str):
-            return None  # row missing → race-condition redirect
+            return None  # row missing → setting-up stub
 
     monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
 
@@ -524,10 +525,10 @@ def test_http_accepts_paperclip_session_cookie_and_forwards(monkeypatch):
         cookies={"isol8_paperclip": cookie},
         follow_redirects=False,
     )
-    # Past auth (no 401), missing row → 302 to /chat with reprovision hint.
-    assert resp.status_code == 302
-    assert "from=teams" in resp.headers["location"]
-    assert "need=reprovision" in resp.headers["location"]
+    # Past auth (no 401), missing row → 503 setting-up stub with auto-refresh.
+    assert resp.status_code == 503
+    assert "Setting up your workspace" in resp.text
+    assert 'http-equiv="refresh"' in resp.text
 
 
 def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
@@ -562,7 +563,9 @@ def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
         headers={"Authorization": "Bearer valid.bearer.jwt"},
         follow_redirects=False,
     )
-    assert resp.status_code == 302
+    # Bearer auth + missing row → setting-up stub (same as cookie path).
+    assert resp.status_code == 503
+    assert "Setting up your workspace" in resp.text
 
 
 def test_http_rejects_invalid_clerk_bearer(monkeypatch):
