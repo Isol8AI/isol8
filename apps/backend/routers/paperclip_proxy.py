@@ -1406,12 +1406,18 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
 
     await websocket.accept()
 
+    # Origin must match PAPERCLIP_PUBLIC_URL so Better Auth's internal
+    # getSession derives the right request URL and looks for the
+    # __Secure- cookie prefix (otherwise it falls back to the bare
+    # name and the session is not recognized — see admin_client._headers).
+    ws_headers = {"Cookie": session_cookie}
+    if settings.PAPERCLIP_PUBLIC_URL:
+        ws_headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
+
     try:
         async with ws_connect(
             upstream_url,
-            # Cookie auth — Paperclip's Better Auth has no bearer plugin,
-            # so the upstream WS handshake authenticates via Cookie only.
-            additional_headers={"Cookie": session_cookie},
+            additional_headers=ws_headers,
             max_size=_WS_MAX_FRAME_SIZE,
             open_timeout=15,
             close_timeout=5,
