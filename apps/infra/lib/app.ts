@@ -36,6 +36,12 @@ const pipeline = new GitHubWorkflow(app, "isol8-pipeline", {
     env: {
       STRIPE_FLAT_PRICE_ID_DEV: "${{ secrets.STRIPE_FLAT_PRICE_ID_DEV }}",
       STRIPE_FLAT_PRICE_ID_PROD: "${{ secrets.STRIPE_FLAT_PRICE_ID_PROD }}",
+      // Same secrets the Vercel build job already consumes (lines below).
+      // Re-exported here so service-stack.ts can bake the publishable key
+      // into the backend container env at synth time — the paperclip-proxy
+      // bootstrap HTML needs it to load the Clerk SDK.
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_DEV }}",
+      NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD: "${{ secrets.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY_PROD }}",
     },
     primaryOutputDirectory: "apps/infra/cdk.out",
   }),

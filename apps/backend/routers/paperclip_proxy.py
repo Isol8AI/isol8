@@ -68,13 +68,18 @@ independently rather than relying on any shared state.
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import html
 import logging
 import re
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+import jwt as pyjwt
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
 from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
@@ -293,46 +298,221 @@ def _rewrite_set_cookie_domain(set_cookie: str, target_domain: str = ".isol8.co"
     return f"{set_cookie}; Domain={target_domain}"
 
 
-# Clerk's default session-cookie name across their JS SDKs. If a future
-# Clerk upgrade renames it we centralize the constant here. Used by both
-# the HTTP path (``_get_paperclip_user``) and the WebSocket relay
-# (``proxy_ws``) — both rely on the cookie because cross-subdomain
-# navigation and JS-initiated WS upgrades can't carry an
-# ``Authorization`` header.
+# Clerk's default session-cookie name across their JS SDKs. Used by the
+# WebSocket relay (``proxy_ws`` below). The HTTP path no longer reads it
+# directly — Clerk dev instances scope ``__session`` to the application's
+# exact host (e.g. ``dev.isol8.co``), so it never reaches
+# ``company-dev.isol8.co``. The HTTP path uses our own session cookie
+# (``isol8_paperclip``) issued by the bootstrap handshake.
 _CLERK_SESSION_COOKIE = "__session"
 
+# --- Proxy session cookie (issued by /__handshake__) ---
+#
+# Why we mint our own cookie instead of relying on Clerk's:
+#
+# Clerk's ``__session`` is set by Clerk's frontend API (or the application's
+# clerkMiddleware) on the host where the user signed in — for dev that's
+# ``dev.isol8.co`` only. Browsers don't send it on cross-subdomain navigation
+# to ``company-dev.isol8.co``, so this proxy never sees it on top-level page
+# loads. (Verified empirically: signed-in browser fetch to ``company-dev``
+# with ``credentials: 'include'`` carried no ``__session`` cookie.)
+#
+# Goosetown solves the same problem implicitly — it serves its own SPA on
+# ``dev.goosetown.isol8.co`` that loads the Clerk SDK, and the SDK recovers
+# the user's session via third-party cookies on Clerk's frontend API host
+# (``up-moth-55.clerk.accounts.dev``). Then it uses ``getToken()`` for API
+# calls. Paperclip is a third-party app — we can't inject the Clerk SDK into
+# its bundle. So we serve a tiny bootstrap HTML *in front* of Paperclip that
+# does the same Clerk SDK dance, exchanges the JWT for a host-scoped cookie
+# on ``company-dev.isol8.co``, and reloads. After that, every subsequent
+# request (including Paperclip's own in-page navigation) carries the cookie
+# and the proxy is happy.
+#
+# The cookie is an HS256 JWT signed with the existing
+# ``PAPERCLIP_SERVICE_TOKEN_KEY`` (already loaded from Secrets Manager into
+# the backend container — see ``core/services/service_token.py``). Different
+# ``kind`` claim distinguishes proxy-session JWTs from agent service tokens
+# so the two can never be cross-used.
+_PAPERCLIP_SESSION_COOKIE = "isol8_paperclip"
+_PAPERCLIP_SESSION_KIND = "paperclip_session"
+_PAPERCLIP_SESSION_TTL_HOURS = 8
 
-# --- Auth ---
-#
-# Top-level browser navigation to ``company.isol8.co`` (the user clicking
-# the "Teams" link from /chat) cannot attach an ``Authorization: Bearer``
-# header — the WebSocket API and the HTML <a> navigation API both lack a
-# hook for it. The only credential the browser sends is the Clerk
-# ``__session`` cookie, which is scoped to ``.isol8.co`` so it survives
-# the cross-subdomain hop. ``get_current_user`` (the standard dependency)
-# only reads ``Authorization`` via ``HTTPBearer``; using it here means
-# every browser nav lands on a 401 "Not authenticated" JSON page.
-#
-# So the HTTP proxy needs the same cookie-or-header dance the WebSocket
-# relay already does (see ``proxy_ws`` below). We prefer ``Authorization``
-# when present so service-to-service callers and explicit fetches still
-# work, and fall back to the cookie for browser navigation.
+
+def _decode_clerk_publishable_key(pk: str) -> str | None:
+    """Extract the Clerk Frontend API hostname from a publishable key.
+
+    Clerk publishable keys encode the frontend API URL: the format is
+    ``pk_{test|live}_<base64(<frontend_api_host>$)>``. Returns the bare
+    hostname (no scheme) on success, ``None`` on parse failure. Used by
+    the bootstrap HTML to load the right Clerk SDK build per environment.
+    """
+    if not pk:
+        return None
+    parts = pk.split("_", 2)
+    if len(parts) != 3 or parts[0] != "pk":
+        return None
+    encoded = parts[2]
+    # base64.b64decode requires correct padding; pad up to a multiple of 4.
+    padding = "=" * (-len(encoded) % 4)
+    try:
+        decoded = base64.b64decode(encoded + padding).decode("ascii")
+    except (binascii.Error, UnicodeDecodeError):
+        return None
+    return decoded.rstrip("$").rstrip("/") or None
+
+
+def _mint_paperclip_session(user_id: str, email: str | None) -> str:
+    """HS256 JWT for the proxy session cookie. Same secret as service tokens
+    but with a distinct ``kind`` claim so the verifier can refuse cross-use.
+    """
+    if not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
+        raise RuntimeError("PAPERCLIP_SERVICE_TOKEN_KEY not configured")
+    now = datetime.now(timezone.utc)
+    payload: dict = {
+        "sub": user_id,
+        "kind": _PAPERCLIP_SESSION_KIND,
+        "iat": int(now.timestamp()),
+        "exp": int((now + timedelta(hours=_PAPERCLIP_SESSION_TTL_HOURS)).timestamp()),
+    }
+    if email:
+        payload["email"] = email
+    return pyjwt.encode(payload, settings.PAPERCLIP_SERVICE_TOKEN_KEY, algorithm="HS256")
+
+
+def _verify_paperclip_session(token: str) -> dict:
+    """Verify a proxy session JWT. Returns claims on success; raises
+    ``pyjwt.InvalidTokenError`` (or subclass) on any failure.
+    """
+    if not settings.PAPERCLIP_SERVICE_TOKEN_KEY:
+        raise pyjwt.InvalidTokenError("PAPERCLIP_SERVICE_TOKEN_KEY not configured")
+    claims = pyjwt.decode(
+        token,
+        settings.PAPERCLIP_SERVICE_TOKEN_KEY,
+        algorithms=["HS256"],
+    )
+    if claims.get("kind") != _PAPERCLIP_SESSION_KIND:
+        raise pyjwt.InvalidTokenError(f"Wrong kind: {claims.get('kind')!r}")
+    if not claims.get("sub"):
+        raise pyjwt.InvalidTokenError("Missing sub claim")
+    return claims
+
+
+def _bootstrap_html() -> bytes:
+    """Render the Clerk-handshake bootstrap page.
+
+    Served when a browser navigates to a Paperclip URL with no auth — the
+    page loads the Clerk SDK, fetches a session token via Clerk's existing
+    third-party cookies, POSTs it to ``/__handshake__``, and reloads. After
+    the reload the request carries our proxy session cookie and proxies
+    through to Paperclip normally.
+
+    The publishable key is *public* (Clerk literally serves it in HTML) so
+    rendering it inline is fine. The Clerk SDK script URL is derived from
+    the key (Clerk encodes the frontend API host inside it).
+    """
+    pk = (settings.CLERK_PUBLISHABLE_KEY or "").strip()
+    clerk_host = _decode_clerk_publishable_key(pk)
+    if not pk or not clerk_host:
+        # Misconfiguration — render a static error rather than broken JS.
+        return (
+            b"<!doctype html><html><body>"
+            b"<h1>Teams unavailable</h1>"
+            b"<p>Auth bootstrap is not configured. Contact support.</p>"
+            b"</body></html>"
+        )
+    pk_attr = html.escape(pk, quote=True)
+    sdk_src = f"https://{html.escape(clerk_host, quote=True)}/npm/@clerk/clerk-js@5/dist/clerk.browser.js"
+    body = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Loading Teams…</title>
+<style>html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fafafa;color:#333}}
+body{{display:flex;align-items:center;justify-content:center}}
+.box{{text-align:center}}.box small{{color:#888;display:block;margin-top:.5rem}}</style>
+</head><body>
+<div class="box"><div>Loading Teams…</div><small>Setting up your session.</small></div>
+<script async crossorigin="anonymous" data-clerk-publishable-key="{pk_attr}" src="{sdk_src}" type="text/javascript"></script>
+<script>
+(async () => {{
+  const start = Date.now();
+  while (!window.Clerk && Date.now() - start < 10000) {{
+    await new Promise(r => setTimeout(r, 50));
+  }}
+  if (!window.Clerk) {{
+    document.querySelector('.box').innerHTML = '<div>Failed to load auth.</div><small>Refresh to try again.</small>';
+    return;
+  }}
+  try {{
+    await window.Clerk.load();
+  }} catch (e) {{
+    document.querySelector('.box').innerHTML = '<div>Auth failed to initialize.</div><small>' + (e && e.message || e) + '</small>';
+    return;
+  }}
+  if (!window.Clerk.session) {{
+    return window.Clerk.redirectToSignIn({{ redirectUrl: location.href }});
+  }}
+  const token = await window.Clerk.session.getToken();
+  if (!token) {{
+    document.querySelector('.box').innerHTML = '<div>No active session.</div>';
+    return;
+  }}
+  const r = await fetch('/__handshake__', {{
+    method: 'POST',
+    headers: {{ 'Authorization': 'Bearer ' + token }},
+    credentials: 'include',
+  }});
+  if (r.ok) {{
+    location.replace(location.pathname + location.search + location.hash);
+  }} else {{
+    document.querySelector('.box').innerHTML = '<div>Auth handshake failed (' + r.status + ').</div>';
+  }}
+}})();
+</script>
+</body></html>
+"""
+    return body.encode("utf-8")
+
+
+def _wants_html(request: Request) -> bool:
+    """Heuristic for "this is a top-level browser navigation."
+
+    Used to decide whether a no-auth request should get the bootstrap
+    HTML page (browser nav) or a JSON 401 (API client / fetch from JS).
+    """
+    accept = request.headers.get("accept", "").lower()
+    return "text/html" in accept
 
 
 async def _get_paperclip_user(request: Request) -> AuthContext:
-    """Resolve the caller from a Bearer header OR the Clerk session cookie.
+    """Resolve the caller from the proxy session cookie OR a Bearer token.
 
-    Browser navigation to ``company.isol8.co`` only carries the cookie;
-    programmatic clients can still send ``Authorization: Bearer``. We
-    only read ``sub`` and ``email`` here — the paperclip-companies table
-    is keyed per-user (not per-org), so org claims aren't needed.
+    Order:
+      1. ``isol8_paperclip`` cookie — fastest, no network roundtrip, set by
+         the handshake endpoint after a successful Clerk validation.
+      2. ``Authorization: Bearer <clerk_jwt>`` — programmatic clients
+         (Postman, curl, the handshake endpoint itself, post-deploy
+         smoke tests). Validated via Clerk's JWKS.
+
+    Browser navigation that bypasses the bootstrap (e.g. a stale tab whose
+    cookie expired) gets a 401 here; ``proxy()`` upgrades that to a
+    bootstrap HTML response when the request looks like a top-level nav.
     """
-    token: str | None = None
+    # 1. Proxy session cookie
+    session_cookie = request.cookies.get(_PAPERCLIP_SESSION_COOKIE)
+    if session_cookie:
+        try:
+            claims = _verify_paperclip_session(session_cookie)
+            return AuthContext(user_id=claims["sub"], email=claims.get("email"))
+        except pyjwt.InvalidTokenError as e:
+            # Expired or tampered — fall through to Bearer; caller will get
+            # a fresh cookie if Bearer succeeds (or bootstrap page if not).
+            logger.info("paperclip_proxy: session cookie rejected: %s", e)
+
+    # 2. Bearer
     auth_header = request.headers.get("authorization", "")
+    token: str | None = None
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip() or None
-    if not token:
-        token = request.cookies.get(_CLERK_SESSION_COOKIE)
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -341,45 +521,110 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     except HTTPException:
         raise
     except httpx.HTTPError as e:
-        # JWKS fetch failed (Clerk down, network blip). This is a transient
-        # *service* problem, not a credential problem — surface 503 so the
-        # browser/client can retry rather than treating the user as logged
-        # out. Mirrors ``core.auth.get_current_user``'s mapping of the same
-        # exception. Codex P2 on PR #487.
+        # JWKS fetch failed (Clerk down, network blip). Transient *service*
+        # problem — surface 503 so the client can retry rather than treating
+        # the user as logged out. Mirrors core.auth.get_current_user.
         logger.error("paperclip_proxy: JWKS fetch failed: %s", e)
         raise HTTPException(status_code=503, detail="Authentication service unavailable")
-    except Exception as e:  # noqa: BLE001 - opaque to caller; we 401.
+    except Exception as e:  # noqa: BLE001
         logger.warning("paperclip_proxy: invalid Clerk token: %s", e)
         raise HTTPException(status_code=401, detail="Invalid Clerk token")
 
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")
-
     return AuthContext(user_id=user_id, email=payload.get("email"))
 
 
 # --- Routes ---
 
 
+@router.post("/__handshake__")
+async def handshake(request: Request) -> Response:
+    """Exchange a Clerk JWT for a host-scoped proxy session cookie.
+
+    Called by the bootstrap HTML the moment Clerk SDK returns a session
+    token. Validates the JWT via the standard Clerk JWKS path, mints an
+    HS256 JWT signed with our service-token secret, and sets it as an
+    HttpOnly Secure SameSite=Lax cookie scoped to the request's host. The
+    cookie expires after ``_PAPERCLIP_SESSION_TTL_HOURS``; after that the
+    bootstrap runs again (Clerk SDK can usually recover the session
+    silently, so the user sees at most a brief loading flash).
+
+    Auth path mirrors ``_get_paperclip_user``'s Bearer branch but does NOT
+    accept the proxy session cookie — that would create a self-renewal
+    loop where stale cookies could keep refreshing themselves. The point
+    of the handshake is to get a *fresh* Clerk JWT.
+    """
+    auth_header = request.headers.get("authorization", "")
+    token: str | None = None
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip() or None
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Clerk JWT")
+
+    try:
+        payload = await _decode_token(token)
+    except HTTPException:
+        raise
+    except httpx.HTTPError as e:
+        logger.error("paperclip_proxy: handshake JWKS fetch failed: %s", e)
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
+    except Exception as e:  # noqa: BLE001
+        logger.warning("paperclip_proxy: handshake invalid Clerk token: %s", e)
+        raise HTTPException(status_code=401, detail="Invalid Clerk token")
+
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Token missing subject")
+    email = payload.get("email")
+
+    session_jwt = _mint_paperclip_session(user_id=user_id, email=email)
+    response = Response(status_code=204)
+    # No Domain= attribute → host-scoped to whatever public host this request
+    # arrived at (e.g. company-dev.isol8.co). HttpOnly so JS can't exfiltrate;
+    # Secure so it's HTTPS-only; SameSite=Lax so it rides on top-level
+    # navigation (the Teams click) but not on cross-site sub-resource POSTs.
+    response.set_cookie(
+        key=_PAPERCLIP_SESSION_COOKIE,
+        value=session_jwt,
+        max_age=_PAPERCLIP_SESSION_TTL_HOURS * 3600,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
+    )
+    return response
+
+
 @router.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
 )
-async def proxy(
-    path: str,
-    request: Request,
-    auth: AuthContext = Depends(_get_paperclip_user),
-) -> Response:
+async def proxy(path: str, request: Request) -> Response:
     """Forward ``request`` to the internal Paperclip server.
 
-    Returns the Paperclip response (HTML brand-rewritten if applicable),
-    a 503 stub if the circuit breaker is open or the user's company
-    isn't provisioned yet, or a 502 if the upstream request itself
-    fails (DNS, connection refused, etc.).
+    Auth resolves via ``_get_paperclip_user``. If that fails AND the
+    request looks like a top-level browser navigation (Accept includes
+    ``text/html``), respond with the Clerk bootstrap HTML instead of a
+    JSON 401 — the page handles the auth handshake and reloads.
+    Programmatic clients (no ``text/html`` in Accept) get the JSON 401.
     """
     if _circuit_open():
         return _circuit_breaker_response()
+
+    try:
+        auth = await _get_paperclip_user(request)
+    except HTTPException as e:
+        # Browser nav with no auth → bootstrap. Anything else → re-raise.
+        if e.status_code == 401 and _wants_html(request):
+            return Response(
+                content=_bootstrap_html(),
+                status_code=200,
+                media_type="text/html; charset=utf-8",
+                headers={"Cache-Control": "no-store"},
+            )
+        raise
 
     # ---- Look up the user's Paperclip company row ----
     # Pass the short name; ``get_table`` adds the env prefix exactly
@@ -597,21 +842,40 @@ async def proxy_ws(websocket: WebSocket, path: str) -> None:
     leg is also a WebSocket and we relay frames bidirectionally instead
     of round-tripping a single request/response.
     """
-    # ---- Step 1: Extract + validate Clerk session cookie ----
-    clerk_token = websocket.cookies.get(_CLERK_SESSION_COOKIE)
-    if not clerk_token:
-        await websocket.close(code=4401, reason="Missing Clerk session cookie")
-        return
+    # ---- Step 1: Extract + validate session ----
+    # Prefer the proxy session cookie (``isol8_paperclip``) over Clerk's
+    # ``__session``. The HTTP bootstrap establishes the proxy cookie before
+    # Paperclip's UI ever loads, so by the time live-events WS connects the
+    # cookie is always there. Clerk ``__session`` falls through as a
+    # belt-and-braces fallback for the day Clerk's parent-domain cookie
+    # config changes (prod with ``clerk.isol8.co``) — the WS handler stays
+    # functional in either world without code changes.
+    user_id: str | None = None
+    email: str = ""
+    proxy_session = websocket.cookies.get(_PAPERCLIP_SESSION_COOKIE)
+    if proxy_session:
+        try:
+            claims = _verify_paperclip_session(proxy_session)
+            user_id = claims["sub"]
+            email = (claims.get("email") or "").strip()
+        except pyjwt.InvalidTokenError as e:
+            logger.info("paperclip_proxy_ws: session cookie rejected: %s", e)
+            # Fall through to Clerk cookie path.
 
-    try:
-        payload = await _decode_token(clerk_token)
-    except Exception as e:  # noqa: BLE001 - opaque to caller; we close.
-        logger.warning("paperclip_proxy_ws: invalid Clerk token: %s", e)
-        await websocket.close(code=4401, reason="Invalid Clerk token")
-        return
+    if not user_id:
+        clerk_token = websocket.cookies.get(_CLERK_SESSION_COOKIE)
+        if not clerk_token:
+            await websocket.close(code=4401, reason="Missing session credential")
+            return
+        try:
+            payload = await _decode_token(clerk_token)
+        except Exception as e:  # noqa: BLE001 - opaque to caller; we close.
+            logger.warning("paperclip_proxy_ws: invalid Clerk token: %s", e)
+            await websocket.close(code=4401, reason="Invalid Clerk token")
+            return
+        user_id = payload.get("sub")
+        email = (payload.get("email") or "").strip()
 
-    user_id = payload.get("sub")
-    email = (payload.get("email") or "").strip()
     if not user_id:
         await websocket.close(code=4401, reason="Token missing subject")
         return

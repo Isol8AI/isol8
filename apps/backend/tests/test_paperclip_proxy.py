@@ -451,63 +451,93 @@ def _build_http_app():
     return app
 
 
-def test_http_rejects_missing_auth():
-    """No Authorization header AND no __session cookie → 401.
+def test_http_rejects_missing_auth_for_api_client():
+    """API client (no text/html in Accept) with no auth → JSON 401.
 
-    Reproduces the original symptom (PR #475 follow-up): browser nav
-    with no credentials must surface as 401 rather than crash deeper
-    in the proxy. Asserts the 401 is the auth-gate's, not a downstream
-    failure dressed up as 401.
+    Distinguishes from browser-nav case which gets bootstrap HTML instead.
     """
     from fastapi.testclient import TestClient
 
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path")
+    resp = client.get("/some/path", headers={"Accept": "application/json"})
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Not authenticated"}
 
 
-def test_http_accepts_clerk_session_cookie(monkeypatch):
-    """Browser nav: __session cookie present, no Authorization header.
+def test_http_serves_bootstrap_html_for_browser_nav_no_auth(monkeypatch):
+    """Browser nav (Accept: text/html) with no auth → bootstrap HTML page.
 
-    Past the auth gate the proxy looks up a PaperclipCompany row; we
-    mock the repo to return ``None`` so the response is the
-    "provisioning" 503 stub (HTML). The point of this test is that we
-    DON'T see 401 — i.e. the cookie fallback was honored. A 503 with
-    HTML body proves the request reached the post-auth code.
+    The bootstrap loads the Clerk SDK and posts a Clerk JWT to /__handshake__
+    to exchange it for a session cookie. Without this, browser nav to
+    company-dev.isol8.co would land on a JSON 401 page (bad UX).
+
+    We also need a publishable key to be configured; mock the settings.
     """
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
 
-    async def _fake_decode(token: str):
-        return {"sub": "user_cookie_path", "email": "u@example.com"}
+    monkeypatch.setattr(
+        proxy_mod.settings,
+        "CLERK_PUBLISHABLE_KEY",
+        # Real-shape dev pub key encoding "up-moth-55.clerk.accounts.dev$".
+        "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk",
+    )
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get(
+        "/some/path",
+        headers={"Accept": "text/html,application/xhtml+xml"},
+    )
+    assert resp.status_code == 200
+    assert "text/html" in resp.headers["content-type"]
+    assert "Loading Teams" in resp.text
+    # Clerk SDK script src derived from the publishable key.
+    assert "up-moth-55.clerk.accounts.dev" in resp.text
+    # Must POST to /__handshake__ to exchange the token.
+    assert "/__handshake__" in resp.text
+    # No-store so a stale tab doesn't cache the bootstrap.
+    assert resp.headers.get("cache-control") == "no-store"
+
+
+def test_http_accepts_paperclip_session_cookie(monkeypatch):
+    """Once /__handshake__ has set the session cookie, subsequent requests
+    skip Clerk's JWKS roundtrip entirely and authenticate from the cookie.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    # Configure the signing secret + mint a valid cookie.
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    cookie = proxy_mod._mint_paperclip_session(user_id="user_session_path", email="u@example.com")
 
     class _FakeRepo:
         def __init__(self, table_name: str) -> None:
             pass
 
         async def get(self, _user_id: str):
-            return None  # → triggers the 503 "provisioning" stub.
+            return None  # triggers the 503 provisioning stub past auth.
 
-    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
     monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
 
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", cookies={"__session": "valid.cookie.jwt"})
+    resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
+    # We got past auth (no 401) — provisioning stub fires → 503.
     assert resp.status_code == 503
     assert "team workspace is being set up" in resp.text
 
 
 def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
-    """Programmatic clients: Authorization: Bearer still works.
+    """Programmatic clients (curl / Postman) authenticate via Bearer header.
 
-    Same shape as the cookie test — assert we get past auth (503 from
-    the missing PaperclipCompany row) rather than 401.
+    Bearer is checked AFTER the cookie path; same downstream behavior.
     """
     from fastapi.testclient import TestClient
 
@@ -536,11 +566,8 @@ def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
     assert resp.status_code == 503
 
 
-def test_http_rejects_invalid_clerk_token(monkeypatch):
-    """Cookie present but JWT decode raises → 401 (not crash).
-
-    Mirrors ``test_ws_rejects_invalid_clerk_token`` for the HTTP path.
-    """
+def test_http_rejects_invalid_clerk_bearer(monkeypatch):
+    """Bearer header with invalid Clerk JWT → 401 Invalid Clerk token."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
@@ -553,43 +580,41 @@ def test_http_rejects_invalid_clerk_token(monkeypatch):
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", cookies={"__session": "garbage"})
+    resp = client.get(
+        "/some/path",
+        headers={"Authorization": "Bearer garbage", "Accept": "application/json"},
+    )
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Invalid Clerk token"}
 
 
-def test_http_rejects_token_missing_subject(monkeypatch):
-    """JWT decodes but lacks ``sub`` claim → 401.
-
-    Defensive: a malformed Clerk template that drops ``sub`` should fail
-    closed at the proxy edge, not blow up in the DynamoDB lookup.
-    """
+def test_http_rejects_bearer_missing_subject(monkeypatch):
+    """Bearer JWT decodes but lacks sub claim → 401."""
     from fastapi.testclient import TestClient
 
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_decode(token: str):
-        return {"email": "u@example.com"}  # no sub.
+        return {"email": "u@example.com"}  # no sub
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
 
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", cookies={"__session": "valid.but.no.sub"})
+    resp = client.get(
+        "/some/path",
+        headers={"Authorization": "Bearer valid.no.sub", "Accept": "application/json"},
+    )
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Token missing subject"}
 
 
 def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
-    """JWKS fetch failure (httpx error) → 503 service-unavailable, not 401.
+    """JWKS fetch failure on the Bearer path → 503, not 401.
 
-    Codex P2 on PR #487: the broad ``except Exception`` in the auth
-    dependency was collapsing JWKS-fetch failures into ``401 Invalid
-    Clerk token``, which is a misleading credential error during a
-    Clerk/network outage. Mirrors ``core.auth.get_current_user`` which
-    maps ``httpx.HTTPError`` to 503 so clients retry instead of treating
-    the user as logged out.
+    Codex P2 on PR #487: transient Clerk/network outage shouldn't be
+    surfaced as a credential failure. Mirrors core.auth.get_current_user.
     """
     from fastapi.testclient import TestClient
     import httpx
@@ -597,9 +622,6 @@ def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
     import routers.paperclip_proxy as proxy_mod
 
     async def _fake_decode(token: str):
-        # Simulate JWKS endpoint down (Clerk/network outage). httpx
-        # surfaces this as ConnectError; the proxy should convert it
-        # to 503 rather than 401.
         raise httpx.ConnectError("clerk JWKS unreachable")
 
     monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
@@ -607,6 +629,198 @@ def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
     app = _build_http_app()
     client = TestClient(app)
 
-    resp = client.get("/some/path", cookies={"__session": "any.token"})
+    resp = client.get(
+        "/some/path",
+        headers={"Authorization": "Bearer any.token", "Accept": "application/json"},
+    )
     assert resp.status_code == 503
     assert resp.json() == {"detail": "Authentication service unavailable"}
+
+
+# ---------------------------------------------------------------
+# Handshake endpoint + session cookie helpers
+# ---------------------------------------------------------------
+
+
+def test_decode_clerk_publishable_key_dev():
+    """The Clerk Frontend API hostname round-trips out of a dev pub key."""
+    from routers.paperclip_proxy import _decode_clerk_publishable_key
+
+    # pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk decodes to
+    # "up-moth-55.clerk.accounts.dev$" — strip the trailing $.
+    pk = "pk_test_dXAtbW90aC01NS5jbGVyay5hY2NvdW50cy5kZXYk"
+    assert _decode_clerk_publishable_key(pk) == "up-moth-55.clerk.accounts.dev"
+
+
+def test_decode_clerk_publishable_key_handles_garbage():
+    """Malformed keys return None rather than raising — the bootstrap
+    HTML responder uses None as a "render an error page" signal.
+    """
+    from routers.paperclip_proxy import _decode_clerk_publishable_key
+
+    assert _decode_clerk_publishable_key("") is None
+    assert _decode_clerk_publishable_key("not_a_valid_key") is None
+    assert _decode_clerk_publishable_key("pk_test_") is None
+
+
+def test_paperclip_session_jwt_round_trip(monkeypatch):
+    """Mint + verify must round-trip with the configured signing key."""
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    token = proxy_mod._mint_paperclip_session(user_id="u1", email="u1@example.com")
+    claims = proxy_mod._verify_paperclip_session(token)
+    assert claims["sub"] == "u1"
+    assert claims["email"] == "u1@example.com"
+    assert claims["kind"] == "paperclip_session"
+
+
+def test_paperclip_session_rejects_wrong_kind(monkeypatch):
+    """Service tokens (kind=paperclip_service) must not be accepted as a
+    proxy-session cookie even though they share the same signing key.
+    Different ``kind`` claim is the only thing keeping the two segregated.
+    """
+    import jwt as pyjwt
+    import pytest as _pytest
+    import routers.paperclip_proxy as proxy_mod
+    from datetime import datetime, timedelta, timezone
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    # Mint a service-token-shaped JWT (kind="paperclip_service") and try
+    # to verify it as a session — must reject.
+    now = datetime.now(timezone.utc)
+    fake_service_token = pyjwt.encode(
+        {
+            "sub": "u1",
+            "kind": "paperclip_service",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=1)).timestamp()),
+        },
+        "test-secret-32-bytes-min-len-x",
+        algorithm="HS256",
+    )
+    with _pytest.raises(pyjwt.InvalidTokenError):
+        proxy_mod._verify_paperclip_session(fake_service_token)
+
+
+def test_handshake_validates_clerk_jwt_and_sets_cookie(monkeypatch):
+    """POST /__handshake__ with valid Clerk Bearer → 204 + Set-Cookie."""
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        return {"sub": "user_handshake", "email": "h@example.com"}
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/__handshake__",
+        headers={"Authorization": "Bearer valid.clerk.jwt"},
+    )
+    assert resp.status_code == 204
+    set_cookie = resp.headers.get("set-cookie", "")
+    assert "isol8_paperclip=" in set_cookie
+    assert "HttpOnly" in set_cookie
+    assert "Secure" in set_cookie
+    assert "SameSite=lax" in set_cookie or "SameSite=Lax" in set_cookie
+
+    # The cookie should round-trip through verify and yield the same sub.
+    cookie_val = set_cookie.split("isol8_paperclip=", 1)[1].split(";", 1)[0]
+    claims = proxy_mod._verify_paperclip_session(cookie_val)
+    assert claims["sub"] == "user_handshake"
+    assert claims["email"] == "h@example.com"
+
+
+def test_handshake_rejects_missing_bearer():
+    """No Authorization header on /__handshake__ → 401."""
+    from fastapi.testclient import TestClient
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post("/__handshake__")
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Missing Clerk JWT"}
+
+
+def test_handshake_rejects_invalid_clerk_jwt(monkeypatch):
+    """/__handshake__ with garbage Bearer → 401."""
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        raise ValueError("not a real jwt")
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.post(
+        "/__handshake__",
+        headers={"Authorization": "Bearer garbage"},
+    )
+    assert resp.status_code == 401
+    assert resp.json() == {"detail": "Invalid Clerk token"}
+
+
+def test_ws_accepts_paperclip_session_cookie(monkeypatch):
+    """WS upgrade with isol8_paperclip cookie → past auth gate (closes
+    later with 4503 because no PaperclipCompany row, not 4401).
+
+    Mirrors the HTTP path: after the bootstrap establishes the proxy
+    session cookie, in-page WebSocket upgrades for live-events use that
+    cookie, not Clerk's __session (which never crossed subdomains anyway).
+    """
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "PAPERCLIP_SERVICE_TOKEN_KEY", "test-secret-32-bytes-min-len-x")
+    cookie = proxy_mod._mint_paperclip_session(user_id="ws_user_session", email="w@example.com")
+
+    class _FakeRepo:
+        def __init__(self, table_name: str) -> None:
+            pass
+
+        async def get(self, _user_id: str):
+            return None  # → 4503 not provisioned (proves we passed auth).
+
+    monkeypatch.setattr(proxy_mod, "PaperclipRepo", _FakeRepo)
+
+    app = _build_ws_app()
+    client = TestClient(app)
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            "/some/live-events/path",
+            cookies={"isol8_paperclip": cookie},
+        ):
+            pass  # pragma: no cover
+
+    assert exc_info.value.code == 4503  # not provisioned, not 4401
+
+
+def test_bootstrap_html_renders_error_when_no_publishable_key(monkeypatch):
+    """If CLERK_PUBLISHABLE_KEY isn't configured, render a static error
+    rather than broken JS. Defensive for misconfigured environments.
+    """
+    from fastapi.testclient import TestClient
+
+    import routers.paperclip_proxy as proxy_mod
+
+    monkeypatch.setattr(proxy_mod.settings, "CLERK_PUBLISHABLE_KEY", "")
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path", headers={"Accept": "text/html"})
+    assert resp.status_code == 200
+    assert "not configured" in resp.text.lower()
+    assert "<script" not in resp.text  # no JS leaked when key is missing

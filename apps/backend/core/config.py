@@ -116,7 +116,15 @@ class Settings(BaseSettings):
     # HMAC key for the OpenClaw service-token JWTs the backend mints for
     # seeded Paperclip agents (see core/services/service_token.py). Populated
     # from Secrets Manager + KMS by the CDK service stack at deploy time.
+    # Re-used by paperclip_proxy to sign the proxy's own session cookie.
     PAPERCLIP_SERVICE_TOKEN_KEY: str = os.getenv("PAPERCLIP_SERVICE_TOKEN_KEY", "")
+    # Clerk publishable key (the same value the frontend uses as
+    # NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY). The paperclip-proxy bootstrap page
+    # renders inline JS that loads the Clerk SDK and handshakes a session
+    # cookie; the SDK needs this key to identify which Clerk instance to
+    # talk to. Publishable keys are public by design — Clerk literally
+    # serves them in HTML; storing in env (not Secrets Manager) is correct.
+    CLERK_PUBLISHABLE_KEY: str = os.getenv("CLERK_PUBLISHABLE_KEY", "")
 
     @field_validator("CLERK_ISSUER")
     @classmethod
