@@ -28,56 +28,96 @@ class BillingService:
     async def create_customer_for_owner(
         self, owner_id: str, owner_type: str = "personal", email: str | None = None
     ) -> dict:
+        """Resolve a Stripe customer for ``owner_id``, keyed by ``email``.
+
+        Email is the system-of-record idempotency key for Stripe-side identity:
+        a single human (one verified email in Clerk) maps to a single Stripe
+        Customer, regardless of how many billing entities they own (personal
+        account, multiple orgs as admin, etc.). DDB ``billing-accounts`` rows
+        are still per-owner_id, so multiple rows can share one
+        ``stripe_customer_id``.
+
+        Resolution order:
+          1. Existing DDB row for this owner_id → return it (no Stripe call).
+          2. ``stripe.Customer.list(email=...)`` → reuse the most recent match.
+             ``list`` is exact-match and immediately consistent (unlike
+             ``search``, which has indexing lag).
+          3. No match → ``stripe.Customer.create``.
+
+        Webhook handlers must resolve owner via subscription metadata
+        (``owner_id``) since the GSI on ``stripe_customer_id`` is no longer
+        unique. See ``handle_stripe_webhook`` in ``routers/billing.py``.
+        """
         existing = await billing_repo.get_by_owner_id(owner_id)
         if existing:
             return existing
 
-        # Create the Stripe customer fresh on every call. We deliberately do
-        # NOT pass a stable idempotency_key keyed on owner_id: Stripe caches
-        # the response for 24h, so an out-of-band customer delete (dashboard
-        # cleanup, dev reset, racing orphan-cleanup) produces a wedge where
-        # the cached id no longer exists and every subsequent checkout 400s
-        # with `No such customer`. Issue #417 documents the recurring impact.
-        #
-        # The DDB conditional write below (create_if_not_exists) is the real
-        # dedupe — it's strongly consistent and atomic. Two racing callers
-        # each create their own Stripe customer; only one wins the DDB slot;
-        # the loser deletes its orphan Stripe customer. Because the customer
-        # ids now differ between racers, the orphan-delete is safe (no risk
-        # of nuking the winner's customer the way it could when both racers
-        # received the same id back from the idempotency cache).
-        with timing("stripe.api.latency", {"op": "customers.create"}):
-            customer = stripe.Customer.create(
-                email=email,
-                metadata={"owner_id": owner_id, "owner_type": owner_type},
-            )
+        # Normalize so a single human typing/signing in with mixed case
+        # ("User@Example.com" vs "user@example.com") still maps to one
+        # Stripe customer. Stripe's Customer.list email filter is exact
+        # match, so without normalization we'd silently create duplicates.
+        normalized_email = email.strip().lower() if email else None
+
+        customer_id: str | None = None
+        created_locally = False
+        if normalized_email:
+            with timing("stripe.api.latency", {"op": "customers.list"}):
+                matches = stripe.Customer.list(email=normalized_email, limit=1)
+            if matches and matches.data:
+                customer_id = matches.data[0].id
+                put_metric("stripe.customer.email_dedup", dimensions={"result": "reuse"})
+                logger.info(
+                    "Reusing Stripe customer %s for owner_id=%s (email=%s)",
+                    customer_id,
+                    owner_id,
+                    normalized_email,
+                )
+
+        if customer_id is None:
+            with timing("stripe.api.latency", {"op": "customers.create"}):
+                customer = stripe.Customer.create(
+                    email=normalized_email,
+                    metadata={"owner_id": owner_id, "owner_type": owner_type},
+                )
+            customer_id = customer.id
+            created_locally = True
+            put_metric("stripe.customer.email_dedup", dimensions={"result": "create"})
 
         try:
             return await billing_repo.create_if_not_exists(
                 owner_id=owner_id,
-                stripe_customer_id=customer.id,
+                stripe_customer_id=customer_id,
                 owner_type=owner_type,
             )
         except billing_repo.AlreadyExistsError:
+            # Lost the DDB race for this owner_id. If we took the create
+            # path, two concurrent callers may have both missed the
+            # email-list lookup and each minted a fresh Stripe customer —
+            # the loser's customer is now orphaned (no DDB row points at
+            # it). Delete it so the email→customer invariant holds.
             winner = await billing_repo.get_by_owner_id(owner_id)
-            if winner and winner.get("stripe_customer_id") == customer.id:
-                # Defensive guard: if anything ever brings stable idempotency
-                # back, our orphan-delete must never nuke the winner's id.
-                return winner
-            logger.info(
-                "Billing account race: owner_id=%s already exists, deleting orphan Stripe customer %s",
-                owner_id,
-                customer.id,
-            )
-            try:
-                with timing("stripe.api.latency", {"op": "customers.delete"}):
-                    stripe.Customer.delete(
-                        customer.id,
-                        idempotency_key=f"delete_customer:{customer.id}",
-                    )
-            except Exception:
-                put_metric("stripe.api.error", dimensions={"op": "customers.delete", "error_code": "unknown"})
-                logger.warning("Failed to delete orphan Stripe customer %s", customer.id)
+            if (
+                created_locally
+                and winner
+                and winner.get("stripe_customer_id")
+                and winner["stripe_customer_id"] != customer_id
+            ):
+                logger.info(
+                    "Lost DDB race for owner_id=%s; deleting orphan Stripe customer %s (winner=%s)",
+                    owner_id,
+                    customer_id,
+                    winner["stripe_customer_id"],
+                )
+                try:
+                    with timing("stripe.api.latency", {"op": "customers.delete"}):
+                        stripe.Customer.delete(
+                            customer_id,
+                            idempotency_key=f"delete_customer:{customer_id}",
+                        )
+                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "ok"})
+                except Exception:
+                    put_metric("stripe.customer.orphan_delete", dimensions={"result": "error"})
+                    logger.warning("Failed to delete orphan Stripe customer %s", customer_id)
             return winner
 
     async def create_portal_session(self, billing_account: dict) -> str:
@@ -115,19 +155,28 @@ async def create_flat_fee_checkout(
     ``trial_days`` is set, the resulting subscription has a trial of that
     length and Stripe charges nothing until the trial converts.
 
-    ``provider_choice`` and ``clerk_user_id`` are threaded into
-    ``subscription_data.metadata`` so the customer.subscription.updated
-    webhook can persist provider_choice on the right per-Clerk-user row
-    (which differs from owner_id in org context).
+    ``provider_choice``, ``clerk_user_id`` and ``owner_id`` are threaded into
+    ``subscription_data.metadata`` so the ``customer.subscription.*`` webhook
+    can resolve the owner unambiguously. ``owner_id`` matters because the
+    Stripe customer is shared across personal/org billing rows for the same
+    email — the GSI on ``stripe_customer_id`` is no longer 1:1.
 
     Conventions (mirrors Plan 1 Stripe Tax setup):
       - ``automatic_tax={"enabled": True}`` — Stripe computes sales tax/VAT.
       - ``customer_update={"address": "auto"}`` — required when automatic_tax
         is enabled so Checkout can persist the collected billing address back
         onto the existing Stripe customer.
-      - ``idempotency_key`` bucketed to a 5-minute window so duplicate
-        button-clicks within the same session collapse to one Checkout but a
-        deliberate retry minutes later still succeeds.
+      - ``allow_promotion_codes=True`` — surfaces the promo-code field so
+        internal coupons (e.g. 100%-off launch codes) can be applied.
+      - ``idempotency_key`` bucketed to a 5-minute window: collapses
+        rapid duplicate clicks (and "open Stripe Checkout in two tabs"
+        style retries) to a single Checkout Session, so a user can't
+        accidentally complete two parallel subscriptions before the
+        first ``customer.subscription.created`` webhook lands and the
+        guard in ``create_trial_checkout`` kicks in. Stripe's
+        idempotency does a body-shape compare, so a config change
+        (e.g. ``allow_promotion_codes`` flipping on) naturally
+        bypasses the cached response within the same bucket.
     """
     if not settings.STRIPE_FLAT_PRICE_ID:
         raise BillingServiceError("STRIPE_FLAT_PRICE_ID not configured")
@@ -139,13 +188,12 @@ async def create_flat_fee_checkout(
     subscription_data: dict = {}
     if trial_days is not None and trial_days > 0:
         subscription_data["trial_period_days"] = trial_days
-    metadata: dict = {}
+    metadata: dict = {"owner_id": owner_id}
     if provider_choice:
         metadata["provider_choice"] = provider_choice
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
-    if metadata:
-        subscription_data["metadata"] = metadata
+    subscription_data["metadata"] = metadata
 
     kwargs: dict = dict(
         customer=account["stripe_customer_id"],
@@ -155,12 +203,12 @@ async def create_flat_fee_checkout(
             f"{FRONTEND_URL}/chat?checkout=success" + (f"&provider={provider_choice}" if provider_choice else "")
         ),
         cancel_url=f"{FRONTEND_URL}/?checkout=cancel",
+        allow_promotion_codes=True,
         automatic_tax={"enabled": True},
         customer_update={"address": "auto"},
+        subscription_data=subscription_data,
         idempotency_key=f"flat_checkout:{owner_id}:{provider_choice or '_'}:{int(time.time() // 300)}",
     )
-    if subscription_data:
-        kwargs["subscription_data"] = subscription_data
 
     with timing("stripe.api.latency", {"op": "checkout.session.create"}):
         session = stripe.checkout.Session.create(**kwargs)

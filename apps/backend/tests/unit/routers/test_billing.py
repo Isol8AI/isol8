@@ -195,11 +195,13 @@ class TestStripeWebhook:
                 }
             },
         }
-        mock_repo.get_by_stripe_customer_id = AsyncMock(
-            return_value={
-                "owner_id": "user_webhook_test",
-                "stripe_customer_id": "cus_webhook_test",
-            }
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[
+                {
+                    "owner_id": "user_webhook_test",
+                    "stripe_customer_id": "cus_webhook_test",
+                }
+            ]
         )
 
         with patch("routers.billing.BillingService") as mock_billing_cls:
@@ -233,8 +235,8 @@ class TestStripeWebhook:
                 }
             },
         }
-        mock_repo.get_by_stripe_customer_id = AsyncMock(
-            return_value={"owner_id": "user_trial_x", "stripe_customer_id": "cus_trial_x"}
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[{"owner_id": "user_trial_x", "stripe_customer_id": "cus_trial_x"}]
         )
 
         response = await async_client.post(
@@ -266,11 +268,13 @@ class TestStripeWebhook:
                 }
             },
         }
-        mock_repo.get_by_stripe_customer_id = AsyncMock(
-            return_value={
-                "owner_id": "user_update_x",
-                "stripe_customer_id": "cus_update_x",
-            }
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[
+                {
+                    "owner_id": "user_update_x",
+                    "stripe_customer_id": "cus_update_x",
+                }
+            ]
         )
         mock_repo.set_subscription = AsyncMock()
 
@@ -317,7 +321,15 @@ class TestStripeWebhook:
                 }
             },
         }
-        mock_repo.get_by_stripe_customer_id = AsyncMock(
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[
+                {
+                    "owner_id": "user_clerk_x",
+                    "stripe_customer_id": "cus_created_x",
+                }
+            ]
+        )
+        mock_repo.get_by_owner_id = AsyncMock(
             return_value={
                 "owner_id": "user_clerk_x",
                 "stripe_customer_id": "cus_created_x",
@@ -355,6 +367,96 @@ class TestStripeWebhook:
             headers={"stripe-signature": "bad_sig", "content-type": "application/json"},
         )
         assert response.status_code == 400
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("routers.billing.stripe")
+    async def test_subscription_updated_resolves_owner_via_metadata(
+        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
+    ):
+        """When subscription.metadata.owner_id is set, owner resolution must
+        prefer it over the stripe_customer_id GSI — that's what makes
+        email-shared customers (one human, multiple billing rows) safe."""
+        mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_meta_owner",
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_meta",
+                    "customer": "cus_shared",
+                    "status": "active",
+                    "metadata": {"owner_id": "org_xyz"},
+                }
+            },
+        }
+        mock_repo.get_by_owner_id = AsyncMock(return_value={"owner_id": "org_xyz", "stripe_customer_id": "cus_shared"})
+        # Even if the customer GSI would return a different (wrong) row,
+        # metadata.owner_id wins. Assert the GSI lookup was never reached.
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[
+                {"owner_id": "wrong_personal", "stripe_customer_id": "cus_shared"},
+                {"owner_id": "org_xyz", "stripe_customer_id": "cus_shared"},
+            ]
+        )
+        mock_repo.set_subscription = AsyncMock()
+
+        response = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=b'{"test": true}',
+            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
+        )
+
+        assert response.status_code == 200
+        mock_repo.list_by_stripe_customer_id.assert_not_called()
+        mock_repo.set_subscription.assert_awaited_once()
+        assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_xyz"
+
+    @pytest.mark.asyncio
+    @patch("routers.billing.billing_repo")
+    @patch("routers.billing.stripe")
+    async def test_subscription_updated_disambiguates_shared_customer_by_sub_id(
+        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
+    ):
+        """Legacy subscriptions (no metadata.owner_id) on a now-shared
+        Stripe customer must be disambiguated by stripe_subscription_id,
+        not silently picked from the GSI's first hit."""
+        mock_stripe.Webhook.construct_event.return_value = {
+            "id": "evt_legacy_shared",
+            "type": "customer.subscription.updated",
+            "data": {
+                "object": {
+                    "id": "sub_legacy_org",
+                    "customer": "cus_shared",
+                    "status": "active",
+                }
+            },
+        }
+        mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+        mock_repo.list_by_stripe_customer_id = AsyncMock(
+            return_value=[
+                {
+                    "owner_id": "personal_user",
+                    "stripe_customer_id": "cus_shared",
+                    "stripe_subscription_id": "sub_legacy_personal",
+                },
+                {
+                    "owner_id": "org_legacy",
+                    "stripe_customer_id": "cus_shared",
+                    "stripe_subscription_id": "sub_legacy_org",
+                },
+            ]
+        )
+        mock_repo.set_subscription = AsyncMock()
+
+        response = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=b'{"test": true}',
+            headers={"stripe-signature": "test_sig", "content-type": "application/json"},
+        )
+
+        assert response.status_code == 200
+        mock_repo.set_subscription.assert_awaited_once()
+        assert mock_repo.set_subscription.await_args.kwargs["owner_id"] == "org_legacy"
 
 
 class TestTrialCheckoutProviderRules:

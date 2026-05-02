@@ -58,6 +58,61 @@ async def _get_billing_account(auth: AuthContext) -> dict | None:
     return await billing_repo.get_by_owner_id(resolve_owner_id(auth))
 
 
+async def _resolve_owner_account(subscription_event_data: dict) -> dict | None:
+    """Resolve the billing-accounts row for a Stripe subscription webhook.
+
+    Stripe customers are now keyed by email and can fan out to multiple
+    DDB rows (one human → personal + org rows sharing one Stripe customer),
+    so the GSI on ``stripe_customer_id`` is no longer 1:1.
+
+    Resolution order:
+      1. ``subscription.metadata.owner_id`` — set at checkout time, pins
+         each subscription to a single billing row. Always prefer this.
+      2. ``stripe_customer_id`` GSI → if exactly one match, use it
+         (legacy 1:1 case). If multiple, filter by
+         ``stripe_subscription_id == event.id``.
+    """
+    metadata = subscription_event_data.get("metadata") or {}
+    owner_id = metadata.get("owner_id")
+    if owner_id:
+        account = await billing_repo.get_by_owner_id(owner_id)
+        if account:
+            return account
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "metadata_miss"})
+
+    customer_id = subscription_event_data.get("customer")
+    if not customer_id:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "unresolved"})
+        return None
+
+    candidates = await billing_repo.list_by_stripe_customer_id(customer_id)
+    if not candidates:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "unresolved"})
+        return None
+    if len(candidates) == 1:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "customer_id_legacy"})
+        return candidates[0]
+
+    sub_id = subscription_event_data.get("id")
+    matches = [c for c in candidates if c.get("stripe_subscription_id") == sub_id]
+    if len(matches) == 1:
+        put_metric("stripe.webhook.owner_resolve", dimensions={"path": "customer_id_subfilter"})
+        return matches[0]
+
+    # Ambiguous: shared customer with no subscription_id match (e.g. a
+    # brand-new customer.subscription.created event from a row whose
+    # checkout was fired before this change deployed and so lacks
+    # metadata.owner_id). Surface as unresolved rather than guessing.
+    logger.warning(
+        "Ambiguous Stripe webhook owner resolution: customer=%s sub=%s candidates=%d",
+        customer_id,
+        sub_id,
+        len(candidates),
+    )
+    put_metric("stripe.webhook.owner_resolve", dimensions={"path": "ambiguous"})
+    return None
+
+
 @router.get(
     "/account",
     response_model=BillingAccountResponse,
@@ -556,8 +611,7 @@ async def handle_stripe_webhook(
                 "status": event_data.get("status", "unknown"),
             },
         )
-        customer_id = event_data["customer"]
-        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        account = await _resolve_owner_account(event_data)
         if account:
             await billing_repo.set_subscription(
                 owner_id=account["owner_id"],
@@ -594,8 +648,7 @@ async def handle_stripe_webhook(
         # its own default reminder email regardless. A branded reminder
         # email via SES is a follow-up.
         put_metric("trial.will_end_3day")
-        customer_id = event_data["customer"]
-        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        account = await _resolve_owner_account(event_data)
         if account:
             logger.info(
                 "Trial will end in 3 days for owner %s (trial_end=%s)",
@@ -605,9 +658,8 @@ async def handle_stripe_webhook(
 
     elif event_type == "customer.subscription.deleted":
         put_metric("stripe.subscription", dimensions={"event": "deleted"})
-        customer_id = event_data["customer"]
 
-        account = await billing_repo.get_by_stripe_customer_id(customer_id)
+        account = await _resolve_owner_account(event_data)
         if account:
             await billing_service.cancel_subscription(account)
             logger.info("Subscription cancelled for owner %s", account["owner_id"])

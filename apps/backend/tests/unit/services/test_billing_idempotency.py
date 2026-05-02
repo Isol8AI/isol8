@@ -1,10 +1,13 @@
 """Confirm Stripe Customer.create runs WITHOUT a stable idempotency_key.
 
-Every other Stripe write site uses an idempotency_key (delete_customer,
-checkout, portal, sub_modify, sub_cancel, balance_tx, invoice_pay), but
-Customer.create deliberately does not — the DDB conditional write is the
-canonical dedupe. See issue #417 for the wedge-on-out-of-band-delete
-incident that drove this.
+Customer creation is now keyed by email — ``stripe.Customer.list(email=...)``
+finds existing customers before falling back to ``Customer.create``. This
+also resolves issue #417 (the dead-id wedge from out-of-band deletes): a
+deleted customer simply doesn't appear in the email list anymore, so the
+next call creates a fresh one rather than reusing the dead id.
+
+Even on the create-path, ``idempotency_key`` is deliberately omitted so a
+24h Stripe cache can't pin a dead customer id.
 """
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -27,6 +30,8 @@ async def test_create_customer_does_not_pass_stable_idempotency_key(mock_stripe,
     from core.services.billing_service import BillingService
 
     mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+    # No existing email match → falls through to Customer.create.
+    mock_stripe.Customer.list.return_value = MagicMock(data=[])
     mock_stripe.Customer.create.return_value = MagicMock(id="cus_test")
     mock_repo.create_if_not_exists = AsyncMock(
         return_value={
@@ -42,5 +47,5 @@ async def test_create_customer_does_not_pass_stable_idempotency_key(mock_stripe,
     key = kwargs.get("idempotency_key")
     assert key is None or "owner_id" not in str(key) and "u_1" not in str(key), (
         f"Customer.create should not receive a stable owner-keyed idempotency_key, "
-        f"got idempotency_key={key!r}. The DDB conditional write is the canonical dedupe."
+        f"got idempotency_key={key!r}. Email-keyed lookup is the canonical dedupe."
     )
