@@ -79,15 +79,12 @@ export class ApiStack extends cdk.Stack {
     // =========================================================================
 
     const httpApiDomain = isProd ? "api.isol8.co" : `api-${env}.isol8.co`;
-    // Second public custom domain for the same HTTP API (Paperclip surface).
-    // Backend dispatches per-host using X-Isol8-Public-Host (set below via the
-    // integration's requestParameters; can't use X-Forwarded-Host because API
-    // Gateway HTTP API restricts parameter mapping on `x-forwarded-*`). The
-    // wildcard *.isol8.co cert in DnsStack already covers this hostname, so
-    // no SAN changes are needed.
-    const companyApiDomain = isProd
-      ? "company.isol8.co"
-      : `company-${env}.isol8.co`;
+    // Paperclip ("Teams") used to have its own API Gateway custom-domain
+    // mapping here (companyApiDomain → CompanyHttpDomain). It now lives
+    // on Vercel — the frontend project has a host-conditional rewrite
+    // that proxies {env}.company.isol8.co through to /__paperclip_proxy__
+    // on this same API Gateway. No second custom domain, no per-host
+    // dispatch in the backend; the proxy is reached at its normal path.
     const frontendUrl = isProd
       ? "https://isol8.co"
       : `https://${env}.isol8.co`;
@@ -234,54 +231,15 @@ export class ApiStack extends cdk.Stack {
         }),
       });
 
-      // --- Second public custom domain: company.isol8.co (Paperclip) ---
-      // Same HTTP API, same VPC Link → ALB → FastAPI integration. The
-      // X-Forwarded-Host header set on the integration above lets the
-      // backend dispatch per-host (T16). The wildcard *.isol8.co cert
-      // already covers this hostname, so we reuse props.certificate.
-      const companyDomainName = new apigatewayv2.CfnDomainName(
-        this,
-        "CompanyHttpDomain",
-        {
-          domainName: companyApiDomain,
-          domainNameConfigurations: [
-            {
-              certificateArn: props.certificate.certificateArn,
-              endpointType: "REGIONAL",
-              securityPolicy: "TLS_1_2",
-            },
-          ],
-        },
-      );
-
-      const companyMapping = new apigatewayv2.CfnApiMapping(
-        this,
-        "CompanyHttpApiMapping",
-        {
-          apiId: httpApi.ref,
-          domainName: companyDomainName.ref,
-          stage: env,
-        },
-      );
-      companyMapping.addDependency(httpStage);
-
-      new route53.ARecord(this, "CompanyHttpApiDnsRecord", {
-        zone: props.hostedZone,
-        recordName: companyApiDomain,
-        target: route53.RecordTarget.fromAlias({
-          bind: () => ({
-            dnsName: cdk.Fn.getAtt(
-              companyDomainName.logicalId,
-              "RegionalDomainName",
-            ).toString(),
-            hostedZoneId: cdk.Fn.getAtt(
-              companyDomainName.logicalId,
-              "RegionalHostedZoneId",
-            ).toString(),
-          }),
-        }),
-      });
-
+      // The Paperclip ("Teams") public hostname previously had its own
+      // API Gateway custom-domain mapping (CompanyHttpDomain) here. It
+      // was removed when we moved the Paperclip hostname to be served
+      // via Vercel rewrites instead — Vercel routes
+      //   {env}.company.isol8.co → api[-{env}].isol8.co/__paperclip_proxy__/...
+      // so the request still arrives at this same API Gateway, just on
+      // the api[-{env}].isol8.co host with the proxy prefix in the URL
+      // path. The DNS A-record for the Paperclip hostname now lives in
+      // DnsStack and points at Vercel's anycast IP.
       this.httpApiUrl = `https://${httpApiDomain}`;
     } else {
       this.httpApiUrl = `https://${httpApi.ref}.execute-api.${this.region}.amazonaws.com/${env}`;

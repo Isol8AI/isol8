@@ -91,12 +91,14 @@ export function ChatLayout({
     const override = process.env.NEXT_PUBLIC_COMPANY_URL;
     if (override) return override;
     const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
-    // Match `api.isol8.co` for prod (no env suffix); anything else
-    // (api-dev.isol8.co, api-staging.isol8.co, localhost, …) routes
-    // to the dev Paperclip stack since that's the only non-prod
-    // environment we run today.
+    // Prod (api.isol8.co) → company.isol8.co; anything else (dev,
+    // staging, preview) → {env}.company.isol8.co. Matches the
+    // Vercel-hosted layout: company.isol8.co is the prod hostname,
+    // {env}.company.isol8.co for non-prod.
     if (/\/\/api\.isol8\.co/.test(apiUrl)) return "https://company.isol8.co";
-    return "https://company-dev.isol8.co";
+    const m = apiUrl.match(/\/\/api-([^.]+)\.isol8\.co/);
+    const env = m ? m[1] : "dev";
+    return `https://${env}.company.isol8.co`;
   })();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);

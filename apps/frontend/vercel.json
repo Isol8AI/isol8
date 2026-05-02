@@ -26,5 +26,16 @@
       ]
     }
   ],
-  "rewrites": []
+  "rewrites": [
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "dev.company.isol8.co" }],
+      "destination": "https://api-dev.isol8.co/__paperclip_proxy__/:path*"
+    },
+    {
+      "source": "/:path*",
+      "has": [{ "type": "host", "value": "company.isol8.co" }],
+      "destination": "https://api.isol8.co/__paperclip_proxy__/:path*"
+    }
+  ]
 }

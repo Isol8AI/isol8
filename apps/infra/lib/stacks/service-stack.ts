@@ -643,10 +643,15 @@ export class ServiceStack extends cdk.Stack {
         // instead of being rewritten to the paperclip_proxy router. Mirrors
         // the env-derivation in paperclip-stack.ts so the two stay in lockstep
         // (keeps ServiceStack independent of PaperclipStack synth order).
+        // Public Paperclip ("Teams") hostname. Routed through Vercel
+        // (frontend project has a host-conditional rewrite to this same
+        // backend's /__paperclip_proxy__ path). The backend uses this
+        // value for cookie-domain rewrites on Better Auth Set-Cookie
+        // responses and for setting the proxy session cookie.
         PAPERCLIP_PUBLIC_URL:
           env === "prod"
             ? "https://company.isol8.co"
-            : `https://company-${env}.isol8.co`,
+            : `https://${env}.company.isol8.co`,
         // Cloud Map A record published by PaperclipStack at:
         //   `paperclip.<cloudMapNamespace.namespaceName>:3100`
         // Namespace name is `isol8-${env}.local` (ContainerStack). Reading
