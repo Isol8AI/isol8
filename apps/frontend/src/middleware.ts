@@ -49,8 +49,25 @@ export function decideAdminHostRouting(
   return { kind: "passthrough" };
 }
 
+// Hostnames whose traffic is handled by the paperclip-proxy upstream
+// via a Next-level rewrite (next.config.ts `beforeFiles`). Middleware
+// must passthrough for these or it'll run Clerk auth on a non-Isol8
+// host (where there's no Clerk session) and redirect users away
+// before the rewrite gets a chance to proxy the request.
+const PAPERCLIP_HOSTS = new Set([
+  "company.isol8.co",
+  "dev.company.isol8.co",
+]);
+
 export default clerkMiddleware(async (auth, req) => {
-  const host = req.headers.get("host");
+  const host = (req.headers.get("host") ?? "").toLowerCase();
+
+  // Paperclip proxy: passthrough — let next.config.ts beforeFiles
+  // rewrite shuttle the request to the backend.
+  if (PAPERCLIP_HOSTS.has(host)) {
+    return NextResponse.next();
+  }
+
   const decision = decideAdminHostRouting(host, req.nextUrl.pathname);
 
   if (decision.kind === "not_found") {

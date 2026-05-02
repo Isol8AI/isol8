@@ -19,20 +19,41 @@ const nextConfig: NextConfig = {
   // endpoint is reached without a 307.
   skipTrailingSlashRedirect: true,
   async rewrites() {
-    return [
-      {
-        source: "/ingest/static/:path*",
-        destination: "https://us-assets.i.posthog.com/static/:path*",
-      },
-      {
-        source: "/ingest/:path*",
-        destination: "https://us.i.posthog.com/:path*",
-      },
-      {
-        source: "/ingest/decide",
-        destination: "https://us.i.posthog.com/decide",
-      },
-    ];
+    // beforeFiles runs ahead of Next.js routing — required for the
+    // company.* host rewrites because otherwise dev.company.isol8.co/foo
+    // would match Next's `/foo` route (or fall through Clerk middleware
+    // which redirects unsigned users away). Vercel-only rewrites in
+    // vercel.json fire AFTER Next routing for the same reason. Putting
+    // them in beforeFiles routes the request to the backend proxy
+    // before Next sees it.
+    return {
+      beforeFiles: [
+        {
+          source: "/:path*",
+          has: [{ type: "host", value: "dev.company.isol8.co" }],
+          destination: "https://api-dev.isol8.co/__paperclip_proxy__/:path*",
+        },
+        {
+          source: "/:path*",
+          has: [{ type: "host", value: "company.isol8.co" }],
+          destination: "https://api.isol8.co/__paperclip_proxy__/:path*",
+        },
+      ],
+      afterFiles: [
+        {
+          source: "/ingest/static/:path*",
+          destination: "https://us-assets.i.posthog.com/static/:path*",
+        },
+        {
+          source: "/ingest/:path*",
+          destination: "https://us.i.posthog.com/:path*",
+        },
+        {
+          source: "/ingest/decide",
+          destination: "https://us.i.posthog.com/decide",
+        },
+      ],
+    };
   },
 
   // Exclude heavy ML packages from Vercel's output file tracing
