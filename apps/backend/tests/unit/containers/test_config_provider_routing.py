@@ -58,7 +58,7 @@ async def test_byo_key_anthropic_branch(tmp_path):
     cfg = json.loads(out.read_text())
     primary = cfg["agents"]["defaults"]["model"]["primary"]
     fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
-    assert primary == "anthropic/claude-opus-4-7"
+    assert primary == "anthropic/claude-opus-4-6-v1"
     assert fallbacks == ["anthropic/claude-sonnet-4-6"]
     env_block = cfg.get("env", {})
     assert "ANTHROPIC_API_KEY" not in env_block
@@ -82,24 +82,28 @@ async def test_bedrock_claude_branch(tmp_path):
     )
     cfg = json.loads(out.read_text())
 
-    # Primary is Opus 4.7 (matches upstream docs/providers/bedrock.md
-    # example and our pre-cutover default). Fallback is Sonnet 4.6 —
-    # ~5× cheaper than Opus, so a capacity-driven failover REDUCES
-    # spend rather than surprise-increasing it.
+    # Primary is Opus 4.6 — Opus 4.7 ships with applied=0 TPM on most
+    # accounts pending AWS capacity rollout (Service Quotas L-5DB28B7B),
+    # which throttles the very first invocation. 4.6 is functionally
+    # identical at the same list price. 4.7 is intentionally omitted
+    # from the catalog until the quota lifts; add it back as a fallback
+    # (or promote to primary) at that point. Sonnet 4.6 fallback is
+    # ~5× cheaper escape hatch for capacity/throttling.
     model_block = cfg["agents"]["defaults"]["model"]
-    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-opus-4-7"
+    assert model_block["primary"] == "amazon-bedrock/us.anthropic.claude-opus-4-6-v1"
     assert model_block["fallbacks"] == ["amazon-bedrock/us.anthropic.claude-sonnet-4-6"]
 
-    # Static provider catalog — exactly Sonnet 4.6 + Opus 4.7. New entries
-    # land here in lockstep with bedrock_pricing._RATES; otherwise the
-    # credit ledger would either skip billing or 500 with UnknownModelError.
+    # Static provider catalog — Opus 4.6 + Sonnet 4.6. New entries land
+    # here in lockstep with bedrock_pricing._RATES; otherwise the
+    # credit ledger would either skip billing or 500 with
+    # UnknownModelError.
     provider = cfg["models"]["providers"]["amazon-bedrock"]
     assert provider["api"] == "bedrock-converse-stream"
     assert provider["auth"] == "aws-sdk"
     model_ids = {m["id"] for m in provider["models"]}
     assert model_ids == {
+        "us.anthropic.claude-opus-4-6-v1",
         "us.anthropic.claude-sonnet-4-6",
-        "us.anthropic.claude-opus-4-7",
     }
     # Cost shape matches upstream ModelDefinitionConfig.cost (USD/MTok).
     for model in provider["models"]:

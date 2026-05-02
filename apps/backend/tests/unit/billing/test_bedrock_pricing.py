@@ -26,14 +26,14 @@ class TestCostMicrocents:
         )
         assert result == 10_500
 
-    def test_opus_4_7_cost(self):
-        # Opus 4.7: $15 / MTok input, $75 / MTok output.
+    def test_opus_4_6_cost(self):
+        # Opus 4.6: $15 / MTok input, $75 / MTok output.
         # 1000 input + 500 output:
         # (1000 / 1_000_000) * $15 = $0.015 = 15_000 microcents (input)
         # (500 / 1_000_000) * $75 = $0.0375 = 37_500 microcents (output)
         # Total: 52_500 microcents
         result = cost_microcents(
-            model_id="anthropic.claude-opus-4-7",
+            model_id="anthropic.claude-opus-4-6-v1",
             input_tokens=1000,
             output_tokens=500,
         )
@@ -86,12 +86,12 @@ class TestCostMicrocents:
     def test_cache_tokens_default_to_zero(self):
         """Older callers that don't pass cache tokens get the same answer."""
         without_cache = cost_microcents(
-            model_id="anthropic.claude-opus-4-7",
+            model_id="anthropic.claude-opus-4-6-v1",
             input_tokens=1000,
             output_tokens=500,
         )
         with_zero_cache = cost_microcents(
-            model_id="anthropic.claude-opus-4-7",
+            model_id="anthropic.claude-opus-4-6-v1",
             input_tokens=1000,
             output_tokens=500,
             cache_read_tokens=0,
@@ -104,7 +104,7 @@ class TestGetAllRates:
     def test_returns_both_models(self):
         rates = get_all_rates()
         assert "anthropic.claude-sonnet-4-6" in rates
-        assert "anthropic.claude-opus-4-7" in rates
+        assert "anthropic.claude-opus-4-6-v1" in rates
 
     def test_each_rate_has_all_four_fields(self):
         rates = get_all_rates()
@@ -121,7 +121,7 @@ class TestGetAllRates:
 
 class TestGetRate:
     def test_known_model(self):
-        rate = get_rate("anthropic.claude-opus-4-7")
+        rate = get_rate("anthropic.claude-opus-4-6-v1")
         assert rate["input"] == 15.0
         assert rate["output"] == 75.0
 
@@ -145,10 +145,10 @@ class TestNormalizeModelId:
             # Inference-profile prefix only.
             ("us.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
             ("global.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
-            ("eu.anthropic.claude-opus-4-7", "anthropic.claude-opus-4-7"),
+            ("eu.anthropic.claude-opus-4-6-v1", "anthropic.claude-opus-4-6-v1"),
             # Both prefixes — the actual shape emitted by chat.final.
             ("amazon-bedrock/us.anthropic.claude-sonnet-4-6", "anthropic.claude-sonnet-4-6"),
-            ("amazon-bedrock/global.anthropic.claude-opus-4-7", "anthropic.claude-opus-4-7"),
+            ("amazon-bedrock/global.anthropic.claude-opus-4-6-v1", "anthropic.claude-opus-4-6-v1"),
         ],
     )
     def test_strips_to_bare_id(self, raw, expected):
@@ -161,7 +161,7 @@ class TestNormalizeModelId:
         assert rate["output"] == 15.0
 
     def test_get_rate_accepts_full_openclaw_ref(self):
-        rate = get_rate("amazon-bedrock/us.anthropic.claude-opus-4-7")
+        rate = get_rate("amazon-bedrock/us.anthropic.claude-opus-4-6-v1")
         assert rate["input"] == 15.0
         assert rate["output"] == 75.0
 

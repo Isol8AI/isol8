@@ -271,7 +271,7 @@ async def test_deduct_for_card3_opus_with_markup():
     ):
         await conn._maybe_deduct_credits(
             chat_session_id="sess_opus",
-            model="amazon-bedrock/anthropic.claude-opus-4-7",
+            model="amazon-bedrock/anthropic.claude-opus-4-6-v1",
             input_tokens=1000,
             output_tokens=500,
         )

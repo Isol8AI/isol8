@@ -61,7 +61,7 @@ def test_redacts_inside_list_elements():
 def test_does_not_touch_non_matching_keys():
     from core.services.admin_redact import redact_openclaw_config
 
-    config = {"name": "myagent", "model": "claude-opus-4-7", "tools": ["exec", "browser"]}
+    config = {"name": "myagent", "model": "claude-opus-4-6-v1", "tools": ["exec", "browser"]}
     out = redact_openclaw_config(config)
     assert out == config
 
