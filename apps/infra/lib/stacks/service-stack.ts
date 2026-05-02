@@ -55,6 +55,7 @@ export interface ServiceStackProps extends cdk.StackProps {
     creditTransactionsTable: dynamodb.Table;
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
+    paperclipCompaniesTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -271,6 +272,13 @@ export class ServiceStack extends cdk.Stack {
     // Webhook dedup helper does conditional PutItem with attribute_not_exists;
     // never reads. Write-only grant is sufficient.
     props.database.webhookDedupTable.grantWriteData(this.taskRole);
+    // Paperclip integration: the proxy router (paperclip_proxy.py:388,
+    // routers/webhooks.py:146) and the daily purge worker
+    // (services/update_service.py:198) all read/write this table to look up
+    // each user's Paperclip company row and decrypt the per-user Better Auth
+    // password. Without this grant the proxy 500s on every Teams click with
+    // an AccessDeniedException, even when Clerk auth succeeds.
+    props.database.paperclipCompaniesTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
