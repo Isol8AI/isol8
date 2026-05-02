@@ -47,12 +47,14 @@ async def test_replayed_stripe_webhook_processed_once(dedup_table_and_settings, 
             new=AsyncMock(return_value={}),
         ) as mock_write,
         patch(
-            "core.repositories.billing_repo.get_by_stripe_customer_id",
+            "core.repositories.billing_repo.list_by_stripe_customer_id",
             new=AsyncMock(
-                return_value={
-                    "owner_id": "user_replay_test",
-                    "stripe_customer_id": "cus_x",
-                }
+                return_value=[
+                    {
+                        "owner_id": "user_replay_test",
+                        "stripe_customer_id": "cus_x",
+                    }
+                ]
             ),
         ),
     ):

@@ -26,14 +26,32 @@ async def get_by_owner_id(owner_id: str) -> dict | None:
 
 
 async def get_by_stripe_customer_id(stripe_customer_id: str) -> dict | None:
+    """Return the first billing row for ``stripe_customer_id``.
+
+    Stripe customers are now keyed by email and can be shared across
+    multiple billing rows (one human → personal + org rows reusing the same
+    Stripe customer). For ambiguous cases prefer
+    :func:`list_by_stripe_customer_id` so callers can disambiguate
+    explicitly.
+    """
+    items = await list_by_stripe_customer_id(stripe_customer_id)
+    return items[0] if items else None
+
+
+async def list_by_stripe_customer_id(stripe_customer_id: str) -> list[dict]:
+    """Return all billing rows pointing at ``stripe_customer_id``.
+
+    Used by the Stripe webhook owner-resolver to disambiguate when a
+    customer is shared across personal + org rows: the resolver filters
+    the returned rows by ``stripe_subscription_id`` from the event.
+    """
     table = _get_table()
     response = await run_in_thread(
         table.query,
         IndexName="stripe-customer-index",
         KeyConditionExpression=Key("stripe_customer_id").eq(stripe_customer_id),
     )
-    items = response.get("Items", [])
-    return items[0] if items else None
+    return response.get("Items", [])
 
 
 async def create_if_not_exists(

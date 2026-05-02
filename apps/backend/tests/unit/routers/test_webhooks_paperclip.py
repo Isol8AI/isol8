@@ -614,8 +614,8 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
 
     with (
         patch(
-            "core.repositories.billing_repo.get_by_stripe_customer_id",
-            new=AsyncMock(return_value=fake_account),
+            "core.repositories.billing_repo.list_by_stripe_customer_id",
+            new=AsyncMock(return_value=[fake_account]),
         ),
         patch(
             "core.services.webhook_dedup.record_event_or_skip",
