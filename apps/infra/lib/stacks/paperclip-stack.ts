@@ -132,6 +132,25 @@ export class PaperclipStack extends cdk.Stack {
       allowAllOutbound: true,
     });
 
+    // Intra-VPC ingress on port 3100. The backend FastAPI proxy connects
+    // directly to the Paperclip task via Cloud Map at
+    // http://paperclip.isol8-{env}.local:3100 (per ServiceStack's
+    // PAPERCLIP_INTERNAL_URL env var) — that bypasses the ALB and hits
+    // this task SG directly. Without this rule the connection times out
+    // and provisioning fails. The earlier comment "Ingress is granted by
+    // T6 (public ALB host rule for company.isol8.co)" was wrong: the ALB
+    // rule only covers ALB-initiated traffic, not direct intra-VPC
+    // connections from the FastAPI service. Scope to the VPC CIDR
+    // instead of the FastAPI SG to avoid a cross-stack reference (the
+    // task lives in a private subnet so the practical reachability is
+    // identical, and the Aurora pattern below shows why we avoid
+    // cross-stack SG refs).
+    this.taskSecurityGroup.addIngressRule(
+      ec2.Peer.ipv4(props.vpc.vpcCidrBlock),
+      ec2.Port.tcp(3100),
+      "FastAPI proxy via Cloud Map (intra-VPC)",
+    );
+
     // Aurora ingress: the Paperclip task must reach Postgres on 5432.
     // Use CfnSecurityGroupIngress (NOT addIngressRule) for the same reason
     // service-stack.ts does — addIngressRule on a cross-stack SG creates
