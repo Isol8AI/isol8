@@ -1021,22 +1021,47 @@ async def proxy(path: str, request: Request) -> Response:
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
     if company is None:
-        # Either:
-        #  (a) we just spawned _autoprovision in the handshake step and
-        #      the row hasn't been written yet (typical first visit), OR
-        #  (b) the row got deleted/disabled out-of-band (cancelled
-        #      subscription, manual purge — the cookie outlived the row).
-        # Both look identical from here. Show the auto-refresh stub; if
-        # provisioning is in flight it'll reload and find an active row;
-        # if it's case (b) it'll loop until the cookie expires.
+        # Either: (a) handshake just spawned _autoprovision and the row
+        # hasn't been written yet (typical first visit), or (b) cookie
+        # outlived the row (deleted out-of-band). Re-kick provisioning
+        # in case (a) failed silently, then return the auto-refresh
+        # stub. provision_org is idempotent so racing with the handshake's
+        # task is safe. Codex P1 on PR #498 — without this re-kick a stale
+        # cookie locked the user into an 8h refresh loop.
+        if auth.email:
+            asyncio.create_task(_autoprovision(auth))
+        return _provisioning_in_progress_response()
+    if company.status == "provisioning":
+        # In flight — the auto-refresh stub will land on "active" once
+        # the background task completes. No need to re-kick.
+        return _provisioning_in_progress_response()
+    if company.status == "failed":
+        # Last provisioning attempt errored. Try once more (idempotent),
+        # then show the stub. If the underlying issue is persistent the
+        # user eventually closes the tab and re-triggers via /chat.
+        logger.warning(
+            "paperclip_proxy: cookie path saw status=failed for user=%s; retrying",
+            auth.user_id,
+        )
+        if auth.email:
+            asyncio.create_task(_autoprovision(auth))
         return _provisioning_in_progress_response()
     if company.status != "active":
-        # Provisioning still running OR in failed/disabled state. Same
-        # auto-refresh stub — if status flips to active the next reload
-        # forwards through; if it stays "failed"/"disabled" the user
-        # eventually closes the tab, and the cookie expiry on the next
-        # handshake re-triggers provisioning.
-        return _provisioning_in_progress_response()
+        # Most commonly status="disabled" (cancelled subscription, admin
+        # disable). Send the user back to /chat so they can re-enable
+        # via the normal entry point — auto-refresh would loop forever
+        # since this state requires admin/billing intervention to clear.
+        from fastapi.responses import RedirectResponse
+
+        logger.info(
+            "paperclip_proxy: cookie path saw status=%s for user=%s; redirecting to /chat",
+            company.status,
+            auth.user_id,
+        )
+        return RedirectResponse(
+            f"{_frontend_url()}/chat?from=teams&need=reprovision",
+            status_code=302,
+        )
 
     # Email comes from the Clerk JWT (``email`` claim). The Isol8
     # ``users`` DynamoDB row only stores ``user_id`` + ``created_at``
@@ -1098,16 +1123,23 @@ async def proxy(path: str, request: Request) -> Response:
 
         # Build forwarding headers. We add X-Forwarded-* so Paperclip's
         # access logs reflect the real client identity (not the ALB IP).
-        # Source the public hostname from X-Isol8-Public-Host (set by
-        # API Gateway parameter mapping; see module docstring). We forward
-        # it as standard X-Forwarded-Host on the outbound (Paperclip-bound)
-        # request — Paperclip uses that header to render absolute URLs
-        # pointing back at company.isol8.co. (Outbound to an internal
-        # service, no API Gateway in the path, so the x-forwarded-* name
-        # restriction doesn't apply here.)
-        forwarded_host = request.headers.get(
-            "x-isol8-public-host",
-            request.headers.get("host", ""),
+        # Source the public hostname Paperclip should use when emitting
+        # absolute callback/redirect URLs. Order matters:
+        #   1. X-Forwarded-Host — set by Vercel for hosts on its rewrite
+        #      path (dev.company.isol8.co, company.isol8.co). Holds the
+        #      real public host the user typed; the only header that
+        #      survives the Vercel→API-Gateway hop with the company host
+        #      intact. Codex P1 on PR #497.
+        #   2. X-Isol8-Public-Host — set by API Gateway parameter mapping
+        #      to ``$context.domainName``. For Vercel-routed traffic this
+        #      is the API Gateway hostname (``api-{env}.isol8.co``), NOT
+        #      the company host — useless for upstream URL shaping. Kept
+        #      as a fallback for legacy direct-to-API-Gateway paths.
+        #   3. Host — last-ditch fallback (post-ALB this is the ALB DNS).
+        forwarded_host = (
+            request.headers.get("x-forwarded-host")
+            or request.headers.get("x-isol8-public-host")
+            or request.headers.get("host", "")
         )
         client_host = request.client.host if request.client else ""
         upstream_headers: dict[str, str] = {
