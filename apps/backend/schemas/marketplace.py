@@ -92,3 +92,99 @@ class TakedownRequest(BaseModel):
     claimant_name: str
     claimant_email: str
     basis_md: str = Field(..., min_length=10, max_length=4096)
+
+
+# -- Artifact upload + seller / buyer surfacing --
+
+
+class ArtifactUploadResponse(BaseModel):
+    """Returned by POST /listings/{id}/artifact and /artifact-from-agent."""
+
+    listing_id: str
+    version: int
+    manifest_sha256: str
+    file_count: int
+    bytes: int
+
+
+class ArtifactFromAgentRequest(BaseModel):
+    agent_id: str = Field(..., min_length=4, max_length=64)
+
+
+class AgentSummary(BaseModel):
+    agent_id: str
+    name: str | None = None
+    updated_at: datetime | None = None
+
+
+class MyAgentsResponse(BaseModel):
+    items: list[AgentSummary]
+
+
+class SellerEligibilityResponse(BaseModel):
+    tier: str  # "free" | "starter" | "pro" | "enterprise" | "none"
+    can_sell_skillmd: bool
+    can_sell_openclaw: bool
+    reason: str | None = None  # populated when can_sell_openclaw=False
+
+
+class PurchaseSummary(BaseModel):
+    purchase_id: str
+    listing_id: str
+    listing_slug: str | None = None
+    license_key: str
+    price_paid_cents: int
+    status: Literal["paid", "refunded", "revoked"]
+    created_at: str  # ISO8601 string (matches DDB raw value)
+
+
+class MyPurchasesResponse(BaseModel):
+    items: list[PurchaseSummary]
+
+
+# -- Admin moderation preview --
+
+
+class FileTreeEntry(BaseModel):
+    path: str
+    size_bytes: int
+
+
+class SafetyFlag(BaseModel):
+    pattern: str  # short identifier: "curl-bash", "eval", "secret", etc.
+    severity: Literal["high", "medium", "low"]
+    file: str
+    line: int | None = None
+    snippet: str  # ~80 char excerpt for the admin UI
+
+
+class OpenclawSummary(BaseModel):
+    tools_count: int = 0
+    providers: list[str] = Field(default_factory=list)
+    cron_count: int = 0
+    channels_count: int = 0
+    sub_agent_count: int = 0
+    raw_config_size_bytes: int = 0
+
+
+class ListingPreviewResponse(BaseModel):
+    """Returned by GET /admin/marketplace/listings/{id}/preview.
+
+    Backend reads the listing's S3 tarball, extracts in-memory, runs the
+    safety scan, and surfaces enough context for an admin to make an
+    informed approve/reject call.
+    """
+
+    listing_id: str
+    slug: str
+    name: str
+    seller_id: str
+    format: FormatStr
+    status: ListingStatusStr
+    price_cents: int
+    tags: list[str]
+    manifest: dict
+    file_tree: list[FileTreeEntry]
+    skill_md_text: str | None = None
+    openclaw_summary: OpenclawSummary | None = None
+    safety_flags: list[SafetyFlag]

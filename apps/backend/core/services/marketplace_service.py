@@ -38,6 +38,15 @@ class SlugCollisionError(Exception):
     """Another listing already owns this slug."""
 
 
+class ArtifactNotUploadedError(Exception):
+    """Seller tried to submit a draft whose artifact bytes were never replaced.
+
+    create_draft writes a metadata-only artifact (empty workspace.tar.gz);
+    the seller must upload real bytes via /artifact or /artifact-from-agent
+    before submit_for_review will accept the draft.
+    """
+
+
 async def _upload_artifact_to_s3(
     *, listing_id: str, version: int, artifact_bytes: bytes, manifest: dict
 ) -> tuple[str, str]:
@@ -98,6 +107,9 @@ async def create_draft(
         "manifest_json": manifest,
         "artifact_format_version": "v1",
         "entitlement_policy": "perpetual",
+        # False until replace_artifact (Path A or B) writes the real bytes.
+        # submit_for_review requires this to be True.
+        "artifact_uploaded": False,
         "created_at": now_iso,
         "updated_at": now_iso,
         "published_at": None,
@@ -119,9 +131,105 @@ async def create_draft(
     return item
 
 
-async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
-    """Transition draft -> review. Idempotent: re-submitting from review is rejected."""
+async def replace_artifact(
+    *,
+    listing_id: str,
+    seller_id: str,
+    artifact_bytes: bytes,
+    manifest: dict,
+) -> dict:
+    """Replace the v1 artifact for a draft listing.
+
+    Conditional on (seller_id matches the listing's seller) AND (status='draft').
+    Re-uploads to the same S3 prefix so the existing version is overwritten —
+    artifacts are mutable until the listing first transitions out of draft.
+
+    Returns:
+        Dict with the updated listing fields: listing_id, version,
+        manifest_sha256, file_count, bytes.
+
+    Raises:
+        InvalidStateError: Listing is not in draft state, or caller is not the seller.
+    """
     table = _listings_table()
+    # Read first to verify ownership + state. We can't use a conditional
+    # update for the upload because the S3 write happens before the DDB
+    # update; verifying ownership upfront keeps the failure mode tight.
+    resp = table.get_item(Key={"listing_id": listing_id, "version": 1})
+    item = resp.get("Item")
+    if not item:
+        raise InvalidStateError("listing not found")
+    if item.get("seller_id") != seller_id:
+        raise InvalidStateError("you are not the seller of this listing")
+    if item.get("status") != "draft":
+        raise InvalidStateError("artifact can only be replaced while in 'draft' state")
+
+    s3_prefix, sha = await _upload_artifact_to_s3(
+        listing_id=listing_id,
+        version=1,
+        artifact_bytes=artifact_bytes,
+        manifest=manifest,
+    )
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    table.update_item(
+        Key={"listing_id": listing_id, "version": 1},
+        UpdateExpression=(
+            "SET manifest_sha256 = :sha, manifest_json = :mj,"
+            "    s3_prefix = :prefix, artifact_uploaded = :uploaded,"
+            "    updated_at = :now"
+        ),
+        # Defense-in-depth: re-check seller match + draft state via condition
+        # in case state changed between the get and update.
+        ConditionExpression="seller_id = :sid AND #s = :draft",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={
+            ":sha": sha,
+            ":mj": manifest,
+            ":prefix": s3_prefix,
+            ":uploaded": True,
+            ":sid": seller_id,
+            ":draft": "draft",
+            ":now": now_iso,
+        },
+    )
+    _versions_table().update_item(
+        Key={"listing_id": listing_id, "version": 1},
+        UpdateExpression="SET manifest_sha256 = :sha, manifest_json = :mj, s3_prefix = :prefix",
+        ExpressionAttributeValues={":sha": sha, ":mj": manifest, ":prefix": s3_prefix},
+    )
+
+    return {
+        "listing_id": listing_id,
+        "version": 1,
+        "manifest_sha256": sha,
+        "file_count": len(manifest.get("contents", [])) or manifest.get("file_count", 0),
+        "bytes": len(artifact_bytes),
+    }
+
+
+async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
+    """Transition draft -> review. Idempotent: re-submitting from review is rejected.
+
+    Precondition: artifact_uploaded must be True. Listings created via
+    create_draft start with artifact_uploaded=False; the seller must call
+    replace_artifact (via /artifact or /artifact-from-agent) before
+    submitting. Without this guard, sellers could submit a metadata-only
+    draft with an empty workspace.tar.gz and buyers would download an
+    empty install.
+    """
+    table = _listings_table()
+
+    # Pre-check artifact_uploaded so we can return a specific error.
+    # Listings created before this field existed default to True (legacy
+    # safety) — the field is only stored for newly-created drafts.
+    pre = table.get_item(Key={"listing_id": listing_id, "version": 1})
+    pre_item = pre.get("Item") or {}
+    # Treat missing field as uploaded (legacy listings predating this
+    # change). Newly-created drafts set the field explicitly to False.
+    if pre_item.get("artifact_uploaded") is False:
+        raise ArtifactNotUploadedError("upload artifact (zip or agent) before submitting for review")
+
     try:
         resp = table.update_item(
             Key={"listing_id": listing_id, "version": 1},

@@ -249,3 +249,78 @@ async def cli_auth_poll(device_code: str = Query(...)):
     jwt = entry["jwt"]
     _CLI_CODES.pop(device_code, None)
     return {"status": "authorized", "jwt": jwt}
+
+
+@router.post("/cli/auth/authorize")
+async def cli_auth_authorize(
+    payload: dict,
+    auth: Annotated[AuthContext, Depends(get_current_user)],
+    request: Request,
+):
+    """Browser-side handoff: the /cli/authorize page in the marketplace
+    storefront POSTs the user's device_code here with their Clerk JWT in
+    the Authorization header. We bind the JWT to the device_code so the
+    next CLI poll completes.
+    """
+    device_code = payload.get("device_code")
+    if not device_code:
+        raise HTTPException(status_code=400, detail="device_code required")
+    entry = _CLI_CODES.get(device_code)
+    if not entry:
+        raise HTTPException(status_code=404, detail="device_code unknown or expired")
+    if time.time() - entry["created_at"] > 300:
+        _CLI_CODES.pop(device_code, None)
+        raise HTTPException(status_code=410, detail="device_code expired")
+
+    # Recover the raw bearer JWT from the request — get_current_user only
+    # returns the parsed AuthContext, but the CLI needs the raw token to
+    # call subsequent backend endpoints (e.g. /install/validate).
+    bearer = request.headers.get("authorization", "")
+    if not bearer.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="missing Authorization header")
+    entry["jwt"] = bearer[len("Bearer ") :]
+    return {"status": "authorized", "user_id": auth.user_id}
+
+
+# ---------------------------------------------------------------------------
+# Buyer purchase history surfacing
+# ---------------------------------------------------------------------------
+
+
+@router.get("/my-purchases", response_model=schemas.MyPurchasesResponse)
+async def my_purchases(auth: Annotated[AuthContext, Depends(get_current_user)]):
+    """List the caller's marketplace purchases.
+
+    Queries marketplace-purchases by buyer_id (the table's PK). Joins the
+    listing slug per row by reading marketplace-listings v1; small N
+    (sellers don't buy thousands of items) makes the per-row read fine
+    for v1.
+    """
+    table = _purchases_table()
+    resp = table.query(
+        KeyConditionExpression="buyer_id = :b",
+        ExpressionAttributeValues={":b": auth.user_id},
+        Limit=100,
+        ScanIndexForward=False,  # newest first
+    )
+
+    items: list[schemas.PurchaseSummary] = []
+    listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+    slug_cache: dict[str, str] = {}
+    for raw in resp.get("Items", []):
+        listing_id = raw.get("listing_id", "")
+        if listing_id and listing_id not in slug_cache:
+            li = listings_table.get_item(Key={"listing_id": listing_id, "version": 1}).get("Item")
+            slug_cache[listing_id] = (li or {}).get("slug", "") if li else ""
+        items.append(
+            schemas.PurchaseSummary(
+                purchase_id=raw.get("purchase_id", ""),
+                listing_id=listing_id,
+                listing_slug=slug_cache.get(listing_id) or None,
+                license_key=raw.get("license_key", ""),
+                price_paid_cents=int(raw.get("price_paid_cents", 0)),
+                status=raw.get("status", "paid"),
+                created_at=raw.get("created_at", ""),
+            )
+        )
+    return schemas.MyPurchasesResponse(items=items)
