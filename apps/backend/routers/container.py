@@ -64,18 +64,31 @@ async def _assert_provision_allowed(owner_id: str, clerk_user_id: str) -> None:
 
     Two layers of gating:
 
-    1. Subscription must be ``active`` or ``trialing``. A canceled,
-       incomplete, unpaid, paused, or past_due subscription cannot
-       spin up new compute — that's how we prevented arbitrary signed-in
-       users from minting free ECS Fargate tasks (audit C1).
+    1. Subscription. A canceled, incomplete, unpaid, paused, or past_due
+       subscription cannot spin up new compute — that's how we prevent
+       arbitrary signed-in users from minting free ECS Fargate tasks
+       (audit C1). Two cases pass:
+         - ``subscription_status`` is ``active`` or ``trialing``.
+         - Legacy row pre-Plan-3: ``stripe_subscription_id`` is set but
+           ``subscription_status`` hasn't been backfilled yet. We mirror
+           ``gate_chat``'s leniency here so a deploy doesn't 402 paying
+           customers mid-migration. Codex P1 on PR #488.
+       Anything else (no row at all, or status set to a non-OK value)
+       gets 402.
     2. For ``bedrock_claude``, the credit balance must be > 0. A
        container with $0 prepaid credits is dead weight: ``gate_chat``
        blocks every chat anyway, so the user can't use it. Refuse the
        provision instead of leaking ECS cost.
     """
     account = await billing_repo.get_by_owner_id(owner_id)
-    status = (account or {}).get("subscription_status")
-    if status not in _PROVISION_OK_STATUSES:
+    if not account:
+        raise HTTPException(status_code=402, detail="Active subscription required")
+    status = account.get("subscription_status")
+    has_legacy_sub = bool(account.get("stripe_subscription_id"))
+    # Allow if status is in the OK set, OR if status is unset on a row
+    # that has a stripe_subscription_id (legacy / pre-backfill).
+    is_ok = status in _PROVISION_OK_STATUSES or (status is None and has_legacy_sub)
+    if not is_ok:
         raise HTTPException(status_code=402, detail="Active subscription required")
 
     provider_choice, _ = await _resolve_provider_choice(clerk_user_id)

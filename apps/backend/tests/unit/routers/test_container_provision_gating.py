@@ -195,6 +195,47 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
 
 
 @pytest.mark.asyncio
+async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
+    """Codex P1 on PR #488: legacy billing rows pre-Plan-3 may have a
+    valid stripe_subscription_id but no subscription_status backfilled
+    yet. Other gates (gate_chat) preserve those — the provision gate
+    must too, or we 402 paying customers mid-migration.
+
+    bedrock_claude users still need credits regardless of legacy
+    status, so this test uses chatgpt_oauth to isolate the legacy-row
+    behavior.
+    """
+    from routers.container import container_provision
+
+    fake_ecs = MagicMock()
+    fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value=None,
+        ),
+        patch(
+            "routers.container.billing_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={
+                "stripe_subscription_id": "sub_legacy_pre_plan_3",
+                # subscription_status deliberately absent / None
+            },
+        ),
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "chatgpt_oauth"},
+        ),
+        patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+    ):
+        result = await container_provision(auth=_auth())
+    assert result["status"] == "provisioning"
+
+
+@pytest.mark.asyncio
 async def test_provision_existing_container_skips_payment_gate():
     """Idempotent return for users who already have a container should
     NOT re-run the gate — billing state can churn (cancel + resubscribe)

@@ -659,13 +659,45 @@ async def handle_stripe_webhook(
     elif event_type == "invoice.paid":
         logger.info("Payment succeeded for customer %s", event_data.get("customer"))
 
-    elif event_type == "checkout.session.completed":
+    elif event_type in (
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+    ):
         session = event["data"]["object"]
         # We piggyback on the same webhook for two distinct flows; only
         # credit-top-up sessions need ledger work here. Trial-checkout
         # sessions get their state from customer.subscription.created
         # / .updated above.
         if session.get("metadata", {}).get("purpose") != "credit_top_up":
+            return Response(status_code=200)
+
+        # Only grant credits when Stripe has actually collected payment.
+        #   - "paid"               : card payment cleared synchronously.
+        #   - "no_payment_required": 100%-off coupon → $0 charge → still
+        #                            a valid credit grant (we absorb the
+        #                            cost via the coupon).
+        #   - "unpaid"             : delayed-payment method (ACH /
+        #                            bank transfer / Klarna) hasn't
+        #                            settled yet. Stripe fires
+        #                            checkout.session.completed
+        #                            immediately for these, then later
+        #                            fires async_payment_succeeded
+        #                            (or async_payment_failed). We
+        #                            wait for the async event before
+        #                            crediting so a failed ACH doesn't
+        #                            leave the user with free credits.
+        # Codex P1 on PR #488.
+        payment_status = session.get("payment_status")
+        if payment_status not in ("paid", "no_payment_required"):
+            put_metric(
+                "credit.top_up.deferred",
+                dimensions={"payment_status": payment_status or "unknown"},
+            )
+            logger.info(
+                "Credit top-up deferred for session %s — payment_status=%s",
+                session.get("id"),
+                payment_status,
+            )
             return Response(status_code=200)
 
         user_id = session["metadata"].get("user_id")
@@ -688,7 +720,8 @@ async def handle_stripe_webhook(
             amount_microcents=amount_microcents,
             # Use session id as the idempotency key on the ledger side —
             # one Checkout completion = one credit grant, even if Stripe
-            # retries the webhook delivery.
+            # retries the webhook delivery (or fires both completed +
+            # async_payment_succeeded back-to-back).
             stripe_payment_intent_id=session.get("id"),
         )
         amount_total = session.get("amount_total")
@@ -699,7 +732,26 @@ async def handle_stripe_webhook(
             dimensions={
                 "source": "stripe_checkout",
                 "discounted": "true" if amount_total != amount_cents else "false",
+                "event": event_type.split(".")[-1],
             },
         )
+
+    elif event_type == "checkout.session.async_payment_failed":
+        # Delayed-payment method (ACH / bank transfer) was rejected after
+        # checkout.session.completed had already fired with payment_status
+        # = "unpaid". Because we *gate* the credit grant on payment_status,
+        # nothing was ever credited — but emit a metric so we can see the
+        # fail rate. Codex P1 on PR #488.
+        session = event["data"]["object"]
+        if session.get("metadata", {}).get("purpose") == "credit_top_up":
+            put_metric(
+                "credit.top_up.payment_failed",
+                dimensions={"source": "stripe_checkout"},
+            )
+            logger.warning(
+                "Credit top-up payment failed for session %s (user=%s)",
+                session.get("id"),
+                session.get("metadata", {}).get("user_id"),
+            )
 
     return {"status": "ok"}
