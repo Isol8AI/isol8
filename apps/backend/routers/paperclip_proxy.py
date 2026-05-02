@@ -977,6 +977,23 @@ async def proxy(path: str, request: Request) -> Response:
         # one that may not exist.
         from fastapi.responses import RedirectResponse
 
+        # Email guard: _autoprovision needs auth.email to call Better
+        # Auth signup. If the Clerk JWT is missing the email claim
+        # (older template, misconfigured org), spawning the task would
+        # raise immediately and asyncio would swallow the exception —
+        # the row would stay None forever and the user would loop in
+        # the setting-up stub. Surface the error explicitly via /chat
+        # instead.
+        if not auth.email:
+            logger.warning(
+                "paperclip_proxy: handoff blocked for user=%s — no email claim on JWT",
+                auth.user_id,
+            )
+            return RedirectResponse(
+                f"{_frontend_url()}/chat?from=teams&need=email",
+                status_code=302,
+            )
+
         owner_id = resolve_owner_id(auth)
         container = await container_repo.get_by_owner_id(owner_id)
         if container is None:
