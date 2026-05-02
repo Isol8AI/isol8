@@ -492,14 +492,12 @@ def build_openclaw_config_dict(
                 "contextLimits": {},
                 "heartbeat": {},
                 "workspace": "/home/node/.openclaw/workspaces",
-                # Pin the embedding provider to Bedrock for every auth path:
-                # the per-user task role has bedrock:InvokeModel via IAM, so
-                # this works whether the user signed in with ChatGPT, brought
-                # their own OpenAI/Anthropic key, or chose Bedrock-Claude.
-                # Without an explicit provider, openclaw defaults to "local"
-                # (GGUF file we don't ship) and qmd's first embed cycle hangs
-                # ~3min (120s timeout + 60s backoff) before failing —
-                # observed in the 02:21 cold-start trace.
+                # Memory embedding provider, kept pinned to Bedrock so any
+                # future plugin that does want embeddings inherits a sane
+                # default. Today's `builtin` backend doesn't use embeddings
+                # — it's flat MEMORY.md files. Without an explicit provider,
+                # openclaw defaults to "local" (GGUF we don't ship), which
+                # historically caused hangs.
                 "memorySearch": {
                     "enabled": True,
                     "provider": "bedrock",
@@ -532,30 +530,20 @@ def build_openclaw_config_dict(
                 },
             ],
         },
+        # Memory backend: "builtin" = flat MEMORY.md files in the agent
+        # workspace. The qmd backend was removed 2026-05-02 because qmd's
+        # better-sqlite3 store on EFS deadlocks the gateway's V8 main
+        # thread when the NFS client retries forever (`rpc_wait_bit_killable`).
+        # Symptoms: container appears alive (TCP port still listening) but
+        # every WS upgrade times out — 10h outage on 2026-05-01.
+        # Builtin reads/writes plain markdown files: same EFS underneath,
+        # but only on explicit agent recall, not via a long-lived sqlite
+        # connection that's constantly hitting the disk. Future semantic
+        # memory work should use a non-EFS-backed plugin (memory-lancedb
+        # with a non-EFS data dir, or Aurora pgvector).
         "memory": {
-            "backend": "qmd",
+            "backend": "builtin",
             "citations": "auto",
-            "qmd": {
-                "command": "/home/node/.npm-global/bin/qmd",
-                "includeDefaultMemory": True,
-                "searchMode": "search",
-                "update": {
-                    "interval": "5m",
-                    "debounceMs": 15000,
-                    "onBoot": True,
-                    "waitForBootSync": False,
-                },
-                "limits": {
-                    "maxResults": 6,
-                    "timeoutMs": 4000,
-                },
-                "scope": {
-                    "default": "deny",
-                    "rules": [
-                        {"action": "allow", "match": {"chatType": "direct"}},
-                    ],
-                },
-            },
         },
         "tools": {
             "profile": "full",

@@ -143,9 +143,9 @@ async def test_meta_shim_present_to_defeat_auto_restore(tmp_path):
     ],
 )
 async def test_memory_search_pinned_to_bedrock_across_auth_paths(tmp_path, provider_choice, byo_provider):
-    """qmd's first embed cycle hangs 3min on default `local` embedding model.
-    Pinning to bedrock works for every auth path since the per-user task
-    role has bedrock:InvokeModel via IAM."""
+    """memorySearch pin defends against openclaw defaulting to "local"
+    (a GGUF file we don't ship). Today's `builtin` memory backend doesn't
+    use embeddings, but future plugins will inherit this default."""
     kwargs = {
         "config_path": tmp_path / "openclaw.json",
         "gateway_token": "test-token",
