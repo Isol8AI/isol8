@@ -51,7 +51,7 @@ export function ChatLayout({
   onCloseFileViewer,
 }: ChatLayoutProps): React.ReactElement {
   const posthog = usePostHog();
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
   // Watch all of the user's org memberships so we can auto-activate the
@@ -298,6 +298,34 @@ export function ChatLayout({
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <a
                 href={companyUrl}
+                onClick={async (e) => {
+                  // The proxy at company.isol8.co accepts a Clerk JWT in the
+                  // ?__t= query param as its initial-handshake auth source.
+                  // Top-level browser navigation can't carry an Authorization
+                  // header, and Clerk's __session cookie is host-scoped to
+                  // dev.isol8.co (doesn't cross subdomains in dev mode), so
+                  // appending the JWT here is the only way to get the user
+                  // signed in on company.isol8.co without a second sign-in.
+                  // Backend strips ?__t= via 302 immediately after minting
+                  // the session cookie, so the token leaves the URL bar
+                  // within ~50ms. JWT TTL is ~60s (Clerk default).
+                  e.preventDefault();
+                  try {
+                    const token = await getToken();
+                    if (!token) {
+                      // No active session — fall back to plain navigation;
+                      // backend will redirect to /chat with the right hint.
+                      window.location.href = companyUrl;
+                      return;
+                    }
+                    const url = new URL(companyUrl);
+                    url.searchParams.set("__t", token);
+                    window.location.href = url.toString();
+                  } catch (err) {
+                    console.error("Teams handoff: getToken failed", err);
+                    window.location.href = companyUrl;
+                  }
+                }}
                 target="_self"
                 rel="noopener"
                 className="sidebar-settings-link"

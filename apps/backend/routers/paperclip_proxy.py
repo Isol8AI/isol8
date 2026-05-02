@@ -83,9 +83,10 @@ from fastapi import APIRouter, HTTPException, Request, Response, WebSocket, WebS
 from websockets import connect as ws_connect
 from websockets.exceptions import ConnectionClosed
 
-from core.auth import AuthContext, _decode_token
+from core.auth import AuthContext, _decode_token, _extract_org_claims, resolve_owner_id
 from core.config import settings
 from core.encryption import decrypt
+from core.repositories import container_repo
 from core.repositories.paperclip_repo import PaperclipRepo
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
@@ -635,15 +636,21 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
             claims = _verify_paperclip_session(session_cookie)
             return AuthContext(user_id=claims["sub"], email=claims.get("email"))
         except pyjwt.InvalidTokenError as e:
-            # Expired or tampered — fall through to Bearer; caller will get
-            # a fresh cookie if Bearer succeeds (or bootstrap page if not).
+            # Expired or tampered — fall through to Bearer/handoff; caller
+            # gets a fresh cookie if either succeeds.
             logger.info("paperclip_proxy: session cookie rejected: %s", e)
 
-    # 2. Bearer
+    # 2. Bearer header (programmatic clients)
+    # 3. ?__t= query-param (browser nav from dev.isol8.co Teams click — top-
+    #    level navigation can't carry a Bearer header, so the frontend
+    #    appends a fresh Clerk JWT here. proxy() strips it via 302 after
+    #    minting the session cookie so it doesn't linger in the URL bar.)
     auth_header = request.headers.get("authorization", "")
     token: str | None = None
     if auth_header.lower().startswith("bearer "):
         token = auth_header.split(" ", 1)[1].strip() or None
+    if not token:
+        token = request.query_params.get("__t") or None
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
 
@@ -664,7 +671,18 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
     user_id = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Token missing subject")
-    return AuthContext(user_id=user_id, email=payload.get("email"))
+    # Extract org claims so the proxy can use resolve_owner_id() for the
+    # container lookup (org users have org-owned OpenClaw containers, not
+    # per-user). The paperclip-companies row itself stays per-user.
+    org = _extract_org_claims(payload)
+    return AuthContext(
+        user_id=user_id,
+        email=payload.get("email"),
+        org_id=org["org_id"],
+        org_role=org["org_role"],
+        org_slug=org["org_slug"],
+        org_permissions=org["org_permissions"],
+    )
 
 
 # --- Routes ---
@@ -797,6 +815,71 @@ async def provision_self(request: Request) -> Response:
     return Response(status_code=204)
 
 
+def _strip_handoff_param(request: Request) -> str:
+    """Build the same URL the browser came from, minus ``?__t=``.
+
+    Used for the post-handoff 302: we want the address bar to show the
+    real URL the user was navigating to, with the one-shot Clerk JWT
+    stripped. Preserves all other query params and the fragment.
+    """
+    items = [(k, v) for k, v in request.query_params.multi_items() if k != "__t"]
+    qs = "&".join(f"{k}={v}" for k, v in items) if items else ""
+    url = request.url.path
+    if qs:
+        url += "?" + qs
+    if request.url.fragment:
+        url += "#" + request.url.fragment
+    return url
+
+
+def _frontend_url() -> str:
+    """Public URL of the dev/prod Isol8 frontend. Used for redirects when
+    the user lands on company.isol8.co without prerequisite state.
+    """
+    return (settings.FRONTEND_URL or "").rstrip("/") or "https://dev.isol8.co"
+
+
+async def _autoprovision(auth: AuthContext) -> None:
+    """Synchronously create a personal Paperclip company for ``auth``.
+
+    Mirrors what the Clerk org.created webhook does, but uses
+    ``user_id`` as the org_id sentinel since the row is keyed per-user
+    anyway. Idempotent — provision_org short-circuits if a row already
+    exists with status="active". Raises HTTPException(502) on failure.
+    """
+    if not auth.email:
+        raise HTTPException(
+            status_code=400,
+            detail="Email claim missing from auth token; cannot create Paperclip account",
+        )
+    from core.services.paperclip_admin_client import PaperclipAdminClient
+    from core.services.paperclip_provisioning import PaperclipProvisioning
+
+    repo = PaperclipRepo(table_name="paperclip-companies")
+    async with httpx.AsyncClient(
+        base_url=settings.PAPERCLIP_INTERNAL_URL,
+        timeout=30.0,
+    ) as http:
+        admin = PaperclipAdminClient(http_client=http)
+        provisioning = PaperclipProvisioning(admin, repo, env_name=settings.ENVIRONMENT)
+        try:
+            await provisioning.provision_org(
+                org_id=auth.user_id,
+                owner_user_id=auth.user_id,
+                owner_email=auth.email,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.exception(
+                "paperclip_proxy: autoprovision failed for user=%s: %s",
+                auth.user_id,
+                e,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Provisioning failed: {type(e).__name__}",
+            )
+
+
 @router.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
@@ -804,36 +887,99 @@ async def provision_self(request: Request) -> Response:
 async def proxy(path: str, request: Request) -> Response:
     """Forward ``request`` to the internal Paperclip server.
 
-    Auth resolves via ``_get_paperclip_user``. If that fails AND the
-    request looks like a top-level browser navigation (Accept includes
-    ``text/html``), respond with the Clerk bootstrap HTML instead of a
-    JSON 401 — the page handles the auth handshake and reloads.
-    Programmatic clients (no ``text/html`` in Accept) get the JSON 401.
+    Three auth + handshake states:
+
+    1. **Initial handshake** (``?__t=<clerk_jwt>`` query param). The Teams
+       button on dev.isol8.co appends a fresh Clerk JWT to the navigation
+       URL because top-level browser nav can't carry an Authorization
+       header. We validate it, check the user has an Isol8 container
+       (302 to /chat if not), auto-provision their Paperclip company if
+       missing, then mint a host-scoped session cookie and 302 to the
+       same URL minus the token. The browser follows with the cookie and
+       proxies through normally.
+    2. **Established session** (``isol8_paperclip`` cookie). Skip the
+       container/provision checks (they ran at handshake time); proceed
+       to forward the request to Paperclip.
+    3. **No auth, browser nav** — redirect to ``dev.isol8.co/chat`` with
+       a hint so the user starts from the right place.
     """
     if _circuit_open():
         return _circuit_breaker_response()
 
+    handoff_token = request.query_params.get("__t")
+    is_initial_handshake = handoff_token is not None
+
     try:
         auth = await _get_paperclip_user(request)
     except HTTPException as e:
-        # Browser nav with no auth → bootstrap. Anything else → re-raise.
+        # Browser nav with no auth → redirect to the Isol8 frontend.
+        # company-dev.isol8.co isn't a sign-in destination on its own; the
+        # canonical entry point is the Teams button on /chat.
         if e.status_code == 401 and _wants_html(request):
-            return Response(
-                content=_bootstrap_html(),
-                status_code=200,
-                media_type="text/html; charset=utf-8",
-                headers={"Cache-Control": "no-store"},
+            from fastapi.responses import RedirectResponse
+
+            return RedirectResponse(
+                f"{_frontend_url()}/chat?from=teams",
+                status_code=302,
             )
         raise
 
-    # ---- Look up the user's Paperclip company row ----
-    # Pass the short name; ``get_table`` adds the env prefix exactly
-    # once (see ``core.dynamodb.table_name``). Mirrors ``api_key_repo``
-    # and every other repo in this directory.
+    if is_initial_handshake:
+        # Container guard: if the user has no Isol8 container, Teams has
+        # nothing to attach to (the seeded Main Agent's openclaw-gateway
+        # adapter would point at a nonexistent target). Send them back to
+        # /chat to provision one first. Use resolve_owner_id so org users
+        # are matched against their org-owned container, not a per-user
+        # one that may not exist.
+        from fastapi.responses import RedirectResponse
+
+        owner_id = resolve_owner_id(auth)
+        container = await container_repo.get_by_owner_id(owner_id)
+        if container is None:
+            logger.info(
+                "paperclip_proxy: handoff blocked for user=%s — no container yet",
+                auth.user_id,
+            )
+            return RedirectResponse(
+                f"{_frontend_url()}/chat?from=teams&need=container",
+                status_code=302,
+            )
+
+        # Auto-provision Paperclip company on first hit. Synchronous so
+        # the user lands directly on Paperclip after the 302 — no card,
+        # no button. provision_org is idempotent so repeated handshakes
+        # are safe.
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        existing = await repo.get(auth.user_id)
+        if existing is None or existing.status != "active":
+            await _autoprovision(auth)
+
+        # Mint cookie + 302 to clean URL.
+        session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email)
+        response = RedirectResponse(_strip_handoff_param(request), status_code=302)
+        response.set_cookie(
+            key=_PAPERCLIP_SESSION_COOKIE,
+            value=session_jwt,
+            max_age=_PAPERCLIP_SESSION_TTL_HOURS * 3600,
+            httponly=True,
+            secure=True,
+            samesite="lax",
+            path="/",
+        )
+        return response
+
+    # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
     if company is None or company.status != "active":
-        return _provisioning_response()
+        # Race condition: cookie was issued but row got deleted/disabled
+        # since. Send the user back to handoff to re-trigger provisioning.
+        from fastapi.responses import RedirectResponse
+
+        return RedirectResponse(
+            f"{_frontend_url()}/chat?from=teams&need=reprovision",
+            status_code=302,
+        )
 
     # Email comes from the Clerk JWT (``email`` claim). The Isol8
     # ``users`` DynamoDB row only stores ``user_id`` + ``created_at``

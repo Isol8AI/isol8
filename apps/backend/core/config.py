@@ -125,6 +125,13 @@ class Settings(BaseSettings):
     # talk to. Publishable keys are public by design — Clerk literally
     # serves them in HTML; storing in env (not Secrets Manager) is correct.
     CLERK_PUBLISHABLE_KEY: str = os.getenv("CLERK_PUBLISHABLE_KEY", "")
+    # Public URL of the Isol8 frontend (e.g. https://dev.isol8.co). Used by
+    # the paperclip-proxy to redirect users back to /chat when they land on
+    # company.isol8.co without prerequisites (no container, no Clerk
+    # session, no Paperclip company row). Same value as CORS_ORIGINS in
+    # most envs but kept separate so the proxy doesn't need to parse a
+    # comma-separated list.
+    FRONTEND_URL: str = os.getenv("FRONTEND_URL", "https://dev.isol8.co")
 
     @field_validator("CLERK_ISSUER")
     @classmethod
