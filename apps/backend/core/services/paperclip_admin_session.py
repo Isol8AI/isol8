@@ -63,17 +63,17 @@ class _AdminSessionState:
 
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
-        self._token: str | None = None
-        self._token_acquired_at: float = 0.0
+        self._cookie: str | None = None
+        self._cookie_acquired_at: float = 0.0
         self._email: str | None = None
         self._password: str | None = None
 
-    def is_token_fresh(self) -> bool:
-        return self._token is not None and (time.time() - self._token_acquired_at) < _SESSION_TTL_SECONDS
+    def is_cookie_fresh(self) -> bool:
+        return self._cookie is not None and (time.time() - self._cookie_acquired_at) < _SESSION_TTL_SECONDS
 
     def invalidate(self) -> None:
-        self._token = None
-        self._token_acquired_at = 0.0
+        self._cookie = None
+        self._cookie_acquired_at = 0.0
 
 
 _state = _AdminSessionState()
@@ -102,17 +102,25 @@ def _load_credentials_from_secrets_manager(env: str) -> tuple[str, str]:
     return email, password
 
 
-async def get_admin_session_token(http_client: httpx.AsyncClient) -> str:
-    """Return a fresh Better Auth session token for admin@isol8.co.
+async def get_admin_session_cookie(http_client: httpx.AsyncClient) -> str:
+    """Return a fresh Better Auth session cookie for admin@isol8.co.
 
-    Uses the caller-provided httpx client (so the lifecycle is owned
-    by whoever's making the provisioning call). Caches the token; on
-    expiry or invalidation, re-signs-in. Async-safe.
+    Returns the bare ``name=value`` cookie line ready to drop into a
+    ``Cookie:`` header. Uses the caller-provided httpx client (so the
+    lifecycle is owned by whoever's making the provisioning call).
+    Caches the cookie; on expiry or invalidation, re-signs-in.
+    Async-safe.
+
+    Why cookie not bearer: Paperclip's Better Auth config does not
+    enable the ``bearer()`` plugin, so ``Authorization: Bearer`` is
+    silently ignored — only the ``Cookie`` path actually authenticates
+    the admin against ``instance_user_roles``. See
+    ``paperclip_admin_client.py`` module docstring for the full chain.
     """
     async with _state._lock:
-        if _state.is_token_fresh():
-            assert _state._token is not None
-            return _state._token
+        if _state.is_cookie_fresh():
+            assert _state._cookie is not None
+            return _state._cookie
 
         if _state._email is None or _state._password is None:
             env = os.environ.get("ENVIRONMENT", "")
@@ -125,17 +133,17 @@ async def get_admin_session_token(http_client: httpx.AsyncClient) -> str:
             email=_state._email,
             password=_state._password,
         )
-        token = signin.get("token")
-        if not token:
-            raise RuntimeError("Better Auth sign-in for admin returned no token")
+        cookie = signin.get("_session_cookie")
+        if not cookie:
+            raise RuntimeError("Better Auth sign-in for admin returned no Set-Cookie session token")
 
-        _state._token = token
-        _state._token_acquired_at = time.time()
+        _state._cookie = cookie
+        _state._cookie_acquired_at = time.time()
         logger.info(
-            "paperclip_admin_session: acquired admin session for %s",
+            "paperclip_admin_session: acquired admin session cookie for %s",
             _state._email,
         )
-        return token
+        return cookie
 
 
 def invalidate_admin_session() -> None:
@@ -143,7 +151,7 @@ def invalidate_admin_session() -> None:
 
     Called by provisioning when an admin-bearing request returns 401
     (session expired, password rotated, etc.). The next
-    ``get_admin_session_token`` call will sign in fresh.
+    ``get_admin_session_cookie`` call will sign in fresh.
     """
     _state.invalidate()
-    logger.info("paperclip_admin_session: invalidated cached session token")
+    logger.info("paperclip_admin_session: invalidated cached session cookie")

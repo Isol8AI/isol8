@@ -1,17 +1,20 @@
 """Typed httpx async client for Paperclip's REST API.
 
-**Auth model** (2026-04-27 pivot): every call that "acts as" a user
-carries that user's Better Auth session token as
-``Authorization: Bearer <token>``. The session token is returned by
-``/api/auth/sign-up/email`` or ``/api/auth/sign-in/email`` (Better
-Auth accepts either a session cookie *or* the bearer token in the
-header). Used for creating the company, creating an invite from the
-org owner, accepting it as the new member, and approving the
-resulting join request from a board admin.
+**Auth model** (2026-05-02 fix): every call that "acts as" a user
+carries that user's Better Auth session as a
+``Cookie: paperclip-<instance>.session_token=<signed-value>`` header.
+Paperclip's Better Auth config (``server/src/auth/better-auth.ts``)
+does NOT enable the ``bearer()`` plugin, so ``Authorization: Bearer``
+is silently ignored — only the cookie path authenticates. Sign-up /
+sign-in extract the ``Set-Cookie`` from Better Auth's response,
+strip attributes (``Path=`` / ``Secure`` / ``HttpOnly`` / ``SameSite``),
+and surface the bare ``name=value`` as ``_session_cookie`` on the
+returned dict. Callers thread that string in as ``session_cookie``
+for every subsequent admin call.
 
 The two unauthenticated routes — ``sign_up_user`` and
 ``sign_in_user`` — hit Better Auth's public endpoints directly and
-don't carry any Bearer at all.
+don't carry any auth at all.
 
 Endpoint surface verified against the local Paperclip checkout at
 ``~/Desktop/paperclip``:
@@ -26,7 +29,7 @@ Endpoint surface verified against the local Paperclip checkout at
   - Access / invite routes: ``server/src/routes/access.ts``:
       * ``POST /api/companies/{companyId}/invites`` — create a
         company-join invite (requires ``users:invite`` permission;
-        the user behind ``session_token`` must already be a member).
+        the user behind ``session_cookie`` must already be a member).
         Body shape: ``createCompanyInviteSchema`` from
         ``packages/shared/src/validators/access.ts:12``:
         ``{allowedJoinTypes: "human"|"agent"|"both", humanRole?, defaultsPayload?, agentMessage?}``.
@@ -56,8 +59,8 @@ Notable deviations from the original plan template:
     ``packages/shared/src/validators/company.ts``. There is no
     ``ownerEmail`` field — the caller becomes the owner via
     ``access.ensureMembership`` on the server side, using the actor of
-    the bearer token (so for org-create we MUST pass the org-owner's
-    ``session_token``, not the admin Bearer).
+    the cookie's user (so for org-create we MUST pass the org-owner's
+    ``session_cookie``, not the admin's).
   - ``create_agent`` sends ``adapterType`` as a top-level field separate
     from ``adapterConfig`` — they are distinct fields per
     ``createAgentSchema``.
@@ -91,6 +94,43 @@ import logging
 from typing import Any, Optional
 
 import httpx
+
+
+def _extract_session_cookie(resp: httpx.Response) -> Optional[str]:
+    """Pull Better Auth's session cookie from a sign-in/sign-up response.
+
+    Returns ``"<name>=<value>"`` ready to drop into a ``Cookie:`` header,
+    or ``None`` if the response carries no Better Auth session cookie.
+
+    Why we parse ``Set-Cookie`` directly instead of reading
+    ``resp.cookies.jar``: Paperclip's Better Auth marks the cookie
+    ``Secure`` whenever ``PAPERCLIP_PUBLIC_URL`` is https (which it is
+    in dev/prod). httpx's cookie jar refuses to STORE Secure cookies
+    received over plain HTTP — and our hop to ``paperclip.<env>.local``
+    is plain HTTP — so the jar comes back empty. Manual parsing of
+    ``Set-Cookie`` lets us capture the value verbatim regardless of
+    transport, and replay it to the same upstream where the ``Secure``
+    attribute is irrelevant for inbound headers.
+    """
+    headers_obj = resp.headers
+    if hasattr(headers_obj, "get_list"):
+        set_cookies = headers_obj.get_list("set-cookie")
+    else:
+        single = headers_obj.get("set-cookie")
+        set_cookies = [single] if single else []
+    for raw in set_cookies:
+        # Take only the first segment up to the first ``;`` — that's
+        # the bare ``name=value`` pair, with attributes like Path,
+        # Domain, Secure, HttpOnly, SameSite stripped.
+        head = raw.split(";", 1)[0].strip()
+        eq = head.find("=")
+        if eq <= 0:
+            continue
+        name = head[:eq]
+        if name.endswith(".session_token"):
+            return head
+    return None
+
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +167,7 @@ class PaperclipAdminClient:
     configured once per Paperclip instance.
 
     Every operation that affects a specific company is invoked with
-    a per-user ``session_token`` so the actor recorded in Paperclip's
+    a per-user ``session_cookie`` so the actor recorded in Paperclip's
     activity log + permission check is the right user.
     """
 
@@ -140,18 +180,19 @@ class PaperclipAdminClient:
 
     def _headers(
         self,
-        session_token: str,
+        session_cookie: str,
         idempotency_key: Optional[str] = None,
     ) -> dict[str, str]:
         """Build request headers.
 
-        Authenticates as the user behind ``session_token`` via
-        ``Authorization: Bearer <session_token>`` (Better Auth accepts
-        the session token in either a cookie or the bearer header —
-        see ``server/src/auth/better-auth.ts``).
+        Authenticates the request via ``Cookie: <session_cookie>``
+        (where ``session_cookie`` is the ``name=value`` line captured
+        from Better Auth's sign-in/sign-up ``Set-Cookie`` response).
+        Bearer auth would be ignored — Paperclip does not enable the
+        Better Auth ``bearer()`` plugin.
         """
         headers = {
-            "Authorization": f"Bearer {session_token}",
+            "Cookie": session_cookie,
             "Content-Type": "application/json",
         }
         if idempotency_key:
@@ -162,13 +203,13 @@ class PaperclipAdminClient:
         self,
         path: str,
         json: dict,
-        session_token: str,
+        session_cookie: str,
         idempotency_key: Optional[str] = None,
     ) -> dict:
         resp = await self._http.post(
             path,
             json=json,
-            headers=self._headers(session_token, idempotency_key=idempotency_key),
+            headers=self._headers(session_cookie, idempotency_key=idempotency_key),
         )
         if resp.status_code >= 400:
             raise PaperclipApiError(
@@ -181,11 +222,11 @@ class PaperclipAdminClient:
     async def _delete(
         self,
         path: str,
-        session_token: str,
+        session_cookie: str,
     ) -> None:
         resp = await self._http.delete(
             path,
-            headers=self._headers(session_token),
+            headers=self._headers(session_cookie),
         )
         # 404 on delete is treated as already-gone (idempotent cleanup).
         if resp.status_code >= 400 and resp.status_code != 404:
@@ -224,7 +265,7 @@ class PaperclipAdminClient:
             "password": password,
             "name": name if name is not None else email,
         }
-        # NOTE: we do not pass session_token — sign-up is unauthenticated.
+        # NOTE: we do not pass any session — sign-up is unauthenticated.
         resp = await self._http.post(
             "/api/auth/sign-up/email",
             json=body,
@@ -236,18 +277,24 @@ class PaperclipAdminClient:
                 status_code=resp.status_code,
                 body=resp.text,
             )
-        return resp.json() if resp.content else {}
+        data = resp.json() if resp.content else {}
+        cookie = _extract_session_cookie(resp)
+        if cookie:
+            data["_session_cookie"] = cookie
+        return data
 
     async def sign_in_user(self, *, email: str, password: str) -> dict:
         """Sign in via Better Auth ``/api/auth/sign-in/email``.
 
-        Returns ``{user, token}`` from the Better Auth response. The
-        Set-Cookie session cookie is on the response's headers — the
-        proxy router (T14) is responsible for extracting it and
-        forwarding to the browser, scoped to ``.isol8.co``. The
-        ``token`` value in the JSON body is also valid for
-        Bearer-style auth and is what we hand to subsequent
-        ``session_token``-aware methods on this client.
+        Returns the Better Auth ``{user, token}`` JSON augmented with a
+        ``_session_cookie`` field — the bare ``name=value`` extracted
+        from the response's ``Set-Cookie`` header. ``_session_cookie``
+        is what every subsequent admin-client method requires; the raw
+        ``token`` field is NOT usable for auth on its own (Paperclip
+        doesn't enable Better Auth's bearer plugin). The proxy router
+        is also responsible for re-shaping ``Set-Cookie`` for the
+        browser path (scoping to ``.isol8.co``); this method only
+        cares about the bare cookie value for upstream calls.
         """
         body = {"email": email, "password": password}
         resp = await self._http.post(
@@ -261,7 +308,11 @@ class PaperclipAdminClient:
                 status_code=resp.status_code,
                 body=resp.text,
             )
-        return resp.json() if resp.content else {}
+        data = resp.json() if resp.content else {}
+        cookie = _extract_session_cookie(resp)
+        if cookie:
+            data["_session_cookie"] = cookie
+        return data
 
     # ------------------------------------------------------------------
     # Companies
@@ -270,7 +321,7 @@ class PaperclipAdminClient:
     async def create_company(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         name: str,
         description: Optional[str] = None,
         budget_monthly_cents: int = 0,
@@ -283,9 +334,9 @@ class PaperclipAdminClient:
 
         Server returns ``201`` with the company object including ``id``,
         ``name``, ``description``, ``status``, ``budgetMonthlyCents``,
-        ``createdAt``, ``updatedAt``. The bearer token's user is
+        ``createdAt``, ``updatedAt``. The session cookie's user is
         automatically granted ``owner`` membership on the new company,
-        so callers MUST pass the org-owner's ``session_token`` here.
+        so callers MUST pass the org-owner's ``session_cookie`` here.
         """
         body: dict[str, Any] = {"name": name}
         if description is not None:
@@ -295,14 +346,14 @@ class PaperclipAdminClient:
         return await self._post(
             "/api/companies",
             json=body,
-            session_token=session_token,
+            session_cookie=session_cookie,
             idempotency_key=idempotency_key,
         )
 
     async def disable_company(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         company_id: str,
         idempotency_key: Optional[str] = None,
     ) -> dict:
@@ -316,14 +367,14 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/companies/{company_id}/archive",
             json={},
-            session_token=session_token,
+            session_cookie=session_cookie,
             idempotency_key=idempotency_key,
         )
 
     async def delete_company(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         company_id: str,
     ) -> None:
         """Hard-delete a company.
@@ -334,7 +385,7 @@ class PaperclipAdminClient:
         """
         await self._delete(
             f"/api/companies/{company_id}",
-            session_token=session_token,
+            session_cookie=session_cookie,
         )
 
     # ------------------------------------------------------------------
@@ -351,7 +402,7 @@ class PaperclipAdminClient:
     async def create_invite(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         company_id: str,
         email: str,  # noqa: ARG002 - kept for caller-side audit/logging
         human_role: Optional[str] = None,
@@ -383,16 +434,16 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/companies/{company_id}/invites",
             json=body,
-            session_token=session_token,
+            session_cookie=session_cookie,
         )
 
     async def accept_invite(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         invite_token: str,
     ) -> dict:
-        """Accept an invite as the new member (signed in via session_token).
+        """Accept an invite as the new member (signed in via session_cookie).
 
         Maps to ``POST /api/invites/{token}/accept`` (see
         ``server/src/routes/access.ts:3199``). For human accept the
@@ -404,13 +455,13 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/invites/{invite_token}/accept",
             json={"requestType": "human"},
-            session_token=session_token,
+            session_cookie=session_cookie,
         )
 
     async def approve_join_request(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         company_id: str,
         request_id: str,
     ) -> dict:
@@ -418,13 +469,13 @@ class PaperclipAdminClient:
 
         Maps to ``POST /api/companies/{companyId}/join-requests/{requestId}/approve``
         (see ``server/src/routes/access.ts:3697``). The signed-in
-        user behind ``session_token`` must hold ``joins:approve`` on
+        user behind ``session_cookie`` must hold ``joins:approve`` on
         the company (every owner does by default).
         """
         return await self._post(
             f"/api/companies/{company_id}/join-requests/{request_id}/approve",
             json={},
-            session_token=session_token,
+            session_cookie=session_cookie,
         )
 
     # ------------------------------------------------------------------
@@ -434,7 +485,7 @@ class PaperclipAdminClient:
     async def create_agent(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         company_id: str,
         name: str,
         role: str,
@@ -471,14 +522,14 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/companies/{company_id}/agents",
             json=body,
-            session_token=session_token,
+            session_cookie=session_cookie,
             idempotency_key=idempotency_key,
         )
 
     async def create_agent_api_key(
         self,
         *,
-        session_token: str,
+        session_cookie: str,
         agent_id: str,
         name: str = "default",
         idempotency_key: Optional[str] = None,
@@ -509,6 +560,6 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/agents/{agent_id}/keys",
             json={"name": name},
-            session_token=session_token,
+            session_cookie=session_cookie,
             idempotency_key=idempotency_key,
         )

@@ -158,13 +158,13 @@ class PaperclipProvisioning:
         # PaperclipAdminClient, which would otherwise create an import
         # cycle if loaded at module level).
         from core.services.paperclip_admin_session import (
-            get_admin_session_token,
+            get_admin_session_cookie,
             invalidate_admin_session,
         )
 
         # Acquire admin session up front so we fail loudly if the
         # bootstrap secret is missing (rather than failing 4 steps in).
-        admin_token = await get_admin_session_token(self._admin._http)
+        admin_cookie = await get_admin_session_cookie(self._admin._http)
 
         password = secrets.token_urlsafe(32)
         try:
@@ -179,7 +179,7 @@ class PaperclipProvisioning:
                 name=owner_email,
             )
             paperclip_user_id = signup["user"]["id"]
-            new_user_session_token = signup["token"]
+            new_user_session_cookie = signup["_session_cookie"]
 
             # 2. ADMIN creates the company. Admin becomes the initial
             #    owner via Paperclip's auto-ensureMembership in
@@ -188,18 +188,18 @@ class PaperclipProvisioning:
                 company = await self._admin.create_company(
                     name=owner_email,
                     description="Isol8 Teams workspace",
-                    session_token=admin_token,
+                    session_cookie=admin_cookie,
                     idempotency_key=owner_user_id,
                 )
             except PaperclipApiError as e:
                 if e.status_code == 401:
                     # Admin session expired; retry once with fresh token.
                     invalidate_admin_session()
-                    admin_token = await get_admin_session_token(self._admin._http)
+                    admin_cookie = await get_admin_session_cookie(self._admin._http)
                     company = await self._admin.create_company(
                         name=owner_email,
                         description="Isol8 Teams workspace",
-                        session_token=admin_token,
+                        session_cookie=admin_cookie,
                         idempotency_key=owner_user_id,
                     )
                 else:
@@ -208,7 +208,7 @@ class PaperclipProvisioning:
 
             # 3. ADMIN creates a one-shot invite for the new user.
             invite = await self._admin.create_invite(
-                session_token=admin_token,
+                session_cookie=admin_cookie,
                 company_id=company_id,
                 email=owner_email,
             )
@@ -217,7 +217,7 @@ class PaperclipProvisioning:
             # 4. New user accepts the invite using their own session.
             #    Produces a join-request bound to their Better Auth user.
             accept = await self._admin.accept_invite(
-                session_token=new_user_session_token,
+                session_cookie=new_user_session_cookie,
                 invite_token=invite_token,
             )
             try:
@@ -232,7 +232,7 @@ class PaperclipProvisioning:
             # 5. ADMIN approves the join request → user is now an
             #    active owner of the company.
             await self._admin.approve_join_request(
-                session_token=admin_token,
+                session_cookie=admin_cookie,
                 company_id=company_id,
                 request_id=request_id,
             )
@@ -259,7 +259,7 @@ class PaperclipProvisioning:
                         "sessionKeyStrategy": "fixed",
                         "sessionKey": owner_user_id,
                     },
-                    session_token=new_user_session_token,
+                    session_cookie=new_user_session_cookie,
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
             except PaperclipApiError as e:
@@ -355,7 +355,7 @@ class PaperclipProvisioning:
                 name=email,
             )
             member_paperclip_user_id = member_signup["user"]["id"]
-            member_session_token = member_signup["token"]
+            member_session_cookie = member_signup["_session_cookie"]
 
             # 2. Sign in as the org owner so we can act on the company
             #    (create invite + approve join request).
@@ -363,11 +363,11 @@ class PaperclipProvisioning:
                 email=owner_email,
                 password=owner_password,
             )
-            owner_session_token = owner_signin["token"]
+            owner_session_cookie = owner_signin["_session_cookie"]
 
             # 3. Owner mints a one-shot invite token for this member.
             invite = await self._admin.create_invite(
-                session_token=owner_session_token,
+                session_cookie=owner_session_cookie,
                 company_id=company_id,
                 email=email,
             )
@@ -376,7 +376,7 @@ class PaperclipProvisioning:
             # 4. Member accepts the invite, producing a pending join
             #    request bound to the member's Better Auth user.
             accept = await self._admin.accept_invite(
-                session_token=member_session_token,
+                session_cookie=member_session_cookie,
                 invite_token=invite_token,
             )
             # Paperclip's accept_invite response shape verified against
@@ -398,7 +398,7 @@ class PaperclipProvisioning:
             # 5. Owner approves the pending join request — flips the
             #    membership from pending_approval to active.
             await self._admin.approve_join_request(
-                session_token=owner_session_token,
+                session_cookie=owner_session_cookie,
                 company_id=company_id,
                 request_id=request_id,
             )

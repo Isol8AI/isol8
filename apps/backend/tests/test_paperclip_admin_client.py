@@ -44,31 +44,32 @@ async def client_factory():
         await h.aclose()
 
 
-async def test_create_company_sends_session_token_and_idempotency_key(client_factory):
-    """``create_company`` carries the org-owner's session token as
-    Bearer + forwards the caller-supplied ``Idempotency-Key`` header.
+async def test_create_company_sends_session_cookie_and_idempotency_key(client_factory):
+    """``create_company`` carries the org-owner's session as a
+    ``Cookie:`` header (Better Auth has no bearer plugin) and forwards
+    the caller-supplied ``Idempotency-Key``.
 
     This is the production path: T11 signs the org-owner up via
-    Better Auth and passes the resulting session token here so the
+    Better Auth and passes the resulting session cookie here so the
     company gets owner-membership for the right user.
     """
     captured: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["idem"] = req.headers.get("idempotency-key")
         captured["body"] = req.read().decode()
         return httpx.Response(201, json={"id": "co_abc", "name": "u@example.com"})
 
     client = client_factory(handler)
     company = await client.create_company(
-        session_token="sess_owner",
+        session_cookie="sess_owner",
         name="u@example.com",
         description="provisioned by Isol8",
         idempotency_key="user_123",
     )
-    assert captured["auth"] == "Bearer sess_owner"
+    assert captured["cookie"] == "sess_owner"
     assert captured["idem"] == "user_123"
     body = _json.loads(captured["body"])
     assert body["name"] == "u@example.com"
@@ -85,7 +86,7 @@ async def test_5xx_raises_paperclip_api_error(client_factory):
 
     client = client_factory(handler)
     with pytest.raises(PaperclipApiError) as exc:
-        await client.create_company(session_token="sess", name="x")
+        await client.create_company(session_cookie="sess", name="x")
     assert exc.value.status_code == 503
 
 
@@ -95,7 +96,7 @@ async def test_4xx_raises_paperclip_api_error(client_factory):
 
     client = client_factory(handler)
     with pytest.raises(PaperclipApiError) as exc:
-        await client.create_company(session_token="sess", name="")
+        await client.create_company(session_cookie="sess", name="")
     assert exc.value.status_code == 400
 
 
@@ -143,7 +144,7 @@ async def test_create_agent_api_key_returns_token(client_factory):
 
     client = client_factory(handler)
     result = await client.create_agent_api_key(
-        session_token="sess_owner",
+        session_cookie="sess_owner",
         agent_id="agent_42",
         name="primary",
     )
@@ -167,7 +168,7 @@ async def test_create_agent_passes_adapter_type_and_config(client_factory):
 
     client = client_factory(handler)
     await client.create_agent(
-        session_token="sess_owner",
+        session_cookie="sess_owner",
         company_id="co_abc",
         name="Main Agent",
         role="ceo",
@@ -197,7 +198,7 @@ async def test_delete_company_swallows_404(client_factory):
 
     client = client_factory(handler)
     # Should NOT raise.
-    await client.delete_company(session_token="sess_owner", company_id="co_gone")
+    await client.delete_company(session_cookie="sess_owner", company_id="co_gone")
 
 
 async def test_disable_company_sends_archive_post(client_factory):
@@ -213,7 +214,7 @@ async def test_disable_company_sends_archive_post(client_factory):
         return httpx.Response(200, json={"id": "co_abc", "status": "archived"})
 
     client = client_factory(handler)
-    await client.disable_company(session_token="sess_owner", company_id="co_abc")
+    await client.disable_company(session_cookie="sess_owner", company_id="co_abc")
     assert captured["method"] == "POST"
     assert "/archive" in captured["url"]
 
@@ -223,16 +224,18 @@ async def test_disable_company_sends_archive_post(client_factory):
 # ---------------------------------------------------------------------
 
 
-async def test_sign_up_user_returns_user_and_token(client_factory):
+async def test_sign_up_user_returns_user_and_session_cookie(client_factory):
     """``POST /api/auth/sign-up/email`` accepts ``{email, password, name?}``
-    and returns ``{user, token}`` (plus a Set-Cookie for the session).
+    and returns ``{user, token}`` plus a ``Set-Cookie`` we surface as
+    ``_session_cookie``. Sign-up MUST NOT carry any auth — Better
+    Auth's ``disableSignUp`` flag is the only gate.
     """
     captured: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
         captured["method"] = req.method
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["body"] = req.read().decode()
         return httpx.Response(
             200,
@@ -240,7 +243,9 @@ async def test_sign_up_user_returns_user_and_token(client_factory):
                 "user": {"id": "pc_user_1", "email": "alice@isol8.co", "name": "Alice"},
                 "token": "sess_token_abc",
             },
-            headers={"Set-Cookie": "paperclip-default-session=sess_token_abc; Path=/; HttpOnly"},
+            headers={
+                "Set-Cookie": ("paperclip-default.session_token=cookie-val-abc; Path=/; HttpOnly; Secure"),
+            },
         )
 
     client = client_factory(handler)
@@ -251,10 +256,7 @@ async def test_sign_up_user_returns_user_and_token(client_factory):
     )
     assert captured["method"] == "POST"
     assert "/api/auth/sign-up/email" in captured["url"]
-    # Sign-up MUST NOT carry the admin Bearer — Better Auth's
-    # disableSignUp flag is the only gate, and the route is
-    # unauthenticated.
-    assert captured["auth"] is None
+    assert captured["cookie"] is None
     body = _json.loads(captured["body"])
     assert body == {
         "email": "alice@isol8.co",
@@ -262,7 +264,7 @@ async def test_sign_up_user_returns_user_and_token(client_factory):
         "name": "Alice",
     }
     assert out["user"]["id"] == "pc_user_1"
-    assert out["token"] == "sess_token_abc"
+    assert out["_session_cookie"] == "paperclip-default.session_token=cookie-val-abc"
 
 
 async def test_sign_up_user_defaults_name_to_email(client_factory):
@@ -281,9 +283,13 @@ async def test_sign_up_user_defaults_name_to_email(client_factory):
     assert body["name"] == "bob@isol8.co"
 
 
-async def test_sign_in_user_returns_session_token(client_factory):
-    """``POST /api/auth/sign-in/email`` returns ``{user, token}`` with
-    the session token in the body (also valid as Bearer)."""
+async def test_sign_in_user_extracts_session_cookie(client_factory):
+    """``POST /api/auth/sign-in/email`` returns ``{user, token}`` AND
+    sets the Better Auth session cookie via ``Set-Cookie``. We surface
+    the bare ``name=value`` of that cookie as ``_session_cookie`` on
+    the response dict — Bearer auth is silently ignored upstream so
+    this is the only handle callers can use to authenticate.
+    """
     captured: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
@@ -295,6 +301,9 @@ async def test_sign_in_user_returns_session_token(client_factory):
                 "user": {"id": "pc_user_1", "email": "alice@isol8.co"},
                 "token": "sess_signed_in",
             },
+            headers={
+                "Set-Cookie": ("paperclip-default.session_token=cookie-val-xyz; Path=/; HttpOnly; Secure"),
+            },
         )
 
     client = client_factory(handler)
@@ -305,6 +314,9 @@ async def test_sign_in_user_returns_session_token(client_factory):
     assert "/api/auth/sign-in/email" in captured["url"]
     body = _json.loads(captured["body"])
     assert body == {"email": "alice@isol8.co", "password": "random-pass-xyz"}
+    # Cookie is what subsequent admin calls actually need.
+    assert out["_session_cookie"] == "paperclip-default.session_token=cookie-val-xyz"
+    # Token is still surfaced for any caller logic that wants it.
     assert out["token"] == "sess_signed_in"
 
 
@@ -313,31 +325,31 @@ async def test_sign_in_user_returns_session_token(client_factory):
 # ---------------------------------------------------------------------
 
 
-async def test_create_company_as_user_uses_session_token_in_authorization(
+async def test_create_company_as_user_uses_session_cookie(
     client_factory,
 ):
-    """When provisioning the org owner's company, the Bearer must be
-    the user's session token so the new company is owned by them."""
+    """When provisioning the org owner's company, the Cookie header
+    must carry the user's session so the new company is owned by them."""
     captured: dict = {}
 
     def handler(req: httpx.Request) -> httpx.Response:
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["url"] = str(req.url)
         return httpx.Response(201, json={"id": "co_owned_by_user"})
 
     client = client_factory(handler)
     out = await client.create_company(
-        session_token="sess_owner",
+        session_cookie="sess_owner",
         name="owner@isol8.co",
     )
-    assert captured["auth"] == "Bearer sess_owner"
+    assert captured["cookie"] == "sess_owner"
     assert "/api/companies" in captured["url"]
     assert out["id"] == "co_owned_by_user"
 
 
 async def test_create_invite_targets_company_and_email(client_factory):
     """``create_invite`` POSTs to ``/api/companies/{id}/invites`` with
-    ``allowedJoinTypes: "human"`` and a session-token Bearer.
+    ``allowedJoinTypes: "human"`` and the admin session cookie.
 
     Note: Paperclip's invite is token-based, NOT email-targeted. The
     ``email`` parameter here is accepted for caller-side audit
@@ -348,7 +360,7 @@ async def test_create_invite_targets_company_and_email(client_factory):
 
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["body"] = req.read().decode()
         return httpx.Response(
             201,
@@ -363,13 +375,13 @@ async def test_create_invite_targets_company_and_email(client_factory):
 
     client = client_factory(handler)
     out = await client.create_invite(
-        session_token="sess_admin",
+        session_cookie="sess_admin",
         company_id="co_abc",
         email="newmember@isol8.co",
         human_role="member",
     )
     assert "/api/companies/co_abc/invites" in captured["url"]
-    assert captured["auth"] == "Bearer sess_admin"
+    assert captured["cookie"] == "sess_admin"
     body = _json.loads(captured["body"])
     assert body["allowedJoinTypes"] == "human"
     assert body["humanRole"] == "member"
@@ -385,7 +397,7 @@ async def test_accept_invite_with_token(client_factory):
 
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["body"] = req.read().decode()
         return httpx.Response(
             201,
@@ -398,11 +410,11 @@ async def test_accept_invite_with_token(client_factory):
 
     client = client_factory(handler)
     out = await client.accept_invite(
-        session_token="sess_new_member",
+        session_cookie="sess_new_member",
         invite_token="raw-invite-token",
     )
     assert "/api/invites/raw-invite-token/accept" in captured["url"]
-    assert captured["auth"] == "Bearer sess_new_member"
+    assert captured["cookie"] == "sess_new_member"
     body = _json.loads(captured["body"])
     assert body == {"requestType": "human"}
     assert out["status"] == "pending_approval"
@@ -416,7 +428,7 @@ async def test_approve_join_request_with_request_id(client_factory):
 
     def handler(req: httpx.Request) -> httpx.Response:
         captured["url"] = str(req.url)
-        captured["auth"] = req.headers.get("authorization")
+        captured["cookie"] = req.headers.get("cookie")
         captured["body"] = req.read().decode()
         return httpx.Response(
             200,
@@ -425,12 +437,12 @@ async def test_approve_join_request_with_request_id(client_factory):
 
     client = client_factory(handler)
     out = await client.approve_join_request(
-        session_token="sess_admin",
+        session_cookie="sess_admin",
         company_id="co_abc",
         request_id="join_req_1",
     )
     assert "/api/companies/co_abc/join-requests/join_req_1/approve" in captured["url"]
-    assert captured["auth"] == "Bearer sess_admin"
+    assert captured["cookie"] == "sess_admin"
     # Empty body but JSON encoded as "{}"
     assert captured["body"] == "{}"
     assert out["status"] == "approved"
