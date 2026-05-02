@@ -1,5 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 
 const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/onboarding", "/settings(.*)"]);
 
@@ -54,20 +54,19 @@ export function decideAdminHostRouting(
 // must passthrough for these or it'll run Clerk auth on a non-Isol8
 // host (where there's no Clerk session) and redirect users away
 // before the rewrite gets a chance to proxy the request.
+//
+// IMPORTANT: this check has to run BEFORE clerkMiddleware wraps the
+// request — otherwise Clerk's own dev-browser handshake fires (returns
+// a 307 to clerk.accounts.dev/v1/client/handshake?...) regardless of
+// what our inner callback does. Wrapping clerkMiddleware from outside
+// is the only way to fully bypass it for these hosts.
 const PAPERCLIP_HOSTS = new Set([
   "company.isol8.co",
   "dev.company.isol8.co",
 ]);
 
-export default clerkMiddleware(async (auth, req) => {
+const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
   const host = (req.headers.get("host") ?? "").toLowerCase();
-
-  // Paperclip proxy: passthrough — let next.config.ts beforeFiles
-  // rewrite shuttle the request to the backend.
-  if (PAPERCLIP_HOSTS.has(host)) {
-    return NextResponse.next();
-  }
-
   const decision = decideAdminHostRouting(host, req.nextUrl.pathname);
 
   if (decision.kind === "not_found") {
@@ -87,6 +86,16 @@ export default clerkMiddleware(async (auth, req) => {
     }
   }
 });
+
+export default function middleware(req: NextRequest, evt: Parameters<typeof _clerkMiddleware>[1]) {
+  const host = (req.headers.get("host") ?? "").toLowerCase();
+  if (PAPERCLIP_HOSTS.has(host)) {
+    // Bypass clerkMiddleware entirely so Clerk's dev-browser handshake
+    // doesn't 307-redirect the request away from the beforeFiles rewrite.
+    return NextResponse.next();
+  }
+  return _clerkMiddleware(req, evt);
+}
 
 export const config = {
   matcher: [
