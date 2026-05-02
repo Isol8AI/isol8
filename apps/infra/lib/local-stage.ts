@@ -32,6 +32,7 @@ export class LocalStage extends cdk.Stage {
         clerk_secret_key: process.env.CLERK_SECRET_KEY ?? "",
         stripe_secret_key: process.env.STRIPE_SECRET_KEY ?? "",
         stripe_webhook_secret: process.env.STRIPE_WEBHOOK_SECRET ?? "",
+        stripe_connect_webhook_secret: process.env.STRIPE_CONNECT_WEBHOOK_SECRET ?? "",
         encryption_key: process.env.ENCRYPTION_KEY ?? "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleXQ=",
       },
     });
@@ -98,6 +99,7 @@ export class LocalStage extends cdk.Stage {
         clerkSecretKey: `isol8/${env}/clerk_secret_key`,
         stripeSecretKey: `isol8/${env}/stripe_secret_key`,
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
+        stripeConnectWebhookSecret: `isol8/${env}/stripe_connect_webhook_secret`,
         encryptionKey: `isol8/${env}/encryption_key`,
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
       },

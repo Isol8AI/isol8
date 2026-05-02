@@ -12,6 +12,15 @@ export interface AuthSecrets {
   clerkSecretKey: secretsmanager.ISecret;
   stripeSecretKey: secretsmanager.ISecret;
   stripeWebhookSecret: secretsmanager.ISecret;
+  /**
+   * Stripe Connect webhook signing secret for marketplace events
+   * (charge.succeeded, charge.refunded, account.updated). Distinct from
+   * stripeWebhookSecret because Stripe assigns a separate signing secret
+   * per webhook endpoint configured in the dashboard.
+   * Operator pastes the value via `aws secretsmanager update-secret`
+   * after registering the marketplace webhook endpoint in Stripe.
+   */
+  stripeConnectWebhookSecret: secretsmanager.ISecret;
   encryptionKey: secretsmanager.ISecret;
   posthogProjectApiKey: secretsmanager.ISecret;
 }
@@ -60,6 +69,10 @@ export class AuthStack extends cdk.Stack {
       clerkSecretKey: createSecret("ClerkSecretKey", "clerk_secret_key"),
       stripeSecretKey: createSecret("StripeSecretKey", "stripe_secret_key"),
       stripeWebhookSecret: createSecret("StripeWebhookSecret", "stripe_webhook_secret"),
+      stripeConnectWebhookSecret: createSecret(
+        "StripeConnectWebhookSecret",
+        "stripe_connect_webhook_secret",
+      ),
       encryptionKey,
       // Same createSecret pattern as Clerk/Stripe — CDK generates a random
       // placeholder on first create (CFN emits only GenerateSecretString).

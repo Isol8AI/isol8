@@ -82,6 +82,7 @@ function buildServiceStack(environment: "dev" | "prod"): Template {
       clerkSecretKey: `isol8/${environment}/clerk_secret_key`,
       stripeSecretKey: `isol8/${environment}/stripe_secret_key`,
       stripeWebhookSecret: `isol8/${environment}/stripe_webhook_secret`,
+      stripeConnectWebhookSecret: `isol8/${environment}/stripe_connect_webhook_secret`,
       encryptionKey: `isol8/${environment}/encryption_key`,
       posthogProjectApiKey: `isol8/${environment}/posthog_project_api_key`,
     },
@@ -297,6 +298,26 @@ describe("ServiceStack — marketplace-mcp Fargate task definition", () => {
       Memory: "2048",
       NetworkMode: "awsvpc",
       RequiresCompatibilities: ["FARGATE"],
+    });
+  });
+});
+
+describe("ServiceStack — marketplace stripe connect webhook secret", () => {
+  test("backend task definition mounts STRIPE_CONNECT_WEBHOOK_SECRET", () => {
+    // Backend task definition exposes STRIPE_CONNECT_WEBHOOK_SECRET as a
+    // Secrets Manager-sourced env var. Without this, the marketplace
+    // Stripe webhook handler rejects every event with "invalid signature".
+    SERVICE_TEMPLATE_DEV.hasResourceProperties("AWS::ECS::TaskDefinition", {
+      Family: "isol8-dev-backend",
+      ContainerDefinitions: Match.arrayWith([
+        Match.objectLike({
+          Secrets: Match.arrayWith([
+            Match.objectLike({
+              Name: "STRIPE_CONNECT_WEBHOOK_SECRET",
+            }),
+          ]),
+        }),
+      ]),
     });
   });
 });

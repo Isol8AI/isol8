@@ -26,6 +26,14 @@ export interface SecretNames {
   clerkSecretKey: string;
   stripeSecretKey: string;
   stripeWebhookSecret: string;
+  /**
+   * Marketplace Stripe Connect webhook signing secret. Separate from
+   * stripeWebhookSecret because Stripe assigns one signing secret per
+   * webhook endpoint configured in its dashboard. Used by
+   * marketplace_purchases.stripe_webhook to verify charge.succeeded /
+   * charge.refunded / account.updated events.
+   */
+  stripeConnectWebhookSecret: string;
   encryptionKey: string;
   /** PostHog personal API key for admin Activity tab. Empty string stubs the endpoint gracefully. */
   posthogProjectApiKey: string;
@@ -822,6 +830,13 @@ export class ServiceStack extends cdk.Stack {
         ),
         STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
+        ),
+        STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportStripeConnectWebhookSecret",
+            props.secretNames.stripeConnectWebhookSecret,
+          ),
         ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),

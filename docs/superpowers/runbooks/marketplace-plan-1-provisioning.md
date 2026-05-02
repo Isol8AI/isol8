@@ -18,32 +18,40 @@ environment (dev, then prod when ready) before deploying Plan 2.
 
 ## 2. AWS Secrets Manager — Stripe Connect secrets
 
-Two new secrets per environment. Run as the AWS admin role in `us-east-1`.
+`stripe_connect_webhook_secret` is **CDK-managed** (created by AuthStack with a
+placeholder value); the operator updates it post-deploy with the real signing
+secret from Stripe (see §3). `stripe_connect_client_id` is created manually
+because it isn't referenced by the backend at runtime — it's used at the Stripe
+dashboard layer for OAuth.
 
 ```bash
-# DEV
+# DEV — manually create the Connect client_id (used by the OAuth flow,
+# not read from the backend container).
 aws secretsmanager create-secret \
   --name "isol8/dev/stripe_connect_client_id" \
   --secret-string "ca_test_..." \
   --profile isol8-admin --region us-east-1
-
-aws secretsmanager create-secret \
-  --name "isol8/dev/stripe_connect_webhook_secret" \
-  --secret-string "whsec_test_..." \
-  --profile isol8-admin --region us-east-1
 ```
 
-Repeat for prod with the live-mode values.
+Repeat for prod with the live-mode value.
 
-## 3. Stripe dashboard — Enable Connect Express
+## 3. Stripe dashboard — Enable Connect Express + register webhook
 
 1. https://dashboard.stripe.com/test/connect → enable Express in test mode.
 2. Settings → Connect → register a webhook endpoint:
    - URL: `https://api-dev.isol8.co/api/v1/marketplace/webhooks/stripe-marketplace`
    - Events: `checkout.session.completed`, `charge.refunded`, `account.updated`,
      `transfer.failed`, `payout.paid`, `payout.failed`
-3. Copy the webhook signing secret → store as the `stripe_connect_webhook_secret`.
-4. Repeat for live mode when promoting to prod.
+3. Copy the webhook signing secret → paste it into the CDK-managed secret:
+   ```bash
+   aws secretsmanager update-secret \
+     --secret-id "isol8/dev/stripe_connect_webhook_secret" \
+     --secret-string "whsec_test_..." \
+     --profile isol8-admin --region us-east-1
+   ```
+4. Repeat for live mode when promoting to prod (use the prod-mode endpoint URL
+   `https://api.isol8.co/api/v1/marketplace/webhooks/stripe-marketplace` and
+   the matching Secrets Manager id `isol8/prod/stripe_connect_webhook_secret`).
 
 ## 4. Route 53 — DNS records
 

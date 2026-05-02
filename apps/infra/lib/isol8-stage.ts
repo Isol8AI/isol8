@@ -95,6 +95,7 @@ export class Isol8Stage extends cdk.Stage {
         clerkSecretKey: `isol8/${env}/clerk_secret_key`,
         stripeSecretKey: `isol8/${env}/stripe_secret_key`,
         stripeWebhookSecret: `isol8/${env}/stripe_webhook_secret`,
+        stripeConnectWebhookSecret: `isol8/${env}/stripe_connect_webhook_secret`,
         encryptionKey: `isol8/${env}/encryption_key`,
         posthogProjectApiKey: `isol8/${env}/posthog_project_api_key`,
       },
