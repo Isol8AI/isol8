@@ -43,6 +43,31 @@ def _service_token_key(monkeypatch):
     monkeypatch.setenv("PAPERCLIP_SERVICE_TOKEN_KEY", "test-service-token-key")
 
 
+@pytest.fixture(autouse=True)
+def _stub_admin_session(monkeypatch):
+    """Stub get_admin_session_token to return a fake token for all tests.
+
+    The real implementation calls Secrets Manager (boto3) + Better Auth
+    sign-in (httpx) — both unwanted in unit tests. Stubbing returns
+    ``"admin-token-test"`` so provision_org's calls to admin-bearing
+    endpoints carry a deterministic value tests can assert on.
+    """
+
+    async def _fake_admin_token(_http_client):
+        return "admin-token-test"
+
+    monkeypatch.setattr(
+        "core.services.paperclip_admin_session.get_admin_session_token",
+        _fake_admin_token,
+    )
+    # The provisioning code imports from this module too — patch in case
+    # someone re-imports.
+    import core.services.paperclip_provisioning as prov_mod
+
+    if hasattr(prov_mod, "get_admin_session_token"):
+        monkeypatch.setattr(prov_mod, "get_admin_session_token", _fake_admin_token, raising=False)
+
+
 @pytest.fixture
 def repo():
     """A moto-backed PaperclipRepo with the by-org-id + by-status-purge-at GSIs."""
@@ -88,6 +113,11 @@ def _make_admin_mock() -> MagicMock:
     raise) per-scenario.
     """
     admin = MagicMock()
+    # The provisioning code passes ``self._admin._http`` into
+    # get_admin_session_token. Stubbed in _stub_admin_session fixture
+    # but the attribute access still has to succeed — give it a
+    # placeholder.
+    admin._http = MagicMock()
     admin.sign_up_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
     admin.sign_in_user = AsyncMock(return_value={"user": {"id": "pc_user_default"}, "token": "session-default"})
     admin.create_company = AsyncMock(return_value={"id": "co_default"})
@@ -144,11 +174,27 @@ async def test_provision_org_happy_path(repo):
     assert sign_up_kwargs["name"] == "owner@acme.test"
     assert len(sign_up_kwargs["password"]) >= 32  # token_urlsafe(32) -> ~43 chars
 
+    # create_company now runs as the BOOTSTRAP ADMIN (not the new user)
+    # because Paperclip's POST /api/companies requires instance_admin.
+    # The admin session token comes from get_admin_session_token, which
+    # the autouse _stub_admin_session fixture pins to "admin-token-test".
     admin.create_company.assert_awaited_once()
     cc_kwargs = admin.create_company.call_args.kwargs
     assert cc_kwargs["name"] == "owner@acme.test"
-    assert cc_kwargs["session_token"] == "owner-session-1"
+    assert cc_kwargs["session_token"] == "admin-token-test"
     assert cc_kwargs["idempotency_key"] == "user_owner"
+
+    # New user is added as a co-owner via the invite/accept/approve chain.
+    admin.create_invite.assert_awaited_once()
+    invite_kwargs = admin.create_invite.call_args.kwargs
+    assert invite_kwargs["company_id"] == "co_acme"
+    assert invite_kwargs["session_token"] == "admin-token-test"  # admin invites
+    admin.accept_invite.assert_awaited_once()
+    accept_kwargs = admin.accept_invite.call_args.kwargs
+    assert accept_kwargs["session_token"] == "owner-session-1"  # user accepts
+    admin.approve_join_request.assert_awaited_once()
+    approve_kwargs = admin.approve_join_request.call_args.kwargs
+    assert approve_kwargs["session_token"] == "admin-token-test"  # admin approves
 
     admin.create_agent.assert_awaited_once()
     agent_kwargs = admin.create_agent.call_args.kwargs
@@ -157,6 +203,8 @@ async def test_provision_org_happy_path(repo):
     assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
+    # Agent is owned BY the user (their session) so they can edit it later.
+    assert agent_kwargs["session_token"] == "owner-session-1"
 
     # Persisted row
     assert row.user_id == "user_owner"

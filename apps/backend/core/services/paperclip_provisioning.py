@@ -123,15 +123,27 @@ class PaperclipProvisioning:
         owner_user_id: str,
         owner_email: str,
     ) -> PaperclipCompany:
-        """Provision the Paperclip company + Better Auth owner for a new org.
+        """Provision the Paperclip company + Better Auth user for a new owner.
+
+        Paperclip's ``POST /api/companies`` requires
+        ``req.actor.isInstanceAdmin`` in ``authenticated`` deployment mode
+        (per ``paperclip/server/src/routes/companies.ts:269``). The
+        old flow signed up the new user and immediately tried to create
+        the company AS that user — which 403'd because the new user
+        isn't an admin. Fixed flow: the bootstrap admin (admin@isol8.co,
+        the only ``instance_admin`` on the deployment) creates the
+        company and invites the new user as a co-owner via the standard
+        invite/accept/approve chain. New user ends up as an active
+        owner; admin stays as a co-owner of every company (harmless
+        side effect — admin doesn't act without explicit code paths).
 
         Idempotent: if a row already exists for ``owner_user_id`` with
-        ``status="active"``, return it unchanged. If it exists with any
-        other status (``provisioning`` / ``failed``), we redo the chain
-        from scratch — Paperclip's sign-up is not idempotent, so a
-        second call against the same email will fail at the Better Auth
-        layer; T12 webhook dedupe is the primary retry-suppression
-        mechanism.
+        ``status="active"``, return it unchanged. Other statuses redo
+        the chain — Paperclip's Better Auth sign-up is NOT idempotent,
+        so retrying after a partial failure will hit "user already
+        exists" at sign_up_user. The proxy's failed-row handler
+        redirects back to /chat for explicit re-handshake instead of
+        looping autoprovisions.
         """
         existing = await self._repo.get(owner_user_id)
         if existing is not None and existing.status == "active":
@@ -142,38 +154,99 @@ class PaperclipProvisioning:
             )
             return existing
 
+        # Lazy import to keep the cycle clean (admin_session imports
+        # PaperclipAdminClient, which would otherwise create an import
+        # cycle if loaded at module level).
+        from core.services.paperclip_admin_session import (
+            get_admin_session_token,
+            invalidate_admin_session,
+        )
+
+        # Acquire admin session up front so we fail loudly if the
+        # bootstrap secret is missing (rather than failing 4 steps in).
+        admin_token = await get_admin_session_token(self._admin._http)
+
         password = secrets.token_urlsafe(32)
         try:
-            # 1. Better Auth sign-up — creates the per-user Paperclip account
-            #    and returns a fresh session token usable as the bearer for
-            #    subsequent calls that should "act as" this user.
+            # 1. Better Auth public signup — creates the new Paperclip
+            #    user. Doesn't require admin privileges (unless
+            #    ``disableSignUp`` is set, which it isn't on this
+            #    deployment). Returns a session token we'll use later
+            #    for the invite-accept and Main Agent steps.
             signup = await self._admin.sign_up_user(
                 email=owner_email,
                 password=password,
                 name=owner_email,
             )
             paperclip_user_id = signup["user"]["id"]
-            session_token = signup["token"]
+            new_user_session_token = signup["token"]
 
-            # 2. Create the company AS the owner. The bearer token's user
-            #    is automatically granted owner-membership server-side.
-            company = await self._admin.create_company(
-                name=owner_email,
-                description="Isol8 Teams workspace",
-                session_token=session_token,
-                idempotency_key=owner_user_id,
-            )
+            # 2. ADMIN creates the company. Admin becomes the initial
+            #    owner via Paperclip's auto-ensureMembership in
+            #    ``routes/companies.ts:273``.
+            try:
+                company = await self._admin.create_company(
+                    name=owner_email,
+                    description="Isol8 Teams workspace",
+                    session_token=admin_token,
+                    idempotency_key=owner_user_id,
+                )
+            except PaperclipApiError as e:
+                if e.status_code == 401:
+                    # Admin session expired; retry once with fresh token.
+                    invalidate_admin_session()
+                    admin_token = await get_admin_session_token(self._admin._http)
+                    company = await self._admin.create_company(
+                        name=owner_email,
+                        description="Isol8 Teams workspace",
+                        session_token=admin_token,
+                        idempotency_key=owner_user_id,
+                    )
+                else:
+                    raise
             company_id = company["id"]
 
-            # 3. Mint a long-lived OpenClaw service-token JWT. Baked into
-            #    the seeded agent's adapter config so the agent can reach
-            #    the user's container via the existing gateway.
+            # 3. ADMIN creates a one-shot invite for the new user.
+            invite = await self._admin.create_invite(
+                session_token=admin_token,
+                company_id=company_id,
+                email=owner_email,
+            )
+            invite_token = invite["token"]
+
+            # 4. New user accepts the invite using their own session.
+            #    Produces a join-request bound to their Better Auth user.
+            accept = await self._admin.accept_invite(
+                session_token=new_user_session_token,
+                invite_token=invite_token,
+            )
+            try:
+                request_id = accept["id"]
+            except (KeyError, TypeError) as e:
+                raise PaperclipApiError(
+                    "accept_invite response missing 'id' field",
+                    status_code=200,
+                    body=accept,
+                ) from e
+
+            # 5. ADMIN approves the join request → user is now an
+            #    active owner of the company.
+            await self._admin.approve_join_request(
+                session_token=admin_token,
+                company_id=company_id,
+                request_id=request_id,
+            )
+
+            # 6. Mint a long-lived OpenClaw service-token JWT. Baked
+            #    into the seeded Main Agent's adapter config so the
+            #    agent can reach the user's container via the gateway.
             svc_token = service_token.mint(owner_user_id)
 
-            # 4. Best-effort seed of a "Main Agent" pointing at the
-            #    user's OpenClaw container. Failure here is not fatal —
-            #    the company is still usable, the user can create agents
-            #    from the UI manually.
+            # 7. Best-effort seed a "Main Agent" pointing at the
+            #    user's OpenClaw container. Failure here is not fatal
+            #    — the company is still usable, the user can create
+            #    agents from the UI manually. Acts AS the user (their
+            #    session) so the agent ends up owned by them.
             try:
                 await self._admin.create_agent(
                     company_id=company_id,
@@ -186,7 +259,7 @@ class PaperclipProvisioning:
                         "sessionKeyStrategy": "fixed",
                         "sessionKey": owner_user_id,
                     },
-                    session_token=session_token,
+                    session_token=new_user_session_token,
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
             except PaperclipApiError as e:
@@ -196,7 +269,7 @@ class PaperclipProvisioning:
                     e,
                 )
 
-            # 5. Persist
+            # 8. Persist
             now = datetime.now(timezone.utc)
             row = PaperclipCompany(
                 user_id=owner_user_id,

@@ -27,6 +27,7 @@ export class AuthStack extends cdk.Stack {
   public readonly kmsKey: kms.Key;
   public readonly paperclipBetterAuthSecret: secretsmanager.Secret;
   public readonly paperclipServiceTokenKey: secretsmanager.Secret;
+  public readonly paperclipAdminCredentials: secretsmanager.Secret;
 
   constructor(scope: Construct, id: string, props: AuthStackProps) {
     super(scope, id, props);
@@ -97,6 +98,23 @@ export class AuthStack extends cdk.Stack {
       "paperclip_service_token_key",
       { passwordLength: 64, excludePunctuation: true },
       "Symmetric secret for signing/verifying OpenClaw service-token JWTs (used by paperclip_provisioning + Lambda Authorizer)",
+    );
+
+    // Bootstrap admin (admin@isol8.co) Better Auth credentials. CDK
+    // creates the secret with a placeholder; the operator populates
+    // it via apps/backend/scripts/bootstrap_paperclip_admin.py
+    // (run as a one-shot ECS task — see paperclip-stack.ts for the
+    // task definition). Backend reads it at first provisioning call
+    // via core/services/paperclip_admin_session.py. Encrypted with
+    // the same CMK as other auth secrets so the existing
+    // KmsDecryptForSecrets policy on the backend task role covers it.
+    this.paperclipAdminCredentials = createSecret(
+      "PaperclipAdminCredentials",
+      "paperclip_admin_credentials",
+      // Placeholder string — bootstrap script overwrites with
+      // {"email": "admin@isol8.co", "password": "<32-byte-random>"}.
+      { passwordLength: 16, excludePunctuation: true },
+      "Paperclip admin (admin@isol8.co) Better Auth credentials. Populated by bootstrap_paperclip_admin.py — placeholder until then.",
     );
 
     // CDK's default GenerateSecretString produces a hex-ish placeholder that
