@@ -208,6 +208,32 @@ _STUB_BASE_CSS = """
 """
 
 
+def _provisioning_in_progress_response() -> Response:
+    """Auto-refreshing "setting up your workspace" stub.
+
+    Shown when ``proxy()`` finds the user authenticated but their
+    paperclip-companies row is missing or status != "active". Typical
+    case: handshake just spawned a background ``_autoprovision`` task
+    that hasn't completed yet (5–10s). ``<meta http-equiv="refresh">``
+    polls every 2s with no JS; once provisioning lands and the proxy
+    returns the actual Paperclip page, the browser stops auto-refreshing.
+    """
+    body = f"""<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="2">
+<title>Setting up Teams…</title>
+<style>{_STUB_BASE_CSS}</style>
+</head><body>
+<div class="card">
+  <h1><span class="spinner"></span>Setting up your workspace…</h1>
+  <p>This usually takes 5–10 seconds. The page will reload automatically.</p>
+</div>
+</body></html>
+"""
+    return Response(content=body.encode("utf-8"), status_code=503, media_type="text/html; charset=utf-8")
+
+
 def _circuit_breaker_response() -> Response:
     body = f"""<!doctype html>
 <html lang="en"><head>
@@ -831,8 +857,14 @@ def _strip_handoff_param(request: Request) -> str:
     the bare ``/foo`` so the next request doesn't double-stack the
     prefix.
     """
+    from urllib.parse import urlencode
+
+    # urlencode handles reserved characters (&, =, %, spaces, …) correctly.
+    # The earlier f-string concat let those through unescaped, which would
+    # split or corrupt query state when the next request decoded the URL
+    # (Codex P2 on PR #495).
     items = [(k, v) for k, v in request.query_params.multi_items() if k != "__t"]
-    qs = "&".join(f"{k}={v}" for k, v in items) if items else ""
+    qs = urlencode(items) if items else ""
     path = request.url.path
     prefix = "/__paperclip_proxy__"
     if path.startswith(prefix):
@@ -957,14 +989,19 @@ async def proxy(path: str, request: Request) -> Response:
                 status_code=302,
             )
 
-        # Auto-provision Paperclip company on first hit. Synchronous so
-        # the user lands directly on Paperclip after the 302 — no card,
-        # no button. provision_org is idempotent so repeated handshakes
-        # are safe.
+        # Auto-provision Paperclip company on first hit. Spawn as a
+        # background task instead of awaiting — the user gets the 302
+        # (and the JWT-stripped URL) within ms instead of waiting 5–10s
+        # for Better Auth signup + company create + agent seed. The
+        # subsequent request lands on a "setting up…" stub that
+        # auto-refreshes until the row goes status="active". Codex P1
+        # on PR #495 — keeps the raw Clerk JWT in the address bar for
+        # only ~50ms instead of the full provisioning duration.
+        # provision_org is idempotent so a fast double-click is safe.
         repo = PaperclipRepo(table_name="paperclip-companies")
         existing = await repo.get(auth.user_id)
         if existing is None or existing.status != "active":
-            await _autoprovision(auth)
+            asyncio.create_task(_autoprovision(auth))
 
         # Mint cookie + 302 to clean URL.
         session_jwt = _mint_paperclip_session(user_id=auth.user_id, email=auth.email)
@@ -983,15 +1020,23 @@ async def proxy(path: str, request: Request) -> Response:
     # ---- Established-session path: forward request to Paperclip ----
     repo = PaperclipRepo(table_name="paperclip-companies")
     company = await repo.get(auth.user_id)
-    if company is None or company.status != "active":
-        # Race condition: cookie was issued but row got deleted/disabled
-        # since. Send the user back to handoff to re-trigger provisioning.
-        from fastapi.responses import RedirectResponse
-
-        return RedirectResponse(
-            f"{_frontend_url()}/chat?from=teams&need=reprovision",
-            status_code=302,
-        )
+    if company is None:
+        # Either:
+        #  (a) we just spawned _autoprovision in the handshake step and
+        #      the row hasn't been written yet (typical first visit), OR
+        #  (b) the row got deleted/disabled out-of-band (cancelled
+        #      subscription, manual purge — the cookie outlived the row).
+        # Both look identical from here. Show the auto-refresh stub; if
+        # provisioning is in flight it'll reload and find an active row;
+        # if it's case (b) it'll loop until the cookie expires.
+        return _provisioning_in_progress_response()
+    if company.status != "active":
+        # Provisioning still running OR in failed/disabled state. Same
+        # auto-refresh stub — if status flips to active the next reload
+        # forwards through; if it stays "failed"/"disabled" the user
+        # eventually closes the tab, and the cookie expiry on the next
+        # handshake re-triggers provisioning.
+        return _provisioning_in_progress_response()
 
     # Email comes from the Clerk JWT (``email`` claim). The Isol8
     # ``users`` DynamoDB row only stores ``user_id`` + ``created_at``
