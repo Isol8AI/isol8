@@ -131,6 +131,13 @@ export async function rejectListing(
   );
 }
 
+/** Listing detail preview for moderators (file tree, content, safety scan). */
+export async function getListingPreview(listingId: string): Promise<ActionResult> {
+  return adminGet(
+    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/preview`,
+  );
+}
+
 /** List takedown requests awaiting admin action. */
 export async function listPendingTakedowns(): Promise<ActionResult> {
   return adminGet("/admin/marketplace/takedowns?status=pending");

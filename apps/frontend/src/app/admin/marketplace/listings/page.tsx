@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 import { listReviewQueue } from "@/app/admin/_actions/marketplace";
 
 import { ModerationActions } from "./ModerationActions";
@@ -57,7 +59,14 @@ export default async function ListingsReview() {
             className="flex items-start justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-900/40 p-5"
           >
             <div className="min-w-0 flex-1">
-              <h3 className="font-semibold text-zinc-100">{listing.name}</h3>
+              <h3 className="font-semibold text-zinc-100">
+                <Link
+                  href={`/admin/marketplace/listings/${listing.listing_id}`}
+                  className="hover:underline"
+                >
+                  {listing.name}
+                </Link>
+              </h3>
               <p className="mt-1 text-sm text-zinc-400">
                 <code className="font-mono">{listing.slug}</code> ·{" "}
                 {listing.format} ·{" "}
@@ -70,6 +79,12 @@ export default async function ListingsReview() {
               <p className="mt-2 text-xs text-zinc-500">
                 seller: <span className="font-mono">{listing.seller_id}</span>
               </p>
+              <Link
+                href={`/admin/marketplace/listings/${listing.listing_id}`}
+                className="mt-2 inline-block text-xs text-zinc-300 underline"
+              >
+                Open full review →
+              </Link>
             </div>
             <ModerationActions
               listingId={listing.listing_id}

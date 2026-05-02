@@ -25,6 +25,13 @@ export interface ModerationActionsProps {
   listingId: string;
   listingName: string;
   slug: string;
+  /**
+   * Optional starter copy for the reject-notes textarea. Used by the
+   * listing detail page to pre-fill `marketplace_safety` high-severity
+   * findings; admins can edit before sending. Empty/undefined preserves
+   * the original blank-textarea behavior used on the queue page.
+   */
+  prefilledRejectionNotes?: string;
 }
 
 /**
@@ -44,11 +51,12 @@ export function ModerationActions({
   listingId,
   listingName,
   slug,
+  prefilledRejectionNotes,
 }: ModerationActionsProps) {
   const router = useRouter();
   const [error, setError] = useState<string | null>(null);
   const [rejectOpen, setRejectOpen] = useState(false);
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(prefilledRejectionNotes ?? "");
   const [busy, setBusy] = useState(false);
 
   async function handleApprove() {
@@ -75,7 +83,7 @@ export function ModerationActions({
         return;
       }
       setRejectOpen(false);
-      setNotes("");
+      setNotes(prefilledRejectionNotes ?? "");
       router.refresh();
     } finally {
       setBusy(false);
@@ -86,7 +94,9 @@ export function ModerationActions({
     if (busy) return;
     setRejectOpen(next);
     if (!next) {
-      setNotes("");
+      // On close, restore the prefilled notes (don't clobber the safety-scan
+      // pre-fill if the admin opened-then-cancelled).
+      setNotes(prefilledRejectionNotes ?? "");
     }
   }
 
