@@ -340,6 +340,14 @@ async def _get_paperclip_user(request: Request) -> AuthContext:
         payload = await _decode_token(token)
     except HTTPException:
         raise
+    except httpx.HTTPError as e:
+        # JWKS fetch failed (Clerk down, network blip). This is a transient
+        # *service* problem, not a credential problem — surface 503 so the
+        # browser/client can retry rather than treating the user as logged
+        # out. Mirrors ``core.auth.get_current_user``'s mapping of the same
+        # exception. Codex P2 on PR #487.
+        logger.error("paperclip_proxy: JWKS fetch failed: %s", e)
+        raise HTTPException(status_code=503, detail="Authentication service unavailable")
     except Exception as e:  # noqa: BLE001 - opaque to caller; we 401.
         logger.warning("paperclip_proxy: invalid Clerk token: %s", e)
         raise HTTPException(status_code=401, detail="Invalid Clerk token")

@@ -579,3 +579,34 @@ def test_http_rejects_token_missing_subject(monkeypatch):
     resp = client.get("/some/path", cookies={"__session": "valid.but.no.sub"})
     assert resp.status_code == 401
     assert resp.json() == {"detail": "Token missing subject"}
+
+
+def test_http_returns_503_when_jwks_fetch_fails(monkeypatch):
+    """JWKS fetch failure (httpx error) → 503 service-unavailable, not 401.
+
+    Codex P2 on PR #487: the broad ``except Exception`` in the auth
+    dependency was collapsing JWKS-fetch failures into ``401 Invalid
+    Clerk token``, which is a misleading credential error during a
+    Clerk/network outage. Mirrors ``core.auth.get_current_user`` which
+    maps ``httpx.HTTPError`` to 503 so clients retry instead of treating
+    the user as logged out.
+    """
+    from fastapi.testclient import TestClient
+    import httpx
+
+    import routers.paperclip_proxy as proxy_mod
+
+    async def _fake_decode(token: str):
+        # Simulate JWKS endpoint down (Clerk/network outage). httpx
+        # surfaces this as ConnectError; the proxy should convert it
+        # to 503 rather than 401.
+        raise httpx.ConnectError("clerk JWKS unreachable")
+
+    monkeypatch.setattr(proxy_mod, "_decode_token", _fake_decode)
+
+    app = _build_http_app()
+    client = TestClient(app)
+
+    resp = client.get("/some/path", cookies={"__session": "any.token"})
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "Authentication service unavailable"}
