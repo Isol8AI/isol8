@@ -190,11 +190,32 @@ class PaperclipAdminClient:
         from Better Auth's sign-in/sign-up ``Set-Cookie`` response).
         Bearer auth would be ignored — Paperclip does not enable the
         Better Auth ``bearer()`` plugin.
+
+        Also stamps ``Origin: <PAPERCLIP_PUBLIC_URL>`` when set. Why:
+        Paperclip's actor middleware calls Better Auth's internal
+        ``api.getSession({headers})``, and Better Auth uses the request
+        URL (derived from ``Origin``) to decide whether to look for the
+        ``__Secure-`` cookie prefix. Without an https Origin it looks
+        for the bare cookie name and our admin call lands as
+        anonymous → 403 on every privileged endpoint. Verified
+        empirically against dev on 2026-05-02. The official handler
+        path (``/api/auth/get-session``) doesn't have this dependency
+        because it has the real request URL.
         """
         headers = {
             "Cookie": session_cookie,
             "Content-Type": "application/json",
         }
+        # Read from the settings singleton (canonical config source —
+        # pydantic loads from .env, tests monkeypatch via
+        # settings.PAPERCLIP_PUBLIC_URL). Reading os.environ would miss
+        # both .env loading and test-suite overrides. Codex P2 on PR #508.
+        # Local import keeps the module load lightweight and avoids a
+        # circular import for tests that bypass settings entirely.
+        from core.config import settings
+
+        if settings.PAPERCLIP_PUBLIC_URL:
+            headers["Origin"] = settings.PAPERCLIP_PUBLIC_URL
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
         return headers
