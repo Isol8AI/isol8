@@ -670,13 +670,16 @@ async def _process_agent_chat_background(
                 except Exception:
                     logger.warning("Failed to bind session %s to node", session_key)
 
-        # Plan 3 Task 4: card-3 (bedrock_claude) hard-stop when balance ≤ 0.
-        # Cards 1+2 always pass through. We push a structured error event
-        # back to the client and bail before forwarding to OpenClaw.
-        # Use the per-user member id (not owner_id) so org-context chats
-        # gate correctly — provider_choice + credit balance live on the
-        # Clerk user row, not the org row. Codex P1 on PR #393.
-        gate = await pool.gate_chat(user_id=user_id)
+        # Plan 3 Task 4 + audit M1: card-3 hard-stop when balance ≤ 0,
+        # AND any provider hard-stop when subscription is inactive.
+        # provider_choice + credit balance live on the Clerk user row,
+        # so we pass user_id; subscription_status lives on the billing
+        # row (org_id in org context, user_id in personal), so we also
+        # pass owner_id. Cards 1 + 2 still skip the credit-balance gate
+        # — they aren't billed against prepaid credits — but they DO
+        # have to honor the subscription gate so a canceled-sub user
+        # can't keep talking through the gateway indefinitely.
+        gate = await pool.gate_chat(user_id=user_id, owner_id=owner_id)
         if gate.get("blocked"):
             put_metric("chat.error", dimensions={"reason": gate.get("code", "blocked")})
             logger.info(

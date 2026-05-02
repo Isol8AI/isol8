@@ -15,8 +15,8 @@ export type AutoReloadConfig = {
 };
 
 export type TopUpResult = {
-  client_secret: string;
-  payment_intent_id: string;
+  /** Stripe-hosted Checkout URL — frontend should `window.location.href = checkout_url`. */
+  checkout_url: string;
 };
 
 export function useCredits() {

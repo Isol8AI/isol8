@@ -65,14 +65,19 @@ async def test_get_balance_returns_microcents(async_client, credit_ledger_tables
 
 
 @pytest.mark.asyncio
-async def test_top_up_creates_payment_intent(async_client, credit_ledger_tables):
-    fake_pi = type("PI", (), {"id": "pi_test", "client_secret": "secret_test"})()
+async def test_top_up_creates_checkout_session(async_client, credit_ledger_tables):
+    """Top-up endpoint returns a Stripe Checkout URL (Elements-flow
+    replacement). The session has allow_promotion_codes=True so an
+    internal 100%-off coupon can be redeemed; metadata carries the
+    credit-grant amount so the webhook handler knows what to write to
+    the ledger regardless of what was charged."""
+    fake_session = type("S", (), {"id": "cs_test", "url": "https://checkout.stripe.com/c/pay/cs_test"})()
     with (
         patch(
-            "routers.billing.billing_repo.get_by_owner_id",
+            "core.services.billing_service.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"stripe_customer_id": "cus_test"}),
         ),
-        patch("stripe.PaymentIntent.create", return_value=fake_pi) as mock_pi,
+        patch("stripe.checkout.Session.create", return_value=fake_session) as mock_session,
     ):
         resp = await async_client.post(
             "/api/v1/billing/credits/top_up",
@@ -80,14 +85,17 @@ async def test_top_up_creates_payment_intent(async_client, credit_ledger_tables)
         )
     assert resp.status_code == 200
     body = resp.json()
-    assert body["client_secret"] == "secret_test"
-    assert body["payment_intent_id"] == "pi_test"
-    _, kwargs = mock_pi.call_args
-    assert kwargs["amount"] == 2000
-    assert kwargs["currency"] == "usd"
+    assert body["checkout_url"] == "https://checkout.stripe.com/c/pay/cs_test"
+    _, kwargs = mock_session.call_args
+    assert kwargs["mode"] == "payment"
     assert kwargs["customer"] == "cus_test"
+    assert kwargs["allow_promotion_codes"] is True
+    line_item = kwargs["line_items"][0]
+    assert line_item["price_data"]["unit_amount"] == 2000
+    assert line_item["price_data"]["currency"] == "usd"
     assert kwargs["metadata"]["purpose"] == "credit_top_up"
     assert kwargs["metadata"]["user_id"] == "user_test_123"
+    assert kwargs["metadata"]["amount_cents"] == "2000"
     assert "idempotency_key" in kwargs
 
 
@@ -116,17 +124,21 @@ async def test_set_auto_reload_persists(async_client, credit_ledger_tables):
 
 
 @pytest.mark.asyncio
-async def test_payment_intent_succeeded_credits_ledger(async_client, monkeypatch, credit_ledger_tables):
+async def test_checkout_session_completed_credits_ledger(async_client, monkeypatch, credit_ledger_tables):
+    """Charged top-up: amount_total matches metadata.amount_cents — full
+    Stripe transaction, no discount applied."""
     fake_event = {
-        "id": "evt_pi_credit_1",
-        "type": "payment_intent.succeeded",
+        "id": "evt_cs_credit_1",
+        "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "pi_test",
-                "amount": 2000,  # $20
+                "id": "cs_test",
+                "payment_status": "paid",
+                "amount_total": 2000,
                 "metadata": {
                     "purpose": "credit_top_up",
                     "user_id": "u_buyer",
+                    "amount_cents": "2000",
                 },
             }
         },
@@ -146,4 +158,186 @@ async def test_payment_intent_succeeded_credits_ledger(async_client, monkeypatch
     assert resp.status_code == 200
     _, kwargs = mock_top_up.call_args
     assert kwargs["amount_microcents"] == 20_000_000
-    assert kwargs["stripe_payment_intent_id"] == "pi_test"
+    assert kwargs["stripe_payment_intent_id"] == "cs_test"
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_completed_with_full_discount_still_credits(
+    async_client, monkeypatch, credit_ledger_tables
+):
+    """100%-off coupon: amount_total=0 (Stripe didn't charge) but the
+    user still gets the requested credit balance. This is the internal-
+    use case — the company absorbs the cost via the coupon, no Stripe
+    fee, and the ledger reflects the credit grant."""
+    fake_event = {
+        "id": "evt_cs_credit_discount_1",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_internal",
+                "payment_status": "no_payment_required",
+                "amount_total": 0,
+                "metadata": {
+                    "purpose": "credit_top_up",
+                    "user_id": "u_internal",
+                    "amount_cents": "5000",
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "stripe.Webhook.construct_event",
+        lambda body, sig, secret: fake_event,
+    )
+
+    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+
+    assert resp.status_code == 200
+    _, kwargs = mock_top_up.call_args
+    # Credit reflects the *requested* amount, not the (zero) Stripe charge.
+    assert kwargs["amount_microcents"] == 50_000_000
+    assert kwargs["stripe_payment_intent_id"] == "cs_internal"
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_completed_ignores_non_credit_purposes(async_client, monkeypatch, credit_ledger_tables):
+    """Trial-checkout sessions ALSO fire checkout.session.completed but
+    they aren't credit grants — they're handled via subscription.created
+    higher up. The handler must ignore non-credit_top_up sessions to
+    avoid accidentally crediting trial signups."""
+    fake_event = {
+        "id": "evt_cs_subscription_1",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_subscription",
+                "amount_total": 0,
+                "metadata": {},  # trial-checkout sessions don't set purpose
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "stripe.Webhook.construct_event",
+        lambda body, sig, secret: fake_event,
+    )
+    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+    assert resp.status_code == 200
+    mock_top_up.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_checkout_session_completed_with_unpaid_status_defers_credit(
+    async_client, monkeypatch, credit_ledger_tables
+):
+    """Codex P1 on PR #488: ACH / bank-transfer / Klarna sessions land
+    in checkout.session.completed with payment_status=unpaid. We must
+    NOT credit at this point — wait for async_payment_succeeded."""
+    fake_event = {
+        "id": "evt_cs_unpaid_1",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_ach_pending",
+                "payment_status": "unpaid",
+                "amount_total": 5000,
+                "metadata": {
+                    "purpose": "credit_top_up",
+                    "user_id": "u_ach",
+                    "amount_cents": "5000",
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "stripe.Webhook.construct_event",
+        lambda body, sig, secret: fake_event,
+    )
+    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+    assert resp.status_code == 200
+    mock_top_up.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_async_payment_succeeded_credits_after_ach_settles(async_client, monkeypatch, credit_ledger_tables):
+    """When ACH/bank-transfer settles, Stripe fires
+    checkout.session.async_payment_succeeded with payment_status=paid.
+    THIS is the event that credits the ledger for delayed payments."""
+    fake_event = {
+        "id": "evt_cs_async_paid_1",
+        "type": "checkout.session.async_payment_succeeded",
+        "data": {
+            "object": {
+                "id": "cs_ach_settled",
+                "payment_status": "paid",
+                "amount_total": 5000,
+                "metadata": {
+                    "purpose": "credit_top_up",
+                    "user_id": "u_ach",
+                    "amount_cents": "5000",
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "stripe.Webhook.construct_event",
+        lambda body, sig, secret: fake_event,
+    )
+    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=50_000_000)) as mock_top_up:
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+    assert resp.status_code == 200
+    _, kwargs = mock_top_up.call_args
+    assert kwargs["amount_microcents"] == 50_000_000
+    assert kwargs["stripe_payment_intent_id"] == "cs_ach_settled"
+
+
+@pytest.mark.asyncio
+async def test_async_payment_failed_does_not_credit(async_client, monkeypatch, credit_ledger_tables):
+    """ACH bounce / bank-transfer reject. Because we never credited on
+    the original completed-but-unpaid event, there's nothing to roll
+    back — just emit a metric."""
+    fake_event = {
+        "id": "evt_cs_async_failed_1",
+        "type": "checkout.session.async_payment_failed",
+        "data": {
+            "object": {
+                "id": "cs_ach_failed",
+                "payment_status": "unpaid",
+                "metadata": {
+                    "purpose": "credit_top_up",
+                    "user_id": "u_ach",
+                    "amount_cents": "5000",
+                },
+            }
+        },
+    }
+    monkeypatch.setattr(
+        "stripe.Webhook.construct_event",
+        lambda body, sig, secret: fake_event,
+    )
+    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up:
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+    assert resp.status_code == 200
+    mock_top_up.assert_not_called()

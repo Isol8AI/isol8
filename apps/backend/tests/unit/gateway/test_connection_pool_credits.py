@@ -121,6 +121,97 @@ async def test_missing_user_record_never_gated():
     assert result == {"blocked": False}
 
 
+# --------- Audit M1: subscription-status gate (any provider) ---------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "status",
+    ["canceled", "incomplete", "incomplete_expired", "unpaid", "paused", "past_due"],
+)
+async def test_inactive_subscription_blocks_chat_regardless_of_provider(status):
+    """A canceled / past_due / unpaid subscription blocks chat for ANY
+    provider — including chatgpt_oauth and byo_key, where the LLM cost
+    is on the user but the container compute is on us."""
+    pool = GatewayConnectionPool(management_api=None)
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value={"subscription_status": status}),
+    ):
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+    assert result["blocked"] is True
+    assert result["code"] == "subscription_inactive"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["active", "trialing"])
+async def test_active_or_trialing_subscription_does_not_trigger_sub_gate(status):
+    """active/trialing pass the subscription gate (then fall through to
+    the legacy provider_choice + balance check)."""
+    pool = GatewayConnectionPool(management_api=None)
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"subscription_status": status}),
+        ),
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+        ),
+    ):
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+    assert result == {"blocked": False}
+
+
+@pytest.mark.asyncio
+async def test_missing_billing_row_blocks_chat_when_owner_id_provided():
+    """Codex P1 round-2 on PR #488: an authenticated user whose
+    billing row doesn't exist at all (never went through trial-checkout,
+    or got cleaned up out-of-band) must be blocked. Otherwise non-
+    Bedrock providers would chat freely with us still on the hook for
+    container compute."""
+    pool = GatewayConnectionPool(management_api=None)
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+    assert result["blocked"] is True
+    assert result["code"] == "subscription_inactive"
+
+
+@pytest.mark.asyncio
+async def test_legacy_billing_row_without_status_does_not_block():
+    """A pre-Plan-3 billing row may have stripe_subscription_id but no
+    subscription_status backfilled — those should NOT be locked out
+    mid-deploy."""
+    pool = GatewayConnectionPool(management_api=None)
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"stripe_subscription_id": "sub_legacy"}),
+        ),
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+        ),
+    ):
+        result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
+    assert result == {"blocked": False}
+
+
+@pytest.mark.asyncio
+async def test_owner_id_omitted_skips_subscription_gate_for_back_compat():
+    """Old callers that don't pass owner_id keep their pre-M1 behavior."""
+    pool = GatewayConnectionPool(management_api=None)
+    with patch(
+        "core.repositories.user_repo.get",
+        new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+    ):
+        result = await pool.gate_chat(user_id="u_1")  # no owner_id
+    assert result == {"blocked": False}
+
+
 # --------- Task 5: connection._maybe_deduct_credits ---------
 
 
