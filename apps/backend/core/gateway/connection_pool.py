@@ -1104,12 +1104,20 @@ class GatewayConnectionPool:
         # --- Layer 1: subscription status ----------------------------
         if owner_id is not None:
             account = await billing_repo.get_by_owner_id(owner_id)
+            # Three cases that pass this gate:
+            #   1. Billing row exists with status in {active, trialing}.
+            #   2. Legacy pre-Plan-3 row: stripe_subscription_id is set
+            #      but subscription_status hasn't been backfilled. Don't
+            #      lock those users out mid-deploy.
+            # Anything else — including a *missing* billing row — gets
+            # blocked. The original M1 fix lumped "no row" with "legacy
+            # row" and let unfunded users chat through cards 1+2 (whose
+            # LLM is on the user but whose container is on us). Codex
+            # P1 round-2 on PR #488.
             status = (account or {}).get("subscription_status")
-            # Treat a missing billing row as "no subscription". Legacy
-            # rows pre-Plan-3 may have a stripe_subscription_id but no
-            # subscription_status backfilled — those still pass here so
-            # we don't lock out users mid-deploy.
-            if status is not None and status not in ("active", "trialing"):
+            has_legacy_sub = bool((account or {}).get("stripe_subscription_id"))
+            is_ok = status in ("active", "trialing") or (status is None and has_legacy_sub)
+            if not is_ok:
                 return {
                     "blocked": True,
                     "code": "subscription_inactive",
