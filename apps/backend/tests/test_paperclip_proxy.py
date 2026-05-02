@@ -533,7 +533,7 @@ def test_http_accepts_paperclip_session_cookie(monkeypatch):
     resp = client.get("/some/path", cookies={"isol8_paperclip": cookie})
     # We got past auth (no 401) — provisioning stub fires → 503.
     assert resp.status_code == 503
-    assert "team workspace is being set up" in resp.text
+    assert "Set up your team workspace" in resp.text
 
 
 def test_http_accepts_bearer_header_when_cookie_absent(monkeypatch):
