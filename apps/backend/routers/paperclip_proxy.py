@@ -398,17 +398,34 @@ def _verify_paperclip_session(token: str) -> dict:
 
 
 def _bootstrap_html() -> bytes:
-    """Render the Clerk-handshake bootstrap page.
+    """Render the Clerk sign-in bootstrap page.
 
-    Served when a browser navigates to a Paperclip URL with no auth — the
-    page loads the Clerk SDK, fetches a session token via Clerk's existing
-    third-party cookies, POSTs it to ``/__handshake__``, and reloads. After
-    the reload the request carries our proxy session cookie and proxies
+    Served when a browser navigates to a Paperclip URL with no auth.
+    Mirrors Goosetown's pattern: a tiny Clerk-aware page that mounts
+    Clerk's ``<SignIn>`` component inline. After the user signs in (or
+    one-clicks "Continue as ..." if Clerk recognizes the browser),
+    Clerk establishes a session on company-dev.isol8.co, the page POSTs
+    the JWT to ``/__handshake__`` to mint a host-scoped proxy cookie,
+    then reloads — the next request carries the cookie and proxies
     through to Paperclip normally.
 
-    The publishable key is *public* (Clerk literally serves it in HTML) so
-    rendering it inline is fine. The Clerk SDK script URL is derived from
-    the key (Clerk encodes the frontend API host inside it).
+    Why we mount the sign-in inline instead of redirecting to a Clerk-
+    hosted sign-in page: ``Clerk.redirectToSignIn`` defaults to a
+    relative ``/sign-in`` URL on the *current* host, which is this same
+    bootstrap page — that creates an infinite redirect loop. Mounting
+    inline avoids the loop entirely and matches the Goosetown UX (no
+    domain-bouncing during sign-in).
+
+    Why we don't use ``__client``-cookie session sharing: Clerk's dev
+    tier scopes session cookies per-application-host. The user has to
+    establish a session on this host directly. Clerk dev does still
+    recognize the email and offers "Continue as ..." with one click on
+    re-visit, so the UX is close to "shared auth" without paying for
+    Clerk Pro's cross-domain SSO.
+
+    The publishable key is *public* (Clerk literally serves it in HTML)
+    so rendering it inline is fine. The Clerk SDK script URL is derived
+    from the key (Clerk encodes the frontend API host inside it).
     """
     pk = (settings.CLERK_PUBLISHABLE_KEY or "").strip()
     clerk_host = _decode_clerk_publishable_key(pk)
@@ -425,47 +442,74 @@ def _bootstrap_html() -> bytes:
     body = f"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Loading Teams…</title>
-<style>html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fafafa;color:#333}}
-body{{display:flex;align-items:center;justify-content:center}}
-.box{{text-align:center}}.box small{{color:#888;display:block;margin-top:.5rem}}</style>
+<title>Sign in to Teams</title>
+<style>
+  html,body{{height:100%;margin:0;font-family:system-ui,-apple-system,sans-serif;background:#fafafa;color:#333}}
+  body{{display:flex;align-items:center;justify-content:center;flex-direction:column;gap:1rem}}
+  #status{{text-align:center;color:#666;font-size:14px}}
+  #signin-root{{min-width:320px}}
+</style>
 </head><body>
-<div class="box"><div>Loading Teams…</div><small>Setting up your session.</small></div>
+<div id="status">Loading…</div>
+<div id="signin-root"></div>
 <script async crossorigin="anonymous" data-clerk-publishable-key="{pk_attr}" src="{sdk_src}" type="text/javascript"></script>
 <script>
 (async () => {{
+  const status = document.getElementById('status');
+  const root = document.getElementById('signin-root');
+  const setStatus = (msg) => {{ status.textContent = msg; }};
+
+  // Wait for Clerk SDK to attach
   const start = Date.now();
   while (!window.Clerk && Date.now() - start < 10000) {{
     await new Promise(r => setTimeout(r, 50));
   }}
   if (!window.Clerk) {{
-    document.querySelector('.box').innerHTML = '<div>Failed to load auth.</div><small>Refresh to try again.</small>';
+    setStatus('Failed to load Clerk SDK. Refresh to try again.');
     return;
   }}
+
   try {{
     await window.Clerk.load();
   }} catch (e) {{
-    document.querySelector('.box').innerHTML = '<div>Auth failed to initialize.</div><small>' + (e && e.message || e) + '</small>';
+    setStatus('Auth failed to initialize: ' + (e && e.message || e));
     return;
   }}
-  if (!window.Clerk.session) {{
-    return window.Clerk.redirectToSignIn({{ redirectUrl: location.href }});
+
+  async function finishHandshake() {{
+    setStatus('Setting up your session…');
+    try {{
+      const token = await window.Clerk.session.getToken();
+      const r = await fetch('/__handshake__', {{
+        method: 'POST',
+        headers: {{ 'Authorization': 'Bearer ' + token }},
+        credentials: 'include',
+      }});
+      if (r.ok) {{
+        location.replace(location.pathname + location.search + location.hash);
+      }} else {{
+        setStatus('Auth handshake failed (' + r.status + '). Refresh to retry.');
+      }}
+    }} catch (e) {{
+      setStatus('Handshake error: ' + (e && e.message || e));
+    }}
   }}
-  const token = await window.Clerk.session.getToken();
-  if (!token) {{
-    document.querySelector('.box').innerHTML = '<div>No active session.</div>';
-    return;
+
+  if (window.Clerk.session) {{
+    // Already signed in on this host — go straight to handshake.
+    return finishHandshake();
   }}
-  const r = await fetch('/__handshake__', {{
-    method: 'POST',
-    headers: {{ 'Authorization': 'Bearer ' + token }},
-    credentials: 'include',
+
+  // Mount Clerk's sign-in component inline. Clerk fires its session-change
+  // listener once sign-in completes; we then run the handshake + reload.
+  setStatus('');
+  window.Clerk.mountSignIn(root, {{
+    routing: 'virtual',
+    appearance: {{ elements: {{ rootBox: {{ width: '100%' }} }} }},
   }});
-  if (r.ok) {{
-    location.replace(location.pathname + location.search + location.hash);
-  }} else {{
-    document.querySelector('.box').innerHTML = '<div>Auth handshake failed (' + r.status + ').</div>';
-  }}
+  window.Clerk.addListener(({{ session }}) => {{
+    if (session) finishHandshake();
+  }});
 }})();
 </script>
 </body></html>
