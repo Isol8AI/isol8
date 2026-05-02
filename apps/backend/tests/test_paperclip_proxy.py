@@ -495,7 +495,9 @@ def test_http_serves_bootstrap_html_for_browser_nav_no_auth(monkeypatch):
     )
     assert resp.status_code == 200
     assert "text/html" in resp.headers["content-type"]
-    assert "Loading Teams" in resp.text
+    # Bootstrap mounts Clerk SignIn inline (no redirectToSignIn loop).
+    assert "Sign in to Teams" in resp.text
+    assert "mountSignIn" in resp.text
     # Clerk SDK script src derived from the publishable key.
     assert "up-moth-55.clerk.accounts.dev" in resp.text
     # Must POST to /__handshake__ to exchange the token.
