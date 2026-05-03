@@ -468,7 +468,15 @@ async def _handle_organization_membership_created(data: dict) -> None:
 
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
-    """Disable Paperclip for a single removed member."""
+    """Archive the member's Paperclip membership AND disable their DDB row.
+
+    Spec §3 case C. Calls ``archive_member`` rather than ``disable``
+    because we need the Paperclip-side membership row archived too —
+    otherwise the Teams UI keeps showing the removed user. If
+    Paperclip's archive call 5xx's, enqueue a retry like other
+    Paperclip-touching handlers; non-retryable errors fall through
+    quietly (the user is already gone from Clerk).
+    """
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
     if not user_id:
@@ -477,13 +485,33 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
 
     provisioning = await _get_paperclip_provisioning()
     try:
-        await provisioning.disable(user_id=user_id)
-        put_metric("paperclip.webhook.disable", dimensions={"trigger": "membership_deleted"})
-    except Exception:
-        # disable() doesn't raise PaperclipApiError today (DDB-only), but
-        # belt-and-braces: log and continue. We don't enqueue a retry —
-        # disable is purely local and a transient DDB hiccup is rare.
-        logger.exception("disable on membership_deleted failed for user=%s", user_id)
+        try:
+            await provisioning.archive_member(user_id=user_id)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={"trigger": "membership_deleted", "result": "ok"},
+            )
+        except Exception as e:
+            retryable = _is_retryable(e)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={
+                    "trigger": "membership_deleted",
+                    "result": "retryable" if retryable else "error",
+                },
+            )
+            logger.warning(
+                "archive_member on membership_deleted failed for user=%s retryable=%s err=%s",
+                user_id,
+                retryable,
+                e,
+            )
+            if retryable:
+                await _enqueue_paperclip_retry(
+                    op="archive_member",
+                    payload={"user_id": user_id},
+                    owner_id=user_id,
+                )
     finally:
         await _close_paperclip_http(provisioning)
 

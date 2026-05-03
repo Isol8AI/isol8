@@ -368,16 +368,21 @@ async def test_membership_created_missing_owner_email_omits_blank_in_retry(async
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.deleted -> disable
+# organizationMembership.deleted -> archive_member
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_membership_deleted_calls_disable(async_client, monkeypatch):
+async def test_membership_deleted_calls_archive_member(async_client, monkeypatch):
+    """``organizationMembership.deleted`` should drive
+    ``PaperclipProvisioning.archive_member`` (which both calls
+    Paperclip's archive endpoint AND marks the DDB row disabled),
+    not the bare ``disable`` shortcut.
+    """
     _bypass_svix(monkeypatch)
 
     mock_provisioning = AsyncMock()
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    mock_provisioning.archive_member = AsyncMock(return_value=None)
 
     payload = {
         "type": "organizationMembership.deleted",
@@ -399,7 +404,92 @@ async def test_membership_deleted_calls_disable(async_client, monkeypatch):
         )
 
     assert resp.status_code == 200
-    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_retryable_failure_enqueues(async_client, monkeypatch):
+    """Paperclip 5xx during ``archive_member`` should enqueue a
+    pending-updates retry row keyed on ``op="archive_member"``.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("server-down", 503, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+
+    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+    captured_create.assert_awaited_once()
+    kwargs = captured_create.call_args.kwargs
+    assert kwargs["owner_id"] == "user_member"
+    assert kwargs["update_type"] == "paperclip_provision"
+    assert kwargs["changes"]["op"] == "archive_member"
+    assert kwargs["changes"]["user_id"] == "user_member"
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_non_retryable_failure_swallowed(async_client, monkeypatch):
+    """4xx (non-429) on archive_member should NOT enqueue a retry —
+    the user is already gone from Clerk, and Clerk redelivery would
+    just hit the same 4xx. We still return 200 so Clerk stops retrying.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("not-found", 404, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    captured_create = AsyncMock()
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    captured_create.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------

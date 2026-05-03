@@ -528,6 +528,125 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 # ----------------------------------------------------------------------
 
 
+# ----------------------------------------------------------------------
+# archive_member
+# ----------------------------------------------------------------------
+
+
+async def test_archive_member_archives_paperclip_then_disables_ddb(repo):
+    """``archive_member`` looks up the member's Paperclip ``member.id`` via
+    ``list_members``, POSTs to the archive endpoint as the bootstrap
+    admin, and finally marks the DDB row ``disabled`` with a purge timer.
+    """
+    await _seed_owner(repo, owner_user_id="user_member")
+    admin = _make_admin_mock()
+    admin.list_members = AsyncMock(
+        return_value={
+            "members": [
+                # Some other member — should be skipped over.
+                {"id": "mem_other", "principalId": "pc_user_other"},
+                # The target row.
+                {"id": "mem_target", "principalId": "pc_user_owner"},
+            ]
+        }
+    )
+    admin.archive_member = AsyncMock(
+        return_value={"member": {"id": "mem_target", "status": "archived"}, "reassignedIssueCount": 0}
+    )
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.archive_member(user_id="user_member", grace_days=14)
+
+    admin.list_members.assert_awaited_once()
+    list_kwargs = admin.list_members.call_args.kwargs
+    assert list_kwargs["company_id"] == "co_acme"
+    assert list_kwargs["session_cookie"] == "admin-cookie-test"
+
+    admin.archive_member.assert_awaited_once()
+    archive_kwargs = admin.archive_member.call_args.kwargs
+    assert archive_kwargs["company_id"] == "co_acme"
+    assert archive_kwargs["member_id"] == "mem_target"
+    assert archive_kwargs["session_cookie"] == "admin-cookie-test"
+
+    fetched = await repo.get("user_member")
+    assert fetched is not None
+    assert fetched.status == "disabled"
+    assert fetched.scheduled_purge_at is not None
+
+
+async def test_archive_member_idempotent_for_missing_row(repo):
+    """No DDB row → no-op (does not call Paperclip)."""
+    admin = _make_admin_mock()
+    admin.list_members = AsyncMock()
+    admin.archive_member = AsyncMock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.archive_member(user_id="user_does_not_exist")
+
+    admin.list_members.assert_not_awaited()
+    admin.archive_member.assert_not_awaited()
+
+
+async def test_archive_member_handles_flat_list_response(repo):
+    """``list_members`` may return a flat list (admin BFF unwraps server
+    envelope). archive_member must accept either shape."""
+    await _seed_owner(repo, owner_user_id="user_member")
+    admin = _make_admin_mock()
+    admin.list_members = AsyncMock(return_value=[{"id": "mem_target", "principalId": "pc_user_owner"}])
+    admin.archive_member = AsyncMock(return_value={"member": {"id": "mem_target"}})
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.archive_member(user_id="user_member")
+
+    admin.archive_member.assert_awaited_once()
+    fetched = await repo.get("user_member")
+    assert fetched.status == "disabled"
+
+
+async def test_archive_member_marks_disabled_with_error_when_member_missing(repo):
+    """If the Paperclip side has no matching member (already archived,
+    drift, etc.) we still flip the DDB row to disabled — but record
+    ``last_error`` so admin tooling can investigate. We do NOT call
+    archive_member in that branch.
+    """
+    await _seed_owner(repo, owner_user_id="user_member")
+    admin = _make_admin_mock()
+    admin.list_members = AsyncMock(return_value={"members": []})
+    admin.archive_member = AsyncMock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    await prov.archive_member(user_id="user_member")
+
+    admin.archive_member.assert_not_awaited()
+    fetched = await repo.get("user_member")
+    assert fetched.status == "disabled"
+    assert fetched.scheduled_purge_at is not None
+    assert fetched.last_error is not None
+    assert "member row not found" in fetched.last_error
+
+
+async def test_archive_member_reraises_paperclip_5xx_without_touching_ddb(repo):
+    """If the archive call itself 5xx's, we re-raise so the webhook
+    can enqueue retry. DDB row stays untouched (active->active) so the
+    retry pass can finish the chain without coming up against an
+    already-disabled row.
+    """
+    from core.services.paperclip_admin_client import PaperclipApiError
+
+    await _seed_owner(repo, owner_user_id="user_member")
+    admin = _make_admin_mock()
+    admin.list_members = AsyncMock(return_value={"members": [{"id": "mem_target", "principalId": "pc_user_owner"}]})
+    admin.archive_member = AsyncMock(side_effect=PaperclipApiError("server-down", 503, ""))
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+
+    with pytest.raises(PaperclipApiError):
+        await prov.archive_member(user_id="user_member")
+
+    fetched = await repo.get("user_member")
+    # Still active — caller is expected to retry.
+    assert fetched.status == "active"
+
+
 async def test_disable_marks_status_disabled_with_grace_window(repo):
     await _seed_owner(repo, owner_user_id="user_a")
     admin = _make_admin_mock()

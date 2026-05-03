@@ -1175,6 +1175,35 @@ class PaperclipAdminClient:
             session_cookie=session_cookie,
         )
 
+    async def archive_member(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        member_id: str,
+    ) -> dict:
+        """Archive a single company membership.
+
+        Maps to ``POST /api/companies/{companyId}/members/{memberId}/archive``
+        (see ``paperclip/server/src/routes/access.ts:4230``). The
+        signed-in user behind ``session_cookie`` must hold
+        ``users:manage_permissions`` on the company. ``member_id`` is
+        the Paperclip ``company_membership.id`` (NOT the Better Auth
+        user id) — callers typically resolve it from ``list_members``
+        by matching ``principalId`` to the user's
+        ``paperclip_user_id``.
+
+        Returns the archived membership row plus a
+        ``reassignedIssueCount`` field. We don't currently do anything
+        with the latter; preserved in the return for symmetry with the
+        upstream response.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/members/{member_id}/archive",
+            json={},
+            session_cookie=session_cookie,
+        )
+
     # ------------------------------------------------------------------
     # Company settings
     # ------------------------------------------------------------------

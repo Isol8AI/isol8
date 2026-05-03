@@ -297,6 +297,7 @@ async def _paperclip_provision_retry_pass() -> None:
 
       * ``provision_org``    -> ``PaperclipProvisioning.provision_org``
       * ``provision_member`` -> ``PaperclipProvisioning.provision_member``
+      * ``archive_member``   -> ``PaperclipProvisioning.archive_member``
       * ``disable``          -> ``PaperclipProvisioning.disable``
 
     On success, mark the row applied (``mark_applied``). On a
@@ -368,6 +369,8 @@ async def _paperclip_provision_retry_pass() -> None:
                         email=changes["email"],
                         owner_email=owner_email,
                     )
+                elif op == "archive_member":
+                    await provisioning.archive_member(user_id=changes["user_id"])
                 elif op == "disable":
                     await provisioning.disable(user_id=changes["user_id"])
                 else:
