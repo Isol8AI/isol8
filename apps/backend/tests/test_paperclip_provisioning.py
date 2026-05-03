@@ -203,9 +203,14 @@ async def test_provision_org_happy_path(repo):
     admin.create_agent.assert_awaited_once()
     agent_kwargs = admin.create_agent.call_args.kwargs
     assert agent_kwargs["company_id"] == "co_acme"
-    assert agent_kwargs["adapter_type"] == "openclaw-gateway"
+    # Canonical adapter_type is the underscore form ("openclaw_gateway")
+    # — the previous hyphenated value ("openclaw-gateway") was rejected
+    # by Paperclip's assertKnownAdapterType so seed-agent creation
+    # silently failed on every provision. See Task 13.
+    assert agent_kwargs["adapter_type"] == "openclaw_gateway"
     assert agent_kwargs["adapter_config"]["url"] == "wss://ws-dev.isol8.co"
     assert agent_kwargs["adapter_config"]["sessionKey"] == "user_owner"
+    assert agent_kwargs["adapter_config"]["sessionKeyStrategy"] == "fixed"
     assert agent_kwargs["adapter_config"]["authToken"]  # JWT minted
     # Agent is owned BY the user (their session) so they can edit it later.
     assert agent_kwargs["session_cookie"] == "owner-session-1"

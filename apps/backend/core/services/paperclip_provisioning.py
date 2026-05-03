@@ -48,6 +48,7 @@ from typing import Optional
 from core.encryption import decrypt, encrypt
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
+from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
@@ -252,13 +253,12 @@ class PaperclipProvisioning:
                     company_id=company_id,
                     name="Main Agent",
                     role="ceo",
-                    adapter_type="openclaw-gateway",
-                    adapter_config={
-                        "url": _ws_gateway_url(self._env_name),
-                        "authToken": svc_token,
-                        "sessionKeyStrategy": "fixed",
-                        "sessionKey": owner_user_id,
-                    },
+                    adapter_type=OPENCLAW_GATEWAY_TYPE,
+                    adapter_config=synthesize_openclaw_adapter(
+                        gateway_url=_ws_gateway_url(self._env_name),
+                        service_token=svc_token,
+                        user_id=owner_user_id,
+                    ),
                     session_cookie=new_user_session_cookie,
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
