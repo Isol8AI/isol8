@@ -813,3 +813,71 @@ class PaperclipAdminClient:
             json={"reason": reason},
             session_cookie=session_cookie,
         )
+
+    # ------------------------------------------------------------------
+    # Issues
+    # ------------------------------------------------------------------
+
+    async def list_issues(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List issues for the company.
+
+        Maps to ``GET /api/companies/{companyId}/issues``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/issues",
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Fetch a single issue by id.
+
+        Maps to ``GET /api/issues/{issueId}``.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def create_issue(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create an issue. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/companies/{companyId}/issues``.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/issues",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def patch_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch an issue. Body is whitelisted by the BFF.
+
+        Maps to ``PATCH /api/issues/{issueId}``.
+        """
+        return await self._patch(
+            f"/api/issues/{issue_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
