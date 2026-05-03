@@ -550,6 +550,30 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                 e,
             )
             if retryable:
+                # Retryable archive failure (5xx/429): we'll retry the
+                # Paperclip-side archive in the update worker, but the
+                # user is already gone from Clerk. Leaving the DDB row
+                # ``status="active"`` for the entire retry window is a
+                # backend auth bypass because ``resolve_teams_context``
+                # only checks DDB status, not Clerk membership — the
+                # removed member could keep hitting ``/api/v1/teams/*``
+                # for minutes/hours until the retry succeeds. Disable
+                # now (idempotent; no-ops if no row exists) and let the
+                # retry re-attempt only the Paperclip-side archive.
+                try:
+                    await provisioning.disable(user_id=user_id)
+                    put_metric(
+                        "paperclip.webhook.disable",
+                        dimensions={
+                            "trigger": "membership_deleted",
+                            "reason": "archive_member_retryable",
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "disable fallback before archive_member retry enqueue failed for user=%s",
+                        user_id,
+                    )
                 await _enqueue_paperclip_retry(
                     op="archive_member",
                     payload={"user_id": user_id},

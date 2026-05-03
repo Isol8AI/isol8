@@ -411,12 +411,20 @@ async def test_membership_deleted_calls_archive_member(async_client, monkeypatch
 async def test_membership_deleted_retryable_failure_enqueues(async_client, monkeypatch):
     """Paperclip 5xx during ``archive_member`` should enqueue a
     pending-updates retry row keyed on ``op="archive_member"``.
+
+    Auth-bypass guard: the handler MUST also call ``disable`` BEFORE
+    enqueueing the retry so the DDB row is flipped to
+    ``status="disabled"`` immediately. Otherwise
+    ``resolve_teams_context`` would keep authorizing the removed user
+    against ``/api/v1/teams/*`` for the entire retry window (minutes
+    to hours).
     """
     _bypass_svix(monkeypatch)
 
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(return_value=None)
 
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
@@ -444,6 +452,8 @@ async def test_membership_deleted_retryable_failure_enqueues(async_client, monke
 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+    # Auth-bypass guard: DDB row must be flipped to disabled even on retryable.
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
     captured_create.assert_awaited_once()
     kwargs = captured_create.call_args.kwargs
     assert kwargs["owner_id"] == "user_member"
@@ -545,19 +555,20 @@ async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(asy
 
 
 @pytest.mark.asyncio
-async def test_membership_deleted_retryable_does_not_call_disable(async_client, monkeypatch):
-    """On retryable failure (5xx), the handler enqueues a retry but
-    must NOT call ``disable`` — the retry path is expected to complete
-    the full archive chain (including DDB status flip). Calling
-    ``disable`` here would race the retry and could prematurely close
-    the grace window.
+async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
+    """On retryable archive failure, the handler tries ``disable``
+    BEFORE enqueueing the retry to close the auth-bypass window. If
+    that defensive ``disable`` itself raises (e.g. DDB transient), we
+    must still enqueue the retry and return 200 — the webhook must not
+    bubble exceptions back to Clerk, and we still want the retry
+    pending so the next pass re-attempts archive.
     """
     _bypass_svix(monkeypatch)
 
     err = PaperclipApiError("server-down", 503, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
     captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
 
     payload = {
@@ -583,8 +594,11 @@ async def test_membership_deleted_retryable_does_not_call_disable(async_client, 
         )
 
     assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    # Even when disable raises, the retry row is still enqueued so
+    # the next worker pass re-attempts the Paperclip-side archive.
     captured_create.assert_awaited_once()
-    mock_provisioning.disable.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
