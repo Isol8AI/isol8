@@ -146,6 +146,47 @@ def test_get_agent_strips_adapter_config(client, monkeypatch):
     assert body["name"] == "Helper"
 
 
+def test_create_agent_returns_upstream_status_on_paperclip_error(client, monkeypatch):
+    """When Paperclip returns a non-2xx (e.g. 403 because the membership
+    role lacks ``agents:create``), the BFF must surface the upstream
+    status to the caller instead of crashing into a generic 500. The
+    global ``PaperclipApiError`` handler in ``main.py`` is what makes
+    this work; this test guards it from regressing.
+    """
+    from core.services.paperclip_admin_client import PaperclipApiError
+    from routers.teams import agents as agents_mod
+
+    admin = MagicMock()
+    admin.create_agent = AsyncMock(
+        side_effect=PaperclipApiError(
+            "POST /api/companies/co_abc/agents -> 403",
+            status_code=403,
+            body='{"error":"Missing permission: agents:create"}',
+        )
+    )
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+    monkeypatch.setattr(
+        agents_mod,
+        "_decrypt_service_token",
+        AsyncMock(return_value="decrypted-token"),
+    )
+    monkeypatch.setattr(
+        agents_mod,
+        "_gateway_url_for_env",
+        lambda: "wss://ws-dev.isol8.co",
+    )
+
+    r = client.post(
+        "/api/v1/teams/agents",
+        json={"name": "Helper", "role": "engineer"},
+        headers={"Authorization": "Bearer test"},
+    )
+    assert r.status_code == 403
+    body = r.json()
+    assert body["upstream_status"] == 403
+    assert "403" in body["detail"]
+
+
 def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
     admin = MagicMock()
     admin.list_agents = AsyncMock(

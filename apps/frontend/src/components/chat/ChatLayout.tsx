@@ -51,7 +51,7 @@ export function ChatLayout({
   onCloseFileViewer,
 }: ChatLayoutProps): React.ReactElement {
   const posthog = usePostHog();
-  const { isSignedIn, getToken } = useAuth();
+  const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
   // Watch all of the user's org memberships so we can auto-activate the
@@ -68,38 +68,6 @@ export function ChatLayout({
   const { refresh: refreshBilling, account, isSubscribed } = useBilling();
   const { nodeConnected } = useGateway();
   const searchParams = useSearchParams();
-
-  // Cross-subdomain link to the Paperclip company portal. Cross-subdomain
-  // navigation must use a plain <a> (not next/link) — Next's Link is for
-  // internal app routing. The user's Clerk session cookie is scoped to
-  // .isol8.co, so the navigation keeps them signed in; the backend proxy
-  // router handles the company.isol8.co request flow.
-  //
-  // We derive the URL from NEXT_PUBLIC_API_URL — already set per-env in
-  // Vercel — instead of requiring a separate NEXT_PUBLIC_COMPANY_URL var.
-  // CLAUDE.md mandates version-controlled config, and adding another env
-  // var that mirrors information already encoded in NEXT_PUBLIC_API_URL
-  // is exactly the kind of drift we want to avoid (the dev frontend
-  // shipped pointing at https://company.isol8.co for weeks because the
-  // env var was never set in Vercel for Preview).
-  //
-  // NEXT_PUBLIC_* is baked at build time, so the value is identical on
-  // SSR and client — no hydration mismatch. The override path
-  // (NEXT_PUBLIC_COMPANY_URL) is kept for explicit overrides like local
-  // dev or a future split-stack.
-  const companyUrl = (() => {
-    const override = process.env.NEXT_PUBLIC_COMPANY_URL;
-    if (override) return override;
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
-    // Prod (api.isol8.co) → company.isol8.co; anything else (dev,
-    // staging, preview) → {env}.company.isol8.co. Matches the
-    // Vercel-hosted layout: company.isol8.co is the prod hostname,
-    // {env}.company.isol8.co for non-prod.
-    if (/\/\/api\.isol8\.co/.test(apiUrl)) return "https://company.isol8.co";
-    const m = apiUrl.match(/\/\/api-([^.]+)\.isol8\.co/);
-    const env = m ? m[1] : "dev";
-    return `https://${env}.company.isol8.co`;
-  })();
 
   const [userSelectedId, setUserSelectedId] = useState<string | null>(null);
   // Stripe Checkout returns either ?subscription=success (legacy) or
@@ -298,44 +266,23 @@ export function ChatLayout({
               <span className="sidebar-logo-8">8</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              <a
-                href={companyUrl}
-                onClick={async (e) => {
-                  // The proxy at company.isol8.co accepts a Clerk JWT in the
-                  // ?__t= query param as its initial-handshake auth source.
-                  // Top-level browser navigation can't carry an Authorization
-                  // header, and Clerk's __session cookie is host-scoped to
-                  // dev.isol8.co (doesn't cross subdomains in dev mode), so
-                  // appending the JWT here is the only way to get the user
-                  // signed in on company.isol8.co without a second sign-in.
-                  // Backend strips ?__t= via 302 immediately after minting
-                  // the session cookie, so the token leaves the URL bar
-                  // within ~50ms. JWT TTL is ~60s (Clerk default).
-                  e.preventDefault();
-                  try {
-                    const token = await getToken();
-                    if (!token) {
-                      // No active session — fall back to plain navigation;
-                      // backend will redirect to /chat with the right hint.
-                      window.location.href = companyUrl;
-                      return;
-                    }
-                    const url = new URL(companyUrl);
-                    url.searchParams.set("__t", token);
-                    window.location.href = url.toString();
-                  } catch (err) {
-                    console.error("Teams handoff: getToken failed", err);
-                    window.location.href = companyUrl;
-                  }
-                }}
-                target="_self"
-                rel="noopener"
-                className="sidebar-settings-link"
-                aria-label="Teams"
-                title="Teams"
-              >
-                <Users size={18} />
-              </a>
+              {/* Teams link goes to the native /teams UI shipped in PR #509.
+                  The previous cross-subdomain link with a Clerk JWT
+                  handoff was retired in PR #510 — the Vercel alias that
+                  kept the dev preview hostname mapped to the latest
+                  Paperclip deploy was removed, leaving no upstream host
+                  to point at. Same flag-gate as the header link below
+                  so prod stays hidden until the native UI is ready. */}
+              {process.env.NEXT_PUBLIC_TEAMS_NATIVE_UI_ENABLED === "true" && (
+                <Link
+                  href="/teams"
+                  className="sidebar-settings-link"
+                  aria-label="Teams"
+                  title="Teams"
+                >
+                  <Users size={18} />
+                </Link>
+              )}
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />
               </Link>

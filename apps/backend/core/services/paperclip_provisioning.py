@@ -208,10 +208,21 @@ class PaperclipProvisioning:
             company_id = company["id"]
 
             # 3. ADMIN creates a one-shot invite for the new user.
+            #    ``human_role="owner"`` is critical: Paperclip's
+            #    ``resolveHumanInviteRole`` defaults a missing role to
+            #    ``"operator"``, and ``grantsForHumanRole("operator")``
+            #    grants only ``tasks:assign`` — no ``agents:create``.
+            #    Without this, the user joins their own company as a
+            #    low-privilege member and POST /api/companies/{co}/agents
+            #    403s with "Missing permission: agents:create". v1
+            #    assumes single-tenant orgs, so granting the new user
+            #    ``"owner"`` matches the Clerk-side org-owner concept;
+            #    multi-tenant role distinctions can be revisited later.
             invite = await self._admin.create_invite(
                 session_cookie=admin_cookie,
                 company_id=company_id,
                 email=owner_email,
+                human_role="owner",
             )
             invite_token = invite["token"]
 
@@ -366,10 +377,16 @@ class PaperclipProvisioning:
             owner_session_cookie = owner_signin["_session_cookie"]
 
             # 3. Owner mints a one-shot invite token for this member.
+            #    ``human_role="owner"`` mirrors provision_org — without
+            #    it, Paperclip defaults humanRole to ``"operator"`` and
+            #    the new member can't create agents in their own
+            #    company (agents:create not granted). v1 single-tenant
+            #    assumption: every Isol8 org member needs full access.
             invite = await self._admin.create_invite(
                 session_cookie=owner_session_cookie,
                 company_id=company_id,
                 email=email,
+                human_role="owner",
             )
             invite_token = invite["token"]
 
