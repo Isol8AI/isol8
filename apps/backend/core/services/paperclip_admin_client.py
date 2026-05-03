@@ -1134,3 +1134,80 @@ class PaperclipAdminClient:
             f"/api/companies/{company_id}/sidebar-badges",
             session_cookie=session_cookie,
         )
+
+    # ------------------------------------------------------------------
+    # Skills (read-only)
+    # ------------------------------------------------------------------
+
+    async def list_skills(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List skills available to the company.
+
+        Maps to ``GET /api/companies/{companyId}/skills``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/skills",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Members (joined with Clerk in the BFF)
+    # ------------------------------------------------------------------
+
+    async def list_members(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List company memberships.
+
+        Maps to ``GET /api/companies/{companyId}/members``. Email and
+        display name are NOT in the upstream response — the BFF joins
+        the principal id against Clerk to enrich the rows.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/members",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Company settings
+    # ------------------------------------------------------------------
+
+    async def get_company(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the company record.
+
+        Maps to ``GET /api/companies/{companyId}``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def patch_company(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch the company record. Body is whitelisted by the BFF
+        to ``display_name`` and ``description`` only.
+
+        Maps to ``PATCH /api/companies/{companyId}``.
+        """
+        return await self._patch(
+            f"/api/companies/{company_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
