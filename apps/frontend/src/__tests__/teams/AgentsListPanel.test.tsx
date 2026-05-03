@@ -8,9 +8,20 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
+interface AgentRow {
+  id: string;
+  name: string;
+  role: string;
+}
+interface AgentsResp {
+  data: { agents: AgentRow[] };
+  isLoading: boolean;
+  error: unknown;
+  mutate: () => void;
+}
 const mockPost = vi.fn();
 const mockMutate = vi.fn();
-const mockRead = vi.fn(() => ({
+const mockRead = vi.fn<() => AgentsResp>(() => ({
   data: { agents: [] },
   isLoading: false,
   error: null,
