@@ -266,23 +266,14 @@ export function ChatLayout({
               <span className="sidebar-logo-8">8</span>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-              {/* Teams link goes to the native /teams UI shipped in PR #509.
-                  The previous cross-subdomain link with a Clerk JWT
-                  handoff was retired in PR #510 — the Vercel alias that
-                  kept the dev preview hostname mapped to the latest
-                  Paperclip deploy was removed, leaving no upstream host
-                  to point at. Same flag-gate as the header link below
-                  so prod stays hidden until the native UI is ready. */}
-              {process.env.NEXT_PUBLIC_TEAMS_NATIVE_UI_ENABLED === "true" && (
-                <Link
-                  href="/teams"
-                  className="sidebar-settings-link"
-                  aria-label="Teams"
-                  title="Teams"
-                >
-                  <Users size={18} />
-                </Link>
-              )}
+              <Link
+                href="/teams"
+                className="sidebar-settings-link"
+                aria-label="Teams"
+                title="Teams"
+              >
+                <Users size={18} />
+              </Link>
               <Link href="/settings" className="sidebar-settings-link">
                 <Settings size={18} />
               </Link>
@@ -449,14 +440,12 @@ export function ChatLayout({
               </button>
             )}
             <div style={{ flex: 1 }} />
-            {process.env.NEXT_PUBLIC_TEAMS_NATIVE_UI_ENABLED === "true" && (
-              <Link
-                href="/teams"
-                className="text-sm text-zinc-700 hover:underline mr-3"
-              >
-                Teams
-              </Link>
-            )}
+            <Link
+              href="/teams"
+              className="text-sm text-zinc-700 hover:underline mr-3"
+            >
+              Teams
+            </Link>
             <UserButton
               appearance={{
                 elements: {
