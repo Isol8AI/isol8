@@ -193,6 +193,11 @@ async def test_provision_org_happy_path(repo):
     invite_kwargs = admin.create_invite.call_args.kwargs
     assert invite_kwargs["company_id"] == "co_acme"
     assert invite_kwargs["session_cookie"] == "admin-cookie-test"  # admin invites
+    # Invite must carry humanRole="owner" so the new user gets
+    # agents:create when Paperclip's resolveHumanInviteRole runs;
+    # otherwise the role defaults to "operator" and they 403 on
+    # POST /api/companies/{co}/agents.
+    assert invite_kwargs["human_role"] == "owner"
     admin.accept_invite.assert_awaited_once()
     accept_kwargs = admin.accept_invite.call_args.kwargs
     assert accept_kwargs["session_cookie"] == "owner-session-1"  # user accepts
@@ -392,6 +397,10 @@ async def test_provision_member_happy_path(repo):
     assert ci_kwargs["session_cookie"] == "owner-session"
     assert ci_kwargs["company_id"] == "co_acme"
     assert ci_kwargs["email"] == "member@acme.test"
+    # Same humanRole="owner" rationale as provision_org — without it
+    # the new member would land as Paperclip's default "operator"
+    # role and 403 on agents:create.
+    assert ci_kwargs["human_role"] == "owner"
 
     admin.accept_invite.assert_awaited_once()
     ai_kwargs = admin.accept_invite.call_args.kwargs
