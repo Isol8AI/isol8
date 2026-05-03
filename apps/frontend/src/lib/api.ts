@@ -52,6 +52,7 @@ interface ApiMethods {
   get: (endpoint: string) => Promise<unknown>;
   post: (endpoint: string, body: unknown) => Promise<unknown>;
   put: (endpoint: string, body: unknown) => Promise<unknown>;
+  patch: (endpoint: string, body: unknown) => Promise<unknown>;
   del: (endpoint: string) => Promise<unknown>;
   patchConfig: (patch: Record<string, unknown>) => Promise<{ status: string; owner_id: string }>;
   uploadFiles: (files: File[], agentId: string) => Promise<UploadResponse>;
@@ -113,6 +114,12 @@ export function useApi(): ApiMethods {
       put(endpoint: string, body: unknown): Promise<unknown> {
         return authenticatedFetch(endpoint, {
           method: "PUT",
+          body: JSON.stringify(body),
+        });
+      },
+      patch(endpoint: string, body: unknown): Promise<unknown> {
+        return authenticatedFetch(endpoint, {
+          method: "PATCH",
           body: JSON.stringify(body),
         });
       },

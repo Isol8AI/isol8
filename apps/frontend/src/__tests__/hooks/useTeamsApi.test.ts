@@ -5,20 +5,23 @@ import { renderHook, waitFor } from "@testing-library/react";
 // must return the SAME object identity each render (otherwise the SWR fetcher
 // closure would be different per render and cause infinite re-fetch loops in
 // tests). We do that by constructing the mock methods once at the module level.
-const { mockGet, mockPost, mockPut, mockDel, mockApi } = vi.hoisted(() => {
+const { mockGet, mockPost, mockPut, mockPatch, mockDel, mockApi } = vi.hoisted(() => {
   const mockGet = vi.fn();
   const mockPost = vi.fn();
   const mockPut = vi.fn();
+  const mockPatch = vi.fn();
   const mockDel = vi.fn();
   return {
     mockGet,
     mockPost,
     mockPut,
+    mockPatch,
     mockDel,
     mockApi: {
       get: mockGet,
       post: mockPost,
       put: mockPut,
+      patch: mockPatch,
       del: mockDel,
       // Unused by useTeamsApi, included for type compatibility:
       syncUser: vi.fn(),
@@ -53,6 +56,7 @@ describe("useTeamsApi", () => {
     mockGet.mockReset();
     mockPost.mockReset();
     mockPut.mockReset();
+    mockPatch.mockReset();
     mockDel.mockReset();
   });
 
@@ -110,15 +114,18 @@ describe("useTeamsApi", () => {
   });
 
   describe("patch", () => {
-    it("routes via api.put under the hood (useApi exposes put, not patch)", async () => {
-      mockPut.mockResolvedValueOnce({ updated: true });
+    it("routes via api.patch (NOT api.put — backend defines @router.patch)", async () => {
+      mockPatch.mockResolvedValueOnce({ updated: true });
       const { result } = renderHook(() => useTeamsApi(), { wrapper });
 
       const body = { name: "renamed" };
       const resp = await result.current.patch<{ updated: boolean }>("/agents/abc", body);
 
       expect(resp).toEqual({ updated: true });
-      expect(mockPut).toHaveBeenCalledWith("/teams/agents/abc", body);
+      expect(mockPatch).toHaveBeenCalledWith("/teams/agents/abc", body);
+      // Regression guard: must not silently fall back to PUT (which the BFF
+      // does not register a handler for, so it would 405).
+      expect(mockPut).not.toHaveBeenCalled();
       expect(mockPost).not.toHaveBeenCalled();
     });
   });

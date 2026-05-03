@@ -41,11 +41,13 @@ export function useTeamsApi() {
     return (await api.post(`/teams${path}`, body)) as T;
   }
 
-  // `useApi()` exposes `put` (not `patch`); the BFF accepts PUT for partial
-  // updates on these resources, so we surface this method as `patch` for
-  // panel-call ergonomics and route it via PUT under the hood.
+  // The BFF defines `@router.patch(...)` handlers on settings/routines/
+  // goals/projects/issues/agents — routing this through PUT (the prior
+  // implementation) silently 405'd because no PUT handlers exist. Use
+  // `api.patch` so the actual HTTP method matches what the backend
+  // accepts.
   async function patch<T = unknown>(path: string, body: unknown): Promise<T> {
-    return (await api.put(`/teams${path}`, body)) as T;
+    return (await api.patch(`/teams${path}`, body)) as T;
   }
 
   async function del<T = unknown>(path: string): Promise<T> {
