@@ -475,7 +475,11 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
     otherwise the Teams UI keeps showing the removed user. If
     Paperclip's archive call 5xx's, enqueue a retry like other
     Paperclip-touching handlers; non-retryable errors fall through
-    quietly (the user is already gone from Clerk).
+    to a defensive ``disable`` call so the DDB row is marked
+    ``status="disabled"`` even when Paperclip archive 4xx'd —
+    otherwise the removed Clerk-org member could keep hitting
+    ``/api/v1/teams/*`` because ``resolve_teams_context`` only
+    inspects DDB state.
     """
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
@@ -512,6 +516,31 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
                     payload={"user_id": user_id},
                     owner_id=user_id,
                 )
+            else:
+                # Non-retryable archive failure (4xx/non-429): the
+                # Paperclip-side archive call won't succeed on retry,
+                # but the user is gone from Clerk — leaving the DDB row
+                # ``status="active"`` is a backend auth bypass because
+                # ``resolve_teams_context`` only checks DDB status, not
+                # Clerk membership. Mark the row disabled (idempotent;
+                # no-ops if no row exists) so ``/api/v1/teams/*`` access
+                # is revoked even though Paperclip-side archive failed.
+                # Operators can clean up the orphan Paperclip member row
+                # out-of-band if needed.
+                try:
+                    await provisioning.disable(user_id=user_id)
+                    put_metric(
+                        "paperclip.webhook.disable",
+                        dimensions={
+                            "trigger": "membership_deleted",
+                            "reason": "archive_member_non_retryable",
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "disable fallback after non-retryable archive_member failure failed for user=%s",
+                        user_id,
+                    )
     finally:
         await _close_paperclip_http(provisioning)
 

@@ -457,12 +457,19 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     """4xx (non-429) on archive_member should NOT enqueue a retry —
     the user is already gone from Clerk, and Clerk redelivery would
     just hit the same 4xx. We still return 200 so Clerk stops retrying.
+
+    Critically (auth-bypass guard): the handler MUST also call
+    ``disable`` to mark the DDB row ``status="disabled"`` even when
+    Paperclip archive failed non-retryably — otherwise the removed
+    Clerk-org member can still hit ``/api/v1/teams/*`` because
+    ``resolve_teams_context`` only checks DDB state.
     """
     _bypass_svix(monkeypatch)
 
     err = PaperclipApiError("not-found", 404, "")
     mock_provisioning = AsyncMock()
     mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(return_value=None)
     captured_create = AsyncMock()
 
     payload = {
@@ -490,6 +497,94 @@ async def test_membership_deleted_non_retryable_failure_swallowed(async_client, 
     assert resp.status_code == 200
     mock_provisioning.archive_member.assert_awaited_once()
     captured_create.assert_not_awaited()
+    # Auth-bypass guard: DDB row must be flipped to disabled.
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
+    """If the defensive ``disable`` call after a non-retryable archive
+    failure itself raises, we still return 200 — the webhook must not
+    bubble exceptions back to Clerk, which would just redeliver the
+    same event. The exception is logged for ops to investigate.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("not-found", 404, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    captured_create = AsyncMock()
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    captured_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_retryable_does_not_call_disable(async_client, monkeypatch):
+    """On retryable failure (5xx), the handler enqueues a retry but
+    must NOT call ``disable`` — the retry path is expected to complete
+    the full archive chain (including DDB status flip). Calling
+    ``disable`` here would race the retry and could prematurely close
+    the grace window.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("server-down", 503, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(return_value=None)
+    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    captured_create.assert_awaited_once()
+    mock_provisioning.disable.assert_not_awaited()
 
 
 # ----------------------------------------------------------------------
