@@ -244,7 +244,7 @@ class PaperclipAdminClient:
         self,
         path: str,
         session_cookie: str,
-    ) -> None:
+    ) -> dict:
         resp = await self._http.delete(
             path,
             headers=self._headers(session_cookie),
@@ -256,6 +256,49 @@ class PaperclipAdminClient:
                 status_code=resp.status_code,
                 body=resp.text,
             )
+        if resp.status_code == 404 or not resp.content:
+            return {}
+        try:
+            return resp.json()
+        except ValueError:
+            return {}
+
+    async def _get(
+        self,
+        path: str,
+        session_cookie: str,
+    ) -> dict:
+        resp = await self._http.get(
+            path,
+            headers=self._headers(session_cookie),
+        )
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"GET {path} -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json() if resp.content else {}
+
+    async def _patch(
+        self,
+        path: str,
+        json: dict,
+        session_cookie: str,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        resp = await self._http.patch(
+            path,
+            json=json,
+            headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+        )
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"PATCH {path} -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json() if resp.content else {}
 
     # ------------------------------------------------------------------
     # Better Auth (per-user accounts)
@@ -583,4 +626,99 @@ class PaperclipAdminClient:
             json={"name": name},
             session_cookie=session_cookie,
             idempotency_key=idempotency_key,
+        )
+
+    async def list_agents(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List agents in a company.
+
+        Maps to ``GET /api/companies/{companyId}/agents``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/agents",
+            session_cookie=session_cookie,
+        )
+
+    async def get_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """Fetch a single agent by id.
+
+        Maps to ``GET /api/agents/{agentId}``.
+        """
+        return await self._get(
+            f"/api/agents/{agent_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def patch_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch an agent.
+
+        Maps to ``PATCH /api/agents/{agentId}``. The body is a
+        whitelisted subset built by the BFF — adapter fields are
+        synthesized server-side and never accepted from clients.
+        """
+        return await self._patch(
+            f"/api/agents/{agent_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """Delete an agent.
+
+        Maps to ``DELETE /api/agents/{agentId}``. 404 is swallowed
+        (treated as already-gone) by the underlying ``_delete`` helper.
+        """
+        return await self._delete(
+            f"/api/agents/{agent_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def list_runs(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """List runs for an agent.
+
+        Maps to ``GET /api/agents/{agentId}/runs``.
+        """
+        return await self._get(
+            f"/api/agents/{agent_id}/runs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_run(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+    ) -> dict:
+        """Fetch a single run by id.
+
+        Maps to ``GET /api/runs/{runId}``.
+        """
+        return await self._get(
+            f"/api/runs/{run_id}",
+            session_cookie=session_cookie,
         )
