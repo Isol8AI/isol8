@@ -8,20 +8,6 @@ const isProtectedRoute = createRouteMatcher([
   "/teams(.*)",
 ]);
 
-/**
- * Feature flag gate for the native Teams UI (Paperclip integration).
- *
- * When `NEXT_PUBLIC_TEAMS_NATIVE_UI_ENABLED !== "true"` we 404 the entire
- * `/teams` tree at the middleware layer — defense in depth for prod where
- * the route should be invisible until cutover. Default off; dev/preview
- * environments flip the env var to enable.
- *
- * See spec §8 Phase 1 (flag-gated parallel deployment).
- */
-function isTeamsEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_TEAMS_NATIVE_UI_ENABLED === "true";
-}
-
 const DEFAULT_ADMIN_HOSTS = "admin.isol8.co,admin.dev.isol8.co,admin.localhost:3000";
 
 function parseAdminHosts(raw: string | undefined): Set<string> {
@@ -95,18 +81,6 @@ const _clerkMiddleware = clerkMiddleware(async (auth, req) => {
     const url = req.nextUrl.clone();
     url.pathname = decision.to;
     return NextResponse.redirect(url);
-  }
-
-  // Teams native UI feature flag — when off, 404 before prompting for sign-in
-  // so the surface is fully invisible (no Clerk redirect probe).
-  if (req.nextUrl.pathname === "/teams" || req.nextUrl.pathname.startsWith("/teams/")) {
-    if (!isTeamsEnabled()) {
-      const url = req.nextUrl.clone();
-      url.pathname = "/404";
-      return NextResponse.rewrite(url);
-    }
-    // Flag is on: fall through to the Clerk auth check below (the matcher
-    // already routes /teams(.*) through this middleware).
   }
 
   const authObj = await auth();

@@ -128,6 +128,10 @@ async def _background_provision(owner_id: str, clerk_user_id: str) -> None:
     personal). ``clerk_user_id`` is the calling Clerk user — used to look
     up provider_choice. In personal context they are the same; in org
     context they differ.
+
+    Also kicks off Paperclip workspace provisioning so the /teams UI works
+    on first visit. Paperclip failure does NOT abort container
+    provisioning — the user can retry from /teams.
     """
     try:
         provider_choice, byo_provider = await _resolve_provider_choice(clerk_user_id)
@@ -138,6 +142,50 @@ async def _background_provision(owner_id: str, clerk_user_id: str) -> None:
         )
     except Exception:
         logger.exception("Background provisioning failed for owner %s", owner_id)
+        return
+    await _ensure_paperclip_workspace(owner_id=owner_id, clerk_user_id=clerk_user_id)
+
+
+async def _ensure_paperclip_workspace(*, owner_id: str, clerk_user_id: str) -> None:
+    """Provision the Paperclip company for this owner if it doesn't exist.
+
+    Personal context: ``owner_id == clerk_user_id`` and we use the user's
+    own id as the Paperclip ``org_id``. Org context: Clerk's
+    ``organization.created`` webhook (in ``routers/webhooks.py``) is the
+    canonical entry point — we skip here so we don't race the webhook
+    or create a personal-shaped row for an org owner.
+
+    Idempotent: ``PaperclipProvisioning.provision_org`` short-circuits on
+    an existing ``status="active"`` row, so calling this from every
+    container-provision path is safe.
+    """
+    if owner_id != clerk_user_id:
+        return
+    try:
+        from core.services.paperclip_owner_email import lookup_owner_email
+        from routers.webhooks import _close_paperclip_http, _get_paperclip_provisioning
+
+        owner_email = await lookup_owner_email(org_id=None, fallback_user_id=clerk_user_id)
+        if not owner_email:
+            logger.warning(
+                "paperclip auto-provision skipped: no email for user %s",
+                clerk_user_id,
+            )
+            return
+        provisioning = await _get_paperclip_provisioning()
+        try:
+            await provisioning.provision_org(
+                org_id=clerk_user_id,
+                owner_user_id=clerk_user_id,
+                owner_email=owner_email,
+            )
+        finally:
+            await _close_paperclip_http(provisioning)
+    except Exception:
+        logger.exception(
+            "Paperclip auto-provision failed for user %s — user can retry from /teams",
+            clerk_user_id,
+        )
 
 
 @router.get(
@@ -303,6 +351,7 @@ async def container_provision(
             byo_provider=byo_provider,
         )
         logger.info("Provisioned container %s for owner %s", service_name, owner_id)
+        asyncio.create_task(_ensure_paperclip_workspace(owner_id=owner_id, clerk_user_id=auth.user_id))
         return {
             "status": "provisioning",
             "service_name": service_name,
@@ -357,4 +406,5 @@ async def container_retry(
         logger.error("Retry provisioning failed for owner %s: %s", owner_id, e)
         raise HTTPException(status_code=502, detail="Provisioning failed")
 
+    asyncio.create_task(_ensure_paperclip_workspace(owner_id=owner_id, clerk_user_id=auth.user_id))
     return {"ok": True, "service_name": service_name}
