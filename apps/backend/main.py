@@ -27,6 +27,7 @@ from core.containers import (
 )
 from core.observability.e2e_correlation import E2ECorrelationMiddleware
 from core.repositories import container_repo
+from core.services.paperclip_admin_client import PaperclipApiError
 from core.services.update_service import run_scheduled_worker
 from routers import (
     admin_catalog,
@@ -313,6 +314,29 @@ app = FastAPI(
     openapi_tags=openapi_tags,
     lifespan=lifespan,
 )
+
+
+# PaperclipApiError handler — translate upstream Paperclip non-2xx responses into
+# matching HTTPExceptions so the BFF returns a faithful status to the browser
+# instead of a generic 500. ``PaperclipApiError`` is raised by every method on
+# ``PaperclipAdminClient`` (see ``_post`` / ``_get`` / ``_patch`` / ``_delete``)
+# whenever Paperclip responds with a non-2xx; without this handler the Teams
+# BFF (``routers/teams/*.py``) would propagate it as an unhandled exception
+# and FastAPI would return 500 with a useless body. We forward Paperclip's
+# original status code (e.g. 403 / 404) and surface the raw upstream body
+# under ``upstream_status`` so panel-side error handling has something to
+# branch on. The ``502`` fallback is for the (currently-impossible) case
+# where ``status_code`` is outside the standard HTTP range — we can't
+# legitimately return that to the client, so map to "bad gateway" which
+# is exactly what an out-of-range upstream status implies.
+@app.exception_handler(PaperclipApiError)
+async def paperclip_api_error_handler(request, exc: PaperclipApiError):
+    status = exc.status_code if 400 <= exc.status_code < 600 else 502
+    return JSONResponse(
+        status_code=status,
+        content={"detail": str(exc), "upstream_status": exc.status_code},
+    )
+
 
 # Request-ID middleware — generates/propagates X-Request-ID for log correlation.
 # Added first so it runs innermost (after CORS and ProxyHeaders).
