@@ -757,3 +757,59 @@ class PaperclipAdminClient:
             json={},
             session_cookie=session_cookie,
         )
+
+    # ------------------------------------------------------------------
+    # Approvals
+    # ------------------------------------------------------------------
+
+    async def list_approvals(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List pending approvals for the company.
+
+        Maps to ``GET /api/companies/{companyId}/approvals``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/approvals",
+            session_cookie=session_cookie,
+        )
+
+    async def approve_approval(
+        self,
+        *,
+        session_cookie: str,
+        approval_id: str,
+        note: Optional[str],
+    ) -> dict:
+        """Approve a pending approval, optionally with a reviewer note.
+
+        Maps to ``POST /api/approvals/{approvalId}/approve``. The body
+        is intentionally narrow — ``note`` only — to close the
+        ``payload.adapterType`` smuggling carrier flagged in the audit.
+        """
+        body: dict[str, Any] = {"note": note} if note else {}
+        return await self._post(
+            f"/api/approvals/{approval_id}/approve",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def reject_approval(
+        self,
+        *,
+        session_cookie: str,
+        approval_id: str,
+        reason: str,
+    ) -> dict:
+        """Reject a pending approval. ``reason`` is required upstream.
+
+        Maps to ``POST /api/approvals/{approvalId}/reject``.
+        """
+        return await self._post(
+            f"/api/approvals/{approval_id}/reject",
+            json={"reason": reason},
+            session_cookie=session_cookie,
+        )
