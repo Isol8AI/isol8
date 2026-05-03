@@ -635,18 +635,29 @@ class PaperclipProvisioning:
     # ------------------------------------------------------------------
 
     async def _find_org_owner(self, org_id: str) -> Optional[PaperclipCompany]:
-        """Find the org-owner row (oldest ``created_at`` for this org).
+        """Find the org-owner row (oldest ACTIVE ``created_at`` for this org).
+
+        Filters out rows that aren't ``status="active"`` before picking
+        the oldest. ``disable()`` flips ``status="disabled"`` but leaves
+        the row in DDB until the purge worker runs (up to 30 days). If
+        the original/oldest member was disabled, returning their stale
+        Better Auth account would break ``provision_member`` (the
+        owner-side sign-in / create-invite / approve-join would all
+        fail) even though other active admins exist. Likewise we skip
+        ``provisioning`` and ``failed`` rows — neither is sign-in-able.
 
         v1 implementation: query the ``by-org-id`` GSI for all rows in
-        the org, then pick the one with the smallest ``created_at``.
-        For typical org sizes (1-10 users) this is fine; if Teams ever
-        supports large orgs we'd want to either:
+        the org, filter to ``active``, then pick the smallest
+        ``created_at``. For typical org sizes (1-10 users) this is
+        fine; if Teams ever supports large orgs we'd want to either:
 
           * sort the GSI by ``created_at`` (range key on the GSI), or
           * track the owner's user_id explicitly on every row.
 
         Both are deferred — the GSI was declared with KEYS_ONLY-style
         projection minimums and the table is small.
+
+        Returns None if the org has no active rows.
         """
         # Re-query the GSI without a Limit so we can pick the oldest
         # row. This is intentionally a separate code path from
@@ -675,7 +686,12 @@ class PaperclipProvisioning:
             if not last_evaluated_key:
                 break
 
-        if not items:
+        # Drop disabled / provisioning / failed rows BEFORE the oldest
+        # pick — see docstring. ``status`` should always be present
+        # since ``put()`` writes it, but treat missing as "not active"
+        # to be safe.
+        active_items = [it for it in items if it.get("status") == "active"]
+        if not active_items:
             return None
 
         # Pick the oldest by created_at; if any item is missing the
@@ -684,7 +700,7 @@ class PaperclipProvisioning:
         def _sort_key(it: dict) -> str:
             return it.get("created_at", "")
 
-        oldest = min(items, key=_sort_key)
+        oldest = min(active_items, key=_sort_key)
         return await self._repo.get(oldest["user_id"])
 
     async def _mark_failed(

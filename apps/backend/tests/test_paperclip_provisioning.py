@@ -524,6 +524,97 @@ async def test_provision_member_raises_when_accept_invite_missing_id(repo):
 
 
 # ----------------------------------------------------------------------
+# _find_org_owner
+# ----------------------------------------------------------------------
+
+
+async def test_find_org_owner_skips_disabled_rows(repo):
+    """Codex P1 (round 3): ``_find_org_owner`` must NOT return a disabled row.
+
+    ``disable()`` flips ``status="disabled"`` and leaves the row in DDB
+    until the purge worker runs (up to 30 days). If the OLDEST row in
+    an org is disabled, the previous "min(created_at)" pick handed
+    back a stale Better Auth account and broke ``provision_member``
+    even when other active admins existed.
+
+    Seed: row A (disabled, older created_at) + row B (active, newer).
+    Expect: ``_find_org_owner`` returns row B.
+    """
+    from datetime import timedelta
+
+    from core.encryption import encrypt
+
+    older = datetime.now(timezone.utc) - timedelta(days=10)
+    newer = datetime.now(timezone.utc)
+
+    # Row A: oldest by created_at, but disabled.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_disabled_admin",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_disabled",
+            paperclip_password_encrypted=encrypt("disabled-password"),
+            service_token_encrypted=encrypt("disabled-token"),
+            status="disabled",
+            created_at=older,
+            updated_at=older,
+        )
+    )
+    # Row B: newer, active — the only valid owner candidate.
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_active_admin",
+            org_id="org_acme",
+            company_id="co_acme",
+            paperclip_user_id="pc_user_active",
+            paperclip_password_encrypted=encrypt("active-password"),
+            service_token_encrypted=encrypt("active-token"),
+            status="active",
+            created_at=newer,
+            updated_at=newer,
+        )
+    )
+
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    found = await prov._find_org_owner("org_acme")  # noqa: SLF001 — testing the helper
+
+    assert found is not None
+    assert found.user_id == "user_active_admin"
+    assert found.status == "active"
+
+
+async def test_find_org_owner_returns_none_when_no_active_rows(repo):
+    """If every row in the org is non-active (disabled/failed/provisioning),
+    ``_find_org_owner`` returns None so the caller raises
+    ``OrgNotProvisionedError`` and the retry path takes over.
+    """
+    from core.encryption import encrypt
+
+    now = datetime.now(timezone.utc)
+    await repo.put(
+        PaperclipCompany(
+            user_id="user_disabled",
+            org_id="org_dead",
+            company_id="co_dead",
+            paperclip_user_id="pc_dead",
+            paperclip_password_encrypted=encrypt("p"),
+            service_token_encrypted=encrypt("t"),
+            status="disabled",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+
+    admin = _make_admin_mock()
+    prov = PaperclipProvisioning(admin_client=admin, repo=repo, env_name="dev")
+    found = await prov._find_org_owner("org_dead")  # noqa: SLF001
+
+    assert found is None
+
+
+# ----------------------------------------------------------------------
 # disable + purge
 # ----------------------------------------------------------------------
 
