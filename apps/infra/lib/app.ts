@@ -93,18 +93,6 @@ pipeline.addStageWithGitHubOptions(devStage, {
           run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,
         },
-        {
-          // Same preview deployment also serves dev.company.isol8.co —
-          // routed there via the host-conditional rewrite in
-          // apps/frontend/next.config.ts (beforeFiles). Without this
-          // alias the host stays pinned to whatever the last *production*
-          // deploy was (Vercel auto-aliases production domains only on
-          // prod deploys), so the dev preview's rewrite changes never
-          // take effect for company.isol8.co users.
-          name: "Alias to dev.company.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-dev.outputs.DEPLOY_URL }} dev.company.isol8.co --token=$VERCEL_TOKEN",
-          env: vercelEnv,
-        },
       ],
     }),
   ],
@@ -150,16 +138,6 @@ pipeline.addStageWithGitHubOptions(prodStage, {
         {
           name: "Alias to isol8.co",
           run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} isol8.co --token=$VERCEL_TOKEN",
-          env: vercelEnv,
-        },
-        {
-          // Same prod deployment serves company.isol8.co via the
-          // host-conditional rewrite in apps/frontend/next.config.ts.
-          // Production domains auto-alias to the latest prod deploy by
-          // default, so this is mostly defensive — it keeps the alias
-          // pinned even if someone manually re-aliases out of band.
-          name: "Alias to company.isol8.co",
-          run: "vercel alias ${{ steps.vercel-deploy-prod.outputs.DEPLOY_URL }} company.isol8.co --token=$VERCEL_TOKEN",
           env: vercelEnv,
         },
       ],

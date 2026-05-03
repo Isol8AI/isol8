@@ -23,26 +23,5 @@ export class DnsStack extends cdk.Stack {
       subjectAlternativeNames: ["isol8.co"],
       validation: acm.CertificateValidation.fromDns(this.hostedZone),
     });
-
-    // Route Paperclip ("Teams") traffic to Vercel. The frontend project
-    // has a host-conditional rewrite (apps/frontend/vercel.json) that
-    // proxies these hostnames to the backend's paperclip_proxy router
-    // via the standard api[-{env}].isol8.co API Gateway endpoint. We
-    // route via Vercel (instead of giving the API Gateway a second
-    // custom domain) so we get Vercel's edge TLS, observability, and
-    // preview-deploy URLs the same way dev.isol8.co already does.
-    //
-    // 76.76.21.21 is Vercel's documented anycast IP for apex/subdomain
-    // attachment to a Vercel project. Auto-provisions a Let's Encrypt
-    // cert for the domain when the project also has it added (already
-    // done via `vercel domains add`).
-    const paperclipHost =
-      props.environment === "prod" ? "company.isol8.co" : `${props.environment}.company.isol8.co`;
-    new route53.ARecord(this, "PaperclipFrontendRecord", {
-      zone: this.hostedZone,
-      recordName: paperclipHost,
-      target: route53.RecordTarget.fromIpAddresses("76.76.21.21"),
-      ttl: cdk.Duration.minutes(5),
-    });
   }
 }
