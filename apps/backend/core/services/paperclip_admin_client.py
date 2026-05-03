@@ -727,18 +727,32 @@ class PaperclipAdminClient:
     # Inbox
     # ------------------------------------------------------------------
 
-    async def list_inbox(
+    async def list_inbox_for_session_user(
         self,
         *,
         session_cookie: str,
-        company_id: str,
-    ) -> dict:
-        """List inbox items for the company.
+    ) -> list:
+        """List the signed-in agent's inbox-lite issue rows.
 
-        Maps to ``GET /api/companies/{companyId}/inbox``.
+        Maps to ``GET /api/agents/me/inbox-lite`` (see
+        ``server/src/routes/agents.ts:1545``). The plan/spec invented
+        ``/api/companies/{co}/inbox`` — that endpoint does not exist in
+        Paperclip and was returning 404, which the BFF then crashed on
+        as a generic 500 prior to PaperclipApiError handling.
+
+        The session implicitly scopes the result to the agent rows
+        owned by the signed-in actor, so no ``company_id`` parameter is
+        needed.
+
+        Response shape (per ``agents.ts:1564-1579``): a JSON array of
+        issue summary objects, each shaped as ``{id, identifier, title,
+        status, priority, projectId, goalId, parentId, updatedAt,
+        activeRun, dependencyReady, unresolvedBlockerCount,
+        unresolvedBlockerIssueIds}``. The Teams BFF reshapes this into
+        the ``{items: [...]}`` envelope the InboxPanel expects.
         """
         return await self._get(
-            f"/api/companies/{company_id}/inbox",
+            "/api/agents/me/inbox-lite",
             session_cookie=session_cookie,
         )
 
