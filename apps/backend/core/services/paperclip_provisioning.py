@@ -48,6 +48,7 @@ from typing import Optional
 from core.encryption import decrypt, encrypt
 from core.repositories.paperclip_repo import PaperclipCompany, PaperclipRepo
 from core.services import service_token
+from core.services.paperclip_adapter_config import OPENCLAW_GATEWAY_TYPE, synthesize_openclaw_adapter
 from core.services.paperclip_admin_client import PaperclipAdminClient, PaperclipApiError
 
 logger = logging.getLogger(__name__)
@@ -252,13 +253,12 @@ class PaperclipProvisioning:
                     company_id=company_id,
                     name="Main Agent",
                     role="ceo",
-                    adapter_type="openclaw-gateway",
-                    adapter_config={
-                        "url": _ws_gateway_url(self._env_name),
-                        "authToken": svc_token,
-                        "sessionKeyStrategy": "fixed",
-                        "sessionKey": owner_user_id,
-                    },
+                    adapter_type=OPENCLAW_GATEWAY_TYPE,
+                    adapter_config=synthesize_openclaw_adapter(
+                        gateway_url=_ws_gateway_url(self._env_name),
+                        service_token=svc_token,
+                        user_id=owner_user_id,
+                    ),
                     session_cookie=new_user_session_cookie,
                     idempotency_key=f"{owner_user_id}:main-agent",
                 )
@@ -439,6 +439,138 @@ class PaperclipProvisioning:
             # for the full rationale).
             raise
 
+    async def archive_member(self, *, user_id: str, grace_days: int = 30) -> None:
+        """Archive a member's Paperclip membership AND disable their DDB row.
+
+        Used by ``organizationMembership.deleted`` (spec §3 case C). The
+        member is removed from the Clerk org but their Paperclip
+        membership lingers unless we proactively archive it. We
+        archive on the Paperclip side first (so the Teams UI stops
+        listing them immediately) then mark the DDB row disabled with
+        a purge timer (same 30-day grace as ``disable``).
+
+        Lookup chain:
+
+          1. ``repo.get(user_id)`` — find their company + paperclip_user_id.
+             If absent, no-op (member never had Paperclip provisioned).
+          2. ``list_members(company_id)`` — find the membership row
+             whose ``principalId`` matches our paperclip_user_id. We
+             need the membership ``id`` to call archive (NOT the
+             user_id).
+          3. ``archive_member(company_id, member_id)`` — POST to the
+             archive endpoint with admin session cookie.
+          4. ``update_status(disabled, purge_at)`` — same DDB shape as
+             ``disable``.
+
+        If the member row can't be located on Paperclip's side (already
+        archived externally, or list_members shape drift) we still mark
+        the DDB row disabled — but record ``last_error`` so admin
+        tooling can surface the inconsistency. We deliberately do NOT
+        raise: the user is already gone from Clerk, and a stuck
+        Paperclip row is recoverable out-of-band.
+
+        If Paperclip's archive call itself fails (5xx), we re-raise so
+        the webhook caller can enqueue a retry — DDB stays untouched
+        in that case so a successful retry can complete the full chain.
+        """
+        existing = await self._repo.get(user_id)
+        if existing is None:
+            return
+
+        # Lazy import to avoid the same import-cycle workaround
+        # ``provision_org`` uses.
+        from core.services.paperclip_admin_session import (
+            get_admin_session_cookie,
+            invalidate_admin_session,
+        )
+
+        admin_cookie = await get_admin_session_cookie(self._admin._http)
+
+        member_id: Optional[str] = None
+        try:
+            members_resp = await self._admin.list_members(
+                session_cookie=admin_cookie,
+                company_id=existing.company_id,
+            )
+        except PaperclipApiError as e:
+            if e.status_code == 401:
+                invalidate_admin_session()
+                admin_cookie = await get_admin_session_cookie(self._admin._http)
+                members_resp = await self._admin.list_members(
+                    session_cookie=admin_cookie,
+                    company_id=existing.company_id,
+                )
+            else:
+                raise
+
+        # Paperclip's list_members returns either a flat list or a
+        # ``{members: [...]}`` envelope depending on caller; defensive
+        # against both since the BFF doesn't unwrap it.
+        members: list[dict]
+        if isinstance(members_resp, list):
+            members = members_resp
+        elif isinstance(members_resp, dict):
+            members = members_resp.get("members") or members_resp.get("items") or []
+        else:
+            members = []
+
+        for m in members:
+            if m.get("principalId") == existing.paperclip_user_id:
+                member_id = m.get("id")
+                break
+
+        purge_at = datetime.now(timezone.utc) + timedelta(days=grace_days)
+        if member_id is None:
+            logger.warning(
+                "paperclip_provisioning.archive_member: no member row found "
+                "for user=%s paperclip_user=%s in company=%s; marking DDB "
+                "disabled without Paperclip archive",
+                user_id,
+                existing.paperclip_user_id,
+                existing.company_id,
+            )
+            await self._repo.update_status(
+                user_id,
+                status="disabled",
+                scheduled_purge_at=purge_at,
+                last_error="archive_member: paperclip member row not found",
+            )
+            return
+
+        try:
+            await self._admin.archive_member(
+                session_cookie=admin_cookie,
+                company_id=existing.company_id,
+                member_id=member_id,
+            )
+        except PaperclipApiError as e:
+            if e.status_code == 401:
+                invalidate_admin_session()
+                admin_cookie = await get_admin_session_cookie(self._admin._http)
+                await self._admin.archive_member(
+                    session_cookie=admin_cookie,
+                    company_id=existing.company_id,
+                    member_id=member_id,
+                )
+            else:
+                # Re-raise so the webhook caller can enqueue retry.
+                # DDB row stays untouched so the retry path can
+                # complete the full chain.
+                raise
+
+        await self._repo.update_status(
+            user_id,
+            status="disabled",
+            scheduled_purge_at=purge_at,
+        )
+        logger.info(
+            "paperclip_provisioning.archive_member: user %s archived (company=%s, member=%s, purge_at=%s)",
+            user_id,
+            existing.company_id,
+            member_id,
+            purge_at.isoformat(),
+        )
+
     async def disable(self, *, user_id: str, grace_days: int = 30) -> None:
         """Mark a user's Paperclip row disabled with a purge timer.
 
@@ -503,18 +635,29 @@ class PaperclipProvisioning:
     # ------------------------------------------------------------------
 
     async def _find_org_owner(self, org_id: str) -> Optional[PaperclipCompany]:
-        """Find the org-owner row (oldest ``created_at`` for this org).
+        """Find the org-owner row (oldest ACTIVE ``created_at`` for this org).
+
+        Filters out rows that aren't ``status="active"`` before picking
+        the oldest. ``disable()`` flips ``status="disabled"`` but leaves
+        the row in DDB until the purge worker runs (up to 30 days). If
+        the original/oldest member was disabled, returning their stale
+        Better Auth account would break ``provision_member`` (the
+        owner-side sign-in / create-invite / approve-join would all
+        fail) even though other active admins exist. Likewise we skip
+        ``provisioning`` and ``failed`` rows — neither is sign-in-able.
 
         v1 implementation: query the ``by-org-id`` GSI for all rows in
-        the org, then pick the one with the smallest ``created_at``.
-        For typical org sizes (1-10 users) this is fine; if Teams ever
-        supports large orgs we'd want to either:
+        the org, filter to ``active``, then pick the smallest
+        ``created_at``. For typical org sizes (1-10 users) this is
+        fine; if Teams ever supports large orgs we'd want to either:
 
           * sort the GSI by ``created_at`` (range key on the GSI), or
           * track the owner's user_id explicitly on every row.
 
         Both are deferred — the GSI was declared with KEYS_ONLY-style
         projection minimums and the table is small.
+
+        Returns None if the org has no active rows.
         """
         # Re-query the GSI without a Limit so we can pick the oldest
         # row. This is intentionally a separate code path from
@@ -543,7 +686,12 @@ class PaperclipProvisioning:
             if not last_evaluated_key:
                 break
 
-        if not items:
+        # Drop disabled / provisioning / failed rows BEFORE the oldest
+        # pick — see docstring. ``status`` should always be present
+        # since ``put()`` writes it, but treat missing as "not active"
+        # to be safe.
+        active_items = [it for it in items if it.get("status") == "active"]
+        if not active_items:
             return None
 
         # Pick the oldest by created_at; if any item is missing the
@@ -552,7 +700,7 @@ class PaperclipProvisioning:
         def _sort_key(it: dict) -> str:
             return it.get("created_at", "")
 
-        oldest = min(items, key=_sort_key)
+        oldest = min(active_items, key=_sort_key)
         return await self._repo.get(oldest["user_id"])
 
     async def _mark_failed(

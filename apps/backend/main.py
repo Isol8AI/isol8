@@ -50,6 +50,7 @@ from routers import (
     websocket_chat,
     workspace_files,
 )
+from routers.teams import router as teams_router
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 logger = logging.getLogger(__name__)
@@ -439,6 +440,10 @@ app.include_router(admin_catalog.router, prefix="/api/v1")
 from routers import admin as admin_router  # noqa: E402
 
 app.include_router(admin_router.router, prefix="/api/v1")
+
+# Teams BFF — native UI for Paperclip (spec 2026-05-02). The router itself
+# carries the /teams prefix; mounting under /api/v1 yields /api/v1/teams/*.
+app.include_router(teams_router, prefix="/api/v1")
 
 # Paperclip proxy router — mounted at the sentinel prefix that
 # HostDispatcherMiddleware rewrites paths to. Never reachable directly

@@ -297,25 +297,18 @@ def _extract_primary_email(data: dict) -> Optional[str]:
 async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -> Optional[str]:
     """Pull the org owner's email so ``provision_member`` can sign them in.
 
-    For ``organizationMembership.created`` Clerk's payload includes
-    ``data.organization.created_by`` (the owner's user_id), but NOT the
-    owner's email. We read it from the ``users`` repo where the
-    ``user.created`` webhook persisted it. If the row is missing or
-    lacks an email, return None — the caller's existing retry path
-    will re-drive once the row is backfilled.
+    Thin delegator to the shared resolver in
+    ``core.services.paperclip_owner_email``. The retry worker
+    (``update_service``) needs the same behaviour and routers can't
+    safely import from services without re-introducing a cycle, so
+    the helper lives in a shared module — this in-module name is
+    kept so existing call sites and any test ``patch`` strings
+    remain stable. See the shared module docstring for the full
+    resolution chain.
     """
-    if not fallback_user_id:
-        return None
-    from core.repositories import user_repo
+    from core.services.paperclip_owner_email import lookup_owner_email
 
-    try:
-        row = await user_repo.get(fallback_user_id)
-        if row and row.get("email"):
-            return row["email"]
-    except Exception:
-        logger.exception("owner email lookup failed for org=%s", org_id)
-
-    return None
+    return await lookup_owner_email(org_id=org_id, fallback_user_id=fallback_user_id)
 
 
 # ----------------------------------------------------------------------
@@ -468,7 +461,19 @@ async def _handle_organization_membership_created(data: dict) -> None:
 
 
 async def _handle_organization_membership_deleted(data: dict) -> None:
-    """Disable Paperclip for a single removed member."""
+    """Archive the member's Paperclip membership AND disable their DDB row.
+
+    Spec §3 case C. Calls ``archive_member`` rather than ``disable``
+    because we need the Paperclip-side membership row archived too —
+    otherwise the Teams UI keeps showing the removed user. If
+    Paperclip's archive call 5xx's, enqueue a retry like other
+    Paperclip-touching handlers; non-retryable errors fall through
+    to a defensive ``disable`` call so the DDB row is marked
+    ``status="disabled"`` even when Paperclip archive 4xx'd —
+    otherwise the removed Clerk-org member could keep hitting
+    ``/api/v1/teams/*`` because ``resolve_teams_context`` only
+    inspects DDB state.
+    """
     pud = data.get("public_user_data") or {}
     user_id = pud.get("user_id", "") or data.get("user_id", "")
     if not user_id:
@@ -477,13 +482,82 @@ async def _handle_organization_membership_deleted(data: dict) -> None:
 
     provisioning = await _get_paperclip_provisioning()
     try:
-        await provisioning.disable(user_id=user_id)
-        put_metric("paperclip.webhook.disable", dimensions={"trigger": "membership_deleted"})
-    except Exception:
-        # disable() doesn't raise PaperclipApiError today (DDB-only), but
-        # belt-and-braces: log and continue. We don't enqueue a retry —
-        # disable is purely local and a transient DDB hiccup is rare.
-        logger.exception("disable on membership_deleted failed for user=%s", user_id)
+        try:
+            await provisioning.archive_member(user_id=user_id)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={"trigger": "membership_deleted", "result": "ok"},
+            )
+        except Exception as e:
+            retryable = _is_retryable(e)
+            put_metric(
+                "paperclip.webhook.archive_member",
+                dimensions={
+                    "trigger": "membership_deleted",
+                    "result": "retryable" if retryable else "error",
+                },
+            )
+            logger.warning(
+                "archive_member on membership_deleted failed for user=%s retryable=%s err=%s",
+                user_id,
+                retryable,
+                e,
+            )
+            if retryable:
+                # Retryable archive failure (5xx/429): we'll retry the
+                # Paperclip-side archive in the update worker, but the
+                # user is already gone from Clerk. Leaving the DDB row
+                # ``status="active"`` for the entire retry window is a
+                # backend auth bypass because ``resolve_teams_context``
+                # only checks DDB status, not Clerk membership — the
+                # removed member could keep hitting ``/api/v1/teams/*``
+                # for minutes/hours until the retry succeeds. Disable
+                # now (idempotent; no-ops if no row exists) and let the
+                # retry re-attempt only the Paperclip-side archive.
+                try:
+                    await provisioning.disable(user_id=user_id)
+                    put_metric(
+                        "paperclip.webhook.disable",
+                        dimensions={
+                            "trigger": "membership_deleted",
+                            "reason": "archive_member_retryable",
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "disable fallback before archive_member retry enqueue failed for user=%s",
+                        user_id,
+                    )
+                await _enqueue_paperclip_retry(
+                    op="archive_member",
+                    payload={"user_id": user_id},
+                    owner_id=user_id,
+                )
+            else:
+                # Non-retryable archive failure (4xx/non-429): the
+                # Paperclip-side archive call won't succeed on retry,
+                # but the user is gone from Clerk — leaving the DDB row
+                # ``status="active"`` is a backend auth bypass because
+                # ``resolve_teams_context`` only checks DDB status, not
+                # Clerk membership. Mark the row disabled (idempotent;
+                # no-ops if no row exists) so ``/api/v1/teams/*`` access
+                # is revoked even though Paperclip-side archive failed.
+                # Operators can clean up the orphan Paperclip member row
+                # out-of-band if needed.
+                try:
+                    await provisioning.disable(user_id=user_id)
+                    put_metric(
+                        "paperclip.webhook.disable",
+                        dimensions={
+                            "trigger": "membership_deleted",
+                            "reason": "archive_member_non_retryable",
+                        },
+                    )
+                except Exception:
+                    logger.exception(
+                        "disable fallback after non-retryable archive_member failure failed for user=%s",
+                        user_id,
+                    )
     finally:
         await _close_paperclip_http(provisioning)
 

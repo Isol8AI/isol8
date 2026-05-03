@@ -253,40 +253,48 @@ async def _paperclip_purge_pass() -> None:
 async def _resolve_owner_email(payload: dict) -> str | None:
     """Resolve the org owner's email for a Paperclip retry payload.
 
-    The webhook handlers omit ``owner_email`` from the retry payload
-    when the user_repo lookup miss-fired at enqueue time (the
-    ``user.created`` webhook may not have landed yet). This helper
-    handles both shapes:
+    On retries we always prefer a fresh lookup over the cached
+    ``owner_email`` in the payload. The cached value can be stale —
+    if a user rotates their email between the original webhook and
+    the retry, ``provision_member`` would sign in with stale
+    credentials and fail non-retryably, marking the retry row failed
+    and requiring manual ops cleanup.
 
-    * ``owner_email`` already present + non-empty -> use as-is
-    * ``owner_email`` missing/blank -> look up via ``user_repo`` using
-      ``owner_user_id`` from the payload
+    Resolution order:
+
+    * Re-resolve via ``paperclip_owner_email.lookup_owner_email`` —
+      hits ``user_repo`` first, falls back to Clerk Backend API.
+    * Fall back to ``payload["owner_email"]`` only when the fresh
+      lookup returns ``None`` (e.g. user_repo row missing AND Clerk
+      transiently down). This preserves the ability to make progress
+      when both lookup tiers fail mid-retry.
 
     Returns ``None`` if the email is still unresolvable. Callers should
     leave the retry row pending (NOT mark failed) so a later
     ``user.created`` redelivery can supply the missing email.
     """
+    owner_user_id = payload.get("owner_user_id")
+    if owner_user_id:
+        # Local import keeps cold-start cheap and mirrors the lazy-import
+        # convention used elsewhere in this module.
+        from core.services.paperclip_owner_email import lookup_owner_email
+
+        try:
+            fresh = await lookup_owner_email(org_id=payload.get("org_id"), fallback_user_id=owner_user_id)
+        except Exception:
+            logger.exception(
+                "paperclip_provision_retry_pass: lookup_owner_email failed for owner=%s",
+                owner_user_id,
+            )
+            fresh = None
+        if fresh:
+            return fresh
+    # Fallback: trust the cached value from the original webhook
+    # payload only if the fresh lookup couldn't resolve.
     cached = payload.get("owner_email")
     if cached:
         return cached
-    owner_user_id = payload.get("owner_user_id")
-    if not owner_user_id:
-        return None
-    # Local import keeps cold-start cheap and mirrors the lazy-import
-    # convention used elsewhere in this module.
-    from core.repositories import user_repo
-
-    try:
-        row = await user_repo.get(owner_user_id)
-    except Exception:
-        logger.exception(
-            "paperclip_provision_retry_pass: user_repo.get failed for owner=%s",
-            owner_user_id,
-        )
-        return None
-    if not row:
-        return None
-    return row.get("email") or None
+    return None
 
 
 async def _paperclip_provision_retry_pass() -> None:
@@ -297,6 +305,7 @@ async def _paperclip_provision_retry_pass() -> None:
 
       * ``provision_org``    -> ``PaperclipProvisioning.provision_org``
       * ``provision_member`` -> ``PaperclipProvisioning.provision_member``
+      * ``archive_member``   -> ``PaperclipProvisioning.archive_member``
       * ``disable``          -> ``PaperclipProvisioning.disable``
 
     On success, mark the row applied (``mark_applied``). On a
@@ -368,6 +377,8 @@ async def _paperclip_provision_retry_pass() -> None:
                         email=changes["email"],
                         owner_email=owner_email,
                     )
+                elif op == "archive_member":
+                    await provisioning.archive_member(user_id=changes["user_id"])
                 elif op == "disable":
                     await provisioning.disable(user_id=changes["user_id"])
                 else:

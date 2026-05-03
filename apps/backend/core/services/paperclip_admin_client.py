@@ -244,7 +244,7 @@ class PaperclipAdminClient:
         self,
         path: str,
         session_cookie: str,
-    ) -> None:
+    ) -> dict:
         resp = await self._http.delete(
             path,
             headers=self._headers(session_cookie),
@@ -256,6 +256,49 @@ class PaperclipAdminClient:
                 status_code=resp.status_code,
                 body=resp.text,
             )
+        if resp.status_code == 404 or not resp.content:
+            return {}
+        try:
+            return resp.json()
+        except ValueError:
+            return {}
+
+    async def _get(
+        self,
+        path: str,
+        session_cookie: str,
+    ) -> dict:
+        resp = await self._http.get(
+            path,
+            headers=self._headers(session_cookie),
+        )
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"GET {path} -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json() if resp.content else {}
+
+    async def _patch(
+        self,
+        path: str,
+        json: dict,
+        session_cookie: str,
+        idempotency_key: Optional[str] = None,
+    ) -> dict:
+        resp = await self._http.patch(
+            path,
+            json=json,
+            headers=self._headers(session_cookie, idempotency_key=idempotency_key),
+        )
+        if resp.status_code >= 400:
+            raise PaperclipApiError(
+                f"PATCH {path} -> {resp.status_code}",
+                status_code=resp.status_code,
+                body=resp.text,
+            )
+        return resp.json() if resp.content else {}
 
     # ------------------------------------------------------------------
     # Better Auth (per-user accounts)
@@ -583,4 +626,617 @@ class PaperclipAdminClient:
             json={"name": name},
             session_cookie=session_cookie,
             idempotency_key=idempotency_key,
+        )
+
+    async def list_agents(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List agents in a company.
+
+        Maps to ``GET /api/companies/{companyId}/agents``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/agents",
+            session_cookie=session_cookie,
+        )
+
+    async def get_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """Fetch a single agent by id.
+
+        Maps to ``GET /api/agents/{agentId}``.
+        """
+        return await self._get(
+            f"/api/agents/{agent_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def patch_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch an agent.
+
+        Maps to ``PATCH /api/agents/{agentId}``. The body is a
+        whitelisted subset built by the BFF — adapter fields are
+        synthesized server-side and never accepted from clients.
+        """
+        return await self._patch(
+            f"/api/agents/{agent_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_agent(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """Delete an agent.
+
+        Maps to ``DELETE /api/agents/{agentId}``. 404 is swallowed
+        (treated as already-gone) by the underlying ``_delete`` helper.
+        """
+        return await self._delete(
+            f"/api/agents/{agent_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def list_runs(
+        self,
+        *,
+        session_cookie: str,
+        agent_id: str,
+    ) -> dict:
+        """List runs for an agent.
+
+        Maps to ``GET /api/agents/{agentId}/runs``.
+        """
+        return await self._get(
+            f"/api/agents/{agent_id}/runs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_run(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+    ) -> dict:
+        """Fetch a single run by id.
+
+        Maps to ``GET /api/runs/{runId}``.
+        """
+        return await self._get(
+            f"/api/runs/{run_id}",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Inbox
+    # ------------------------------------------------------------------
+
+    async def list_inbox(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List inbox items for the company.
+
+        Maps to ``GET /api/companies/{companyId}/inbox``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/inbox",
+            session_cookie=session_cookie,
+        )
+
+    async def dismiss_inbox_item(
+        self,
+        *,
+        session_cookie: str,
+        item_id: str,
+    ) -> dict:
+        """Dismiss a single inbox item.
+
+        Maps to ``POST /api/inbox/{itemId}/dismiss``.
+        """
+        return await self._post(
+            f"/api/inbox/{item_id}/dismiss",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Approvals
+    # ------------------------------------------------------------------
+
+    async def list_approvals(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List pending approvals for the company.
+
+        Maps to ``GET /api/companies/{companyId}/approvals``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/approvals",
+            session_cookie=session_cookie,
+        )
+
+    async def approve_approval(
+        self,
+        *,
+        session_cookie: str,
+        approval_id: str,
+        note: Optional[str],
+    ) -> dict:
+        """Approve a pending approval, optionally with a reviewer note.
+
+        Maps to ``POST /api/approvals/{approvalId}/approve``. The body
+        is intentionally narrow — ``note`` only — to close the
+        ``payload.adapterType`` smuggling carrier flagged in the audit.
+        """
+        body: dict[str, Any] = {"note": note} if note else {}
+        return await self._post(
+            f"/api/approvals/{approval_id}/approve",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def reject_approval(
+        self,
+        *,
+        session_cookie: str,
+        approval_id: str,
+        reason: str,
+    ) -> dict:
+        """Reject a pending approval. ``reason`` is required upstream.
+
+        Maps to ``POST /api/approvals/{approvalId}/reject``.
+        """
+        return await self._post(
+            f"/api/approvals/{approval_id}/reject",
+            json={"reason": reason},
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Issues
+    # ------------------------------------------------------------------
+
+    async def list_issues(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List issues for the company.
+
+        Maps to ``GET /api/companies/{companyId}/issues``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/issues",
+            session_cookie=session_cookie,
+        )
+
+    async def get_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Fetch a single issue by id.
+
+        Maps to ``GET /api/issues/{issueId}``.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def create_issue(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create an issue. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/companies/{companyId}/issues``.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/issues",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def patch_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch an issue. Body is whitelisted by the BFF.
+
+        Maps to ``PATCH /api/issues/{issueId}``.
+        """
+        return await self._patch(
+            f"/api/issues/{issue_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Routines
+    # ------------------------------------------------------------------
+
+    async def list_routines(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List routines for the company.
+
+        Maps to ``GET /api/companies/{companyId}/routines``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/routines",
+            session_cookie=session_cookie,
+        )
+
+    async def create_routine(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a routine. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/companies/{companyId}/routines``.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/routines",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def patch_routine(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch a routine. Body is whitelisted by the BFF.
+
+        Maps to ``PATCH /api/routines/{routineId}``.
+        """
+        return await self._patch(
+            f"/api/routines/{routine_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def delete_routine(
+        self,
+        *,
+        session_cookie: str,
+        routine_id: str,
+    ) -> dict:
+        """Delete a routine. 404 is swallowed as already-gone.
+
+        Maps to ``DELETE /api/routines/{routineId}``.
+        """
+        return await self._delete(
+            f"/api/routines/{routine_id}",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Goals
+    # ------------------------------------------------------------------
+
+    async def list_goals(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List goals for the company.
+
+        Maps to ``GET /api/companies/{companyId}/goals``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/goals",
+            session_cookie=session_cookie,
+        )
+
+    async def create_goal(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a goal. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/companies/{companyId}/goals``.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/goals",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def patch_goal(
+        self,
+        *,
+        session_cookie: str,
+        goal_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch a goal. Body is whitelisted by the BFF.
+
+        Maps to ``PATCH /api/goals/{goalId}``.
+        """
+        return await self._patch(
+            f"/api/goals/{goal_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Projects
+    # ------------------------------------------------------------------
+
+    async def list_projects(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List projects for the company.
+
+        Maps to ``GET /api/companies/{companyId}/projects``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/projects",
+            session_cookie=session_cookie,
+        )
+
+    async def get_project(
+        self,
+        *,
+        session_cookie: str,
+        project_id: str,
+    ) -> dict:
+        """Fetch a single project by id.
+
+        Maps to ``GET /api/projects/{projectId}``.
+        """
+        return await self._get(
+            f"/api/projects/{project_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def create_project(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Create a project. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/companies/{companyId}/projects``.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/projects",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    async def patch_project(
+        self,
+        *,
+        session_cookie: str,
+        project_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch a project. Body is whitelisted by the BFF.
+
+        Maps to ``PATCH /api/projects/{projectId}``.
+        """
+        return await self._patch(
+            f"/api/projects/{project_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Read-only feed: activity, costs, dashboard, sidebar badges
+    # ------------------------------------------------------------------
+
+    async def list_activity(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List company activity events.
+
+        Maps to ``GET /api/companies/{companyId}/activity``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/activity",
+            session_cookie=session_cookie,
+        )
+
+    async def get_costs(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the company costs summary.
+
+        Maps to ``GET /api/companies/{companyId}/costs``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/costs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_dashboard(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the dashboard aggregate.
+
+        Maps to ``GET /api/companies/{companyId}/dashboard``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/dashboard",
+            session_cookie=session_cookie,
+        )
+
+    async def get_sidebar_badges(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the sidebar badge counts (inbox, approvals, etc).
+
+        Maps to ``GET /api/companies/{companyId}/sidebar-badges``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/sidebar-badges",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Skills (read-only)
+    # ------------------------------------------------------------------
+
+    async def list_skills(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List skills available to the company.
+
+        Maps to ``GET /api/companies/{companyId}/skills``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/skills",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Members (joined with Clerk in the BFF)
+    # ------------------------------------------------------------------
+
+    async def list_members(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List company memberships.
+
+        Maps to ``GET /api/companies/{companyId}/members``. Email and
+        display name are NOT in the upstream response — the BFF joins
+        the principal id against Clerk to enrich the rows.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/members",
+            session_cookie=session_cookie,
+        )
+
+    async def archive_member(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        member_id: str,
+    ) -> dict:
+        """Archive a single company membership.
+
+        Maps to ``POST /api/companies/{companyId}/members/{memberId}/archive``
+        (see ``paperclip/server/src/routes/access.ts:4230``). The
+        signed-in user behind ``session_cookie`` must hold
+        ``users:manage_permissions`` on the company. ``member_id`` is
+        the Paperclip ``company_membership.id`` (NOT the Better Auth
+        user id) — callers typically resolve it from ``list_members``
+        by matching ``principalId`` to the user's
+        ``paperclip_user_id``.
+
+        Returns the archived membership row plus a
+        ``reassignedIssueCount`` field. We don't currently do anything
+        with the latter; preserved in the return for symmetry with the
+        upstream response.
+        """
+        return await self._post(
+            f"/api/companies/{company_id}/members/{member_id}/archive",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Company settings
+    # ------------------------------------------------------------------
+
+    async def get_company(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the company record.
+
+        Maps to ``GET /api/companies/{companyId}``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}",
+            session_cookie=session_cookie,
+        )
+
+    async def patch_company(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        body: dict,
+    ) -> dict:
+        """Patch the company record. Body is whitelisted by the BFF
+        to ``display_name`` and ``description`` only.
+
+        Maps to ``PATCH /api/companies/{companyId}``.
+        """
+        return await self._patch(
+            f"/api/companies/{company_id}",
+            json=body,
+            session_cookie=session_cookie,
         )

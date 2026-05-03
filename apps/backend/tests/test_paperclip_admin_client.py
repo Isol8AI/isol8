@@ -446,3 +446,37 @@ async def test_approve_join_request_with_request_id(client_factory):
     # Empty body but JSON encoded as "{}"
     assert captured["body"] == "{}"
     assert out["status"] == "approved"
+
+
+async def test_archive_member_targets_company_and_member(client_factory):
+    """``archive_member`` POSTs to
+    ``/api/companies/{companyId}/members/{memberId}/archive`` with the
+    admin's session cookie. Empty body."""
+    captured: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        captured["url"] = str(req.url)
+        captured["cookie"] = req.headers.get("cookie")
+        captured["body"] = req.read().decode()
+        return httpx.Response(
+            200,
+            json={
+                "member": {
+                    "id": "mem_1",
+                    "principalId": "pap_user_1",
+                    "status": "archived",
+                },
+                "reassignedIssueCount": 0,
+            },
+        )
+
+    client = client_factory(handler)
+    out = await client.archive_member(
+        session_cookie="sess_admin",
+        company_id="co_abc",
+        member_id="mem_1",
+    )
+    assert "/api/companies/co_abc/members/mem_1/archive" in captured["url"]
+    assert captured["cookie"] == "sess_admin"
+    assert captured["body"] == "{}"
+    assert out["member"]["status"] == "archived"

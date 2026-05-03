@@ -94,6 +94,15 @@ schema = (
     .exclude(
         path_regex="^/api/v1/auth/",
     )
+    # Teams BFF endpoints chain Clerk auth -> DDB lookup -> a Better
+    # Auth sign-in to upstream Paperclip. The contract harness has none
+    # of those, so every fuzzed request reaches unmocked DDB / httpx
+    # code and surfaces as 5xx. Teams routers have dedicated unit tests
+    # under tests/unit/routers/teams/ that mock each collaborator
+    # end-to-end. Excluded for consistency with /billing/ and /admin/.
+    .exclude(
+        path_regex="^/api/v1/teams/",
+    )
     .exclude(
         path_regex="^/health$",
     )

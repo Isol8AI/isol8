@@ -368,16 +368,21 @@ async def test_membership_created_missing_owner_email_omits_blank_in_retry(async
 
 
 # ----------------------------------------------------------------------
-# organizationMembership.deleted -> disable
+# organizationMembership.deleted -> archive_member
 # ----------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_membership_deleted_calls_disable(async_client, monkeypatch):
+async def test_membership_deleted_calls_archive_member(async_client, monkeypatch):
+    """``organizationMembership.deleted`` should drive
+    ``PaperclipProvisioning.archive_member`` (which both calls
+    Paperclip's archive endpoint AND marks the DDB row disabled),
+    not the bare ``disable`` shortcut.
+    """
     _bypass_svix(monkeypatch)
 
     mock_provisioning = AsyncMock()
-    mock_provisioning.disable = AsyncMock(return_value=None)
+    mock_provisioning.archive_member = AsyncMock(return_value=None)
 
     payload = {
         "type": "organizationMembership.deleted",
@@ -399,7 +404,201 @@ async def test_membership_deleted_calls_disable(async_client, monkeypatch):
         )
 
     assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_retryable_failure_enqueues(async_client, monkeypatch):
+    """Paperclip 5xx during ``archive_member`` should enqueue a
+    pending-updates retry row keyed on ``op="archive_member"``.
+
+    Auth-bypass guard: the handler MUST also call ``disable`` BEFORE
+    enqueueing the retry so the DDB row is flipped to
+    ``status="disabled"`` immediately. Otherwise
+    ``resolve_teams_context`` would keep authorizing the removed user
+    against ``/api/v1/teams/*`` for the entire retry window (minutes
+    to hours).
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("server-down", 503, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(return_value=None)
+
+    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once_with(user_id="user_member")
+    # Auth-bypass guard: DDB row must be flipped to disabled even on retryable.
     mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    captured_create.assert_awaited_once()
+    kwargs = captured_create.call_args.kwargs
+    assert kwargs["owner_id"] == "user_member"
+    assert kwargs["update_type"] == "paperclip_provision"
+    assert kwargs["changes"]["op"] == "archive_member"
+    assert kwargs["changes"]["user_id"] == "user_member"
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_non_retryable_failure_swallowed(async_client, monkeypatch):
+    """4xx (non-429) on archive_member should NOT enqueue a retry —
+    the user is already gone from Clerk, and Clerk redelivery would
+    just hit the same 4xx. We still return 200 so Clerk stops retrying.
+
+    Critically (auth-bypass guard): the handler MUST also call
+    ``disable`` to mark the DDB row ``status="disabled"`` even when
+    Paperclip archive failed non-retryably — otherwise the removed
+    Clerk-org member can still hit ``/api/v1/teams/*`` because
+    ``resolve_teams_context`` only checks DDB state.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("not-found", 404, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(return_value=None)
+    captured_create = AsyncMock()
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    captured_create.assert_not_awaited()
+    # Auth-bypass guard: DDB row must be flipped to disabled.
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_non_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
+    """If the defensive ``disable`` call after a non-retryable archive
+    failure itself raises, we still return 200 — the webhook must not
+    bubble exceptions back to Clerk, which would just redeliver the
+    same event. The exception is logged for ops to investigate.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("not-found", 404, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    captured_create = AsyncMock()
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    captured_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_membership_deleted_retryable_disable_failure_is_swallowed(async_client, monkeypatch):
+    """On retryable archive failure, the handler tries ``disable``
+    BEFORE enqueueing the retry to close the auth-bypass window. If
+    that defensive ``disable`` itself raises (e.g. DDB transient), we
+    must still enqueue the retry and return 200 — the webhook must not
+    bubble exceptions back to Clerk, and we still want the retry
+    pending so the next pass re-attempts archive.
+    """
+    _bypass_svix(monkeypatch)
+
+    err = PaperclipApiError("server-down", 503, "")
+    mock_provisioning = AsyncMock()
+    mock_provisioning.archive_member = AsyncMock(side_effect=err)
+    mock_provisioning.disable = AsyncMock(side_effect=RuntimeError("ddb-down"))
+    captured_create = AsyncMock(return_value={"update_id": "upd_archive"})
+
+    payload = {
+        "type": "organizationMembership.deleted",
+        "data": {
+            "id": "orgm_1",
+            "organization": {"id": "org_acme"},
+            "public_user_data": {"user_id": "user_member"},
+        },
+    }
+
+    with (
+        patch(
+            "routers.webhooks._get_paperclip_provisioning",
+            new=AsyncMock(return_value=mock_provisioning),
+        ),
+        patch("core.repositories.update_repo.create", new=captured_create),
+    ):
+        resp = await async_client.post(
+            "/api/v1/webhooks/clerk",
+            json=payload,
+            headers=_svix_headers(),
+        )
+
+    assert resp.status_code == 200
+    mock_provisioning.archive_member.assert_awaited_once()
+    mock_provisioning.disable.assert_awaited_once_with(user_id="user_member")
+    # Even when disable raises, the retry row is still enqueued so
+    # the next worker pass re-attempts the Paperclip-side archive.
+    captured_create.assert_awaited_once()
 
 
 # ----------------------------------------------------------------------
@@ -644,3 +843,126 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
 
     assert resp.status_code == 200
     mock_provisioning.disable.assert_awaited_once_with(user_id="user_owner")
+
+
+# ----------------------------------------------------------------------
+# _lookup_owner_email — Codex P1 (round 3): Clerk fallback
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_falls_back_to_clerk_when_repo_missing():
+    """When ``user_repo.get`` returns no row (a prior ``user.created``
+    persistence failed, or the row predates the email field), we must
+    fall back to Clerk Backend API. Without the fallback, retries via
+    the update-service worker call the same resolver and stay
+    permanently ``pending``.
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_user = {
+        "primary_email_address_id": "idn_primary",
+        "email_addresses": [
+            {"id": "idn_primary", "email_address": "owner@acme.test"},
+        ],
+    }
+
+    clerk_get = AsyncMock(return_value=clerk_user)
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_falls_back_to_clerk_when_email_field_empty():
+    """Same fallback when the row exists but lacks an email field
+    (older rows that predate the email column).
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_user = {
+        "primary_email_address_id": "idn_primary",
+        "email_addresses": [
+            {"id": "idn_primary", "email_address": "owner@acme.test"},
+        ],
+    }
+
+    clerk_get = AsyncMock(return_value=clerk_user)
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"user_id": "user_owner"}),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_user_repo_fast_path_does_not_hit_clerk():
+    """Existing fast path: when the users repo already has the email
+    we MUST NOT call Clerk (avoid extra Clerk API hits and rate-limit
+    risk on every membership webhook).
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_get = AsyncMock()  # spy — should never be awaited
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_returns_none_when_clerk_fails():
+    """On Clerk error/404 we return None (not raise) so the retry
+    worker can try again next cycle without crashing the webhook.
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.clerk_admin.get_user",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email is None

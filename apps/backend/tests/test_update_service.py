@@ -550,6 +550,67 @@ async def test_retry_pass_resolves_owner_email_for_provision_member_when_missing
     mark_applied.assert_awaited_once_with("user_member", "u_member")
 
 
+async def test_retry_pass_prefers_fresh_owner_email_over_cached_payload():
+    """Round-4 P2: on retries, the resolver MUST re-resolve the
+    owner's email from ``user_repo`` (with Clerk fallback) and prefer
+    that over any cached ``owner_email`` baked into the retry payload.
+
+    Why: if the user rotated their email between the original webhook
+    and the retry, signing in with the cached value fails
+    non-retryably and the retry row gets marked failed — requiring
+    manual ops cleanup. Always trying a fresh lookup first lets the
+    retry self-heal across email rotations.
+    """
+    prov = _make_provisioning_mock()
+    http = _make_http_mock()
+    rows = [
+        {
+            "owner_id": "user_owner",
+            "update_id": "u_rotated",
+            "changes": {
+                "op": "provision_org",
+                "org_id": "org_acme",
+                "owner_user_id": "user_owner",
+                # Cached value from the original webhook; user has
+                # since rotated to ``new@example.com``.
+                "owner_email": "old@example.com",
+            },
+        }
+    ]
+
+    user_repo_get = AsyncMock(return_value={"user_id": "user_owner", "email": "new@example.com"})
+
+    with (
+        patch.object(
+            update_service.update_repo,
+            "list_pending_by_type",
+            new=AsyncMock(return_value=rows),
+        ),
+        patch.object(
+            update_service.update_repo,
+            "mark_applied",
+            new=AsyncMock(return_value=True),
+        ) as mark_applied,
+        patch.object(
+            update_service,
+            "_build_paperclip_provisioning",
+            return_value=(prov, http, MagicMock()),
+        ),
+        patch("core.repositories.user_repo.get", new=user_repo_get),
+    ):
+        await update_service._paperclip_provision_retry_pass()
+
+    user_repo_get.assert_awaited_once_with("user_owner")
+    # Critically: provision_org received the FRESH email, not the
+    # stale cached one from the payload.
+    prov.provision_org.assert_awaited_once_with(
+        org_id="org_acme",
+        owner_user_id="user_owner",
+        owner_email="new@example.com",
+    )
+    mark_applied.assert_awaited_once_with("user_owner", "u_rotated")
+
+
 # ----------------------------------------------------------------------
 # run_scheduled_worker integration
 # ----------------------------------------------------------------------

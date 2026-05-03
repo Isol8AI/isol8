@@ -192,6 +192,36 @@ class PaperclipRepo:
         base = await self.get(first["user_id"])
         return base.company_id if base is not None else None
 
+    async def list_by_org_id(self, org_id: str) -> list[dict]:
+        """Return all rows in ``org_id`` via the ``by-org-id`` GSI.
+
+        Returns raw DDB items (dicts) rather than ``PaperclipCompany``
+        instances because callers (notably the Teams BFF members
+        endpoint) typically only need a small subset of fields
+        (``user_id``, ``paperclip_user_id``) to build a Paperclip→Clerk
+        principal map. The GSI is declared with ``ProjectionType=ALL``
+        in ``database-stack.ts`` so every field is available without a
+        base-table chain read.
+
+        Paginates ``LastEvaluatedKey`` to handle orgs larger than a
+        single Query page; for typical Isol8 org sizes (1-10 users)
+        one page suffices.
+        """
+        items: list[dict] = []
+        last_evaluated_key: dict | None = None
+        while True:
+            kwargs: dict = {
+                "IndexName": "by-org-id",
+                "KeyConditionExpression": Key("org_id").eq(org_id),
+            }
+            if last_evaluated_key is not None:
+                kwargs["ExclusiveStartKey"] = last_evaluated_key
+            resp = await run_in_thread(self._table().query, **kwargs)
+            items.extend(resp.get("Items", []))
+            last_evaluated_key = resp.get("LastEvaluatedKey")
+            if not last_evaluated_key:
+                return items
+
     async def count_org_members(self, org_id: str) -> int:
         """Count how many rows currently exist for ``org_id`` via the
         ``by-org-id`` GSI.
