@@ -49,7 +49,11 @@ def _flatten_dashboard(raw: Any) -> dict:
 
     agents_obj = raw.get("agents")
     if isinstance(agents_obj, dict):
-        agents_count = int(agents_obj.get("active") or 0) + int(agents_obj.get("running") or 0)
+        # Sum every status bucket (active/running/paused/error/idle/...) so
+        # the Overview card reflects the total agent count in any steady
+        # state — including all-paused or all-idle. Forward-compatible
+        # against new buckets added upstream.
+        agents_count = sum(int(v) for v in agents_obj.values() if isinstance(v, (int, float)))
     elif isinstance(agents_obj, (int, float)):
         agents_count = int(agents_obj)
     else:

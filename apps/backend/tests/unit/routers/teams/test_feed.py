@@ -80,7 +80,7 @@ def test_get_dashboard_aggregates_dash_and_badges(client, monkeypatch):
     admin.get_dashboard = AsyncMock(
         return_value={
             "companyId": "co_abc",
-            "agents": {"active": 2, "running": 1, "paused": 0, "error": 0},
+            "agents": {"active": 2, "running": 1, "paused": 4, "error": 1},
             "tasks": {"open": 5, "inProgress": 2, "blocked": 1, "done": 7},
             "costs": {
                 "monthSpendCents": 12345,
@@ -106,7 +106,7 @@ def test_get_dashboard_aggregates_dash_and_badges(client, monkeypatch):
     body = r.json()
     assert body == {
         "dashboard": {
-            "agents": 3,  # active(2) + running(1)
+            "agents": 8,  # all status buckets summed: 2+1+4+1
             "openIssues": 5,
             "runsToday": 8,
             "spendCents": 12345,
