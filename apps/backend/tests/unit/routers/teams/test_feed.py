@@ -73,9 +73,26 @@ def test_get_costs(client, monkeypatch):
 
 def test_get_dashboard_aggregates_dash_and_badges(client, monkeypatch):
     """Dashboard endpoint must call both ``get_dashboard`` and
-    ``get_sidebar_badges`` and return both under a stable shape."""
+    ``get_sidebar_badges`` in parallel, flatten the dashboard payload
+    into the scalar shape DashboardPanel expects, and pass through
+    sidebar_badges verbatim."""
     admin = MagicMock()
-    admin.get_dashboard = AsyncMock(return_value={"x": 1})
+    admin.get_dashboard = AsyncMock(
+        return_value={
+            "companyId": "co_abc",
+            "agents": {"active": 2, "running": 1, "paused": 0, "error": 0},
+            "tasks": {"open": 5, "inProgress": 2, "blocked": 1, "done": 7},
+            "costs": {
+                "monthSpendCents": 12345,
+                "monthBudgetCents": 50000,
+                "monthUtilizationPercent": 24.69,
+            },
+            "runActivity": [
+                {"date": "2026-04-19", "total": 3},
+                {"date": "2026-05-02", "total": 8},
+            ],
+        }
+    )
     admin.get_sidebar_badges = AsyncMock(return_value={"inbox": 3})
     from routers.teams import agents as agents_mod
 
@@ -87,7 +104,15 @@ def test_get_dashboard_aggregates_dash_and_badges(client, monkeypatch):
     )
     assert r.status_code == 200
     body = r.json()
-    assert body == {"dashboard": {"x": 1}, "sidebar_badges": {"inbox": 3}}
+    assert body == {
+        "dashboard": {
+            "agents": 3,  # active(2) + running(1)
+            "openIssues": 5,
+            "runsToday": 8,
+            "spendCents": 12345,
+        },
+        "sidebar_badges": {"inbox": 3},
+    }
     admin.get_dashboard.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie",
@@ -96,6 +121,30 @@ def test_get_dashboard_aggregates_dash_and_badges(client, monkeypatch):
         company_id="co_abc",
         session_cookie="cookie",
     )
+
+
+def test_get_dashboard_handles_missing_subfields(client, monkeypatch):
+    """If upstream ever returns null/missing sub-fields, the BFF must
+    coerce to 0 rather than 500 — DashboardPanel renders the result as
+    JSX values, so any non-scalar leaks back as a React crash."""
+    admin = MagicMock()
+    admin.get_dashboard = AsyncMock(return_value={})
+    admin.get_sidebar_badges = AsyncMock(return_value={})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/dashboard",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json()["dashboard"] == {
+        "agents": 0,
+        "openIssues": 0,
+        "runsToday": 0,
+        "spendCents": 0,
+    }
 
 
 def test_get_sidebar_badges(client, monkeypatch):
