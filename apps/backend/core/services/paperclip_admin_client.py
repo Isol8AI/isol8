@@ -722,3 +722,38 @@ class PaperclipAdminClient:
             f"/api/runs/{run_id}",
             session_cookie=session_cookie,
         )
+
+    # ------------------------------------------------------------------
+    # Inbox
+    # ------------------------------------------------------------------
+
+    async def list_inbox(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List inbox items for the company.
+
+        Maps to ``GET /api/companies/{companyId}/inbox``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/inbox",
+            session_cookie=session_cookie,
+        )
+
+    async def dismiss_inbox_item(
+        self,
+        *,
+        session_cookie: str,
+        item_id: str,
+    ) -> dict:
+        """Dismiss a single inbox item.
+
+        Maps to ``POST /api/inbox/{itemId}/dismiss``.
+        """
+        return await self._post(
+            f"/api/inbox/{item_id}/dismiss",
+            json={},
+            session_cookie=session_cookie,
+        )
