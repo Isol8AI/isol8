@@ -1070,3 +1070,67 @@ class PaperclipAdminClient:
             json=body,
             session_cookie=session_cookie,
         )
+
+    # ------------------------------------------------------------------
+    # Read-only feed: activity, costs, dashboard, sidebar badges
+    # ------------------------------------------------------------------
+
+    async def list_activity(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List company activity events.
+
+        Maps to ``GET /api/companies/{companyId}/activity``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/activity",
+            session_cookie=session_cookie,
+        )
+
+    async def get_costs(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the company costs summary.
+
+        Maps to ``GET /api/companies/{companyId}/costs``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/costs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_dashboard(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the dashboard aggregate.
+
+        Maps to ``GET /api/companies/{companyId}/dashboard``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/dashboard",
+            session_cookie=session_cookie,
+        )
+
+    async def get_sidebar_badges(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """Fetch the sidebar badge counts (inbox, approvals, etc).
+
+        Maps to ``GET /api/companies/{companyId}/sidebar-badges``.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/sidebar-badges",
+            session_cookie=session_cookie,
+        )
