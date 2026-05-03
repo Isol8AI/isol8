@@ -36,6 +36,32 @@ from .schemas import CreateAgentBody, PatchAgentBody
 router = APIRouter()
 
 
+# Adapter fields are synthesized server-side and must never reach the
+# browser. ``adapterConfig`` carries the user's own service token in
+# ``authToken``; ``adapterType`` is invariant (``openclaw_gateway`` for
+# everyone) and conveys nothing useful to the UI. Detail panels in the
+# frontend currently render ``JSON.stringify(<BFF response>)``, so a leak
+# at the BFF boundary becomes a token-in-DOM exposure. Strip on every
+# read path as defense in depth — the frontend should never need these.
+_AGENT_REDACTED_FIELDS = ("adapterConfig", "adapterType")
+
+
+def _redact_agent(agent):
+    """Strip adapter-related fields from an agent record before returning to the browser.
+
+    Defense in depth: the BFF synthesizes adapter config from server-side
+    state; the browser never names or sees it. Stripping on read prevents
+    a current/future panel that pretty-prints the agent dict from leaking
+    ``authToken`` (the user's own service token) into the DOM.
+
+    Returns the input unchanged if it isn't a dict (so the function is
+    safe to call on any upstream payload shape).
+    """
+    if not isinstance(agent, dict):
+        return agent
+    return {k: v for k, v in agent.items() if k not in _AGENT_REDACTED_FIELDS}
+
+
 # --- Indirection helpers (Tasks 7-12 import these) ---
 #
 # Each helper is a free function so unit tests can monkeypatch them
@@ -162,11 +188,18 @@ async def _ctx(auth: AuthContext = Depends(get_current_user)) -> TeamsContext:
 
 @router.get("/agents")
 async def list_agents(ctx: TeamsContext = Depends(_ctx)):
-    """List agents in the caller's company."""
-    return await _admin().list_agents(
+    """List agents in the caller's company.
+
+    Redacts ``adapterConfig`` + ``adapterType`` per-item before returning
+    — see ``_redact_agent`` for rationale.
+    """
+    upstream = await _admin().list_agents(
         company_id=ctx.company_id,
         session_cookie=ctx.session_cookie,
     )
+    if isinstance(upstream, dict) and isinstance(upstream.get("agents"), list):
+        return {**upstream, "agents": [_redact_agent(a) for a in upstream["agents"]]}
+    return upstream
 
 
 @router.post("/agents")
@@ -200,11 +233,16 @@ async def create_agent(body: CreateAgentBody, ctx: TeamsContext = Depends(_ctx))
 
 @router.get("/agents/{agent_id}")
 async def get_agent(agent_id: str, ctx: TeamsContext = Depends(_ctx)):
-    """Fetch a single agent by id."""
-    return await _admin().get_agent(
+    """Fetch a single agent by id.
+
+    Redacts ``adapterConfig`` + ``adapterType`` before returning — see
+    ``_redact_agent``.
+    """
+    upstream = await _admin().get_agent(
         agent_id=agent_id,
         session_cookie=ctx.session_cookie,
     )
+    return _redact_agent(upstream)
 
 
 @router.patch("/agents/{agent_id}")
@@ -220,11 +258,14 @@ async def patch_agent(
     provisioning path, not user-facing PATCH.
     """
     payload = body.model_dump(exclude_none=True)
-    return await _admin().patch_agent(
+    upstream = await _admin().patch_agent(
         agent_id=agent_id,
         body=payload,
         session_cookie=ctx.session_cookie,
     )
+    # Paperclip may echo the full agent record (including adapterConfig)
+    # in PATCH responses; redact for the same reason as the GETs.
+    return _redact_agent(upstream)
 
 
 @router.delete("/agents/{agent_id}")

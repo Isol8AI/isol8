@@ -113,3 +113,55 @@ def test_create_agent_rejects_client_supplied_url(client):
         headers={"Authorization": "Bearer test"},
     )
     assert r.status_code == 422
+
+
+def test_get_agent_strips_adapter_config(client, monkeypatch):
+    """Defense in depth: even if Paperclip echoes adapterConfig (containing
+    the user's service token) in the GET response, our BFF must strip it
+    before sending to the browser. Three detail panels render JSON dumps."""
+    admin = MagicMock()
+    admin.get_agent = AsyncMock(
+        return_value={
+            "id": "a1",
+            "name": "Helper",
+            "role": "engineer",
+            "adapterType": "openclaw_gateway",
+            "adapterConfig": {
+                "url": "wss://ws-dev.isol8.co",
+                "authToken": "SENSITIVE_USER_TOKEN",
+                "sessionKeyStrategy": "fixed",
+                "sessionKey": "u1",
+            },
+        }
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/agents/a1", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "adapterConfig" not in body
+    assert "adapterType" not in body
+    assert body["name"] == "Helper"
+
+
+def test_list_agents_strips_adapter_config_per_item(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_agents = AsyncMock(
+        return_value={
+            "agents": [
+                {"id": "a1", "name": "X", "adapterType": "openclaw_gateway", "adapterConfig": {"authToken": "SECRET"}},
+                {"id": "a2", "name": "Y", "adapterConfig": {"authToken": "SECRET2"}},
+            ],
+        }
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get("/api/v1/teams/agents", headers={"Authorization": "Bearer x"})
+    assert r.status_code == 200
+    for agent in r.json()["agents"]:
+        assert "adapterConfig" not in agent
+        assert "adapterType" not in agent
