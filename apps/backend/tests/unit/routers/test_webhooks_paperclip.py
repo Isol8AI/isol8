@@ -829,3 +829,126 @@ async def test_stripe_subscription_deleted_calls_disable(async_client, monkeypat
 
     assert resp.status_code == 200
     mock_provisioning.disable.assert_awaited_once_with(user_id="user_owner")
+
+
+# ----------------------------------------------------------------------
+# _lookup_owner_email — Codex P1 (round 3): Clerk fallback
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_falls_back_to_clerk_when_repo_missing():
+    """When ``user_repo.get`` returns no row (a prior ``user.created``
+    persistence failed, or the row predates the email field), we must
+    fall back to Clerk Backend API. Without the fallback, retries via
+    the update-service worker call the same resolver and stay
+    permanently ``pending``.
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_user = {
+        "primary_email_address_id": "idn_primary",
+        "email_addresses": [
+            {"id": "idn_primary", "email_address": "owner@acme.test"},
+        ],
+    }
+
+    clerk_get = AsyncMock(return_value=clerk_user)
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_falls_back_to_clerk_when_email_field_empty():
+    """Same fallback when the row exists but lacks an email field
+    (older rows that predate the email column).
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_user = {
+        "primary_email_address_id": "idn_primary",
+        "email_addresses": [
+            {"id": "idn_primary", "email_address": "owner@acme.test"},
+        ],
+    }
+
+    clerk_get = AsyncMock(return_value=clerk_user)
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"user_id": "user_owner"}),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_awaited_once_with("user_owner")
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_user_repo_fast_path_does_not_hit_clerk():
+    """Existing fast path: when the users repo already has the email
+    we MUST NOT call Clerk (avoid extra Clerk API hits and rate-limit
+    risk on every membership webhook).
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    clerk_get = AsyncMock()  # spy — should never be awaited
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value={"user_id": "user_owner", "email": "owner@acme.test"}),
+        ),
+        patch("core.services.clerk_admin.get_user", new=clerk_get),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email == "owner@acme.test"
+    clerk_get.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_lookup_owner_email_returns_none_when_clerk_fails():
+    """On Clerk error/404 we return None (not raise) so the retry
+    worker can try again next cycle without crashing the webhook.
+    """
+    from routers.webhooks import _lookup_owner_email
+
+    with (
+        patch(
+            "core.repositories.user_repo.get",
+            new=AsyncMock(return_value=None),
+        ),
+        patch(
+            "core.services.clerk_admin.get_user",
+            new=AsyncMock(return_value=None),
+        ),
+    ):
+        email = await _lookup_owner_email(
+            org_id="org_acme",
+            fallback_user_id="user_owner",
+        )
+
+    assert email is None

@@ -300,20 +300,59 @@ async def _lookup_owner_email(*, org_id: str, fallback_user_id: Optional[str]) -
     For ``organizationMembership.created`` Clerk's payload includes
     ``data.organization.created_by`` (the owner's user_id), but NOT the
     owner's email. We read it from the ``users`` repo where the
-    ``user.created`` webhook persisted it. If the row is missing or
-    lacks an email, return None — the caller's existing retry path
-    will re-drive once the row is backfilled.
+    ``user.created`` webhook persisted it.
+
+    Fallback to Clerk Backend API (``clerk_admin.get_user``) when the
+    repo row is missing or lacks an email. This catches two real
+    cases that the retry worker can't otherwise recover from:
+
+      * a prior ``user.created`` webhook persistence failed, leaving
+        no row at all, and
+      * older rows that predate the email field on ``users``.
+
+    Without the Clerk fallback the resolver returns None forever and
+    member onboarding stays permanently ``pending``. Returns None
+    (not raises) on Clerk failure so the retry worker can try again
+    next cycle without crashing the webhook.
     """
     if not fallback_user_id:
         return None
     from core.repositories import user_repo
 
+    # Fast path: users repo already has the email (populated by the
+    # ``user.created`` webhook).
     try:
         row = await user_repo.get(fallback_user_id)
         if row and row.get("email"):
             return row["email"]
     except Exception:
-        logger.exception("owner email lookup failed for org=%s", org_id)
+        logger.exception("owner email lookup (user_repo) failed for org=%s", org_id)
+
+    # Fallback: ask Clerk directly. Mirrors the email-extraction
+    # pattern in ``routers/teams/agents.py:_resolve_user_email``
+    # (primary_email_address_id → first email → None).
+    try:
+        from core.services import clerk_admin
+
+        user = await clerk_admin.get_user(fallback_user_id)
+        if not user:
+            return None
+        primary_id = user.get("primary_email_address_id")
+        addresses = user.get("email_addresses") or []
+        if primary_id:
+            for entry in addresses:
+                if isinstance(entry, dict) and entry.get("id") == primary_id:
+                    addr = entry.get("email_address")
+                    if addr:
+                        return addr
+        # Fall back to the first email if the primary id pointer is unset.
+        for entry in addresses:
+            if isinstance(entry, dict):
+                addr = entry.get("email_address")
+                if addr:
+                    return addr
+    except Exception:
+        logger.exception("owner email lookup (clerk_admin) failed for org=%s", org_id)
 
     return None
 
