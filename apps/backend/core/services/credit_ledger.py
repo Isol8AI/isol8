@@ -1,8 +1,13 @@
-"""Credit ledger — per-user prepaid balance + immutable transaction log.
+"""Credit ledger — owner-scoped prepaid balance + immutable transaction log.
 
-Backed by two DDB tables: `credits` (single row per user, atomic counter)
-and `credit-transactions` (immutable audit log, PK user_id + SK tx_id).
+Backed by two DDB tables: `credits` (single row per owner, atomic counter)
+and `credit-transactions` (immutable audit log, PK owner_id + SK tx_id).
 Per spec §6. Card 3 only — cards 1 and 2 don't touch this module.
+
+The DDB attribute name is still `user_id` for backward-compat, but the
+value we write is the **owner_id** (org_id for org context, user_id for
+personal). Org members all draw from one pooled balance keyed on the
+org's owner_id. Renaming the DDB attribute is a separate migration.
 
 Concurrency:
 - Top-up: atomic ADD on balance_microcents (cannot overflow on writes).
@@ -86,9 +91,9 @@ def _put_txn(item: dict) -> None:
     raise RuntimeError("credit_ledger._put_txn: 2 tx_id collisions in a row")
 
 
-async def get_balance(user_id: str, *, consistent: bool = False) -> int:
-    """Returns balance in microcents. 0 if the user has no row yet."""
-    resp = _credits_table().get_item(Key={"user_id": user_id}, ConsistentRead=consistent)
+async def get_balance(owner_id: str, *, consistent: bool = False) -> int:
+    """Returns balance in microcents. 0 if the owner has no row yet."""
+    resp = _credits_table().get_item(Key={"user_id": owner_id}, ConsistentRead=consistent)
     item = resp.get("Item")
     if not item:
         return 0
@@ -96,12 +101,12 @@ async def get_balance(user_id: str, *, consistent: bool = False) -> int:
 
 
 async def top_up(
-    user_id: str,
+    owner_id: str,
     *,
     amount_microcents: int,
     stripe_payment_intent_id: str,
 ) -> int:
-    """Add credits to a user's balance. Returns the new balance.
+    """Add credits to an owner's balance. Returns the new balance.
 
     Idempotent on stripe_payment_intent_id at the webhook layer (handler
     dedupes by event.id via Plan 1's webhook_dedup helper). This function
@@ -111,7 +116,7 @@ async def top_up(
         raise ValueError(f"amount_microcents must be positive, got {amount_microcents}")
 
     resp = _credits_table().update_item(
-        Key={"user_id": user_id},
+        Key={"user_id": owner_id},
         UpdateExpression="ADD balance_microcents :amt SET updated_at = :now, last_top_up_at = :now",
         ExpressionAttributeValues={
             ":amt": amount_microcents,
@@ -123,7 +128,7 @@ async def top_up(
 
     _put_txn(
         {
-            "user_id": user_id,
+            "user_id": owner_id,
             "tx_id": _new_tx_id(),
             "type": "top_up",
             "amount_microcents": amount_microcents,
@@ -136,7 +141,7 @@ async def top_up(
 
 
 async def deduct(
-    user_id: str,
+    owner_id: str,
     *,
     amount_microcents: int,
     chat_session_id: str,
@@ -154,7 +159,7 @@ async def deduct(
 
     try:
         resp = _credits_table().update_item(
-            Key={"user_id": user_id},
+            Key={"user_id": owner_id},
             UpdateExpression="ADD balance_microcents :neg SET updated_at = :now",
             ConditionExpression="balance_microcents >= :amt",
             ExpressionAttributeValues={
@@ -175,14 +180,14 @@ async def deduct(
         # write. Without the guard we'd zero the balance and erase the
         # top-up entirely (Codex P1 on PR #393).
         logger.warning(
-            "Credit overdraft for user_id=%s session=%s amount=%d — applying overdraft deduct",
-            user_id,
+            "Credit overdraft for owner_id=%s session=%s amount=%d — applying overdraft deduct",
+            owner_id,
             chat_session_id,
             amount_microcents,
         )
         try:
             resp = _credits_table().update_item(
-                Key={"user_id": user_id},
+                Key={"user_id": owner_id},
                 UpdateExpression=("ADD balance_microcents :neg SET updated_at = :now"),
                 # Only apply the overdraft deduct if the balance is still
                 # below the requested amount. If a top-up arrived first and
@@ -202,11 +207,11 @@ async def deduct(
                 raise
             # Top-up already restored a positive balance — read it and use
             # that for the audit row instead of writing a zero we'd regret.
-            current = await get_balance(user_id)
+            current = await get_balance(owner_id)
             new_balance = current
 
     txn_item = {
-        "user_id": user_id,
+        "user_id": owner_id,
         "tx_id": _new_tx_id(),
         "type": "deduct",
         "amount_microcents": -amount_microcents,
@@ -223,7 +228,7 @@ async def deduct(
 
 
 async def adjustment(
-    user_id: str,
+    owner_id: str,
     *,
     amount_microcents: int,
     reason: str,
@@ -234,15 +239,15 @@ async def adjustment(
     Positive amount adds, negative subtracts. Always succeeds; if subtracting
     would go negative, balance becomes 0 (consistent with deduct overdraft).
     """
-    new_balance = max(0, await get_balance(user_id, consistent=True) + amount_microcents)
+    new_balance = max(0, await get_balance(owner_id, consistent=True) + amount_microcents)
     _credits_table().update_item(
-        Key={"user_id": user_id},
+        Key={"user_id": owner_id},
         UpdateExpression="SET balance_microcents = :bal, updated_at = :now",
         ExpressionAttributeValues={":bal": new_balance, ":now": _now_iso()},
     )
     _put_txn(
         {
-            "user_id": user_id,
+            "user_id": owner_id,
             "tx_id": _new_tx_id(),
             "type": "adjustment",
             "amount_microcents": amount_microcents,
@@ -256,7 +261,7 @@ async def adjustment(
 
 
 async def set_auto_reload(
-    user_id: str,
+    owner_id: str,
     *,
     enabled: bool,
     threshold_cents: int | None = None,
@@ -273,7 +278,7 @@ async def set_auto_reload(
         raise ValueError("threshold_cents and amount_cents required when enabling")
 
     _credits_table().update_item(
-        Key={"user_id": user_id},
+        Key={"user_id": owner_id},
         UpdateExpression=(
             "SET auto_reload_enabled = :en, "
             "auto_reload_threshold_cents = :th, "
@@ -289,9 +294,9 @@ async def set_auto_reload(
     )
 
 
-async def should_auto_reload(user_id: str) -> bool:
+async def should_auto_reload(owner_id: str) -> bool:
     """True iff auto-reload is enabled and balance < threshold."""
-    resp = _credits_table().get_item(Key={"user_id": user_id}, ConsistentRead=True)
+    resp = _credits_table().get_item(Key={"user_id": owner_id}, ConsistentRead=True)
     item = resp.get("Item")
     if not item or not item.get("auto_reload_enabled"):
         return False
