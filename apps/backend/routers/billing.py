@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Literal
 
 import httpx
 import stripe
@@ -298,10 +299,18 @@ async def create_portal(
 
 
 class TrialCheckoutRequest(BaseModel):
-    provider_choice: str = Field(..., description="chatgpt_oauth | byo_key | bedrock_claude")
-    byo_provider: str | None = Field(
+    # Pydantic Literal validates at request time (422 on unknown values), so
+    # the body never reaches billing_repo / Stripe with junk that would later
+    # blow up ECS provisioning. The endpoint still raises 400 on the
+    # byo_key-without-byo_provider invariant — Literal enforces the enum,
+    # not the cross-field requirement.
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
+        ...,
+        description="chatgpt_oauth | byo_key | bedrock_claude",
+    )
+    byo_provider: Literal["openai", "anthropic"] | None = Field(
         None,
-        description="openai | anthropic — required when provider_choice='byo_key'",
+        description="Required when provider_choice='byo_key'",
     )
 
 
@@ -327,9 +336,10 @@ async def create_trial_checkout(
         create_flat_fee_checkout,
     )
 
-    if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
-        raise HTTPException(status_code=400, detail="unknown provider_choice")
-
+    # Note: provider_choice and byo_provider enums are enforced by pydantic
+    # Literal in TrialCheckoutRequest — invalid values produce 422 before
+    # reaching this handler. The cross-field invariant (byo_key requires a
+    # byo_provider value) is still enforced manually below.
     if body.provider_choice == "byo_key" and not body.byo_provider:
         raise HTTPException(
             status_code=400,

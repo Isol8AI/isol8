@@ -102,3 +102,67 @@ async def test_trial_checkout_byo_key_without_provider_rejected(async_client):
     assert resp.status_code == 400
     assert "byo_provider" in resp.json().get("detail", "")
     mock_set_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trial_checkout_invalid_provider_choice_rejected(async_client):
+    """Codex P2 (PR #521): unknown provider_choice values are rejected by
+    pydantic Literal with 422, before any DDB write or Stripe call."""
+    with patch(
+        "routers.billing.billing_repo.set_provider_choice",
+        new_callable=AsyncMock,
+    ) as mock_set_pc:
+        resp = await async_client.post(
+            "/api/v1/billing/trial-checkout",
+            json={"provider_choice": "cohere_claude"},  # not in Literal
+        )
+
+    assert resp.status_code == 422
+    mock_set_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trial_checkout_invalid_byo_provider_rejected(async_client):
+    """Codex P2 (PR #521): unknown byo_provider values are rejected by
+    pydantic Literal with 422 — pre-fix the field accepted any string and
+    junk like 'cohere' was persisted to billing then blew up ECS provisioning.
+    """
+    with patch(
+        "routers.billing.billing_repo.set_provider_choice",
+        new_callable=AsyncMock,
+    ) as mock_set_pc:
+        resp = await async_client.post(
+            "/api/v1/billing/trial-checkout",
+            json={"provider_choice": "byo_key", "byo_provider": "cohere"},
+        )
+
+    assert resp.status_code == 422
+    mock_set_pc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_trial_checkout_accepts_valid_byo_provider_values(async_client):
+    """Sanity check: openai and anthropic are valid byo_provider values."""
+    fake_account = {
+        "owner_id": "user_x",
+        "owner_type": "personal",
+        "stripe_customer_id": "cus_abc",
+    }
+
+    for provider in ("openai", "anthropic"):
+        with (
+            patch("routers.billing._get_billing_account", new_callable=AsyncMock, return_value=fake_account),
+            patch("routers.billing.billing_repo.set_provider_choice", new_callable=AsyncMock),
+            patch(
+                "core.services.billing_service.create_flat_fee_checkout",
+                new_callable=AsyncMock,
+            ) as mock_checkout,
+        ):
+            mock_checkout.return_value = type("S", (), {"url": "https://checkout.stripe.com/foo"})()
+
+            resp = await async_client.post(
+                "/api/v1/billing/trial-checkout",
+                json={"provider_choice": "byo_key", "byo_provider": provider},
+            )
+
+        assert resp.status_code == 200, f"byo_provider={provider} should be accepted, got {resp.status_code}"
