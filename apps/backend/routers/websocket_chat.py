@@ -177,6 +177,24 @@ async def ws_disconnect(
             pool = get_gateway_pool()
             pool.remove_frontend_connection(owner_id, x_connection_id)
 
+            # Tear down any teams-event subscription this conn had. Without
+            # this, a tab crash / network drop leaves a dead conn-id in the
+            # broker's subscriber set, blocking grace teardown of the
+            # backing Paperclip WS. The browser SHOULD send teams.unsubscribe
+            # on unmount but can't be relied on.
+            from core.services import teams_event_broker_singleton
+
+            broker = teams_event_broker_singleton.get_broker()
+            if broker is not None:
+                try:
+                    await broker.unsubscribe(user_id, x_connection_id)
+                except Exception:
+                    logger.exception(
+                        "teams broker disconnect cleanup failed user=%s conn=%s",
+                        user_id,
+                        x_connection_id[:12] if x_connection_id else "?",
+                    )
+
             # Additionally tear down the node upstream + per-user state
             # if this was a node connection.
             if is_node_connection(x_connection_id):

@@ -160,3 +160,77 @@ async def test_teams_subscribe_emits_dispatch_ok_metric():
         f"expected teams.dispatch ok/teams.subscribe; got: "
         f"{[(c.args, c.kwargs) for c in put_metric_mock.call_args_list]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_disconnect_unsubscribes_dead_browser_from_broker():
+    """Codex P1: a browser tab crashing without sending teams.unsubscribe
+    must NOT leave a stale conn-id in the broker's subscriber set —
+    that would block grace teardown of the backing Paperclip WS forever.
+    /ws/disconnect cleans up via broker.unsubscribe."""
+    from routers.websocket_chat import ws_disconnect
+
+    fake_conn_svc = MagicMock()
+    fake_conn_svc.get_connection = MagicMock(return_value=_conn_record())
+    fake_conn_svc.delete_connection = MagicMock()
+    fake_broker = MagicMock()
+    fake_broker.unsubscribe = AsyncMock()
+    fake_pool = MagicMock()
+    fake_pool.remove_frontend_connection = MagicMock()
+
+    with (
+        patch(
+            "routers.websocket_chat.get_connection_service",
+            AsyncMock(return_value=fake_conn_svc),
+        ),
+        patch(
+            "routers.websocket_chat.get_gateway_pool",
+            MagicMock(return_value=fake_pool),
+        ),
+        patch(
+            "routers.websocket_chat.is_node_connection",
+            MagicMock(return_value=False),
+        ),
+        patch(
+            "core.services.teams_event_broker_singleton.get_broker",
+            return_value=fake_broker,
+        ),
+    ):
+        resp = await ws_disconnect(x_connection_id="conn_abc")
+
+    assert resp.status_code == 200
+    fake_broker.unsubscribe.assert_awaited_once_with("u1", "conn_abc")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_no_op_when_broker_unavailable():
+    """If the broker singleton is None (dev without Paperclip),
+    /ws/disconnect still succeeds — broker cleanup is best-effort."""
+    from routers.websocket_chat import ws_disconnect
+
+    fake_conn_svc = MagicMock()
+    fake_conn_svc.get_connection = MagicMock(return_value=_conn_record())
+    fake_conn_svc.delete_connection = MagicMock()
+    fake_pool = MagicMock()
+
+    with (
+        patch(
+            "routers.websocket_chat.get_connection_service",
+            AsyncMock(return_value=fake_conn_svc),
+        ),
+        patch(
+            "routers.websocket_chat.get_gateway_pool",
+            MagicMock(return_value=fake_pool),
+        ),
+        patch(
+            "routers.websocket_chat.is_node_connection",
+            MagicMock(return_value=False),
+        ),
+        patch(
+            "core.services.teams_event_broker_singleton.get_broker",
+            return_value=None,
+        ),
+    ):
+        resp = await ws_disconnect(x_connection_id="conn_abc")
+
+    assert resp.status_code == 200
