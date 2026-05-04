@@ -309,6 +309,12 @@ async def container_provision(
     # 402 to mask the actual container the caller is asking about.
     existing = await container_repo.get_by_owner_id(owner_id)
     if existing:
+        # Backfill Paperclip workspace on every /provision hit, even for
+        # users who already have a container. provision_org is idempotent
+        # (no-ops on an active row), so this is cheap and lets users who
+        # provisioned before the auto-provision hook landed get their
+        # Paperclip workspace on next /chat visit.
+        asyncio.create_task(_ensure_paperclip_workspace(owner_id=owner_id, clerk_user_id=auth.user_id))
         if existing.get("status") == "stopped":
             # Container was scaled to zero -- restart it. This is the
             # cold-start path; emit a metric so we can answer "how often do

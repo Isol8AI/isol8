@@ -15,6 +15,7 @@ contract:
     Paperclip never breaks container provisioning.
 """
 
+import asyncio
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -151,6 +152,37 @@ async def test_background_provision_calls_paperclip_after_container_succeeds():
         await _background_provision("user_abc", "user_abc")
 
     fake_ecs.provision_user_container.assert_awaited_once()
+    ensure_mock.assert_awaited_once_with(owner_id="user_abc", clerk_user_id="user_abc")
+
+
+@pytest.mark.asyncio
+async def test_provision_existing_container_backfills_paperclip():
+    """Users who already have a container (provisioned before the auto-
+    provision hook landed) must still get Paperclip on next /chat visit.
+    The existing-container short-circuit path must fire the hook too."""
+    from routers.container import container_provision
+
+    auth = MagicMock()
+    auth.user_id = "user_abc"
+    auth.org_id = None
+    auth.is_org_context = False
+
+    with (
+        patch(
+            "routers.container.container_repo.get_by_owner_id",
+            new_callable=AsyncMock,
+            return_value={"status": "running", "service_name": "openclaw-existing"},
+        ),
+        patch(
+            "routers.container._ensure_paperclip_workspace",
+            new_callable=AsyncMock,
+        ) as ensure_mock,
+    ):
+        result = await container_provision(auth=auth)
+        # Let the asyncio.create_task scheduling run.
+        await asyncio.sleep(0)
+
+    assert result["already_existed"] is True
     ensure_mock.assert_awaited_once_with(owner_id="user_abc", clerk_user_id="user_abc")
 
 
