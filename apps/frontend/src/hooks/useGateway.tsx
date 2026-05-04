@@ -86,6 +86,7 @@ interface GatewayContextValue {
   nodeConnected: boolean;
   error: string | null;
   reconnectAttempt: number;
+  send: (payload: unknown) => void;
   sendReq: (method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<unknown>;
   sendChat: (agentId: string, message: string) => void;
   onEvent: (handler: (event: string, data: unknown) => void) => () => void;
@@ -436,6 +437,22 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  // ---- send (raw fire-and-forget) ----
+
+  // Fire-and-forget send for best-effort signals — currently the
+  // teams.subscribe / teams.unsubscribe envelopes from
+  // TeamsEventsProvider, but kept generic so future ws-broker
+  // subscription kinds can reuse it. Silent no-op when the socket
+  // isn't open; callers retry on their own cadence (TeamsEventsProvider
+  // re-fires on isConnected transitions).
+  const send = useCallback((payload: unknown): void => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    ws.send(JSON.stringify(payload));
+  }, []);
+
   // ---- Subscription helpers ----
 
   const onEvent = useCallback(
@@ -459,8 +476,8 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
   );
 
   const value = useMemo(
-    () => ({ isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
-    [isConnected, nodeConnected, error, reconnectAttempt, sendReq, sendChat, onEvent, onChatMessage, reconnect],
+    () => ({ isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect }),
+    [isConnected, nodeConnected, error, reconnectAttempt, send, sendReq, sendChat, onEvent, onChatMessage, reconnect],
   );
 
   return (
