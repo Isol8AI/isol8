@@ -24,7 +24,7 @@ export default function PayoutsReturnPage() {
   useEffect(() => {
     if (!isSignedIn) return;
     if (attempt >= 8) {
-      router.replace("/dashboard");
+      router.replace("/marketplace/dashboard");
       return;
     }
     const t = setTimeout(async () => {
@@ -37,7 +37,7 @@ export default function PayoutsReturnPage() {
         if (resp.ok) {
           const body = (await resp.json()) as { dashboard_url?: string | null };
           if (body.dashboard_url) {
-            router.replace("/dashboard");
+            router.replace("/marketplace/dashboard");
             return;
           }
         }

@@ -1,5 +1,5 @@
-import { browseListings } from "@/lib/api";
-import { ListingCard } from "@/components/Listing/ListingCard";
+import { browseListings } from "@/lib/marketplace/api";
+import { ListingCard } from "@/components/marketplace/storefront/Listing/ListingCard";
 import Link from "next/link";
 
 export default async function Home() {
@@ -20,7 +20,7 @@ export default async function Home() {
         </p>
         <div className="flex gap-4">
           <Link
-            href="/agents"
+            href="/marketplace/agents"
             className="px-6 py-3 bg-zinc-100 text-zinc-950 rounded-lg font-semibold"
           >
             Browse agents
@@ -30,7 +30,7 @@ export default async function Home() {
       <section>
         <div className="flex justify-between items-baseline mb-6">
           <h2 className="text-2xl font-semibold">Featured agents</h2>
-          <Link href="/agents" className="text-sm text-zinc-400 hover:text-zinc-100">
+          <Link href="/marketplace/agents" className="text-sm text-zinc-400 hover:text-zinc-100">
             View all →
           </Link>
         </div>

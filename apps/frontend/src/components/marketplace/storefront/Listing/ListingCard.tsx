@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Listing } from "@/lib/types";
+import type { Listing } from "@/lib/marketplace/types";
 
 // Strip markdown noise for the card preview — full markdown render lives on
 // the detail page. This keeps cards visually consistent (no headings/lists
@@ -22,7 +22,7 @@ export function ListingCard({ listing }: { listing: Listing }) {
   const preview = stripMarkdown(listing.description_md);
   return (
     <Link
-      href={`/listing/${listing.slug}`}
+      href={`/marketplace/listing/${listing.slug}`}
       className="block rounded-xl border border-zinc-800 p-5 hover:border-zinc-600 transition"
     >
       <div className="flex items-start justify-between mb-2">

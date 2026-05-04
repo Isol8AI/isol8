@@ -150,7 +150,7 @@ describe("PublishAgentModal — submit flow", () => {
     const storefrontLink = screen.getByRole("link", {
       name: /view storefront url/i,
     }) as HTMLAnchorElement;
-    expect(storefrontLink.href).toBe("http://localhost:3001/listing/research-agent");
+    expect(storefrontLink.href).toBe("http://localhost:3000/marketplace/listing/research-agent");
 
     expect(api.post).toHaveBeenCalledTimes(3);
     expect(api.post).toHaveBeenNthCalledWith(
@@ -334,17 +334,18 @@ describe("PublishAgentModal — submit flow", () => {
 });
 
 describe("storefrontUrlForSlug — host pattern", () => {
-  // Pinning the dotted convention (marketplace[.{env}].isol8.co) prevents
-  // regression to the broken hyphenated form (marketplace-{env}.isol8.co).
-  // See apps/infra/lib/stacks/service-stack.ts for the canonical reference.
+  // Storefront is path-based on the same isol8.co frontend (no separate
+  // marketplace.* subdomain). Test pins the env→host mapping so the
+  // publish-success "your listing is live at…" link goes to the right
+  // dev/staging/prod surface.
 
   it("localhost backend → storefront dev port (uses module-mocked BACKEND_URL)", () => {
     expect(storefrontUrlForSlug("my-agent")).toBe(
-      "http://localhost:3001/listing/my-agent",
+      "http://localhost:3000/marketplace/listing/my-agent",
     );
   });
 
-  it("api.isol8.co → marketplace.isol8.co", async () => {
+  it("api.isol8.co → isol8.co", async () => {
     vi.resetModules();
     vi.doMock("@/lib/api", async () => {
       const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -352,12 +353,12 @@ describe("storefrontUrlForSlug — host pattern", () => {
     });
     const mod = await import("@/components/marketplace/PublishAgentModal");
     expect(mod.storefrontUrlForSlug("my-agent")).toBe(
-      "https://marketplace.isol8.co/listing/my-agent",
+      "https://isol8.co/marketplace/listing/my-agent",
     );
     vi.doUnmock("@/lib/api");
   });
 
-  it("api-dev.isol8.co → marketplace.dev.isol8.co (dotted, NOT hyphenated)", async () => {
+  it("api-dev.isol8.co → dev.isol8.co", async () => {
     vi.resetModules();
     vi.doMock("@/lib/api", async () => {
       const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -369,12 +370,12 @@ describe("storefrontUrlForSlug — host pattern", () => {
     });
     const mod = await import("@/components/marketplace/PublishAgentModal");
     expect(mod.storefrontUrlForSlug("my-agent")).toBe(
-      "https://marketplace.dev.isol8.co/listing/my-agent",
+      "https://dev.isol8.co/marketplace/listing/my-agent",
     );
     vi.doUnmock("@/lib/api");
   });
 
-  it("api-staging.isol8.co → marketplace.staging.isol8.co (dotted)", async () => {
+  it("api-staging.isol8.co → staging.isol8.co", async () => {
     vi.resetModules();
     vi.doMock("@/lib/api", async () => {
       const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");
@@ -386,7 +387,7 @@ describe("storefrontUrlForSlug — host pattern", () => {
     });
     const mod = await import("@/components/marketplace/PublishAgentModal");
     expect(mod.storefrontUrlForSlug("my-agent")).toBe(
-      "https://marketplace.staging.isol8.co/listing/my-agent",
+      "https://staging.isol8.co/marketplace/listing/my-agent",
     );
     vi.doUnmock("@/lib/api");
   });
@@ -395,7 +396,7 @@ describe("storefrontUrlForSlug — host pattern", () => {
     // The slug validator forbids these in real usage, but the function should
     // still safely encode whatever is passed in.
     expect(storefrontUrlForSlug("a b/c")).toBe(
-      "http://localhost:3001/listing/a%20b%2Fc",
+      "http://localhost:3000/marketplace/listing/a%20b%2Fc",
     );
   });
 });

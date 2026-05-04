@@ -1,4 +1,4 @@
-import type { Listing, ListingDetailResponse } from "@/lib/types";
+import type { Listing, ListingDetailResponse } from "@/lib/marketplace/types";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "https://api.isol8.co";
 

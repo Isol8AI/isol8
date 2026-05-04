@@ -1,6 +1,6 @@
 "use client";
 
-import type { Listing } from "@/lib/types";
+import type { Listing } from "@/lib/marketplace/types";
 import { useAuth, useUser } from "@clerk/nextjs";
 import { useState } from "react";
 
@@ -162,7 +162,7 @@ function PaidBuyButton({
     setLoading(true);
     try {
       const jwt = await getToken();
-      const resp = await fetch("/api/internal/checkout", {
+      const resp = await fetch("/api/internal/marketplace/checkout", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

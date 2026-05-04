@@ -1,7 +1,7 @@
-import { getListing } from "@/lib/api";
-import { BuyButton } from "@/components/Listing/BuyButton";
-import { MarkdownDescription } from "@/components/Listing/MarkdownDescription";
-import type { ListingManifest } from "@/lib/types";
+import { getListing } from "@/lib/marketplace/api";
+import { BuyButton } from "@/components/marketplace/storefront/Listing/BuyButton";
+import { MarkdownDescription } from "@/components/marketplace/storefront/Listing/MarkdownDescription";
+import type { ListingManifest } from "@/lib/marketplace/types";
 import { notFound } from "next/navigation";
 
 export default async function ListingDetail({

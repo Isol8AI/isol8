@@ -1,5 +1,5 @@
-import { browseListings } from "@/lib/api";
-import { ListingCard } from "@/components/Listing/ListingCard";
+import { browseListings } from "@/lib/marketplace/api";
+import { ListingCard } from "@/components/marketplace/storefront/Listing/ListingCard";
 
 export default async function Agents() {
   let items: Awaited<ReturnType<typeof browseListings>>["items"] = [];

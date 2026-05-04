@@ -90,38 +90,36 @@ function parseTags(raw: string): string[] {
 
 // ---------------------------------------------------------------------------
 // Storefront URL — pin to dev/prod by API host. The marketplace storefront
-// has a separate Vercel deploy at marketplace[.{env}].isol8.co. The repo's
-// canonical convention is dotted (not hyphenated): see
-// apps/infra/lib/stacks/service-stack.ts (Stripe Connect refresh URL) and
-// the marketplace plan docs (storefront DNS section).
+// is path-based (/marketplace/...) on the same isol8.co frontend, not a
+// separate subdomain. See apps/frontend/src/app/marketplace/ for the routes.
 // ---------------------------------------------------------------------------
 
 export function storefrontUrlForSlug(slug: string): string {
   // Examples:
-  //   https://api-dev.isol8.co/api/v1     → https://marketplace.dev.isol8.co
-  //   https://api-staging.isol8.co/api/v1 → https://marketplace.staging.isol8.co
-  //   https://api.isol8.co/api/v1         → https://marketplace.isol8.co
-  //   http://localhost:8000/api/v1        → http://localhost:3001 (best-effort)
-  const path = `/listing/${encodeURIComponent(slug)}`;
+  //   https://api-dev.isol8.co/api/v1     → https://dev.isol8.co/marketplace/listing/<slug>
+  //   https://api-staging.isol8.co/api/v1 → https://staging.isol8.co/marketplace/listing/<slug>
+  //   https://api.isol8.co/api/v1         → https://isol8.co/marketplace/listing/<slug>
+  //   http://localhost:8000/api/v1        → http://localhost:3000/marketplace/listing/<slug>
+  const path = `/marketplace/listing/${encodeURIComponent(slug)}`;
   try {
     const url = new URL(BACKEND_URL);
     const host = url.hostname;
     if (host === "localhost" || host === "127.0.0.1") {
-      return `http://localhost:3001${path}`;
+      return `http://localhost:3000${path}`;
     }
-    // Extract env from `api[-env].isol8.co` and produce `marketplace[.env].isol8.co`.
+    // Extract env from `api[-env].isol8.co` and produce `[env.]isol8.co`.
     // Prod (api.isol8.co) → no env segment. Non-prod hyphenated suffix becomes
-    // a dotted subdomain so storefront DNS matches infra (CNAMEs are
-    // marketplace.dev.isol8.co, marketplace.staging.isol8.co).
+    // a dotted subdomain matching the existing frontend convention
+    // (dev.isol8.co, staging.isol8.co).
     const m = host.match(/^api(?:-([a-z]+))?\.isol8\.co$/);
     if (m) {
       const env = m[1];
-      const storefrontHost = env ? `marketplace.${env}.isol8.co` : "marketplace.isol8.co";
-      return `https://${storefrontHost}${path}`;
+      const frontHost = env ? `${env}.isol8.co` : "isol8.co";
+      return `https://${frontHost}${path}`;
     }
-    return `https://marketplace.isol8.co${path}`;
+    return `https://isol8.co${path}`;
   } catch {
-    return `https://marketplace.isol8.co${path}`;
+    return `https://isol8.co${path}`;
   }
 }
 

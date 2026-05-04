@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { checkout } from "@/lib/api";
+import { checkout } from "@/lib/marketplace/api";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();

@@ -777,12 +777,12 @@ export class ServiceStack extends cdk.Stack {
         // bounces sellers back here on refresh + completion.
         STRIPE_CONNECT_REFRESH_URL:
           env === "prod"
-            ? "https://marketplace.isol8.co/payouts/refresh"
-            : "https://marketplace.dev.isol8.co/payouts/refresh",
+            ? "https://isol8.co/marketplace/payouts/refresh"
+            : "https://dev.isol8.co/marketplace/payouts/refresh",
         STRIPE_CONNECT_RETURN_URL:
           env === "prod"
-            ? "https://marketplace.isol8.co/payouts/return"
-            : "https://marketplace.dev.isol8.co/payouts/return",
+            ? "https://isol8.co/marketplace/payouts/return"
+            : "https://dev.isol8.co/marketplace/payouts/return",
         // PostHog server-side reads for the admin Activity tab.
         // us.posthog.com is the API host for US Cloud (our project lives
         // there). Project ID is public — visible in the PostHog dashboard
