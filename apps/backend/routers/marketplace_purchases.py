@@ -6,11 +6,11 @@ in marketplace_listings. There is no CLI installer.
 """
 
 import time
-import uuid
 from typing import Annotated
 
 import boto3
 import stripe
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
 from core.auth import AuthContext, get_current_user
@@ -177,27 +177,44 @@ async def _handle_checkout_completed(session: dict) -> None:
             # Logged via Stripe's own audit; we continue.
             transfer_group = ""
 
+    # Deterministic purchase_id keyed on the Stripe checkout session id so
+    # the put_item is idempotent: a Stripe retry (after webhook_dedup
+    # rollback on transient failure) re-runs this handler with the same
+    # session_id, the conditional put fails on attribute_not_exists, and we
+    # treat that as already-fulfilled and skip the seller balance bump.
+    # Without this guard, every retry minted a fresh uuid4 → duplicate
+    # purchase row + duplicate license + double balance credit.
+    session_id = session.get("id")
+    if not session_id:
+        return  # Stripe always sends id on completed sessions; defensive.
+    purchase_id = f"cs_{session_id}"
     license_key = license_service.generate()
-    purchase_id = str(uuid.uuid4())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    _purchases_table().put_item(
-        Item={
-            "buyer_id": buyer_id,
-            "purchase_id": purchase_id,
-            "listing_id": listing_id,
-            "listing_version_at_purchase": version,
-            "entitlement_version_floor": version,
-            "price_paid_cents": amount,
-            "stripe_payment_intent_id": payment_intent_id,
-            "stripe_checkout_session_id": session.get("id"),
-            "stripe_transfer_group": transfer_group,
-            "license_key": license_key,
-            "license_key_revoked": False,
-            "status": "paid",
-            "install_count": 0,
-            "created_at": now_iso,
-        }
-    )
+    try:
+        _purchases_table().put_item(
+            Item={
+                "buyer_id": buyer_id,
+                "purchase_id": purchase_id,
+                "listing_id": listing_id,
+                "listing_version_at_purchase": version,
+                "entitlement_version_floor": version,
+                "price_paid_cents": amount,
+                "stripe_payment_intent_id": payment_intent_id,
+                "stripe_checkout_session_id": session_id,
+                "stripe_transfer_group": transfer_group,
+                "license_key": license_key,
+                "license_key_revoked": False,
+                "status": "paid",
+                "install_count": 0,
+                "created_at": now_iso,
+            },
+            ConditionExpression="attribute_not_exists(purchase_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # Already fulfilled on a prior delivery; idempotent no-op.
+        raise
+
     _payout_accounts_table().update_item(
         Key={"seller_id": seller_id},
         UpdateExpression=(

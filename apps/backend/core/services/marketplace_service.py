@@ -75,23 +75,77 @@ async def create_draft(
     artifact_bytes: bytes,
     manifest: dict,
 ) -> dict:
-    """Create a new listing in draft state. Slug must be unique."""
-    table = _listings_table()
-    existing = table.query(
-        IndexName="slug-version-index",
-        KeyConditionExpression="slug = :s",
-        ExpressionAttributeValues={":s": slug},
-        Limit=1,
-    )
-    if existing.get("Items"):
-        raise SlugCollisionError(f"slug '{slug}' is taken")
+    """Create a new listing in draft state. Slug must be unique.
 
+    Uses a TransactWriteItems with a slug-reservation row to enforce
+    uniqueness atomically — a read-then-put has a race window where two
+    concurrent create_draft calls for the same slug both pass the
+    pre-check and both insert. The reservation row uses listing_id=
+    "slug:{slug}" + version=0 (sentinel) so it sits in the same table
+    but doesn't appear in any real-listing query (those filter version >= 1).
+    """
     listing_id = str(uuid.uuid4())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     s3_prefix, sha = await _upload_artifact_to_s3(
         listing_id=listing_id, version=1, artifact_bytes=artifact_bytes, manifest=manifest
     )
-    item = {
+
+    listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
+    client = _dynamodb_client()
+    try:
+        client.transact_write_items(
+            TransactItems=[
+                {
+                    "Put": {
+                        "TableName": listings_tbl,
+                        "Item": {
+                            "listing_id": {"S": f"slug:{slug}"},
+                            "version": {"N": "0"},
+                            "slug": {"S": slug},
+                            "owner_listing_id": {"S": listing_id},
+                            "reserved_at": {"S": now_iso},
+                        },
+                        "ConditionExpression": "attribute_not_exists(listing_id)",
+                    },
+                },
+                {
+                    "Put": {
+                        "TableName": listings_tbl,
+                        "Item": {
+                            "listing_id": {"S": listing_id},
+                            "version": {"N": "1"},
+                            "slug": {"S": slug},
+                            "name": {"S": name},
+                            "description_md": {"S": description_md},
+                            "format": {"S": format},
+                            "price_cents": {"N": str(price_cents)},
+                            "tags": {"L": [{"S": t} for t in tags]},
+                            "seller_id": {"S": seller_id},
+                            "status": {"S": "draft"},
+                            "s3_prefix": {"S": s3_prefix},
+                            "manifest_sha256": {"S": sha},
+                            "manifest_json": {"S": json.dumps(manifest)},
+                            "artifact_format_version": {"S": "v1"},
+                            "entitlement_policy": {"S": "perpetual"},
+                            "artifact_uploaded": {"BOOL": False},
+                            "created_at": {"S": now_iso},
+                            "updated_at": {"S": now_iso},
+                            # published_at is NULL until publish (resp. submit
+                            # populates it for sparse-GSI visibility).
+                        },
+                    },
+                },
+            ]
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "TransactionCanceledException":
+            raise SlugCollisionError(f"slug '{slug}' is taken")
+        raise
+
+    # Return the listing item shape the caller expects (matching the
+    # pre-TransactWrite dict literal — manifest is the original dict, not
+    # the JSON-serialized form stored in DDB).
+    return {
         "listing_id": listing_id,
         "version": 1,
         "slug": slug,
@@ -107,15 +161,11 @@ async def create_draft(
         "manifest_json": manifest,
         "artifact_format_version": "v1",
         "entitlement_policy": "perpetual",
-        # False until replace_artifact writes the real bytes.
-        # submit_for_review requires this to be True.
         "artifact_uploaded": False,
         "created_at": now_iso,
         "updated_at": now_iso,
         "published_at": None,
     }
-    table.put_item(Item=item)
-    return item
 
 
 async def replace_artifact(
@@ -325,45 +375,59 @@ async def publish_v2(
     client = _dynamodb_client()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     listings_tbl = settings.MARKETPLACE_LISTINGS_TABLE
-    client.transact_write_items(
-        TransactItems=[
-            {
-                "Update": {
-                    "TableName": listings_tbl,
-                    "Key": {
-                        "listing_id": {"S": listing_id},
-                        "version": {"N": str(prev_version)},
-                    },
-                    "ConditionExpression": "#s = :pub",
-                    "UpdateExpression": "SET #s = :retired, updated_at = :now",
-                    "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": {
-                        ":pub": {"S": "published"},
-                        ":retired": {"S": "retired"},
-                        ":now": {"S": now_iso},
-                    },
-                },
-            },
-            {
-                "Update": {
-                    "TableName": listings_tbl,
-                    "Key": {
-                        "listing_id": {"S": listing_id},
-                        "version": {"N": str(new_version)},
-                    },
-                    "ConditionExpression": "#s = :review",
-                    "UpdateExpression": ("SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"),
-                    "ExpressionAttributeNames": {"#s": "status"},
-                    "ExpressionAttributeValues": {
-                        ":review": {"S": "review"},
-                        ":pub": {"S": "published"},
-                        ":now": {"S": now_iso},
-                        ":by": {"S": approved_by},
+    try:
+        client.transact_write_items(
+            TransactItems=[
+                {
+                    "Update": {
+                        "TableName": listings_tbl,
+                        "Key": {
+                            "listing_id": {"S": listing_id},
+                            "version": {"N": str(prev_version)},
+                        },
+                        "ConditionExpression": "#s = :pub",
+                        "UpdateExpression": "SET #s = :retired, updated_at = :now",
+                        "ExpressionAttributeNames": {"#s": "status"},
+                        "ExpressionAttributeValues": {
+                            ":pub": {"S": "published"},
+                            ":retired": {"S": "retired"},
+                            ":now": {"S": now_iso},
+                        },
                     },
                 },
-            },
-        ]
-    )
+                {
+                    "Update": {
+                        "TableName": listings_tbl,
+                        "Key": {
+                            "listing_id": {"S": listing_id},
+                            "version": {"N": str(new_version)},
+                        },
+                        "ConditionExpression": "#s = :review",
+                        "UpdateExpression": (
+                            "SET #s = :pub, published_at = :now, published_by = :by, updated_at = :now"
+                        ),
+                        "ExpressionAttributeNames": {"#s": "status"},
+                        "ExpressionAttributeValues": {
+                            ":review": {"S": "review"},
+                            ":pub": {"S": "published"},
+                            ":now": {"S": now_iso},
+                            ":by": {"S": approved_by},
+                        },
+                    },
+                },
+            ]
+        )
+    except ClientError as e:
+        # TransactionCanceledException fires when either ConditionExpression
+        # fails (prev_version not 'published' or new_version not 'review').
+        # Surface as InvalidStateError so the route translates it to 409
+        # rather than letting a raw ClientError become a 500.
+        if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
+            raise InvalidStateError(
+                f"publish_v2 conditional check failed for listing {listing_id} "
+                f"(prev v{prev_version} or new v{new_version} not in expected state)"
+            )
+        raise
 
 
 async def get_by_slug(*, slug: str) -> dict | None:
@@ -383,8 +447,11 @@ async def get_by_slug(*, slug: str) -> dict | None:
     table = _listings_table()
     resp = table.query(
         IndexName="slug-version-index",
-        KeyConditionExpression="slug = :s",
-        ExpressionAttributeValues={":s": slug},
+        # version > 0 excludes the slug-reservation sentinel row written by
+        # create_draft (listing_id="slug:…", version=0). Real listings start
+        # at version=1.
+        KeyConditionExpression="slug = :s AND version > :zero",
+        ExpressionAttributeValues={":s": slug, ":zero": 0},
         ScanIndexForward=False,  # newest version first
     )
     items = resp.get("Items", [])

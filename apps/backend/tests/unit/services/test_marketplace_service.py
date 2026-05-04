@@ -12,14 +12,13 @@ from core.services import marketplace_service  # noqa: E402
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
+@patch("core.services.marketplace_service._dynamodb_client")
 @patch(
     "core.services.marketplace_service._upload_artifact_to_s3",
     new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
 )
-async def test_create_draft_listing(mock_listings):
-    mock_listings.return_value.query.return_value = {"Items": []}  # no slug collision
-    mock_listings.return_value.put_item = MagicMock()
+async def test_create_draft_listing(mock_client):
+    mock_client.return_value.transact_write_items = MagicMock(return_value={})
     listing = await marketplace_service.create_draft(
         seller_id="user_abc",
         slug="my-agent",
@@ -35,12 +34,34 @@ async def test_create_draft_listing(mock_listings):
     assert listing["seller_id"] == "user_abc"
     assert listing["slug"] == "my-agent"
     assert listing["version"] == 1
+    # Slug-reservation row is in the same TransactWrite as the listing.
+    transact_items = mock_client.return_value.transact_write_items.call_args.kwargs["TransactItems"]
+    assert len(transact_items) == 2
+    reservation = transact_items[0]["Put"]
+    assert reservation["Item"]["listing_id"]["S"] == "slug:my-agent"
+    assert reservation["Item"]["version"]["N"] == "0"
+    assert reservation["ConditionExpression"] == "attribute_not_exists(listing_id)"
 
 
 @pytest.mark.asyncio
-@patch("core.services.marketplace_service._listings_table")
-async def test_create_draft_rejects_duplicate_slug(mock_listings):
-    mock_listings.return_value.query.return_value = {"Items": [{"slug": "my-agent"}]}
+@patch("core.services.marketplace_service._dynamodb_client")
+@patch(
+    "core.services.marketplace_service._upload_artifact_to_s3",
+    new=AsyncMock(return_value=("listings/abc/v1/", "sha-1")),
+)
+async def test_create_draft_rejects_duplicate_slug(mock_client):
+    """Regression: slug uniqueness must be atomic via TransactWriteItems +
+    a slug-reservation row, not a read-then-put. Two concurrent create_draft
+    calls for the same slug both pass the read but TransactWrite fails for
+    the loser (Codex P2 on PR #517, commit 0035a8ac)."""
+    from botocore.exceptions import ClientError
+
+    mock_client.return_value.transact_write_items = MagicMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}},
+            "TransactWriteItems",
+        )
+    )
     with pytest.raises(marketplace_service.SlugCollisionError):
         await marketplace_service.create_draft(
             seller_id="user_abc",
@@ -160,6 +181,30 @@ async def test_get_by_slug_returns_highest_when_no_published(mock_listings):
     assert result is not None
     assert result["version"] == 1
     assert result["status"] == "draft"
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._dynamodb_client")
+async def test_publish_v2_translates_transaction_cancel_to_invalid_state(mock_client):
+    """Regression: publish_v2 raises ClientError(TransactionCanceledException)
+    when either ConditionExpression fails (prev not 'published' or new not
+    'review'). Translate to InvalidStateError so the route turns it into a
+    409 instead of a 500 (Codex P2 on PR #517, commit 0035a8ac)."""
+    from botocore.exceptions import ClientError
+
+    mock_client.return_value.transact_write_items = MagicMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "TransactionCanceledException", "Message": "x"}},
+            "TransactWriteItems",
+        )
+    )
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.publish_v2(
+            listing_id="l1",
+            prev_version=1,
+            new_version=2,
+            approved_by="admin_xyz",
+        )
 
 
 @pytest.mark.asyncio
