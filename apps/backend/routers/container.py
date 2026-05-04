@@ -130,6 +130,19 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
+        # No container row at all — before returning 404, evaluate the
+        # same provision gate POST /provision uses. If a gate fires, the
+        # frontend needs the structured payload (402) so it can render
+        # the picker / "top up" CTA instead of trapping the user in a
+        # generic "no container" state. If no gate fires, fall through
+        # to the existing 404 behavior unchanged.
+        gate = await evaluate_provision_gate(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            is_admin=auth.is_org_admin if auth.is_org_context else True,
+        )
+        if gate is not None:
+            raise HTTPException(status_code=402, detail=gate.to_payload())
         raise HTTPException(status_code=404, detail="No container found")
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
