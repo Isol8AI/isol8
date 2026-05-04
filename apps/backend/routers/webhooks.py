@@ -44,7 +44,7 @@ from fastapi import APIRouter, HTTPException, Request
 from core.config import settings
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo, channel_link_repo, update_repo
-from core.services.update_service import PAPERCLIP_RETRY_KIND as _PAPERCLIP_RETRY_KIND
+from core.services.update_service import PAPERCLIP_RETRY_KIND
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +106,7 @@ def _verify_svix_signature(body: bytes, headers: dict) -> None:
 # constructing per-request keeps the wiring trivial to override in tests.
 # T14/T15 (proxy router) will introduce a long-lived shared client.
 
-# The canonical home for ``_PAPERCLIP_RETRY_KIND`` is
+# The canonical home for ``PAPERCLIP_RETRY_KIND`` is
 # ``core.services.update_service.PAPERCLIP_RETRY_KIND``. Both this
 # webhook router (which enqueues retries) and the scheduled worker
 # (which consumes them) read the same constant — keeping them in
@@ -184,7 +184,7 @@ async def _enqueue_paperclip_retry(*, op: str, payload: dict, owner_id: str) -> 
     try:
         await update_repo.create(
             owner_id=owner_id,
-            update_type=_PAPERCLIP_RETRY_KIND,
+            update_type=PAPERCLIP_RETRY_KIND,
             description=f"Retry {op} (Paperclip)",
             changes={"op": op, **payload},
         )

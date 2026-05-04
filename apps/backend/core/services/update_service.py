@@ -32,9 +32,6 @@ logger = logging.getLogger(__name__)
 # the right amount of paranoia. Public name (no underscore) since both
 # the webhook router and tests import it.
 PAPERCLIP_RETRY_KIND = "paperclip_provision"
-# Backwards-compat alias for any callers still referencing the old
-# private name. Kept until the next cleanup pass.
-_PAPERCLIP_RETRY_KIND = PAPERCLIP_RETRY_KIND
 
 # Daily purge pass cadence, in seconds.
 _PURGE_PASS_INTERVAL_SECONDS = 24 * 60 * 60
@@ -315,7 +312,7 @@ async def _paperclip_provision_retry_pass() -> None:
     leave the row pending so the next iteration retries it.
     """
     try:
-        pending = await update_repo.list_pending_by_type(_PAPERCLIP_RETRY_KIND)
+        pending = await update_repo.list_pending_by_type(PAPERCLIP_RETRY_KIND)
     except Exception:
         logger.exception("paperclip_provision_retry_pass: list_pending_by_type failed")
         return
