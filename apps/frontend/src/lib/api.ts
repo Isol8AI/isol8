@@ -88,10 +88,14 @@ export function useApi(): ApiMethods {
         throw new Error("No authentication token available");
       }
 
+      // Let the browser set the multipart Content-Type (with boundary)
+      // when the body is FormData. Otherwise default to JSON, which is
+      // the calling convention for every other method on this hook.
+      const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
       const headers: HeadersInit = {
         ...options.headers,
         Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
       };
 
       const response = await fetch(`${BACKEND_URL}${endpoint}`, {
@@ -161,27 +165,15 @@ export function useApi(): ApiMethods {
           body: JSON.stringify({ patch }),
         }) as Promise<{ status: string; owner_id: string }>;
       },
-      async uploadFiles(files: File[], agentId: string): Promise<UploadResponse> {
-        const token = await getToken();
-        if (!token) throw new Error("No authentication token available");
-
+      uploadFiles(files: File[], agentId: string): Promise<UploadResponse> {
         const formData = new FormData();
         for (const file of files) {
           formData.append("files", file);
         }
-
-        const response = await fetch(`${BACKEND_URL}/container/files?agent_id=${encodeURIComponent(agentId)}`, {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: formData,
-        });
-
-        if (!response.ok) {
-          const errorData = await response.json().catch(() => ({}));
-          throw new Error(errorData.detail || "Upload failed");
-        }
-
-        return response.json();
+        return authenticatedFetch(
+          `/container/files?agent_id=${encodeURIComponent(agentId)}`,
+          { method: "POST", body: formData },
+        ) as Promise<UploadResponse>;
       },
       saveWorkspaceFile(
         agentId: string,
@@ -195,6 +187,6 @@ export function useApi(): ApiMethods {
         }) as Promise<{ status: string; path: string }>;
       },
     }),
-    [authenticatedFetch, getToken]
+    [authenticatedFetch]
   );
 }
