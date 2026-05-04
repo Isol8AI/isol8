@@ -14,7 +14,7 @@ A gap audit produced this prioritized list of sub-projects to close the most-vis
 
 | # | Sub-project | Effort | Status | Spec | Plan | PR |
 |---|---|---|---|---|---|---|
-| 1 | Realtime updates (BFF WS subscriptions + frontend hook for live badges, agent status dots, run progress, dashboard counts) | L | Brainstorming | — | — | — |
+| 1 | Realtime updates (BFF WS subscriptions + frontend hook for live badges, agent status dots, run progress, dashboard counts) | L | Spec | [2026-05-04-teams-realtime-design.md](./2026-05-04-teams-realtime-design.md) | — | — |
 | 2 | Dashboard charts (4 live charts: run activity, success rate, issue status, priority breakdown; recent activity panel) | M | Pending | — | — | — |
 | 3 | Inbox depth (tabs All/Mine/Approvals, filters, detail drawer, archive/undo, keyboard nav) | M | Pending | — | — | — |
 | 4 | Command palette (cmd+k for fast nav/search/create across agents/issues/projects) | S | Pending | — | — | — |
