@@ -62,14 +62,32 @@ async def approve(
 ):
     """Approve a listing version.
 
-    First publish (default): version=1, no prev_version → marketplace_service.approve
-    flips status review→published.
+    First publish (version=1): marketplace_service.approve flips status
+    review→published.
 
-    Subsequent versions: pass version=N and prev_version=M → publish_v2 atomically
-    flips prev_version's status published→retired AND new version's review→published
-    in one TransactWriteItems.
+    Subsequent versions: when version > 1, derive prev_version automatically
+    by reading the listing's history and finding the currently-published
+    row. publish_v2 atomically flips prev_version's status published→retired
+    AND new version's review→published in one TransactWriteItems. This
+    keeps the frontend ignorant of the v_prev concept — the admin just
+    approves; the backend figures out which version (if any) to retire.
+
+    `prev_version` query param is retained as a manual override for
+    edge cases where the admin wants to be explicit (e.g. tooling that
+    wants to fail loudly on race conditions).
     """
     try:
+        if version > 1 and prev_version is None:
+            # Derive prev_version: the currently-published row of this listing.
+            table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+            rows = table.query(
+                KeyConditionExpression="listing_id = :l",
+                ExpressionAttributeValues={":l": listing_id},
+            ).get("Items", [])
+            published = next((r for r in rows if r.get("status") == "published"), None)
+            if published is not None and int(published["version"]) != version:
+                prev_version = int(published["version"])
+
         if prev_version is not None:
             await marketplace_service.publish_v2(
                 listing_id=listing_id,

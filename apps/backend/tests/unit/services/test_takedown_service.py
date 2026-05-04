@@ -124,6 +124,33 @@ async def test_takedowns_grant_update_guards_with_attribute_exists(mock_takedown
 
 
 @pytest.mark.asyncio
+@patch("core.services.takedown_service._purchases_table")
+@patch("core.services.takedown_service._listings_table")
+@patch("core.services.takedown_service._takedowns_table")
+@patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
+async def test_admin_initiated_takedown_404s_before_writing_pending_row(mock_takedowns, mock_listings, mock_purchases):
+    """Regression: validate listing exists BEFORE writing the pending
+    takedown row, so a phantom listing_id doesn't leave an orphan row
+    polluting the audit view (Codex P2 on PR #517, commit 977bf178)."""
+    takedown_service.license_service.revoke.reset_mock()
+    # Listing query returns empty → ListingNotFoundError before put_item.
+    mock_listings.return_value.query = MagicMock(return_value={"Items": []})
+    mock_takedowns.return_value.put_item = MagicMock()
+    mock_takedowns.return_value.update_item = MagicMock()
+
+    with pytest.raises(takedown_service.ListingNotFoundError):
+        await takedown_service.execute_admin_initiated_takedown(
+            listing_id="l-ghost",
+            reason="policy",
+            basis_md="Long enough basis to pass min_length=10 validator.",
+            decided_by="user_admin1",
+        )
+
+    # Critical: no orphan pending row was written.
+    mock_takedowns.return_value.put_item.assert_not_called()
+
+
+@pytest.mark.asyncio
 @patch("core.services.takedown_service._takedowns_table")
 async def test_file_takedown_creates_row(mock_table):
     mock_table.return_value.put_item = MagicMock()

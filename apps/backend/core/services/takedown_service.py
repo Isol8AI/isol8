@@ -209,6 +209,22 @@ async def execute_admin_initiated_takedown(
     tid = str(uuid.uuid4())
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
+    # Validate the listing exists BEFORE writing the pending row — otherwise
+    # a malformed admin grant on a phantom listing_id leaves the cascade
+    # raising ListingNotFoundError but the orphan "pending" row stays in
+    # DDB forever, polluting the takedown audit view.
+    rows = (
+        _listings_table()
+        .query(
+            KeyConditionExpression="listing_id = :l",
+            ExpressionAttributeValues={":l": listing_id},
+            Limit=1,
+        )
+        .get("Items", [])
+    )
+    if not rows:
+        raise ListingNotFoundError(f"listing {listing_id} does not exist")
+
     # Symmetric with `file_takedown` + `execute_full_takedown`: write a
     # "pending" row first, then let `_cascade_takedown` perform the single
     # granted-stamp + affected-purchases count. Avoids a transient state

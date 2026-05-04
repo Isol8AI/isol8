@@ -371,21 +371,41 @@ async def my_purchases(auth: Annotated[AuthContext, Depends(get_current_user)]):
     listing slug per row by reading marketplace-listings v1; small N
     (buyers don't buy thousands of items) makes the per-row read fine for v0.
     """
+    # The table's sort key is purchase_id (UUID), so ScanIndexForward=False
+    # would return reverse-lexical UUID order, not newest-first. Page
+    # through all rows for this buyer (v0 volumes are tiny) and sort by
+    # created_at in Python. Limit-then-cap-at-100 after sorting so a buyer
+    # with >100 purchases sees the genuinely-newest 100, not an arbitrary
+    # subset.
     table = _purchases_table()
-    resp = table.query(
-        KeyConditionExpression="buyer_id = :b",
-        ExpressionAttributeValues={":b": auth.user_id},
-        Limit=100,
-        ScanIndexForward=False,  # newest first
-    )
+    raws: list[dict] = []
+    kwargs: dict = {
+        "KeyConditionExpression": "buyer_id = :b",
+        "ExpressionAttributeValues": {":b": auth.user_id},
+    }
+    while True:
+        page = table.query(**kwargs)
+        raws.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            break
+        kwargs["ExclusiveStartKey"] = last
+    raws.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+    raws = raws[:100]
 
     items: list[schemas.PurchaseSummary] = []
     listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     slug_cache: dict[str, str] = {}
-    for raw in resp.get("Items", []):
+    for raw in raws:
         listing_id = raw.get("listing_id", "")
         if listing_id and listing_id not in slug_cache:
-            li = listings_table.get_item(Key={"listing_id": listing_id, "version": 1}).get("Item")
+            # Use the listing_version_at_purchase row if available, otherwise
+            # fall back to v=1. Avoids 404s on multi-version listings where
+            # v=1 was retired before the buyer reads their history.
+            v_at_purchase = int(raw.get("listing_version_at_purchase", 1)) or 1
+            li = listings_table.get_item(Key={"listing_id": listing_id, "version": v_at_purchase}).get("Item")
+            if not li:
+                li = listings_table.get_item(Key={"listing_id": listing_id, "version": 1}).get("Item")
             slug_cache[listing_id] = (li or {}).get("slug", "") if li else ""
         items.append(
             schemas.PurchaseSummary(

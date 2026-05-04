@@ -144,6 +144,52 @@ def test_admin_takedown_404s_for_nonexistent_listing(client):
     assert "l-ghost" in resp.json()["detail"]
 
 
+def test_approve_v2_derives_prev_version_from_history(client):
+    """Regression: approving version=N (N>1) without explicit prev_version
+    must auto-derive it from the listing's history and route through
+    publish_v2 — otherwise both versions end up published (Codex P1 on
+    PR #517, commit 977bf178).
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    fake_table = MagicMock()
+    fake_table.query.return_value = {
+        "Items": [
+            {"listing_id": "l1", "version": 2, "status": "review"},
+            {"listing_id": "l1", "version": 1, "status": "published"},
+        ]
+    }
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = fake_table
+
+    with (
+        patch("routers.marketplace_admin.boto3.resource", return_value=fake_resource),
+        patch(
+            "routers.marketplace_admin.marketplace_service.publish_v2",
+            new=AsyncMock(return_value=None),
+        ) as mock_publish_v2,
+        patch(
+            "routers.marketplace_admin.marketplace_service.approve",
+            new=AsyncMock(return_value={"status": "published", "version": 2}),
+        ) as mock_simple_approve,
+    ):
+        resp = client.post("/api/v1/admin/marketplace/listings/l1/approve?version=2")
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    # publish_v2 path was taken with derived prev_version=1.
+    mock_publish_v2.assert_awaited_once()
+    assert mock_publish_v2.await_args.kwargs["prev_version"] == 1
+    assert mock_publish_v2.await_args.kwargs["new_version"] == 2
+    # The simple approve path was NOT taken.
+    mock_simple_approve.assert_not_awaited()
+    body = resp.json()
+    assert body["retired_version"] == 1
+
+
 def test_admin_takedown_validates_basis_md_length(client):
     """basis_md < 10 chars rejected so the audit log always has a real reason."""
     from main import app

@@ -17,6 +17,63 @@ def client():
     return TestClient(app)
 
 
+@patch("routers.marketplace_purchases.boto3.resource")
+@patch("routers.marketplace_purchases._purchases_table")
+def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_boto, client):
+    """Regression: /my-purchases must sort by created_at, not by purchase_id
+    (UUID, the table's sort key). ScanIndexForward=False on the base table
+    returns reverse-lexical UUID order, not newest-first (Codex P2 on
+    PR #517, commit 977bf178).
+    """
+    from main import app
+
+    from core.auth import AuthContext, get_current_user
+
+    app.dependency_overrides[get_current_user] = lambda: AuthContext(user_id="b1")
+
+    # UUIDs out-of-order vs. created_at: ensures we're not lucky-sorting.
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "zzz_uuid",  # high lexical
+                    "listing_id": "l1",
+                    "license_key": "iml_a",
+                    "price_paid_cents": 100,
+                    "status": "paid",
+                    "created_at": "2026-01-01T00:00:00Z",  # OLD
+                },
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "aaa_uuid",  # low lexical
+                    "listing_id": "l1",
+                    "license_key": "iml_b",
+                    "price_paid_cents": 200,
+                    "status": "paid",
+                    "created_at": "2026-04-15T00:00:00Z",  # NEW
+                },
+            ]
+        }
+    )
+    listings_table = MagicMock()
+    listings_table.get_item.return_value = {"Item": {"slug": "demo"}}
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = listings_table
+    mock_boto.return_value = fake_resource
+
+    resp = client.get("/api/v1/marketplace/my-purchases")
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 2
+    # Newest first — created_at desc, NOT lexical UUID desc.
+    assert items[0]["created_at"] == "2026-04-15T00:00:00Z"
+    assert items[0]["license_key"] == "iml_b"
+    assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
+
+
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
