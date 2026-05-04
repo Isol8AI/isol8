@@ -63,14 +63,20 @@ class TestSyncUser:
 
 
 class TestSyncUserProviderChoice:
-    """Tests for Plan 3 Task 3: provider_choice persistence on /users/sync."""
+    """Workstream B (2026-05-03): /users/sync no longer writes provider_choice.
+
+    The canonical write path is POST /billing/trial-checkout, which
+    persists synchronously to billing_accounts before creating the
+    Stripe Checkout session. /users/sync is now a pure user-row sync
+    and silently ignores any provider_choice / byo_provider it receives
+    so old frontends keep working.
+    """
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_persists_provider_choice(self, mock_repo, async_client):
-        """POST /users/sync with provider_choice persists via user_repo."""
-        mock_repo.get = AsyncMock(return_value=None)
-        mock_repo.put = AsyncMock(return_value=None)
+    async def test_sync_does_not_persist_provider_choice(self, mock_repo, async_client):
+        """provider_choice in the body is silently ignored — no user_repo write."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
 
         response = await async_client.post(
@@ -79,16 +85,13 @@ class TestSyncUserProviderChoice:
         )
 
         assert response.status_code == 200
-        mock_repo.set_provider_choice.assert_awaited_once()
-        _, kwargs = mock_repo.set_provider_choice.call_args
-        assert kwargs["provider_choice"] == "bedrock_claude"
-        assert kwargs.get("byo_provider") is None
+        mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_persists_byo_key_with_provider(self, mock_repo, async_client):
-        """byo_key + byo_provider together persist both values."""
-        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "created_at": "2026-01-01T00:00:00Z"})
+    async def test_sync_does_not_persist_byo_key(self, mock_repo, async_client):
+        """byo_key + byo_provider in the body are also silently ignored."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
 
         response = await async_client.post(
@@ -97,15 +100,17 @@ class TestSyncUserProviderChoice:
         )
 
         assert response.status_code == 200
-        mock_repo.set_provider_choice.assert_awaited_once()
-        _, kwargs = mock_repo.set_provider_choice.call_args
-        assert kwargs["provider_choice"] == "byo_key"
-        assert kwargs["byo_provider"] == "openai"
+        mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_byo_key_without_provider_rejected(self, mock_repo, async_client):
-        """byo_key without byo_provider is a 400 (or 422 if pydantic catches it)."""
+    async def test_sync_byo_key_without_provider_no_longer_400s(self, mock_repo, async_client):
+        """The pre-Workstream-B 400 on byo_key-without-byo_provider is gone.
+
+        The endpoint now silently ignores both fields, so a body that
+        previously triggered a 400 just succeeds with no repo write.
+        Pydantic Literal validation still rejects unknown values (422).
+        """
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -115,13 +120,13 @@ class TestSyncUserProviderChoice:
             json={"provider_choice": "byo_key"},
         )
 
-        assert response.status_code in (400, 422)
+        assert response.status_code == 200
         mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_sync_without_provider_choice_unchanged(self, mock_repo, async_client):
-        """Existing callers (no body / empty body) bypass set_provider_choice."""
+        """Existing callers (no body / empty body) still work and bypass set_provider_choice."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -147,7 +152,7 @@ class TestSyncUserProviderChoice:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_sync_invalid_provider_choice_rejected(self, mock_repo, async_client):
-        """Unknown provider_choice value is 422 (pydantic Literal)."""
+        """Unknown provider_choice value is still 422 (pydantic Literal)."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)

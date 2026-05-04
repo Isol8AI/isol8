@@ -19,7 +19,6 @@ router = APIRouter()
     description="Creates or returns the user record based on the authenticated Clerk user. Idempotent.",
     operation_id="sync_user",
     responses={
-        400: {"description": "Invalid provider_choice / byo_provider combination"},
         401: {"description": "Missing or invalid Clerk JWT token"},
         500: {"description": "Database error"},
     },
@@ -42,25 +41,13 @@ async def sync_user(
     else:
         status = "exists"
 
-    # Plan 3 Task 3: persist provider_choice (+ byo_provider when applicable)
-    # so the gateway can branch on it. The body is fully optional -- legacy
-    # callers (ChatLayout mount before Plan 3 onboarding ran) just get a
-    # plain user-record sync.
-    if body is not None and body.provider_choice is not None:
-        if body.provider_choice == "byo_key" and body.byo_provider is None:
-            raise HTTPException(
-                status_code=400,
-                detail="byo_provider is required when provider_choice is 'byo_key'",
-            )
-        try:
-            await user_repo.set_provider_choice(
-                user_id,
-                provider_choice=body.provider_choice,
-                byo_provider=body.byo_provider,
-            )
-        except Exception as e:
-            logger.error("Database error persisting provider_choice for %s: %s", user_id, e)
-            raise HTTPException(status_code=500, detail="Database operation failed")
+    # provider_choice writes were removed in Workstream B (2026-05-03);
+    # the canonical write path is now POST /billing/trial-checkout, which
+    # persists synchronously to billing_accounts before creating the
+    # Stripe Checkout session. /users/sync is now a pure user-row sync.
+    # The ``body`` parameter is still accepted (so old frontends that
+    # send ``provider_choice``/``byo_provider`` keep working), but the
+    # fields are silently ignored on the server.
 
     # Note: no billing-account creation here. /users/sync fires from multiple
     # places (ChatLayout mount, onboarding, settings), and the caller's JWT
@@ -81,9 +68,8 @@ async def sync_user(
     "/me",
     summary="Get the authenticated user's record",
     description=(
-        "Returns the user's persisted fields needed by the frontend "
-        "(provider_choice, byo_provider). Used by the LLMPanel settings "
-        "page to render the correct provider section."
+        "Returns the authenticated user's id. provider_choice/byo_provider "
+        "moved to GET /billing/account in Workstream B (2026-05-03)."
     ),
     operation_id="get_me",
     responses={401: {"description": "Missing or invalid Clerk JWT token"}},
@@ -95,11 +81,13 @@ async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
         # empty shape so the panel's Loading state can resolve cleanly.
         return {
             "user_id": auth.user_id,
-            "provider_choice": None,
-            "byo_provider": None,
+            # provider_choice/byo_provider were removed from this endpoint in
+            # Workstream B (2026-05-03). The frontend now reads them from
+            # GET /billing/account (per-owner instead of per-user).
         }
     return {
         "user_id": auth.user_id,
-        "provider_choice": user.get("provider_choice"),
-        "byo_provider": user.get("byo_provider"),
+        # provider_choice/byo_provider were removed from this endpoint in
+        # Workstream B (2026-05-03). The frontend now reads them from
+        # GET /billing/account (per-owner instead of per-user).
     }
