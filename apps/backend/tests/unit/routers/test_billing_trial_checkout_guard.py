@@ -132,24 +132,39 @@ async def test_trial_checkout_with_pending_invite_no_org_name_falls_back(mock_re
 
 
 @pytest.mark.asyncio
+@patch("core.services.billing_service.create_flat_fee_checkout")
+@patch("core.services.billing_service.BillingService.create_customer_for_owner")
 @patch("routers.billing.clerk_admin")
 @patch("routers.billing.billing_repo")
-async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(mock_repo, mock_clerk, async_client):
-    """Empty pending-invitations list passes Gate B; downstream checks still
-    apply. We assert that if the response IS a 409, it's NOT the gate-B kind
-    (so we know gate B let the request through)."""
+async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(
+    mock_repo, mock_clerk, mock_create_customer, mock_create_checkout, async_client
+):
+    """Empty pending-invitations list lets the request through Gate B. The
+    downstream BillingService is mocked so the test verifies ONLY that Gate
+    B invoked the Clerk lookup and did not raise its own 409."""
     mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+    mock_repo.set_provider_choice = AsyncMock(return_value=None)
     mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+    # Mock the downstream Stripe customer + checkout creation so the test
+    # doesn't reach real DDB / Stripe.
+    mock_create_customer.return_value = {
+        "owner_id": "user_test_123",
+        "owner_type": "personal",
+        "stripe_customer_id": "cus_test",
+    }
+    mock_create_checkout.return_value = type("Session", (), {"url": "https://checkout.stripe.com/test"})()
 
     resp = await async_client.post(
         "/api/v1/billing/trial-checkout",
         json={"provider_choice": "bedrock_claude"},
     )
+
+    # Gate B was invoked (proves it WAS evaluated, not skipped).
+    mock_clerk.list_pending_invitations_for_user.assert_awaited_once()
+    # Gate B did NOT block — if a 409 fires, it must be from a different guard.
     if resp.status_code == 409:
         body = resp.json()
         detail = body.get("detail")
-        # Gate B's detail is a dict with code; the older "already_subscribed:*"
-        # guard returns a string. Either way, code != pending_org_invitation.
         if isinstance(detail, dict):
             assert detail.get("code") != PENDING_ORG_INVITATION
     mock_clerk.list_pending_invitations_for_user.assert_awaited_once()
