@@ -54,15 +54,13 @@ class Gate:
         }
 
 
-async def _get_provider_choice(clerk_user_id: str) -> tuple[str, str | None]:
+async def _get_provider_choice(clerk_user_id: str) -> str:
     """Read provider_choice from user_repo (current model — Workstream B
     will move this to billing_repo). Falls back to bedrock_claude when no
     row exists, matching the existing behavior in container.py.
     """
     row = await user_repo.get(clerk_user_id)
-    provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
-    byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
-    return provider_choice, byo_provider
+    return (row or {}).get("provider_choice") or "bedrock_claude"
 
 
 async def _has_oauth_tokens(clerk_user_id: str) -> bool:
@@ -84,7 +82,6 @@ async def _has_oauth_tokens(clerk_user_id: str) -> bool:
 async def evaluate_provision_gate(
     *,
     owner_id: str,
-    owner_type: str,  # "personal" | "org"
     clerk_user_id: str,
     is_admin: bool = True,  # personal owners are always admin of themselves
 ) -> Gate | None:
@@ -134,7 +131,7 @@ async def evaluate_provision_gate(
         )
 
     # Layer 2/3 — provider-specific.
-    provider_choice, _ = await _get_provider_choice(clerk_user_id)
+    provider_choice = await _get_provider_choice(clerk_user_id)
 
     if provider_choice == "bedrock_claude":
         balance = await credit_ledger.get_balance(clerk_user_id)

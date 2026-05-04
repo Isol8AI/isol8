@@ -13,7 +13,6 @@ async def test_no_billing_account_returns_subscription_required():
         repo.get_by_owner_id = AsyncMock(return_value=None)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            owner_type="personal",
             clerk_user_id="user_x",
         )
     assert gate is not None
@@ -31,11 +30,10 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
         )
-        gp.return_value = ("bedrock_claude", None)
+        gp.return_value = "bedrock_claude"
         cl.get_balance = AsyncMock(return_value=0)
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            owner_type="personal",
             clerk_user_id="user_x",
         )
     assert gate is not None
@@ -52,11 +50,10 @@ async def test_trialing_with_credits_returns_none():
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "trialing", "stripe_subscription_id": "sub_x"},
         )
-        gp.return_value = ("bedrock_claude", None)
+        gp.return_value = "bedrock_claude"
         cl.get_balance = AsyncMock(return_value=500_000)  # 50 cents in microcents
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            owner_type="personal",
             clerk_user_id="user_x",
         )
     assert gate is None  # all gates pass
@@ -70,7 +67,6 @@ async def test_past_due_returns_payment_past_due():
         )
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            owner_type="personal",
             clerk_user_id="user_x",
         )
     assert gate is not None
@@ -87,11 +83,10 @@ async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
         )
-        gp.return_value = ("chatgpt_oauth", None)
+        gp.return_value = "chatgpt_oauth"
         ht.return_value = False
         gate = await evaluate_provision_gate(
             owner_id="user_x",
-            owner_type="personal",
             clerk_user_id="user_x",
         )
     assert gate is not None
