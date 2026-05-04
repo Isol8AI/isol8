@@ -164,11 +164,13 @@ class TeamsEventBroker:
             logger.info("teams broker: closed backing WS for idle user=%s", user_id)
             put_metric("teams.broker.client", dimensions={"event": "closed"})
             gauge("teams.broker.users.active", len(self._clients))
-        # Prune the per-user lock now that the user is fully torn down. Done
-        # AFTER releasing the lock — popping from inside the `async with` is
-        # safe but easier to reason about outside. The next subscribe will
-        # lazily create a fresh lock.
-        self._locks.pop(user_id, None)
+        # We deliberately do NOT pop ``self._locks[user_id]`` here. Codex P1 on
+        # PR #518: pruning after releasing the lock creates a race where a
+        # subscribe arriving in the gap between ``async with`` exit and the
+        # pop holds the OLD lock while a subsequent subscribe lazily creates
+        # a FRESH lock, allowing duplicate client creation. The leak from
+        # keeping per-former-user locks is bounded by total user count and
+        # benign at any realistic scale; correctness > the small memory cost.
 
     async def _handle_event(self, user_id: str, event: dict[str, Any]) -> None:
         """Wrap and fan out one event to all of the user's connections."""

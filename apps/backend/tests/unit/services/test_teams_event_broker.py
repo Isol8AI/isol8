@@ -256,13 +256,21 @@ async def test_event_handling_emits_received_and_fanout_ok_metrics(fake_componen
 
 
 @pytest.mark.asyncio
-async def test_grace_teardown_prunes_user_lock(fake_components):
-    """After grace teardown completes, _locks[user_id] is removed so
-    long-running processes don't accumulate per-former-user locks."""
+async def test_grace_teardown_keeps_user_lock_to_avoid_race(fake_components):
+    """Codex P1 on PR #518: do NOT prune _locks[user_id] in
+    _grace_teardown. A subscribe racing in between lock release and
+    lock-pop would hold the OLD lock while a subsequent subscribe
+    creates a fresh one, allowing duplicate client creation. The
+    bounded memory cost of keeping per-former-user locks is acceptable;
+    correctness > the leak."""
     broker = _build_broker(fake_components, grace_seconds=0.05)
     await broker.subscribe("user_a", "conn_1")
     assert "user_a" in broker._locks
     await broker.unsubscribe("user_a", "conn_1")
     await asyncio.sleep(0.2)  # let grace teardown finish
-    assert "user_a" not in broker._locks
+    # Lock entry must still be present after grace teardown.
+    assert "user_a" in broker._locks
+    # And the client + subscriber state IS cleared.
+    assert "user_a" not in broker._clients
+    assert "user_a" not in broker._subscribers
     await broker.shutdown()
