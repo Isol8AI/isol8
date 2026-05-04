@@ -34,6 +34,7 @@ def test_webhook_checkout_completed_grants_license(
         "data": {
             "object": {
                 "id": "cs_1",
+                "payment_status": "paid",
                 "metadata": {
                     "listing_id": "l1",
                     "buyer_id": "b1",
@@ -74,6 +75,99 @@ def test_webhook_idempotent_on_replay(mock_construct, mock_dedup, client):
         content=b'{"id":"evt_1"}',
     )
     assert resp.status_code == 200
+
+
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
+    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, client
+):
+    """Regression: Stripe emits checkout.session.completed with
+    payment_status='unpaid' for delayed-payment methods (ACH, BNPL); the
+    actual settlement comes later as async_payment_succeeded. The fulfillment
+    path must gate on payment_status='paid' or buyers receive entitlement on
+    payments that may later fail (Codex P1 on PR #517, commit 40b698f8).
+    """
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_async_unpaid",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_async",
+                "payment_status": "unpaid",
+                "metadata": {
+                    "listing_id": "l1",
+                    "buyer_id": "b1",
+                    "seller_id": "s1",
+                    "version": "1",
+                },
+                "amount_total": 2000,
+                "payment_intent": "pi_async",
+            }
+        },
+    }
+    mock_purchases_table.return_value.put_item = MagicMock()
+    mock_pa_table.return_value.update_item = MagicMock()
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_async_unpaid"}',
+    )
+    assert resp.status_code == 200
+    # Critical assertions: NO purchase row written, NO seller balance bump.
+    mock_purchases_table.return_value.put_item.assert_not_called()
+    mock_pa_table.return_value.update_item.assert_not_called()
+
+
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_webhook_async_payment_succeeded_grants_license(
+    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, client
+):
+    """Regression: async_payment_succeeded is the settle event for delayed
+    methods. Must run the same fulfillment path as a synchronous paid
+    checkout.session.completed."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_async_paid",
+        "type": "checkout.session.async_payment_succeeded",
+        "data": {
+            "object": {
+                "id": "cs_async",
+                "payment_status": "paid",
+                "metadata": {
+                    "listing_id": "l1",
+                    "buyer_id": "b1",
+                    "seller_id": "s1",
+                    "version": "1",
+                },
+                "amount_total": 2000,
+                "payment_intent": "pi_async",
+            }
+        },
+    }
+    mock_purchases_table.return_value.put_item = MagicMock()
+    mock_pa_table.return_value.update_item = MagicMock()
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_async_paid"}',
+    )
+    assert resp.status_code == 200
+    mock_purchases_table.return_value.put_item.assert_called_once()
 
 
 @patch("routers.marketplace_purchases.webhook_dedup.delete_event")

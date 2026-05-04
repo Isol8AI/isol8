@@ -114,14 +114,23 @@ async def stripe_webhook(
     event_type = event["type"]
     obj = event["data"]["object"]
     try:
-        if event_type == "checkout.session.completed":
+        if event_type in ("checkout.session.completed", "checkout.session.async_payment_succeeded"):
+            # Both events flow through the same fulfillment path.
+            # checkout.session.completed fires once payment is initiated;
+            # for delayed-payment methods (ACH, BNPL, bank transfer) it
+            # carries payment_status="unpaid" and the actual settlement
+            # comes later as async_payment_succeeded. _handle_checkout_completed
+            # gates on payment_status="paid" so unpaid sessions are no-ops
+            # until the async event arrives.
             await _handle_checkout_completed(obj)
         elif event_type == "charge.refunded":
             await _handle_charge_refunded(obj)
         elif event_type == "account.updated":
             await _handle_account_updated(obj)
-        # Other events (transfer.failed, payout.paid, payout.failed) are
-        # logged via Stripe; no immediate action in v1.
+        # Other events (transfer.failed, payout.paid, payout.failed,
+        # checkout.session.async_payment_failed) are logged via Stripe;
+        # async_payment_failed in particular is a no-op because we never
+        # granted the license in the first place (gated above).
     except Exception:
         await webhook_dedup.delete_event(event_id=event["id"])
         raise
@@ -135,7 +144,17 @@ async def _handle_checkout_completed(session: dict) -> None:
     /refund can pass the EXACT same key into payout_service.refund_purchase
     when looking up the seller transfer for reversal. Reconstructing the
     key client-side would miss because checkout includes a timestamp suffix.
+
+    Gates on payment_status="paid". For delayed-payment methods (ACH,
+    BNPL, bank transfer) Stripe emits checkout.session.completed with
+    payment_status="unpaid" before funds settle, then follows up with
+    async_payment_succeeded once paid (or async_payment_failed). Without
+    this gate the buyer would receive entitlement on a payment that may
+    later fail.
     """
+    if session.get("payment_status") != "paid":
+        return  # delayed payment not yet settled; wait for async_payment_succeeded.
+
     metadata = session.get("metadata", {})
     listing_id = metadata.get("listing_id")
     buyer_id = metadata.get("buyer_id")
