@@ -186,15 +186,31 @@ async def set_provider_choice(
 
 
 async def clear_provider_choice(owner_id: str) -> None:
-    """Remove provider_choice and byo_provider from a billing row."""
+    """Remove provider_choice and byo_provider from a billing row.
+
+    No-op when no billing row exists — DynamoDB ``update_item`` would
+    otherwise upsert and create a phantom ``{owner_id, updated_at}`` row
+    with no ``stripe_customer_id``. That phantom row would then block
+    ``/billing/trial-checkout`` from creating a Stripe customer (the
+    ``if not account`` branch sees the phantom and skips customer
+    creation). Codex P1 #3179825257 on PR #523.
+    """
     now = utc_now_iso()
     table = _get_table()
-    await run_in_thread(
-        table.update_item,
-        Key={"owner_id": owner_id},
-        UpdateExpression="REMOVE provider_choice, byo_provider SET updated_at = :t",
-        ExpressionAttributeValues={":t": now},
-    )
+    try:
+        await run_in_thread(
+            table.update_item,
+            Key={"owner_id": owner_id},
+            UpdateExpression="REMOVE provider_choice, byo_provider SET updated_at = :t",
+            ExpressionAttributeValues={":t": now},
+            ConditionExpression="attribute_exists(owner_id)",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            # No billing row to clear — disconnect should be idempotent
+            # even when the user never had a billing row.
+            return
+        raise
 
 
 async def delete(owner_id: str) -> None:
