@@ -539,6 +539,10 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B: trial-checkout synchronously persists provider_choice
+        # via billing_repo.set_provider_choice before creating the Stripe
+        # Checkout session. Mock as AsyncMock so the await works.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_byo"
@@ -547,7 +551,7 @@ class TestTrialCheckoutProviderRules:
 
         resp = await async_client.post(
             "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "byo_key"},
+            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
         )
         assert resp.status_code == 200
         assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_byo"
@@ -566,6 +570,8 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B sync-persist of provider_choice — see byo test above.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_bed"
@@ -594,6 +600,8 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B sync-persist of provider_choice — see byo test above.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_personal"
