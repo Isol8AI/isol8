@@ -26,10 +26,12 @@ vi.mock("next/navigation", () => ({
 
 vi.mock("@/lib/api", () => ({
   useApi: () => ({
-    post: vi.fn(),
-    get: vi.fn(),
-    put: vi.fn(),
-    del: vi.fn(),
+    // ProvisioningStepper chains .catch on the result, so the mock must
+    // return a promise — vi.fn() defaults to undefined which crashes.
+    post: vi.fn().mockResolvedValue({}),
+    get: vi.fn().mockResolvedValue({}),
+    put: vi.fn().mockResolvedValue({}),
+    del: vi.fn().mockResolvedValue({}),
   }),
 }));
 

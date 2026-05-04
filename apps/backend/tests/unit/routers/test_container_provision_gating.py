@@ -42,7 +42,7 @@ async def test_provision_requires_subscription_row():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -68,7 +68,7 @@ async def test_provision_rejects_inactive_subscription_status(status):
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -98,7 +98,7 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -106,12 +106,12 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             },
         ),
         patch(
-            "routers.container.user_repo.get",
+            "core.services.provision_gate.user_repo.get",
             new_callable=AsyncMock,
             return_value={"provider_choice": "bedrock_claude"},
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
+            "core.services.provision_gate.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=0,
         ),
@@ -136,7 +136,7 @@ async def test_provision_allows_bedrock_with_positive_balance():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -144,14 +144,22 @@ async def test_provision_allows_bedrock_with_positive_balance():
             },
         ),
         patch(
-            "routers.container.user_repo.get",
+            "core.services.provision_gate.user_repo.get",
             new_callable=AsyncMock,
             return_value={"provider_choice": "bedrock_claude"},
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
+            "core.services.provision_gate.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=10_000_000,
+        ),
+        # _resolve_provider_choice in routers.container also reads user_repo
+        # after the gate passes — patch that binding too so provisioning
+        # doesn't hit DDB.
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "bedrock_claude"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):
@@ -169,6 +177,12 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
+    # Pre-import oauth_service so we can patch its function attribute directly,
+    # which beats sys.modules-swapping for cross-test isolation (the lazy
+    # `from core.services import oauth_service` inside the gate hits the
+    # already-imported module via package attribute lookup).
+    from core.services import oauth_service  # noqa: F401
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -176,13 +190,25 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
             },
         ),
+        patch(
+            "core.services.provision_gate.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": provider_choice},
+        ),
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new_callable=AsyncMock,
+            return_value={"access_token": "x"},
+        ),
+        # _resolve_provider_choice in routers.container also reads user_repo
+        # after the gate passes — patch that binding too.
         patch(
             "routers.container.user_repo.get",
             new_callable=AsyncMock,
@@ -210,6 +236,8 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
+    from core.services import oauth_service  # noqa: F401
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -217,12 +245,22 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_legacy_pre_plan_3",
                 # subscription_status deliberately absent / None
             },
+        ),
+        patch(
+            "core.services.provision_gate.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "chatgpt_oauth"},
+        ),
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new_callable=AsyncMock,
+            return_value={"access_token": "x"},
         ),
         patch(
             "routers.container.user_repo.get",

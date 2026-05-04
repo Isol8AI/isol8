@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
 import { BACKEND_URL, ApiError } from "@/lib/api";
@@ -57,7 +57,14 @@ type FetchResult =
  */
 export function useProvisioningState(): ProvisioningStateResult {
   const { getToken, isSignedIn } = useAuth();
-  const [blockedSinceMs, setBlockedSinceMs] = useState<number | null>(null);
+  // Two-phase blocked-state polling cadence: 5s for the first minute, then
+  // 30s. `blockedFastPhase` is a *generation counter* — each new blocked
+  // entry (or manual refresh) bumps it, the effect below tracks generations
+  // and flips the cadence flag after 60s. Storing as a counter keeps the
+  // effect derived purely from inputs (no setState-from-effect against the
+  // same flag the effect reads) so `react-hooks/set-state-in-effect` is happy.
+  const [blockedGen, setBlockedGen] = useState<number>(0);
+  const [slowAfterGen, setSlowAfterGen] = useState<number>(-1);
 
   const fetcher = useCallback(
     async (url: string): Promise<FetchResult> => {
@@ -87,33 +94,48 @@ export function useProvisioningState(): ProvisioningStateResult {
     [getToken],
   );
 
-  const refreshInterval = useMemo(() => {
-    if (blockedSinceMs === null) return 0;
-    const elapsed = Date.now() - blockedSinceMs;
-    return elapsed < 60_000 ? 5_000 : 30_000;
-  }, [blockedSinceMs]);
-
   const { data, mutate } = useSWR<FetchResult>(
     isSignedIn ? "/container/status" : null,
     fetcher,
     {
       revalidateOnFocus: false,
-      refreshInterval,
+      // Function form lets SWR pass the latest data; while blocked,
+      // fast-poll for the first minute (slowAfterGen < blockedGen means
+      // the 60s timer hasn't fired yet for the current generation), then
+      // drop to 30s. Avoids referencing `data` in this options block (it
+      // isn't in scope yet).
+      refreshInterval: (latest) =>
+        latest?.kind === "blocked"
+          ? slowAfterGen < blockedGen
+            ? 5_000
+            : 30_000
+          : 0,
     },
   );
 
+  // Bump the generation when we (re-)enter blocked state, and start a 60s
+  // timer that flips the slow-cadence flag for that generation.
+  const isBlocked = data?.kind === "blocked";
   useEffect(() => {
-    if (data?.kind === "blocked") {
-      if (blockedSinceMs === null) setBlockedSinceMs(Date.now());
-    } else if (blockedSinceMs !== null) {
-      setBlockedSinceMs(null);
-    }
-  }, [data, blockedSinceMs]);
+    if (!isBlocked) return;
+    const myGen = blockedGen + 1;
+    setBlockedGen(myGen);
+    const t = setTimeout(() => setSlowAfterGen(myGen), 60_000);
+    return () => clearTimeout(t);
+    // We deliberately do NOT depend on blockedGen here — incrementing it
+    // inside the effect would self-loop. The effect should only fire when
+    // we transition into blocked state, which is captured by `isBlocked`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isBlocked]);
 
   const refresh = useCallback(() => {
-    setBlockedSinceMs(Date.now());
+    // Manual refresh resets the fast-poll window: bump the generation so
+    // the existing slowAfterGen no longer matches and we go back to 5s.
+    setBlockedGen((g) => g + 1);
     mutate();
   }, [mutate]);
+
+  const refreshInterval = isBlocked ? (slowAfterGen < blockedGen ? 5_000 : 30_000) : 0;
 
   if (!data) {
     return { phase: "loading", container: null, blocked: null, refreshInterval: 0, refresh };
