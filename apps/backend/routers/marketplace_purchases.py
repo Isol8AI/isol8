@@ -77,11 +77,24 @@ async def checkout(
     return {"checkout_url": session.url, "session_id": session.id}
 
 
-@router.post("/webhooks/stripe-marketplace")
+@router.post(
+    "/webhooks/stripe-marketplace",
+    summary="Stripe Connect webhook receiver for marketplace events",
+    description=(
+        "Receives Stripe Connect webhook events for the marketplace. Verifies "
+        "the signature against STRIPE_CONNECT_WEBHOOK_SECRET (set in the task "
+        "definition). Handles checkout.session.completed (records purchase + "
+        "license + held balance), charge.refunded (revokes license), and "
+        "account.updated (flushes held balance to seller's Connect account). "
+        "Other event types are acknowledged 200 but not acted on. Idempotent "
+        "via webhook_dedup."
+    ),
+)
 async def stripe_webhook(
     request: Request,
     stripe_signature: str = Header(..., alias="stripe-signature"),
 ):
+    """Stripe Connect webhook receiver for marketplace events."""
     body = await request.body()
     try:
         event = stripe.Webhook.construct_event(body, stripe_signature, settings.STRIPE_CONNECT_WEBHOOK_SECRET)
@@ -106,7 +119,13 @@ async def stripe_webhook(
 
 
 async def _handle_checkout_completed(session: dict) -> None:
-    """Grant license + record purchase + bump seller's held balance."""
+    """Grant license + record purchase + bump seller's held balance.
+
+    Captures the PaymentIntent's transfer_group on the purchase row so that
+    /refund can pass the EXACT same key into payout_service.refund_purchase
+    when looking up the seller transfer for reversal. Reconstructing the
+    key client-side would miss because checkout includes a timestamp suffix.
+    """
     metadata = session.get("metadata", {})
     listing_id = metadata.get("listing_id")
     buyer_id = metadata.get("buyer_id")
@@ -115,6 +134,19 @@ async def _handle_checkout_completed(session: dict) -> None:
     amount = session.get("amount_total", 0)
     if not (listing_id and buyer_id and seller_id):
         return  # invalid session metadata, ignore.
+
+    payment_intent_id = session.get("payment_intent")
+    transfer_group = ""
+    if payment_intent_id:
+        try:
+            stripe.api_key = settings.STRIPE_SECRET_KEY
+            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+            transfer_group = pi.get("transfer_group") or ""
+        except stripe.error.StripeError:
+            # Best-effort. Without transfer_group the refund flow can still
+            # refund the buyer; only the Transfer Reversal lookup would miss.
+            # Logged via Stripe's own audit; we continue.
+            transfer_group = ""
 
     license_key = license_service.generate()
     purchase_id = str(uuid.uuid4())
@@ -127,8 +159,9 @@ async def _handle_checkout_completed(session: dict) -> None:
             "listing_version_at_purchase": version,
             "entitlement_version_floor": version,
             "price_paid_cents": amount,
-            "stripe_payment_intent_id": session.get("payment_intent"),
+            "stripe_payment_intent_id": payment_intent_id,
             "stripe_checkout_session_id": session.get("id"),
+            "stripe_transfer_group": transfer_group,
             "license_key": license_key,
             "license_key_revoked": False,
             "status": "paid",
@@ -221,8 +254,8 @@ async def refund(
         raise HTTPException(status_code=403, detail="refund window expired (7 days)")
 
     result = await payout_service.refund_purchase(
-        charge_id=purchase["stripe_payment_intent_id"],
-        transfer_group=f"purchase_{purchase['listing_id']}_{auth.user_id}",
+        payment_intent_id=purchase["stripe_payment_intent_id"],
+        transfer_group=purchase.get("stripe_transfer_group", ""),
         full_amount_cents=purchase["price_paid_cents"],
     )
     await license_service.revoke(purchase_id=purchase_id, buyer_id=auth.user_id, reason="refunded")

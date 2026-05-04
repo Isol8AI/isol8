@@ -95,8 +95,8 @@ class RefundResult:
     reversal_id: str | None
 
 
-async def refund_purchase(*, charge_id: str, transfer_group: str, full_amount_cents: int) -> RefundResult:
-    """Refund a buyer's charge. If a Transfer to the seller has happened,
+async def refund_purchase(*, payment_intent_id: str, transfer_group: str, full_amount_cents: int) -> RefundResult:
+    """Refund a buyer's PaymentIntent. If a Transfer to the seller has happened,
     reverse it first to claw back the funds.
 
     Per design doc separate-charges-and-transfers: the original charge is on
@@ -104,10 +104,15 @@ async def refund_purchase(*, charge_id: str, transfer_group: str, full_amount_ce
     in held balance), refund alone is sufficient. If a Transfer has happened,
     we must reverse it before refunding — otherwise the platform eats the cost.
 
-    NOTE: Plan 2 caller (refund router) MUST guard `create_connect_account`
-    via a marketplace-payout-accounts DDB lookup before invocation — Stripe's
-    24h idempotency window will silently produce a NEW account on day 2 of
-    the same call, leaving orphan Connect accounts.
+    Args:
+        payment_intent_id: Stripe PaymentIntent ID (`pi_…`). The marketplace
+            stores PaymentIntent IDs on purchase rows (not Charge IDs); Stripe's
+            Refund.create accepts either via `payment_intent=` or `charge=`.
+        transfer_group: The exact transfer_group used at checkout. Caller MUST
+            persist this on the purchase row at checkout-completion time and
+            read it back here — checkout writes a unique-per-purchase value
+            (includes a timestamp suffix) and any reconstruction here would
+            miss the seller transfer.
     """
     stripe.api_key = settings.STRIPE_SECRET_KEY
     transfers = stripe.Transfer.list(transfer_group=transfer_group, limit=1)
@@ -122,8 +127,8 @@ async def refund_purchase(*, charge_id: str, transfer_group: str, full_amount_ce
         reversal_id = reversal.id
 
     refund = stripe.Refund.create(
-        charge=charge_id,
+        payment_intent=payment_intent_id,
         amount=full_amount_cents,
-        idempotency_key=f"refund:{charge_id}",
+        idempotency_key=f"refund:{payment_intent_id}",
     )
     return RefundResult(refund_id=refund.id, reversal_id=reversal_id)

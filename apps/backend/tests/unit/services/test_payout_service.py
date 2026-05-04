@@ -76,7 +76,7 @@ async def test_refund_with_completed_transfer_reverses_it(mock_stripe):
     mock_stripe.Transfer.create_reversal.return_value = MagicMock(id="trr_pqr")
 
     result = await payout_service.refund_purchase(
-        charge_id="ch_abc",
+        payment_intent_id="pi_abc",
         transfer_group="purchase_p1",
         full_amount_cents=2000,
     )
@@ -93,7 +93,7 @@ async def test_refund_without_transfer_skips_reversal(mock_stripe):
     mock_stripe.Transfer.list.return_value = MagicMock(data=[])
 
     result = await payout_service.refund_purchase(
-        charge_id="ch_abc",
+        payment_intent_id="pi_abc",
         transfer_group="purchase_p1",
         full_amount_cents=2000,
     )

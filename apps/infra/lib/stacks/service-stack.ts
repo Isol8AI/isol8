@@ -813,6 +813,23 @@ export class ServiceStack extends cdk.Stack {
         STRIPE_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportStripeWebhookSecret", props.secretNames.stripeWebhookSecret),
         ),
+        // Marketplace's Stripe Connect webhook signing secret (separate
+        // from the regular Stripe webhook above — Connect events come
+        // through a different webhook endpoint with its own signing key).
+        // marketplace_purchases.stripe_webhook reads this via
+        // settings.STRIPE_CONNECT_WEBHOOK_SECRET to verify event signatures;
+        // an empty value means stripe.Webhook.construct_event will reject
+        // every event and paid checkouts silently never produce purchase
+        // rows. Operator provisions the secret via
+        // `aws secretsmanager update-secret` with the value from the
+        // Stripe dashboard's Connect webhook (per the Plan 1 runbook).
+        STRIPE_CONNECT_WEBHOOK_SECRET: ecs.Secret.fromSecretsManager(
+          secretsmanager.Secret.fromSecretNameV2(
+            this,
+            "ImportStripeConnectWebhookSecret",
+            `isol8/${env}/stripe_connect_webhook_secret`,
+          ),
+        ),
         ENCRYPTION_KEY: ecs.Secret.fromSecretsManager(
           secretsmanager.Secret.fromSecretNameV2(this, "ImportEncryptionKey", props.secretNames.encryptionKey),
         ),

@@ -13,19 +13,35 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 @pytest.fixture
 def unauth_client():
-    """Plain TestClient without auth override (for endpoints that 401 unauthenticated)."""
+    """Plain TestClient without auth override (for endpoints that 401 unauthenticated).
+
+    Defensively clears app.dependency_overrides on enter + exit so a prior
+    suite (e.g. tests/contract/) that left an auth override behind cannot
+    silently bypass auth here. Without this, test_create_draft_requires_auth
+    sees a leaked override, the route runs unauthenticated, and the
+    boto3.Table("") call surfaces as a misleading ParamValidationError.
+    """
     from main import app
 
-    return TestClient(app)
+    app.dependency_overrides.clear()
+    try:
+        yield TestClient(app)
+    finally:
+        app.dependency_overrides.clear()
 
 
 def test_create_draft_requires_auth(unauth_client):
-    """Without a Clerk JWT, create draft must 401."""
+    """Without a Clerk JWT, create draft must 401/403.
+
+    Payload must satisfy ListingCreate min_length validators (slug≥2, name≥2,
+    description_md≥1) — otherwise FastAPI 422s on the body before reaching
+    the auth dependency, which is not what we're testing here.
+    """
     resp = unauth_client.post(
         "/api/v1/marketplace/listings",
         json={
-            "slug": "x",
-            "name": "x",
+            "slug": "test-slug",
+            "name": "Test Listing",
             "description_md": "x",
             "format": "openclaw",
             "price_cents": 0,

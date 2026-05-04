@@ -31,6 +31,11 @@ async def review_queue(
     request: Request,
     auth: Annotated[AuthContext, Depends(require_platform_admin)],
 ):
+    """List the marketplace listings currently awaiting moderation.
+
+    Queries the status-published-index GSI for status="review" rows. Returns
+    up to 50 newest-first; the admin UI paginates client-side at v0 volume.
+    """
     table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     resp = table.query(
         IndexName="status-published-index",
@@ -91,6 +96,11 @@ async def reject(
     auth: Annotated[AuthContext, Depends(require_platform_admin)],
     version: int = 1,
 ):
+    """Reject a listing version with seller-visible notes.
+
+    Flips status review→rejected and persists the moderator's notes on the
+    row so the seller can see them on their listing detail page and resubmit.
+    """
     return await marketplace_service.reject(
         listing_id=listing_id, version=version, notes=notes, rejected_by=auth.user_id
     )
