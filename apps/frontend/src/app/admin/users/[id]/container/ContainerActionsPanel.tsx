@@ -13,31 +13,24 @@ import {
   stopContainer,
 } from "@/app/admin/_actions/container";
 
-const TIERS = ["free", "starter", "pro", "enterprise"] as const;
-type Tier = (typeof TIERS)[number];
-
 export interface ContainerActionsPanelProps {
   userId: string;
-  /** Current plan tier — pre-selects the resize dropdown so the operator only changes one thing. */
-  currentTier?: string;
 }
 
 /**
- * Client island for the per-user container lifecycle actions. The four
- * non-resize actions all use the user_id as the typed-confirm phrase
- * (CEO S5). Resize additionally requires picking a target tier in a small
- * inline form before opening the confirm dialog.
+ * Client island for the per-user container lifecycle actions. All four
+ * actions use the user_id as the typed-confirm phrase (CEO S5).
+ *
+ * Note on Resize: post-flat-fee (2026-04 pivot) every user runs the same
+ * 0.5 vCPU / 1 GB box, so resize is now a "re-apply standard sizing"
+ * recovery action — it forces the ECS service to roll its task definition
+ * with the canonical per-user resource profile. The backend's resize
+ * endpoint accepts and ignores the legacy `tier` argument.
  */
-export function ContainerActionsPanel({ userId, currentTier }: ContainerActionsPanelProps) {
+export function ContainerActionsPanel({ userId }: ContainerActionsPanelProps) {
   const router = useRouter();
   const [error, setError] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
-  const [tier, setTier] = React.useState<Tier>(() => {
-    if (currentTier && (TIERS as readonly string[]).includes(currentTier)) {
-      return currentTier as Tier;
-    }
-    return "starter";
-  });
 
   function clearStatus() {
     setError(null);
@@ -76,8 +69,9 @@ export function ContainerActionsPanel({ userId, currentTier }: ContainerActionsP
 
   async function handleResize() {
     clearStatus();
-    const result = await resizeContainer(userId, tier);
-    applyResult(`Resize to ${tier}`, result.ok, result.error);
+    // Tier arg is ignored by the backend post-flat-fee; pass empty string.
+    const result = await resizeContainer(userId, "");
+    applyResult("Re-apply standard sizing", result.ok, result.error);
   }
 
   return (
@@ -121,37 +115,25 @@ export function ContainerActionsPanel({ userId, currentTier }: ContainerActionsP
         </ConfirmActionDialog>
       </div>
 
-      {/* Resize */}
+      {/* Re-apply standard sizing (post-flat-fee: single per-user task profile) */}
       <div className="space-y-2 rounded-md border border-white/5 bg-white/[0.01] p-3">
         <h3 className="text-xs font-medium uppercase tracking-wide text-zinc-500">
-          Resize container
+          Re-apply standard sizing
         </h3>
-        <div className="flex flex-wrap items-center gap-2">
-          <label className="text-xs text-zinc-400" htmlFor="resize-tier">
-            Target tier
-          </label>
-          <select
-            id="resize-tier"
-            value={tier}
-            onChange={(e) => setTier(e.target.value as Tier)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-sm text-zinc-100"
-          >
-            {TIERS.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </select>
-          <ConfirmActionDialog
-            confirmText={userId}
-            actionLabel={`Resize to ${tier}`}
-            onConfirm={handleResize}
-          >
-            <Button type="button" variant="default" size="sm">
-              Resize
-            </Button>
-          </ConfirmActionDialog>
-        </div>
+        <p className="text-xs text-zinc-400">
+          Forces the ECS service to roll its task definition with the
+          canonical 0.5 vCPU / 1 GB profile. Use as a recovery action when
+          a container is wedged on a stale task def.
+        </p>
+        <ConfirmActionDialog
+          confirmText={userId}
+          actionLabel="Re-apply standard sizing"
+          onConfirm={handleResize}
+        >
+          <Button type="button" variant="default" size="sm">
+            Re-apply sizing
+          </Button>
+        </ConfirmActionDialog>
       </div>
     </div>
   );
