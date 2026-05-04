@@ -15,7 +15,7 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo, user_repo
+from core.repositories import container_repo, user_repo
 from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
@@ -45,12 +45,6 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
     if gateway_pool.is_user_connected(owner_id):
         return "ready"
     return "starting"
-
-
-async def _owner_has_subscription(owner_id: str) -> bool:
-    """Check if an owner has an active billing subscription."""
-    account = await billing_repo.get_by_owner_id(owner_id)
-    return account is not None and account.get("stripe_subscription_id") is not None
 
 
 async def _assert_provision_allowed(
