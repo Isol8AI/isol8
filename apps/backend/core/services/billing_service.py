@@ -145,6 +145,7 @@ async def create_flat_fee_checkout(
     *,
     owner_id: str,
     provider_choice: str | None = None,
+    byo_provider: str | None = None,
     clerk_user_id: str | None = None,
     trial_days: int | None = 14,
 ) -> stripe.checkout.Session:
@@ -191,6 +192,8 @@ async def create_flat_fee_checkout(
     metadata: dict = {"owner_id": owner_id}
     if provider_choice:
         metadata["provider_choice"] = provider_choice
+    if byo_provider:
+        metadata["byo_provider"] = byo_provider
     if clerk_user_id:
         metadata["clerk_user_id"] = clerk_user_id
     subscription_data["metadata"] = metadata
