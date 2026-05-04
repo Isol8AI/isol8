@@ -133,9 +133,13 @@ export function ChatLayout({
   // where they can accept.
   const needsOnboarding = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && !hasPendingInvitations && !organization;
   const needsAutoActivate = clerkLoaded && isSignedIn === true && !organization && hasMemberships;
-  // Users with pending invitations who haven't onboarded should also go to
-  // /onboarding where they'll see the invitation acceptance UI.
-  const needsInvitationFlow = clerkLoaded && isSignedIn === true && !isOnboarded && !hasMemberships && hasPendingInvitations && !organization;
+  // Tenancy invariant: pending invitations beat the unsafeMetadata.onboarded
+  // flag. A user who completed personal onboarding earlier and was later
+  // invited to an org MUST be routed to /onboarding/invitations to accept,
+  // because the invariant forbids personal-tenancy + pending-org-invite
+  // coexisting. Dropping `!isOnboarded` is what makes the post-wipe flow
+  // for users like aden self-recover.
+  const needsInvitationFlow = clerkLoaded && isSignedIn === true && !hasMemberships && hasPendingInvitations && !organization;
 
   useEffect(() => {
     if (needsOnboarding || needsInvitationFlow) {
