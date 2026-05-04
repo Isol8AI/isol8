@@ -229,6 +229,29 @@ async def ws_message(
         management_api.send_message(x_connection_id, {"type": "pong"})
         return Response(status_code=200)
 
+    # Teams BFF realtime: browser opts into / out of Paperclip event fanout.
+    # Best-effort — if the broker singleton isn't configured (local dev
+    # without Paperclip env), 200 silently and /teams just runs without
+    # live updates.
+    if msg_type in ("teams.subscribe", "teams.unsubscribe"):
+        from core.services import teams_event_broker_singleton
+
+        broker = teams_event_broker_singleton.get_broker()
+        if broker is not None:
+            try:
+                if msg_type == "teams.subscribe":
+                    await broker.subscribe(user_id, x_connection_id)
+                else:
+                    await broker.unsubscribe(user_id, x_connection_id)
+            except Exception:
+                logger.exception(
+                    "teams broker dispatch failed type=%s user=%s conn=%s",
+                    msg_type,
+                    user_id,
+                    x_connection_id[:12] if x_connection_id else "?",
+                )
+        return Response(status_code=200)
+
     # Lazy-register the frontend connection with the gateway pool. The
     # WS connection registry is in-memory per backend task. /ws/connect
     # only fires once when the client first opens the WS — but the
