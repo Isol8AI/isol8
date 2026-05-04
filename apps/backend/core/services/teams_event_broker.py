@@ -205,6 +205,7 @@ class TeamsEventBroker:
             )
             return
 
+        gone_conn_ids: list[str] = []
         with timing("teams.broker.fanout.latency"):
             for conn_id in conn_ids:
                 try:
@@ -215,6 +216,7 @@ class TeamsEventBroker:
                             dimensions={"outcome": "gone"},
                         )
                         self._conn_svc.delete_connection(conn_id)
+                        gone_conn_ids.append(conn_id)
                     else:
                         put_metric(
                             "teams.broker.fanout",
@@ -230,6 +232,16 @@ class TeamsEventBroker:
                         "teams.broker.fanout",
                         dimensions={"outcome": "error"},
                     )
+
+        # Codex P1 on PR #518: stale conns must be removed from the local
+        # subscriber set too, not just the DDB row. _grace_teardown checks
+        # self._subscribers[user_id] to decide whether to close the backing
+        # client; if a stale conn-id lingers there, a single missed
+        # teams.unsubscribe pins the upstream WS open forever.
+        # Reuses unsubscribe() so cleanup goes through the same lock-guarded
+        # path that schedules the grace teardown when subscribers empty.
+        for conn_id in gone_conn_ids:
+            await self.unsubscribe(user_id, conn_id)
 
     async def shutdown(self) -> None:
         """Close every backing client + cancel grace tasks. Lifespan shutdown."""

@@ -192,6 +192,39 @@ async def test_stale_connection_cleaned_up_on_send_false(fake_components):
 
 
 @pytest.mark.asyncio
+async def test_stale_fanout_conn_removed_from_local_subscribers(fake_components):
+    """Codex P1 on PR #518: when send_message returns False, the conn-id
+    must be removed from self._subscribers (not just from DDB).
+    Otherwise _grace_teardown sees a non-empty subscriber set and never
+    closes the backing client, pinning the upstream WS forever for any
+    user whose Management API send raced a browser close."""
+    broker = _build_broker(fake_components, grace_seconds=0.05)
+    await broker.subscribe("user_a", "conn_1")
+    assert "conn_1" in broker._subscribers["user_a"]
+
+    fake_components["conn_svc"].query_by_user_id.return_value = ["conn_1"]
+    fake_components["mgmt"].send_message.return_value = False
+
+    await fake_components["clients"][0].trigger(
+        {
+            "id": 1,
+            "companyId": "co_user_a",
+            "type": "activity.logged",
+            "createdAt": "2026-05-04T01:00:00Z",
+            "payload": {},
+        }
+    )
+
+    # Local subscriber set must be empty (or the user_id key removed entirely).
+    assert not broker._subscribers.get("user_a")
+    # And grace teardown must fire — wait past the grace window and
+    # confirm the backing client was closed.
+    await asyncio.sleep(0.15)
+    assert fake_components["clients"][0].close_called == 1
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_subscribes_do_not_double_open_client(fake_components):
     broker = _build_broker(fake_components)
     await asyncio.gather(
