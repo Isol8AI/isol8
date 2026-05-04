@@ -137,7 +137,10 @@ async def evaluate_provision_gate(
     provider_choice = await _get_provider_choice(owner_id)
 
     if provider_choice == "bedrock_claude":
-        balance = await credit_ledger.get_balance(clerk_user_id)
+        # Credits pool at the owner level — org members all draw from one
+        # balance funded by the admin. clerk_user_id stays per-user for
+        # the OAuth-tokens probe below.
+        balance = await credit_ledger.get_balance(owner_id)
         if balance <= 0:
             return Gate(
                 code="credits_required",
