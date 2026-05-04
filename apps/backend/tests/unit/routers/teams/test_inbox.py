@@ -38,7 +38,10 @@ def client(teams_ctx):
 
 def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
     """The BFF must call ``GET /api/companies/{co}/issues`` (the board-
-    user-friendly endpoint) and reshape into ``{items: []}``."""
+    user-friendly endpoint) and reshape into ``{items: []}``. A bare
+    ``/teams/inbox`` (no params) defaults to the ``mine`` filter set —
+    matching the personal-inbox semantic the previous ``inbox-lite``
+    upstream returned by default."""
     admin = MagicMock()
     admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
@@ -51,6 +54,11 @@ def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
     admin.list_issues.assert_awaited_once_with(
         company_id="co_abc",
         session_cookie="cookie",
+        params={
+            "touchedByUserId": "me",
+            "inboxArchivedByUserId": "me",
+            "status": "in_review,pending,review,todo,in_progress",
+        },
     )
 
 
@@ -196,18 +204,25 @@ def test_list_inbox_forwards_explicit_filter_params(client, monkeypatch):
     }
 
 
-def test_list_inbox_omits_params_when_no_filters(client, monkeypatch):
-    """When no tab/filter is set, the BFF must omit the params kwarg
-    entirely so the call shape stays clean."""
+def test_list_inbox_explicit_tab_all_clears_default_mine(client, monkeypatch):
+    """When the caller explicitly picks ``tab=all``, the upstream call
+    must NOT carry the mine-filter set — ``all`` is the explicit
+    "show everything" tab and overrides the bare-call default."""
     admin = MagicMock()
     admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
-    r = client.get("/api/v1/teams/inbox", headers={"Authorization": "Bearer x"})
+    r = client.get(
+        "/api/v1/teams/inbox?tab=all",
+        headers={"Authorization": "Bearer x"},
+    )
     assert r.status_code == 200
     call = admin.list_issues.call_args
+    # tab=all has no filter overlays, and since the caller set ``tab``
+    # explicitly the bare-call default no longer applies — so no params
+    # kwarg is forwarded at all.
     assert "params" not in call.kwargs
 
 

@@ -70,12 +70,29 @@ async def list_inbox(
     endpoints (``/teams/approvals``, ``/teams/inbox/runs``,
     ``/teams/inbox/live-runs``); for those tab values this handler
     returns an empty envelope so the frontend can keep one tab handler.
+
+    When the caller passes no params at all (bare ``/teams/inbox``),
+    default to the ``mine`` filter set. The previous ``inbox-lite``
+    upstream returned the caller's personal queue by default; mirroring
+    that here keeps existing naive callers (the current InboxPanel,
+    which fetches ``/inbox`` with no params) from flooding with
+    company-wide issues. If any filter is set explicitly, treat it as
+    an advanced query and don't overlay the mine-filter.
     """
     if tab in _TABS_NOT_ON_ISSUES:
         return {"items": []}
 
-    # Start with the per-tab filter composition (or {} when no tab).
-    upstream_params: dict[str, str] = dict(_TAB_FILTERS.get(tab or "", {}))
+    no_caller_filters = (
+        tab is None
+        and status is None
+        and project is None
+        and assignee is None
+        and creator is None
+        and search is None
+        and limit is None
+    )
+    effective_tab = "mine" if no_caller_filters else tab
+    upstream_params: dict[str, str] = dict(_TAB_FILTERS.get(effective_tab or "", {}))
 
     # Per-filter overrides. ``status`` from the caller wins over the
     # tab-derived status default — frontend passes status explicitly only
