@@ -216,3 +216,35 @@ def test_list_inbox_live_runs(client, monkeypatch):
         company_id="co_abc",
         session_cookie="cookie",
     )
+
+
+@pytest.mark.parametrize("tab", ["mine", "recent", "all", "unread", "approvals", "runs", "joins"])
+def test_list_inbox_accepts_all_documented_tabs(client, monkeypatch, tab):
+    """Codex P1 on PR #524: the tab regex must accept the full set of
+    upstream Inbox tabs, not just the 4 work-item tabs. The Paperclip
+    Inbox UI also uses approvals/runs/joins as tab values that route
+    through this same endpoint; rejecting them at the BFF blocks the
+    Approvals/Runs/Joins tabs from ever loading."""
+    admin = MagicMock()
+    admin.list_inbox_for_session_user = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/inbox",
+        params={"tab": tab},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200, f"tab={tab} was rejected: {r.json()}"
+
+
+def test_list_inbox_rejects_unknown_tab(client):
+    """Sanity check: the regex still rejects nonsense to keep the
+    forwarded query string within the documented vocabulary."""
+    r = client.get(
+        "/api/v1/teams/inbox",
+        params={"tab": "evil-tab"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422

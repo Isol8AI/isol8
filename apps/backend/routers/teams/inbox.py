@@ -27,7 +27,12 @@ _ctx = _agents._ctx
 @router.get("/inbox")
 async def list_inbox(
     ctx: TeamsContext = Depends(_ctx),
-    tab: Optional[str] = Query(default=None, pattern=r"^(mine|recent|all|unread)$"),
+    # Tab values mirror upstream's inbox-lite tab segments. The original
+    # spec listed mine/recent/all/unread as the 4 work-item tabs, but
+    # Paperclip's Inbox UI also routes approvals/runs/joins through this
+    # same endpoint as separate tabs (Codex P1 on PR #524). Forward the
+    # full set so the frontend doesn't 422 on legitimate tab clicks.
+    tab: Optional[str] = Query(default=None, pattern=r"^(mine|recent|all|unread|approvals|runs|joins)$"),
     status: Optional[str] = Query(default=None, max_length=40),
     project: Optional[str] = Query(default=None, max_length=80),
     assignee: Optional[str] = Query(default=None, max_length=80),
