@@ -1,0 +1,111 @@
+"""Organization management endpoints — invite creation gate (Gate A)."""
+
+import logging
+
+from fastapi import APIRouter, Depends, HTTPException
+
+from core.auth import AuthContext, get_current_user, require_org_admin
+from core.observability.metrics import put_metric
+from core.repositories import billing_repo
+from core.services import clerk_admin
+from core.tenancy_codes import PERSONAL_USER_EXISTS
+from schemas.orgs import CreateInvitationRequest, CreateInvitationResponse
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+def _has_active_personal_tenancy(account: dict) -> bool:
+    """A `billing_accounts` row counts as an active personal tenancy when:
+
+    1. ``subscription_status`` is ``active`` or ``trialing`` — the canonical
+       case for rows written after the per-owner subscription_status backfill.
+    2. ``stripe_subscription_id`` is set AND ``subscription_status`` is
+       missing/null — pre-cutover legacy row that was created before the
+       backfill landed. We do NOT call Stripe here to verify the live status:
+       conservatively block the invite and let the user cancel cleanly via
+       the Stripe customer portal before joining an org. Mirrors the legacy-
+       row handling in ``/billing/trial-checkout`` (which DOES call Stripe,
+       but that path needs to allow re-checkout for genuinely-canceled subs;
+       we don't).
+    """
+    if account.get("subscription_status") in ("active", "trialing"):
+        return True
+    if account.get("stripe_subscription_id") and not account.get("subscription_status"):
+        return True
+    return False
+
+
+@router.post(
+    "/{org_id}/invitations",
+    response_model=CreateInvitationResponse,
+    status_code=201,
+    summary="Create an org invitation",
+    description=(
+        "Refuses with 409 if the invitee already has an active or trialing "
+        "personal Isol8 subscription. Otherwise forwards to Clerk's "
+        "createInvitation API."
+    ),
+    operation_id="create_org_invitation",
+)
+async def create_invitation(
+    org_id: str,
+    body: CreateInvitationRequest,
+    auth: AuthContext = Depends(get_current_user),
+) -> CreateInvitationResponse:
+    # Caller must be an admin of THIS org. require_org_admin only checks
+    # the role within the active org; the path-vs-token org_id match
+    # closes the cross-org admin escalation gap.
+    require_org_admin(auth)
+    if auth.org_id != org_id:
+        raise HTTPException(403, "Cannot invite to a different org")
+
+    invitee_email = body.email.lower()
+
+    # Tenancy invariant: refuse if invitee has an active personal sub.
+    existing = await clerk_admin.find_user_by_email(invitee_email)
+    if existing is not None:
+        account = await billing_repo.get_by_owner_id(existing["id"])
+        if account and _has_active_personal_tenancy(account):
+            put_metric("orgs.invitation.blocked", dimensions={"reason": PERSONAL_USER_EXISTS})
+            logger.info(
+                "orgs.invitation.blocked owner_id=%s personal_status=%s legacy_sub=%s",
+                existing["id"],
+                account.get("subscription_status"),
+                bool(account.get("stripe_subscription_id")),
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": PERSONAL_USER_EXISTS,
+                    # body.email preserves the inviter's typed casing for the
+                    # human-readable message; invitee_email (above) is lowercased
+                    # for the Clerk lookup itself.
+                    "message": (
+                        f"{body.email} already has an active personal Isol8 "
+                        "subscription. They must cancel it before they can "
+                        "be invited to an organization."
+                    ),
+                },
+            )
+
+    try:
+        invite = await clerk_admin.create_organization_invitation(
+            org_id=org_id,
+            email=invitee_email,
+            role=body.role,
+            inviter_user_id=auth.user_id,
+        )
+    except HTTPException:
+        put_metric("orgs.invitation.failed", dimensions={"reason": "clerk_error"})
+        raise
+    put_metric("orgs.invitation.created", dimensions={"role": body.role})
+    logger.info(
+        "orgs.invitation.created org_id=%s invitee=%s role=%s invitation_id=%s",
+        org_id,
+        invitee_email,
+        body.role,
+        invite["id"],
+    )
+    return CreateInvitationResponse(invitation_id=invite["id"])

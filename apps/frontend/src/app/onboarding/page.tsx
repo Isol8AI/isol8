@@ -13,10 +13,11 @@ import { useApi } from "@/lib/api";
 import { usePostHog } from "posthog-js/react";
 import { Button } from "@/components/ui/button";
 import { User, Users, Mail } from "lucide-react";
+import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { isLoaded } = useAuth();
+  const { isLoaded, orgId: authOrgId } = useAuth();
   const { user } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { userMemberships, userInvitations, isLoaded: orgsLoaded, setActive } = useOrganizationList({
@@ -30,11 +31,12 @@ export default function OnboardingPage() {
 
   const pendingInvitations = userInvitations?.data ?? [];
 
-  // Derive initial mode: show invitations if any exist, otherwise "choose".
-  // User can navigate away with setExplicitMode; once they do, we stop
-  // auto-detecting invitations.
+  // Tenancy invariant: when the user has pending invitations, force the
+  // invitations screen — no escape hatch into personal onboarding because
+  // a user can't have personal tenancy AND a pending org invite.
   const [explicitMode, setExplicitMode] = useState<"choose" | "personal" | "org" | "invitations" | null>(null);
-  const mode = explicitMode ?? (isLoaded && orgsLoaded && pendingInvitations.length > 0 ? "invitations" : "choose");
+  const forcedInvitations = isLoaded && orgsLoaded && pendingInvitations.length > 0;
+  const mode = forcedInvitations ? "invitations" : (explicitMode ?? "choose");
   const setMode = setExplicitMode;
 
   // Two redirect triggers:
@@ -56,10 +58,10 @@ export default function OnboardingPage() {
   // time they log in on a new browser.
   //
   // IMPORTANT: skip when mode === "org" — the user is actively inside
-  // Clerk's CreateOrganization component (which includes the invitation
-  // screen). Clerk sets `organization` the instant the org is created,
-  // BEFORE the invitation step. If we redirect on that signal, the
-  // invitation screen never shows.
+  // Clerk's CreateOrganization component (now mounted with
+  // skipInvitationScreen={true}), and our <InviteTeammatesStep> takes
+  // over once `organization` resolves. If we redirected on the
+  // organization signal, we'd never render the custom invite step.
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
     if (mode === "org") return; // let CreateOrganization handle its flow
@@ -165,18 +167,48 @@ export default function OnboardingPage() {
             </div>
           ))}
         </div>
-
-        <div className="flex flex-col items-center gap-2 mt-4">
-          <p className="text-sm text-muted-foreground">Or set up your own workspace instead</p>
-          <Button variant="ghost" onClick={() => setMode("choose")}>
-            Skip invitations
-          </Button>
-        </div>
       </div>
     );
   }
 
   if (mode === "org") {
+    // Two-stage gate after Clerk's <CreateOrganization> finishes:
+    //
+    //   Stage A: `organization` is non-null but the JWT hasn't picked up
+    //   the new org yet (Clerk's setActive → JWT refresh is async). Show
+    //   a transient "Activating…" message so the user knows we're working
+    //   on it. Without this gate, the first invite POST hits Gate A's
+    //   auth.org_id == org_id check on the backend with a pre-org JWT and
+    //   returns 403 "Cannot invite to a different org" — flaky right
+    //   after org creation.
+    //
+    //   Stage B: JWT now carries the new org. Mount InviteTeammatesStep
+    //   so all invites flow through our backend's Gate A (rejecting
+    //   personal-subscriber emails) instead of Clerk's built-in invite
+    //   UI which calls Clerk directly.
+    if (organization && authOrgId === organization.id) {
+      return (
+        <InviteTeammatesStep
+          orgId={organization.id}
+          onComplete={async () => {
+            try {
+              await user?.update({ unsafeMetadata: { onboarded: true } });
+            } catch {
+              // best-effort; ChatLayout's auto-activate fallback covers this
+            }
+            router.push("/chat");
+          }}
+        />
+      );
+    }
+    if (organization && authOrgId !== organization.id) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
+          <p className="text-sm text-muted-foreground">Activating your organization…</p>
+        </div>
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-6 bg-background">
         <div className="text-center mb-4">
@@ -186,16 +218,12 @@ export default function OnboardingPage() {
           </p>
         </div>
         <CreateOrganization
-          // Round-trip back through /onboarding (NOT /chat). The effect at
-          // the top of this file will then detect the freshly-created org
-          // in userMemberships.data, call setActive() so the JWT has the
-          // right org_id, await it, and redirect to /chat with a fully-
-          // settled session. If we redirected straight to /chat, ChatLayout
-          // could mount ProvisioningStepper while the JWT is still mid-
-          // switch between personal and org context — causing the double-
-          // provision bug where the same human ends up with two containers.
-          afterCreateOrganizationUrl="/chat"
-          skipInvitationScreen={false}
+          // skipInvitationScreen={true} → Clerk creates the org and stops.
+          // <InviteTeammatesStep> takes over above (rendered when
+          // `organization` resolves) so all invites route through our
+          // backend's Gate A.
+          afterCreateOrganizationUrl="/onboarding"
+          skipInvitationScreen={true}
         />
         <Button variant="ghost" onClick={() => setMode("choose")}>
           Back
@@ -238,15 +266,6 @@ export default function OnboardingPage() {
           </span>
         </button>
       </div>
-
-      {pendingInvitations.length > 0 && (
-        <button
-          onClick={() => setMode("invitations")}
-          className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
-        >
-          You have {pendingInvitations.length} pending invitation{pendingInvitations.length > 1 ? "s" : ""}
-        </button>
-      )}
     </div>
   );
 }

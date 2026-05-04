@@ -13,7 +13,7 @@ from core.auth import AuthContext, get_current_user, get_owner_type, resolve_own
 from core.config import settings
 from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
-from core.services import credit_ledger
+from core.services import clerk_admin, credit_ledger
 from core.services.billing_service import BillingService
 from core.services.provision_gate import (
     TRIAL_BLOCKED_STATUSES,
@@ -22,6 +22,7 @@ from core.services.provision_gate import (
 )
 from core.services.usage_service import get_usage_summary
 from core.billing.bedrock_pricing import get_all_rates
+from core.tenancy_codes import PENDING_ORG_INVITATION
 from schemas.billing import (
     BillingAccountResponse,
     PortalResponse,
@@ -371,6 +372,35 @@ async def create_trial_checkout(
                 "Use Bring-Your-Own-Key or Powered by Claude instead."
             ),
         )
+
+    # Tenancy invariant (Gate B): refuse a PERSONAL trial-checkout when
+    # the caller has any pending org invitations. We only check the
+    # personal path — an org-context call to /trial-checkout is the
+    # admin subscribing the org, which can never have personal pending
+    # invites by construction.
+    if not auth.is_org_context:
+        pending = await clerk_admin.list_pending_invitations_for_user(auth.user_id)
+        if pending:
+            org_name = (pending[0].get("public_organization_data") or {}).get("name") or "an organization"
+            put_metric(
+                "billing.trial_checkout.blocked",
+                dimensions={"reason": PENDING_ORG_INVITATION},
+            )
+            logger.info(
+                "billing.trial_checkout.blocked user=%s reason=pending_org_invitation org=%s",
+                auth.user_id,
+                org_name,
+            )
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": PENDING_ORG_INVITATION,
+                    "message": (
+                        f"You have a pending invitation to {org_name}. Accept it before subscribing personally."
+                    ),
+                    "redirect_to": "/onboarding/invitations",
+                },
+            )
 
     # Org-context callers must be admins — without this gate any org member
     # could create a Stripe Checkout against the org's billing account and
