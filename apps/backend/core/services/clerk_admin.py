@@ -205,3 +205,127 @@ async def list_user_organizations(user_id: str, *, limit: int = 25) -> list[dict
             }
         )
     return result
+
+
+async def find_user_by_email(email: str) -> dict | None:
+    """Return the first Clerk user matching `email`, or None.
+
+    Used by the invite-creation gate to detect "is this email already a
+    Clerk user?" before forwarding to Clerk's createInvitation API.
+    Stubs to None when CLERK_SECRET_KEY is unset.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return None
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    params = {"email_address": email, "limit": 1}
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(f"{_CLERK_API_BASE}/users", headers=headers, params=params)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.find_user_by_email network error: %s", e)
+        return None
+
+    if response.status_code >= 400:
+        logger.warning(
+            "clerk_admin.find_user_by_email HTTP %s for %s",
+            response.status_code,
+            email,
+        )
+        return None
+
+    users = response.json() or []
+    return users[0] if users else None
+
+
+async def create_organization_invitation(
+    *,
+    org_id: str,
+    email: str,
+    role: str,
+    inviter_user_id: str,
+) -> dict:
+    """Create a Clerk org invitation. Returns the invitation dict on success.
+
+    Raises HTTPException via the caller for non-201 responses — we want
+    Clerk's error to surface to the org admin, not a silent no-op.
+    `role` is a Clerk role key (e.g. "org:admin", "org:member").
+    """
+    if not settings.CLERK_SECRET_KEY:
+        # Local-dev stub: return a fake invitation so the test path works.
+        return {"id": f"orginv_stub_{email}", "stubbed": True}
+
+    headers = {
+        "Authorization": f"Bearer {settings.CLERK_SECRET_KEY}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "email_address": email,
+        "role": role,
+        "inviter_user_id": inviter_user_id,
+    }
+
+    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+        response = await client.post(
+            f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
+            headers=headers,
+            json=body,
+        )
+
+    if response.status_code >= 400:
+        logger.warning(
+            "clerk_admin.create_organization_invitation HTTP %s org=%s email=%s body=%s",
+            response.status_code,
+            org_id,
+            email,
+            response.text,
+        )
+        # Surface Clerk's error verbatim so the admin sees real causes
+        # (duplicate invitation, invalid role, etc.). Caller wraps in
+        # HTTPException with the same status code.
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=response.status_code, detail=response.text)
+
+    return response.json()
+
+
+async def list_pending_invitations_for_user(user_id: str) -> list[dict]:
+    """List a Clerk user's pending org invitations. Empty list if none.
+
+    Used by Gate B (personal trial-checkout) to refuse a personal
+    subscription when the caller has unaccepted org invitations.
+    Stubs to [] when CLERK_SECRET_KEY is unset.
+    """
+    if not settings.CLERK_SECRET_KEY:
+        return []
+
+    headers = {"Authorization": f"Bearer {settings.CLERK_SECRET_KEY}"}
+    params = {"status": "pending", "limit": 100}
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.get(
+                f"{_CLERK_API_BASE}/users/{user_id}/organization_invitations",
+                headers=headers,
+                params=params,
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("clerk_admin.list_pending_invitations_for_user network error: %s", e)
+        return []
+
+    if response.status_code >= 400:
+        logger.warning(
+            "clerk_admin.list_pending_invitations_for_user HTTP %s user=%s",
+            response.status_code,
+            user_id,
+        )
+        return []
+
+    payload = response.json()
+    # Clerk paginated responses have shape {data: [...], total_count: int}
+    # for invitation listings — extract data list when present.
+    if isinstance(payload, dict) and "data" in payload:
+        return payload["data"] or []
+    return payload if isinstance(payload, list) else []
