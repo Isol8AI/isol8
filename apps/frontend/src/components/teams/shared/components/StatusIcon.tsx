@@ -8,34 +8,20 @@ import { useState } from "react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import type {
+  IssueBlockerAttention,
+  IssueBlockerAttentionReason,
+  IssueBlockerAttentionState,
+} from "@/components/teams/shared/types";
 
-// Local copies of upstream `IssueBlockerAttention` shape — Isol8's shared
-// `Issue` type currently exposes `blockerAttention` as a boolean flag, but
-// the StatusIcon needs the rich attention metadata when callers have it.
-// Defined here so we can opt-in without modifying the broader types.
-export type IssueBlockerAttentionState =
-  | "none"
-  | "covered"
-  | "stalled"
-  | "needs_attention";
-
-export type IssueBlockerAttentionReason =
-  | "active_child"
-  | "active_dependency"
-  | "stalled_review"
-  | "attention_required"
-  | null;
-
-export interface IssueBlockerAttention {
-  state: IssueBlockerAttentionState;
-  reason: IssueBlockerAttentionReason;
-  unresolvedBlockerCount: number;
-  coveredBlockerCount: number;
-  stalledBlockerCount: number;
-  attentionBlockerCount: number;
-  sampleBlockerIdentifier: string | null;
-  sampleStalledBlockerIdentifier: string | null;
-}
+// Re-export the rich `IssueBlockerAttention` shape (hoisted to types.ts so
+// the slim `Issue.blockerAttention` field can carry it). Existing imports
+// from `./StatusIcon` continue to work.
+export type {
+  IssueBlockerAttention,
+  IssueBlockerAttentionReason,
+  IssueBlockerAttentionState,
+};
 
 // Inlined copy of the upstream `issueStatusIcon` map from
 // `paperclip/ui/src/lib/status-colors.ts` with the retheme mapping applied:

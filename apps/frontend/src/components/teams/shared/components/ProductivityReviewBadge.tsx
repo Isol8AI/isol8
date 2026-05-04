@@ -19,20 +19,15 @@ import Link from "next/link";
 import { Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { createIssueDetailPath } from "@/components/teams/shared/lib/issueDetailBreadcrumb";
-import type { IssueStatus } from "@/components/teams/shared/types";
+import type {
+  IssueProductivityReview,
+  IssueProductivityReviewTrigger,
+} from "@/components/teams/shared/types";
 
-export type IssueProductivityReviewTrigger =
-  | "no_comment_streak"
-  | "long_active_duration"
-  | "high_churn";
-
-export interface IssueProductivityReview {
-  reviewIssueId: string;
-  reviewIdentifier: string | null;
-  status: IssueStatus | string;
-  trigger: IssueProductivityReviewTrigger | null;
-  noCommentStreak: number | null;
-}
+// Re-export the rich productivity-review shapes (hoisted to types.ts so the
+// `Issue.productivityReview` field can carry them). Existing imports from
+// `./ProductivityReviewBadge` continue to work.
+export type { IssueProductivityReview, IssueProductivityReviewTrigger };
 
 const TRIGGER_LABELS: Record<string, string> = {
   no_comment_streak: "No-comment streak",

@@ -45,6 +45,51 @@ export interface IssueProject {
   color?: string | null;
 }
 
+// Rich `blockerAttention` shape — hoisted from upstream Paperclip's StatusIcon
+// so it can live alongside the slim `Issue` interface without creating an
+// import cycle through the components/ subtree. Re-exported from
+// `components/StatusIcon.tsx` for back-compat with existing call sites.
+export type IssueBlockerAttentionState =
+  | "none"
+  | "covered"
+  | "stalled"
+  | "needs_attention";
+
+export type IssueBlockerAttentionReason =
+  | "active_child"
+  | "active_dependency"
+  | "stalled_review"
+  | "attention_required"
+  | null;
+
+export interface IssueBlockerAttention {
+  state: IssueBlockerAttentionState;
+  reason: IssueBlockerAttentionReason;
+  unresolvedBlockerCount: number;
+  coveredBlockerCount: number;
+  stalledBlockerCount: number;
+  attentionBlockerCount: number;
+  sampleBlockerIdentifier: string | null;
+  sampleStalledBlockerIdentifier: string | null;
+}
+
+// Rich productivity-review payload — hoisted from upstream Paperclip's
+// ProductivityReviewBadge so the `Issue.productivityReview` field can carry
+// the full review metadata that StatusIcon / IssueRow consume. Re-exported
+// from `components/ProductivityReviewBadge.tsx` for back-compat.
+export type IssueProductivityReviewTrigger =
+  | "no_comment_streak"
+  | "long_active_duration"
+  | "high_churn";
+
+export interface IssueProductivityReview {
+  reviewIssueId: string;
+  reviewIdentifier: string | null;
+  status: IssueStatus | string;
+  trigger: IssueProductivityReviewTrigger | null;
+  noCommentStreak: number | null;
+}
+
 export interface Issue {
   id: string;
   identifier?: string | null;
@@ -61,10 +106,8 @@ export interface Issue {
   updatedAt?: string | null;
   lastActivityAt?: string | null;
   lastExternalCommentAt?: string | null;
-  blockerAttention?: boolean | null;
-  productivityReview?: {
-    triggerLabel?: string | null;
-  } | null;
+  blockerAttention?: boolean | IssueBlockerAttention | null;
+  productivityReview?: IssueProductivityReview | null;
   unread?: boolean | null;
   archivedAt?: string | null;
 }
