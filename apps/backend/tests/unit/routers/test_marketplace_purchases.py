@@ -74,14 +74,16 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_bo
     assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
 
 
+@patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 @patch("routers.marketplace_purchases._purchases_table")
 @patch("routers.marketplace_purchases._payout_accounts_table")
 def test_webhook_checkout_completed_grants_license(
-    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, client
+    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, client
 ):
+    mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_111"}
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
@@ -183,14 +185,16 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
+@patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
 @patch("routers.marketplace_purchases._purchases_table")
 @patch("routers.marketplace_purchases._payout_accounts_table")
 def test_webhook_async_payment_succeeded_grants_license(
-    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, client
+    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, client
 ):
+    mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_async"}
     """Regression: async_payment_succeeded is the settle event for delayed
     methods. Must run the same fulfillment path as a synchronous paid
     checkout.session.completed."""
@@ -225,6 +229,103 @@ def test_webhook_async_payment_succeeded_grants_license(
     )
     assert resp.status_code == 200
     mock_purchases_table.return_value.put_item.assert_called_once()
+
+
+@patch("routers.marketplace_purchases.boto3.resource")
+@patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_account_updated_skips_already_transferred_purchases_idempotently(
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+):
+    """Regression: payout flush must skip purchases that another run already
+    flagged. listing-created-index is eventually consistent — a replayed
+    or concurrent account.updated can re-read the same purchase before
+    seller_transfer_id is visible. Conditional update on
+    attribute_not_exists(seller_transfer_id) is the source of truth;
+    only successful updates bump transferred_total. Otherwise held balance
+    decrements twice for one transfer (Codex P1 round 9, commit 3bc1a2eb).
+    """
+    from botocore.exceptions import ClientError
+
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_acct_replay",
+        "type": "account.updated",
+        "data": {
+            "object": {
+                "id": "acct_1",
+                "payouts_enabled": True,
+                "metadata": {"seller_id": "s1"},
+            }
+        },
+    }
+    mock_pa_table.return_value.get_item = MagicMock(
+        return_value={
+            "Item": {
+                "seller_id": "s1",
+                "balance_held_cents": 5000,
+                "stripe_connect_account_id": "acct_1",
+            }
+        }
+    )
+    mock_pa_table.return_value.update_item = MagicMock()
+    listings_table = MagicMock()
+    listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = listings_table
+    mock_boto.return_value = fake_resource
+    # Two purchases. update_item succeeds for the first, raises
+    # ConditionalCheckFailedException for the second (race-loser).
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "price_paid_cents": 2000,
+                    "stripe_transfer_group": "purchase_l1_b1",
+                },
+                {
+                    "buyer_id": "b2",
+                    "purchase_id": "p2",
+                    "price_paid_cents": 3000,
+                    "stripe_transfer_group": "purchase_l1_b2",
+                },
+            ]
+        }
+    )
+    mock_purchases_table.return_value.update_item = MagicMock(
+        side_effect=[
+            None,
+            ClientError(
+                {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+                "UpdateItem",
+            ),
+        ]
+    )
+
+    async def fake_transfer(*, connect_account_id, amount_cents, transfer_group):
+        return f"tr_{transfer_group}"
+
+    mock_transfer.side_effect = fake_transfer
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_acct_replay"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Held balance was decremented by ONLY the first purchase's amount —
+    # the second one race-lost the conditional and was skipped, even though
+    # transfer_held_balance was called for it (Stripe idempotency catches).
+    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
+    assert pa_update["ExpressionAttributeValues"][":t"] == 2000
 
 
 @patch("routers.marketplace_purchases.boto3.resource")

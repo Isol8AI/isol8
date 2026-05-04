@@ -167,15 +167,14 @@ async def _handle_checkout_completed(session: dict) -> None:
     payment_intent_id = session.get("payment_intent")
     transfer_group = ""
     if payment_intent_id:
-        try:
-            stripe.api_key = settings.STRIPE_SECRET_KEY
-            pi = stripe.PaymentIntent.retrieve(payment_intent_id)
-            transfer_group = pi.get("transfer_group") or ""
-        except stripe.error.StripeError:
-            # Best-effort. Without transfer_group the refund flow can still
-            # refund the buyer; only the Transfer Reversal lookup would miss.
-            # Logged via Stripe's own audit; we continue.
-            transfer_group = ""
+        # Re-raise StripeError so the webhook dedup rollback fires and Stripe
+        # retries the event — silently persisting an empty transfer_group
+        # would permanently mark this event "processed" while leaving the
+        # purchase row missing the linkage refund_purchase needs to find and
+        # reverse the seller transfer (Codex P1, round 9).
+        stripe.api_key = settings.STRIPE_SECRET_KEY
+        pi = stripe.PaymentIntent.retrieve(payment_intent_id)
+        transfer_group = pi.get("transfer_group") or ""
 
     # Deterministic purchase_id keyed on the Stripe checkout session id so
     # the put_item is idempotent: a Stripe retry (after webhook_dedup
@@ -322,16 +321,37 @@ async def _handle_account_updated(account: dict) -> None:
                 tg = purchase.get("stripe_transfer_group")
                 if amount <= 0 or not tg:
                     continue  # legacy / refunded / malformed row
+                # listing-created-index is eventually consistent: a replayed
+                # account.updated (or a concurrent run) can re-read the same
+                # purchase before the previous run's seller_transfer_id is
+                # visible. Stripe's idempotency_key on transfer_held_balance
+                # catches the duplicate transfer (returns the existing
+                # transfer_id), but without an atomic guard here we'd
+                # double-count the amount in transferred_total and the held
+                # balance would be decremented twice for one transfer.
+                # The conditional update on attribute_not_exists is the
+                # source of truth for "this run wrote the seller_transfer_id"
+                # — only successful update_item calls increment the running
+                # total.
                 transfer_id = await payout_service.transfer_held_balance(
                     connect_account_id=connect_account_id,
                     amount_cents=amount,
                     transfer_group=tg,
                 )
-                purchases_table.update_item(
-                    Key={"buyer_id": purchase["buyer_id"], "purchase_id": purchase["purchase_id"]},
-                    UpdateExpression="SET seller_transfer_id = :t, transferred_at = :now",
-                    ExpressionAttributeValues={":t": transfer_id, ":now": now_iso},
-                )
+                try:
+                    purchases_table.update_item(
+                        Key={"buyer_id": purchase["buyer_id"], "purchase_id": purchase["purchase_id"]},
+                        UpdateExpression="SET seller_transfer_id = :t, transferred_at = :now",
+                        ConditionExpression="attribute_not_exists(seller_transfer_id)",
+                        ExpressionAttributeValues={":t": transfer_id, ":now": now_iso},
+                    )
+                except ClientError as e:
+                    if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                        # Another run got there first — Stripe Transfer was
+                        # idempotent so no money moved twice; just don't
+                        # count this amount toward our held-balance decrement.
+                        continue
+                    raise
                 transferred_total += amount
             last = page.get("LastEvaluatedKey")
             if not last:

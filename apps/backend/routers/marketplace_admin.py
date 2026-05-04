@@ -229,7 +229,18 @@ async def listing_preview(
                     continue
                 total_unpacked += m.size
                 if total_unpacked > _MAX_PREVIEW_TARBALL_BYTES:
-                    break
+                    # Fail closed: a partial preview means the safety scan
+                    # would only see files BEFORE the cutoff, so a malicious
+                    # artifact could hide bad files behind padding. Surface
+                    # 413 so the moderator knows to reject the upload, not
+                    # approve based on incomplete evidence.
+                    raise HTTPException(
+                        status_code=413,
+                        detail=(
+                            f"unpacked preview exceeds {_MAX_PREVIEW_TARBALL_BYTES // (1024 * 1024)} MB cap; "
+                            "ask the seller to split the artifact or contact ops to raise the cap"
+                        ),
+                    )
                 f = tf.extractfile(m)
                 if f is None:
                     continue
