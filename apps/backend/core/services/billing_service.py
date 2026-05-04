@@ -221,7 +221,6 @@ async def create_flat_fee_checkout(
 async def create_credit_top_up_checkout(
     *,
     owner_id: str,
-    user_id: str,
     amount_cents: int,
 ) -> stripe.checkout.Session:
     """Create a Stripe Checkout session for a one-shot Claude-credit top-up.
@@ -248,7 +247,10 @@ async def create_credit_top_up_checkout(
 
     The credit grant happens asynchronously when Stripe fires
     ``checkout.session.completed`` with metadata
-    ``{"purpose": "credit_top_up", "user_id": ...}``.
+    ``{"purpose": "credit_top_up", "owner_id": ...}``. ``owner_id`` is the
+    org_id in org context, the user_id in personal context — i.e. whatever
+    ``resolve_owner_id`` returns for the requesting auth context. Pooling
+    at the owner level lets every member of an org draw from one balance.
     """
     if amount_cents < 500:
         raise BillingServiceError("Minimum top-up is $5 (500 cents)")
@@ -285,12 +287,12 @@ async def create_credit_top_up_checkout(
             payment_intent_data={
                 "metadata": {
                     "purpose": "credit_top_up",
-                    "user_id": user_id,
+                    "owner_id": owner_id,
                 },
             },
             metadata={
                 "purpose": "credit_top_up",
-                "user_id": user_id,
+                "owner_id": owner_id,
                 "amount_cents": str(amount_cents),
             },
             idempotency_key=f"credit_checkout:{owner_id}:{nonce}",

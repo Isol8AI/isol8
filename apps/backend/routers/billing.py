@@ -560,7 +560,6 @@ async def top_up_credits(
     try:
         session = await create_credit_top_up_checkout(
             owner_id=owner_id,
-            user_id=ctx.user_id,
             amount_cents=body.amount_cents,
         )
     except BillingServiceError as e:
@@ -809,11 +808,25 @@ async def handle_stripe_webhook(
             )
             return Response(status_code=200)
 
-        user_id = session["metadata"].get("user_id")
-        amount_cents_str = session["metadata"].get("amount_cents")
-        if not user_id or not amount_cents_str:
+        # owner_id is the credit ledger key — org_id for org context, user_id
+        # for personal. See create_credit_top_up_checkout for where we write
+        # it. Bridge: in-flight Checkout sessions started before the
+        # owner-pool deploy carry only metadata.user_id; credit them and
+        # emit credit.top_up.legacy_metadata so we can confirm the fallback
+        # is safe to remove in a follow-up PR.
+        metadata = session["metadata"]
+        ledger_key = metadata.get("owner_id") or metadata.get("user_id")
+        amount_cents_str = metadata.get("amount_cents")
+        if not ledger_key or not amount_cents_str:
             logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
             return Response(status_code=200)
+        if not metadata.get("owner_id") and metadata.get("user_id"):
+            put_metric("credit.top_up.legacy_metadata")
+            logger.warning(
+                "Credit top-up using legacy metadata.user_id for session %s — "
+                "in-flight Stripe checkout from before owner-pool deploy",
+                session.get("id"),
+            )
 
         # Credit the *requested* amount, not what Stripe actually charged.
         # If the user redeemed a 100%-off internal coupon, Stripe charged
@@ -825,7 +838,7 @@ async def handle_stripe_webhook(
         amount_cents = int(amount_cents_str)
         amount_microcents = amount_cents * 10_000
         await credit_ledger.top_up(
-            user_id,
+            ledger_key,
             amount_microcents=amount_microcents,
             # Use session id as the idempotency key on the ledger side —
             # one Checkout completion = one credit grant, even if Stripe
