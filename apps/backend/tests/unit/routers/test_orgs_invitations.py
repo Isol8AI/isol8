@@ -134,6 +134,7 @@ def test_non_admin_caller_returns_403(app, member_auth):
         json={"email": "nope@example.com", "role": "org:member"},
     )
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "Organization admin access required"
 
 
 def test_personal_caller_returns_403(app, personal_auth):
@@ -146,6 +147,7 @@ def test_personal_caller_returns_403(app, personal_auth):
         json={"email": "nope@example.com", "role": "org:member"},
     )
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "Cannot invite to a different org"
 
 
 def test_caller_in_different_org_returns_403(app, admin_auth):
@@ -157,6 +159,7 @@ def test_caller_in_different_org_returns_403(app, admin_auth):
         json={"email": "x@example.com", "role": "org:member"},
     )
     assert resp.status_code == 403
+    assert resp.json()["detail"] == "Cannot invite to a different org"
 
 
 def test_default_role_is_member(app, admin_auth):
@@ -178,3 +181,62 @@ def test_default_role_is_member(app, admin_auth):
         )
     assert resp.status_code == 201
     assert captured["role"] == "org:member"
+
+
+def test_clerk_create_invitation_failure_propagates_with_metric(app, admin_auth):
+    """Clerk 4xx/5xx propagates the HTTPException AND emits orgs.invitation.failed."""
+    from fastapi import HTTPException
+
+    _override_auth(app, admin_auth)
+    with (
+        patch("routers.orgs.clerk_admin") as mock_clerk,
+        patch("routers.orgs.billing_repo"),
+        patch("routers.orgs.put_metric") as mock_metric,
+    ):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(
+            side_effect=HTTPException(status_code=422, detail="duplicate invitation")
+        )
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "dup@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 422
+    metric_names = [c.args[0] for c in mock_metric.call_args_list]
+    assert "orgs.invitation.failed" in metric_names
+
+
+def test_clerk_find_user_by_email_returns_none_proceeds_to_create(app, admin_auth):
+    """Fail-open semantics: when find_user_by_email returns None (Clerk down or
+    no match), the gate forwards to createInvitation. This pins the contract so
+    a future 'fail-closed' refactor doesn't silently change behavior."""
+    _override_auth(app, admin_auth)
+    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={"id": "orginv_failopen"})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "stranger@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 201
+    mock_billing.get_by_owner_id.assert_not_called()
+    mock_clerk.create_organization_invitation.assert_awaited_once()
+
+
+def test_clerk_response_missing_id_raises_500(app, admin_auth):
+    """A malformed Clerk response without 'id' should fail loudly, not 200 with
+    invitation_id=''. Pydantic raises on construction; FastAPI surfaces as 500."""
+    _override_auth(app, admin_auth)
+    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo"):
+        mock_clerk.find_user_by_email = AsyncMock(return_value=None)
+        # Clerk returned a dict without 'id' — KeyError at invite["id"].
+        mock_clerk.create_organization_invitation = AsyncMock(return_value={})
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "malformed@example.com", "role": "org:member"},
+        )
+    # Server error — the contract is "fail loudly", not "return invitation_id=''".
+    assert resp.status_code == 500

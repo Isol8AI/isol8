@@ -19,7 +19,7 @@ router = APIRouter()
     "/{org_id}/invitations",
     response_model=CreateInvitationResponse,
     status_code=201,
-    summary="Create an org invitation (Gate A — tenancy invariant)",
+    summary="Create an org invitation",
     description=(
         "Refuses with 409 if the invitee already has an active or trialing "
         "personal Isol8 subscription. Otherwise forwards to Clerk's "
@@ -47,10 +47,18 @@ async def create_invitation(
         account = await billing_repo.get_by_owner_id(existing["id"])
         if account and account.get("subscription_status") in ("active", "trialing"):
             put_metric("orgs.invitation.blocked", dimensions={"reason": "personal_user_exists"})
+            logger.info(
+                "orgs.invitation.blocked owner_id=%s personal_status=%s",
+                existing["id"],
+                account.get("subscription_status"),
+            )
             raise HTTPException(
                 status_code=409,
                 detail={
                     "code": "personal_user_exists",
+                    # body.email preserves the inviter's typed casing for the
+                    # human-readable message; invitee_email (above) is lowercased
+                    # for the Clerk lookup itself.
                     "message": (
                         f"{body.email} already has an active personal Isol8 "
                         "subscription. They must cancel it before they can "
@@ -59,11 +67,22 @@ async def create_invitation(
                 },
             )
 
-    invite = await clerk_admin.create_organization_invitation(
-        org_id=org_id,
-        email=invitee_email,
-        role=body.role,
-        inviter_user_id=auth.user_id,
-    )
+    try:
+        invite = await clerk_admin.create_organization_invitation(
+            org_id=org_id,
+            email=invitee_email,
+            role=body.role,
+            inviter_user_id=auth.user_id,
+        )
+    except HTTPException:
+        put_metric("orgs.invitation.failed", dimensions={"reason": "clerk_error"})
+        raise
     put_metric("orgs.invitation.created", dimensions={"role": body.role})
+    logger.info(
+        "orgs.invitation.created org_id=%s invitee=%s role=%s invitation_id=%s",
+        org_id,
+        invitee_email,
+        body.role,
+        invite["id"],
+    )
     return CreateInvitationResponse(invitation_id=invite["id"])
