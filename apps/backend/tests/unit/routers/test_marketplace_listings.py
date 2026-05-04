@@ -193,6 +193,20 @@ def test_get_listing_404_for_taken_down(mock_get_by_slug, unauth_client):
     assert resp.status_code == 404
 
 
+@pytest.mark.parametrize("status", ["draft", "review", "retired"])
+@patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
+def test_get_listing_404_for_non_published_states(mock_get_by_slug, unauth_client, status):
+    """Regression: only published listings are publicly visible. The previous
+    blacklist allowed draft + review through, leaking unmoderated content if
+    a slug was guessed (Codex P1 on PR #517, commit 23bdc518).
+    """
+    listing = _published_listing()
+    listing["status"] = status
+    mock_get_by_slug.return_value = listing
+    resp = unauth_client.get("/api/v1/marketplace/listings/demo-agent")
+    assert resp.status_code == 404
+
+
 @patch("routers.marketplace_listings.marketplace_service.get_by_slug", new_callable=AsyncMock)
 def test_get_listing_404_for_unknown_slug(mock_get_by_slug, unauth_client):
     mock_get_by_slug.return_value = None

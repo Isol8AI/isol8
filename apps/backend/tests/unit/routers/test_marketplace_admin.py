@@ -88,6 +88,62 @@ def test_admin_takedown_endpoint_creates_and_grants(client):
     assert call_kwargs["decided_by"] == "user_admin_123"
 
 
+def test_reject_reads_notes_from_request_body(client):
+    """Regression: reject must accept notes as a JSON body field, not a
+    query param. The admin UI sends ``{ notes }`` in JSON; if `notes`
+    binds to a query param, every UI reject 422s (Codex P1 on PR #517,
+    commit 23bdc518).
+    """
+    from main import app
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.marketplace_service.reject",
+        new=AsyncMock(return_value={"status": "draft", "rejection_notes": "incomplete docs"}),
+    ) as mock_service:
+        resp = client.post(
+            "/api/v1/admin/marketplace/listings/l-1/reject",
+            json={"notes": "incomplete docs"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 200, resp.text
+    mock_service.assert_awaited_once()
+    assert mock_service.await_args.kwargs["notes"] == "incomplete docs"
+
+
+def test_admin_takedown_404s_for_nonexistent_listing(client):
+    """Regression: the takedown cascade's ``_listings_table().update_item``
+    used to upsert a fake listing for nonexistent IDs. Now guarded with
+    ``ConditionExpression="attribute_exists(listing_id)"`` and surfaced as
+    404 (Codex P2 on PR #517, commit 23bdc518).
+    """
+    from main import app
+
+    from core.services.takedown_service import ListingNotFoundError
+
+    _admit_admin(app)
+
+    with patch(
+        "routers.marketplace_admin.takedown_service.execute_admin_initiated_takedown",
+        new=AsyncMock(side_effect=ListingNotFoundError("listing l-ghost v1 does not exist")),
+    ):
+        resp = client.post(
+            "/api/v1/admin/marketplace/listings/l-ghost/takedown",
+            json={
+                "reason": "policy",
+                "basis_md": "Long enough basis to pass min_length=10 validator.",
+            },
+        )
+
+    app.dependency_overrides.clear()
+
+    assert resp.status_code == 404, resp.text
+    assert "l-ghost" in resp.json()["detail"]
+
+
 def test_admin_takedown_validates_basis_md_length(client):
     """basis_md < 10 chars rejected so the audit log always has a real reason."""
     from main import app

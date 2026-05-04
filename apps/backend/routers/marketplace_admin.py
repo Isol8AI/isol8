@@ -83,27 +83,42 @@ async def approve(
         raise HTTPException(status_code=409, detail=str(e))
 
 
+class RejectBody(BaseModel):
+    """Body schema for the admin reject endpoint.
+
+    Notes is a body field, not a query param: the admin UI sends
+    ``{ notes }`` in JSON (apps/frontend/src/app/admin/_actions/marketplace.ts).
+    Declaring `notes: str` as a plain function arg made FastAPI bind it as
+    a query param, so every reject from the UI 422'd.
+    """
+
+    notes: str = Field(..., min_length=1, max_length=4096)
+
+
 @router.post("/listings/{listing_id}/reject")
 @audit_admin_action(
     "marketplace.reject",
     target_user_id_override="__marketplace__",
-    capture_params=["listing_id", "version", "notes"],
+    capture_params=["listing_id", "version", "body"],
 )
 async def reject(
     listing_id: str,
-    notes: str,
+    body: RejectBody,
     request: Request,
     auth: Annotated[AuthContext, Depends(require_platform_admin)],
     version: int = 1,
 ):
     """Reject a listing version with seller-visible notes.
 
-    Flips status review→rejected and persists the moderator's notes on the
+    Flips status review→draft and persists the moderator's notes on the
     row so the seller can see them on their listing detail page and resubmit.
     """
-    return await marketplace_service.reject(
-        listing_id=listing_id, version=version, notes=notes, rejected_by=auth.user_id
-    )
+    try:
+        return await marketplace_service.reject(
+            listing_id=listing_id, version=version, notes=body.notes, rejected_by=auth.user_id
+        )
+    except marketplace_service.InvalidStateError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
 
 @router.get(
@@ -281,12 +296,15 @@ async def admin_initiated_takedown(
     takedown_id and the count of affected purchases so the UI can show
     confirmation copy.
     """
-    result = await takedown_service.execute_admin_initiated_takedown(
-        listing_id=listing_id,
-        reason=body.reason,
-        basis_md=body.basis_md,
-        decided_by=auth.user_id,
-    )
+    try:
+        result = await takedown_service.execute_admin_initiated_takedown(
+            listing_id=listing_id,
+            reason=body.reason,
+            basis_md=body.basis_md,
+            decided_by=auth.user_id,
+        )
+    except takedown_service.ListingNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     return {"status": "taken_down", **result}
 
 

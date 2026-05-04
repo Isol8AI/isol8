@@ -17,9 +17,14 @@ import uuid
 from typing import Literal
 
 import boto3
+from botocore.exceptions import ClientError
 
 from core.config import settings
 from core.services import license_service
+
+
+class ListingNotFoundError(Exception):
+    """Takedown was granted on a listing_id that does not exist."""
 
 
 # Stable sentinel used for `filed_by_email` on admin-initiated takedowns —
@@ -109,12 +114,23 @@ async def _cascade_takedown(
             reason="takedown",
         )
 
-    _listings_table().update_item(
-        Key={"listing_id": listing_id, "version": 1},
-        UpdateExpression="SET #s = :taken, updated_at = :now",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":taken": "taken_down", ":now": now_iso},
-    )
+    # Guard against upsert: if the takedown was granted on a non-existent
+    # listing_id (malformed admin request, race with seller deletion), DDB
+    # would otherwise create a new partial row {listing_id, version:1,
+    # status:"taken_down", updated_at} and the cascade would appear to
+    # succeed for content that never existed.
+    try:
+        _listings_table().update_item(
+            Key={"listing_id": listing_id, "version": 1},
+            UpdateExpression="SET #s = :taken, updated_at = :now",
+            ConditionExpression="attribute_exists(listing_id)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":taken": "taken_down", ":now": now_iso},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ListingNotFoundError(f"listing {listing_id} v1 does not exist")
+        raise
     _takedowns_table().update_item(
         Key={"listing_id": listing_id, "takedown_id": takedown_id},
         UpdateExpression=("SET decision = :granted, decided_by = :by, decided_at = :now, affected_purchases = :n"),

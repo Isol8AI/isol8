@@ -103,7 +103,11 @@ async def get_listing(slug: str, response: Response):
     """
     response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
     listing = await marketplace_service.get_by_slug(slug=slug)
-    if not listing or listing["status"] in ("retired", "taken_down"):
+    # Only published listings are publicly visible. The previous version
+    # blacklisted retired/taken_down but allowed draft + review through,
+    # leaking unmoderated content if someone guessed a slug. Whitelist
+    # status="published" instead — same gate /deploy and /checkout enforce.
+    if not listing or listing.get("status") != "published":
         raise HTTPException(status_code=404, detail="listing not found")
 
     manifest: dict | None = None
