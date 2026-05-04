@@ -50,7 +50,11 @@ export function useContainerStatus(options: UseContainerStatusOptions = {}) {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (res.status === 404) return null;
+      // 404: no container row yet. 402: a provision gate is up (handled by
+      // useProvisioningState in the stepper). For non-stepper consumers (e.g.
+      // OverviewPanel, HealthIndicator), both states mean "no container info to
+      // render" — return null instead of throwing.
+      if (res.status === 404 || res.status === 402) return null;
       if (!res.ok) throw new Error("Failed to fetch container status");
       return res.json();
     },
