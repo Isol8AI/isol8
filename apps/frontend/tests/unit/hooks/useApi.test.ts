@@ -92,8 +92,12 @@ describe('useApi hook', () => {
     });
 
     it('throws error on non-ok response', async () => {
+      // ApiError now reads Content-Type from response.headers to decide
+      // whether to parse the body, so the mock must expose a headers map.
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        status: 404,
+        headers: new Headers({ 'Content-Type': 'application/json' }),
         json: () => Promise.resolve({ detail: 'Not found' }),
       });
 

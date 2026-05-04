@@ -15,7 +15,8 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.containers.ecs_manager import EcsManagerError
 from core.services.management_api_client import ManagementApiClientError
 from core.observability.metrics import put_metric, timing
-from core.repositories import billing_repo, container_repo, user_repo
+from core.repositories import container_repo, user_repo
+from core.services.provision_gate import evaluate_provision_gate
 
 logger = logging.getLogger(__name__)
 
@@ -46,61 +47,25 @@ def _resolve_cold_start_phase(container: dict, gateway_pool, owner_id: str) -> s
     return "starting"
 
 
-async def _owner_has_subscription(owner_id: str) -> bool:
-    """Check if an owner has an active billing subscription."""
-    account = await billing_repo.get_by_owner_id(owner_id)
-    return account is not None and account.get("stripe_subscription_id") is not None
+async def _assert_provision_allowed(
+    owner_id: str,
+    clerk_user_id: str,
+    *,
+    is_admin: bool = True,
+) -> None:
+    """Raise 402 with a structured `blocked` payload if a provision gate fires.
 
-
-# Subscription statuses that count as "currently paying" for the purpose of
-# provisioning compute. `past_due` is excluded — Stripe is actively trying
-# to recover payment, and we'd rather refuse new infra than rack up cost
-# against a card that's failing.
-_PROVISION_OK_STATUSES = frozenset({"active", "trialing"})
-
-
-async def _assert_provision_allowed(owner_id: str, clerk_user_id: str) -> None:
-    """Raise 402 if the owner cannot afford to provision a new container.
-
-    Two layers of gating:
-
-    1. Subscription. A canceled, incomplete, unpaid, paused, or past_due
-       subscription cannot spin up new compute — that's how we prevent
-       arbitrary signed-in users from minting free ECS Fargate tasks
-       (audit C1). Two cases pass:
-         - ``subscription_status`` is ``active`` or ``trialing``.
-         - Legacy row pre-Plan-3: ``stripe_subscription_id`` is set but
-           ``subscription_status`` hasn't been backfilled yet. We mirror
-           ``gate_chat``'s leniency here so a deploy doesn't 402 paying
-           customers mid-migration. Codex P1 on PR #488.
-       Anything else (no row at all, or status set to a non-OK value)
-       gets 402.
-    2. For ``bedrock_claude``, the credit balance must be > 0. A
-       container with $0 prepaid credits is dead weight: ``gate_chat``
-       blocks every chat anyway, so the user can't use it. Refuse the
-       provision instead of leaking ECS cost.
+    Delegates to ``core.services.provision_gate.evaluate_provision_gate`` so
+    /container/provision and /container/status share the same logic and can
+    never disagree about whether a gate is up.
     """
-    account = await billing_repo.get_by_owner_id(owner_id)
-    if not account:
-        raise HTTPException(status_code=402, detail="Active subscription required")
-    status = account.get("subscription_status")
-    has_legacy_sub = bool(account.get("stripe_subscription_id"))
-    # Allow if status is in the OK set, OR if status is unset on a row
-    # that has a stripe_subscription_id (legacy / pre-backfill).
-    is_ok = status in _PROVISION_OK_STATUSES or (status is None and has_legacy_sub)
-    if not is_ok:
-        raise HTTPException(status_code=402, detail="Active subscription required")
-
-    provider_choice, _ = await _resolve_provider_choice(clerk_user_id)
-    if provider_choice == "bedrock_claude":
-        from core.services import credit_ledger
-
-        balance = await credit_ledger.get_balance(clerk_user_id)
-        if balance <= 0:
-            raise HTTPException(
-                status_code=402,
-                detail="Top up Claude credits before provisioning",
-            )
+    gate = await evaluate_provision_gate(
+        owner_id=owner_id,
+        clerk_user_id=clerk_user_id,
+        is_admin=is_admin,
+    )
+    if gate is not None:
+        raise HTTPException(status_code=402, detail=gate.to_payload())
 
 
 async def _resolve_provider_choice(clerk_user_id: str) -> tuple[str, str | None]:
@@ -165,6 +130,19 @@ async def container_status(
         # Fall back to get_service_status for error/stopped containers
         container = await ecs_manager.get_service_status(owner_id)
     if not container:
+        # No container row at all — before returning 404, evaluate the
+        # same provision gate POST /provision uses. If a gate fires, the
+        # frontend needs the structured payload (402) so it can render
+        # the picker / "top up" CTA instead of trapping the user in a
+        # generic "no container" state. If no gate fires, fall through
+        # to the existing 404 behavior unchanged.
+        gate = await evaluate_provision_gate(
+            owner_id=owner_id,
+            clerk_user_id=auth.user_id,
+            is_admin=auth.is_org_admin if auth.is_org_context else True,
+        )
+        if gate is not None:
+            raise HTTPException(status_code=402, detail=gate.to_payload())
         raise HTTPException(status_code=404, detail="No container found")
 
     # Auto-retry: if container is in a failed/stuck state AND the owner can
@@ -175,7 +153,11 @@ async def container_status(
     retryable_states = ("error", "stopped")
     if container.get("status") in retryable_states:
         try:
-            await _assert_provision_allowed(owner_id, auth.user_id)
+            await _assert_provision_allowed(
+                owner_id,
+                auth.user_id,
+                is_admin=auth.is_org_admin if auth.is_org_context else True,
+            )
         except HTTPException:
             pass
         else:
@@ -290,7 +272,11 @@ async def container_provision(
     # Payment gate (audit C1). New-container path only — the existing-
     # container branch above intentionally bypasses this so we don't 402
     # callers asking about a container they already have.
-    await _assert_provision_allowed(owner_id, auth.user_id)
+    await _assert_provision_allowed(
+        owner_id,
+        auth.user_id,
+        is_admin=auth.is_org_admin if auth.is_org_context else True,
+    )
 
     # Provision new container — read the user's saved provider_choice so the
     # container is configured for the right LLM path (OAuth / BYO key /
@@ -334,7 +320,11 @@ async def container_retry(
     # Audit C1: same hardened gate as /provision — ID existence isn't
     # enough; status must be active/trialing AND bedrock_claude needs
     # a positive credit balance.
-    await _assert_provision_allowed(owner_id, auth.user_id)
+    await _assert_provision_allowed(
+        owner_id,
+        auth.user_id,
+        is_admin=auth.is_org_admin if auth.is_org_context else True,
+    )
 
     ecs_manager = get_ecs_manager()
     container = await ecs_manager.get_service_status(owner_id)

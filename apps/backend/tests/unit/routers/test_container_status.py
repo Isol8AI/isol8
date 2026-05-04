@@ -219,15 +219,151 @@ class TestContainerStatus:
         assert data["last_error_at"] is None
 
     @pytest.mark.asyncio
+    @patch("routers.container.evaluate_provision_gate", new_callable=AsyncMock)
     @patch("routers.container.get_ecs_manager")
-    async def test_returns_404_without_container(self, mock_get_ecs, async_client):
-        """Should return 404 when user has no container."""
+    async def test_returns_404_without_container(self, mock_get_ecs, mock_gate, async_client):
+        """No container row + no gate fires -> preserve existing 404 behavior."""
         mock_ecs = AsyncMock()
         mock_get_ecs.return_value = mock_ecs
         mock_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
         mock_ecs.get_service_status = AsyncMock(return_value=None)
+        mock_gate.return_value = None  # no gate fires
         response = await async_client.get("/api/v1/container/status")
         assert response.status_code == 404
+
+
+class TestContainerStatusGate:
+    """GET /container/status — gate-aware response shape (provision-gate-ui).
+
+    When there's no container row yet, /status should evaluate the same
+    provision gate POST /provision uses and return 402 + structured
+    `blocked` payload if a gate fires. If no gate fires, the existing 404
+    behavior is preserved (covered by test_returns_404_without_container).
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_container_with_gate_raises_402_structured(self):
+        """No container row + gate fires -> 402 with structured blocked payload."""
+        from fastapi import HTTPException
+
+        from core.services.provision_gate import Gate
+        from routers.container import container_status
+
+        fake_gate = Gate(
+            code="credits_required",
+            title="Top up Claude credits to start your container",
+            message="Top up some Claude credits to start your Bedrock container.",
+            action_label="Top up now",
+            action_href="/settings/billing#credits",
+            action_admin_only=False,
+            owner_role="admin",
+        )
+
+        mock_auth = SimpleNamespace(
+            user_id="user_x",
+            org_id=None,
+            is_org_context=False,
+            is_org_admin=False,
+        )
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+                return_value=fake_gate,
+            ),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(auth=mock_auth)
+
+        assert exc.value.status_code == 402
+        assert isinstance(exc.value.detail, dict)
+        assert exc.value.detail["blocked"]["code"] == "credits_required"
+        assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
+
+    @pytest.mark.asyncio
+    async def test_no_container_no_gate_raises_404(self):
+        """No container row + no gate fires -> existing 404 behavior preserved."""
+        from fastapi import HTTPException
+
+        from routers.container import container_status
+
+        mock_auth = SimpleNamespace(
+            user_id="user_x",
+            org_id=None,
+            is_org_context=False,
+            is_org_admin=False,
+        )
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(return_value=(None, None))
+        fake_ecs.get_service_status = AsyncMock(return_value=None)
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+        ):
+            with pytest.raises(HTTPException) as exc:
+                await container_status(auth=mock_auth)
+
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_existing_container_skips_gate(self):
+        """Container exists -> gate is NOT consulted; response is unchanged."""
+        from routers.container import container_status
+
+        mock_auth = SimpleNamespace(
+            user_id="user_x",
+            org_id=None,
+            is_org_context=False,
+            is_org_admin=False,
+        )
+
+        fake_ecs = AsyncMock()
+        fake_ecs.resolve_running_container = AsyncMock(
+            return_value=(
+                {
+                    "service_name": "openclaw-existing",
+                    "status": "running",
+                    "substatus": None,
+                    "created_at": "2026-01-15T12:00:00+00:00",
+                    "updated_at": "2026-01-15T12:00:00+00:00",
+                },
+                "10.0.1.5",
+            )
+        )
+
+        with (
+            patch("routers.container.get_ecs_manager", return_value=fake_ecs),
+            patch(
+                "routers.container.evaluate_provision_gate",
+                new_callable=AsyncMock,
+            ) as mock_gate,
+            patch("routers.container.resolve_owner_id", return_value="user_x"),
+            patch(
+                "routers.container.get_gateway_pool",
+                return_value=SimpleNamespace(is_user_connected=lambda _u: True),
+            ),
+        ):
+            result = await container_status(auth=mock_auth)
+
+        # Working container path must never call the gate — billing churn
+        # (cancel/resubscribe) shouldn't 402 a user with a live container.
+        mock_gate.assert_not_called()
+        assert result["service_name"] == "openclaw-existing"
+        assert result["status"] == "running"
 
 
 class TestGatewayRestart:

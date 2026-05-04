@@ -1,0 +1,176 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { render, screen } from "@testing-library/react";
+import React from "react";
+
+// The blocked-state branch in ProvisioningStepper renders before any of the
+// container/billing/orchestration logic, so we only need the hooks the
+// component touches *up to* that early-return to be functional. Everything
+// else gets a no-op stub.
+
+vi.mock("@/hooks/useProvisioningState", () => ({
+  useProvisioningState: vi.fn(),
+}));
+
+vi.mock("@clerk/nextjs", () => ({
+  useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
+}));
+
+vi.mock("posthog-js/react", () => ({
+  usePostHog: () => null,
+}));
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+vi.mock("@/lib/api", () => ({
+  useApi: () => ({
+    // ProvisioningStepper chains .catch on the result, so the mock must
+    // return a promise — vi.fn() defaults to undefined which crashes.
+    post: vi.fn().mockResolvedValue({}),
+    get: vi.fn().mockResolvedValue({}),
+    put: vi.fn().mockResolvedValue({}),
+    del: vi.fn().mockResolvedValue({}),
+  }),
+}));
+
+vi.mock("@/hooks/useBilling", () => ({
+  useBilling: () => ({ isLoading: false, isSubscribed: true }),
+}));
+
+vi.mock("@/hooks/useContainerStatus", () => ({
+  useContainerStatus: () => ({ container: null, refresh: vi.fn() }),
+}));
+
+vi.mock("@/hooks/useGatewayRpc", () => ({
+  useGatewayRpc: () => ({ data: null, error: null }),
+}));
+
+vi.mock("swr", () => ({
+  default: () => ({ data: null, error: null, mutate: vi.fn() }),
+}));
+
+vi.mock("@/lib/analytics", () => ({
+  capture: vi.fn(),
+}));
+
+import { useProvisioningState } from "@/hooks/useProvisioningState";
+import { ProvisioningStepper } from "../ProvisioningStepper";
+
+const useProvMock = useProvisioningState as ReturnType<typeof vi.fn>;
+
+describe("ProvisioningStepper blocked-state rendering", () => {
+  beforeEach(() => {
+    useProvMock.mockReset();
+  });
+
+  it("renders title + message + action button when admin and not admin_only", () => {
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "credits_required",
+        title: "Top up Claude credits to start your container",
+        message: "Top up some Claude credits to start your Bedrock container.",
+        action: {
+          kind: "link",
+          label: "Top up now",
+          href: "/settings/billing#credits",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(
+      screen.getByText(/Top up Claude credits to start your container/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(/Top up some Claude credits to start your Bedrock container\./),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Top up now/ })).toHaveAttribute(
+      "href",
+      "/settings/billing#credits",
+    );
+    // Member-only fallback copy must NOT appear when the action is allowed.
+    expect(screen.queryByText(/Ask your org admin/i)).not.toBeInTheDocument();
+  });
+
+  it("renders 'ask your admin' when member-and-admin_only", () => {
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "subscription_required",
+        title: "Subscribe to start your container",
+        message: "An active subscription is required.",
+        action: {
+          kind: "link",
+          label: "Subscribe",
+          href: "/onboarding",
+          admin_only: true,
+        },
+        owner_role: "member",
+      },
+      refreshInterval: 5000,
+      refresh: vi.fn(),
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    expect(screen.getByText(/Ask your org admin/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: /Subscribe/ }),
+    ).not.toBeInTheDocument();
+    // Title and message still render even when the action is hidden.
+    expect(
+      screen.getByText(/Subscribe to start your container/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/An active subscription is required\./)).toBeInTheDocument();
+  });
+
+  it("wires the 'Check again' button to the hook's refresh()", () => {
+    const refresh = vi.fn();
+    useProvMock.mockReturnValue({
+      phase: "blocked",
+      container: null,
+      blocked: {
+        code: "credits_required",
+        title: "Top up Claude credits to start your container",
+        message: "Top up some Claude credits to start your Bedrock container.",
+        action: {
+          kind: "link",
+          label: "Top up now",
+          href: "/settings/billing#credits",
+          admin_only: false,
+        },
+        owner_role: "admin",
+      },
+      refreshInterval: 5000,
+      refresh,
+    });
+
+    render(
+      <ProvisioningStepper>
+        <div>children</div>
+      </ProvisioningStepper>,
+    );
+
+    const checkAgain = screen.getByRole("button", { name: /Check again/ });
+    checkAgain.click();
+    expect(refresh).toHaveBeenCalled();
+  });
+});

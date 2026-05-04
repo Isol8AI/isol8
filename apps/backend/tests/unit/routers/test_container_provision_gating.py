@@ -42,7 +42,7 @@ async def test_provision_requires_subscription_row():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -68,7 +68,7 @@ async def test_provision_rejects_inactive_subscription_status(status):
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -98,7 +98,7 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -106,12 +106,12 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             },
         ),
         patch(
-            "routers.container.user_repo.get",
+            "core.services.provision_gate.user_repo.get",
             new_callable=AsyncMock,
             return_value={"provider_choice": "bedrock_claude"},
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
+            "core.services.provision_gate.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=0,
         ),
@@ -136,7 +136,7 @@ async def test_provision_allows_bedrock_with_positive_balance():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
@@ -144,14 +144,22 @@ async def test_provision_allows_bedrock_with_positive_balance():
             },
         ),
         patch(
-            "routers.container.user_repo.get",
+            "core.services.provision_gate.user_repo.get",
             new_callable=AsyncMock,
             return_value={"provider_choice": "bedrock_claude"},
         ),
         patch(
-            "core.services.credit_ledger.get_balance",
+            "core.services.provision_gate.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=10_000_000,
+        ),
+        # _resolve_provider_choice in routers.container also reads user_repo
+        # after the gate passes — patch that binding too so provisioning
+        # doesn't hit DDB.
+        patch(
+            "routers.container.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "bedrock_claude"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):
@@ -169,6 +177,12 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
+    # Pre-import oauth_service so we can patch its function attribute directly,
+    # which beats sys.modules-swapping for cross-test isolation (the lazy
+    # `from core.services import oauth_service` inside the gate hits the
+    # already-imported module via package attribute lookup).
+    from core.services import oauth_service  # noqa: F401
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -176,13 +190,25 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
             },
         ),
+        patch(
+            "core.services.provision_gate.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": provider_choice},
+        ),
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new_callable=AsyncMock,
+            return_value={"access_token": "x"},
+        ),
+        # _resolve_provider_choice in routers.container also reads user_repo
+        # after the gate passes — patch that binding too.
         patch(
             "routers.container.user_repo.get",
             new_callable=AsyncMock,
@@ -210,6 +236,8 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
     fake_ecs = MagicMock()
     fake_ecs.provision_user_container = AsyncMock(return_value="openclaw-foo")
 
+    from core.services import oauth_service  # noqa: F401
+
     with (
         patch(
             "routers.container.container_repo.get_by_owner_id",
@@ -217,12 +245,22 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
             return_value=None,
         ),
         patch(
-            "routers.container.billing_repo.get_by_owner_id",
+            "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
                 "stripe_subscription_id": "sub_legacy_pre_plan_3",
                 # subscription_status deliberately absent / None
             },
+        ),
+        patch(
+            "core.services.provision_gate.user_repo.get",
+            new_callable=AsyncMock,
+            return_value={"provider_choice": "chatgpt_oauth"},
+        ),
+        patch(
+            "core.services.oauth_service.get_decrypted_tokens",
+            new_callable=AsyncMock,
+            return_value={"access_token": "x"},
         ),
         patch(
             "routers.container.user_repo.get",
@@ -252,3 +290,83 @@ async def test_provision_existing_container_skips_payment_gate():
         result = await container_provision(auth=_auth())
     assert result["already_existed"] is True
     assert result["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_provision_402_returns_structured_blocked_payload():
+    """Per provision-gate-ui spec: _assert_provision_allowed must raise
+    402 with a structured `blocked` payload (not a free-form string)."""
+    from core.services.provision_gate import Gate
+
+    fake_gate = Gate(
+        code="credits_required",
+        title="Top up Claude credits to start your container",
+        message="Top up some Claude credits to start your Bedrock container.",
+        action_label="Top up now",
+        action_href="/settings/billing#credits",
+        action_admin_only=False,
+        owner_role="admin",
+    )
+
+    with patch(
+        "routers.container.evaluate_provision_gate",
+        new_callable=AsyncMock,
+    ) as mock_gate:
+        mock_gate.return_value = fake_gate
+
+        from routers.container import _assert_provision_allowed
+
+        with pytest.raises(HTTPException) as exc:
+            await _assert_provision_allowed(
+                owner_id="user_x",
+                clerk_user_id="user_x",
+                is_admin=True,
+            )
+
+    assert exc.value.status_code == 402
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["blocked"]["code"] == "credits_required"
+    assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
+
+
+@pytest.mark.asyncio
+async def test_provision_402_subscription_required_payload():
+    """Companion to credits_required test — pin the subscription_required
+    path too, including the admin_only flag on the action.
+
+    Existing test fixtures call _assert_provision_allowed / container_provision
+    directly rather than going through an HTTP TestClient, so this matches
+    that style for consistency with the rest of the file.
+    """
+    from core.services.provision_gate import Gate
+
+    fake_gate = Gate(
+        code="subscription_required",
+        title="Subscribe to start your container",
+        message="An active subscription is required to provision a container.",
+        action_label="Subscribe",
+        action_href="/onboarding",
+        action_admin_only=True,
+        owner_role="admin",
+    )
+
+    with patch(
+        "routers.container.evaluate_provision_gate",
+        new_callable=AsyncMock,
+    ) as mock_gate:
+        mock_gate.return_value = fake_gate
+
+        from routers.container import _assert_provision_allowed
+
+        with pytest.raises(HTTPException) as exc:
+            await _assert_provision_allowed(
+                owner_id="user_x",
+                clerk_user_id="user_x",
+                is_admin=True,
+            )
+
+    assert exc.value.status_code == 402
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["blocked"]["code"] == "subscription_required"
+    assert exc.value.detail["blocked"]["action"]["admin_only"] is True
+    assert exc.value.detail["blocked"]["action"]["href"] == "/onboarding"

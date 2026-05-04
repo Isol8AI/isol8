@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { deriveWebSocketUrl } from '../api';
+import { ApiError, deriveWebSocketUrl } from '../api';
 
 describe('deriveWebSocketUrl', () => {
   const originalEnv = process.env.NEXT_PUBLIC_WS_URL;
@@ -62,5 +62,36 @@ describe('deriveWebSocketUrl', () => {
     expect(deriveWebSocketUrl('https://apiary.com/api/v1')).toBe(
       'wss://apiary.com',
     );
+  });
+});
+
+describe('ApiError', () => {
+  it('captures the status code and parsed body', () => {
+    const err = new ApiError(402, { blocked: { code: 'credits_required' } });
+    expect(err.status).toBe(402);
+    expect(err.body).toEqual({ blocked: { code: 'credits_required' } });
+    expect(err.name).toBe('ApiError');
+  });
+
+  it('uses a default message when none provided', () => {
+    const err = new ApiError(503, null);
+    expect(err.message).toBe('API 503');
+  });
+
+  it('uses the provided message when given', () => {
+    const err = new ApiError(404, null, 'Resource not found');
+    expect(err.message).toBe('Resource not found');
+  });
+
+  it('is throwable and instanceof Error', () => {
+    expect(() => {
+      throw new ApiError(400, { error: 'bad' });
+    }).toThrow(ApiError);
+    try {
+      throw new ApiError(400, { error: 'bad' });
+    } catch (e) {
+      expect(e).toBeInstanceOf(Error);
+      expect(e).toBeInstanceOf(ApiError);
+    }
   });
 });
