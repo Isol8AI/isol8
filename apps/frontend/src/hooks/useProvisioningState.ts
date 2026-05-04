@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { BACKEND_URL, ApiError } from "@/lib/api";
+import { useApi, ApiError } from "@/lib/api";
 
 /** Server-rendered blocked-state payload from /container/status (402). */
 export interface BlockedPayload {
@@ -56,7 +56,8 @@ type FetchResult =
  * `refresh()` resets to 5s and re-polls immediately.
  */
 export function useProvisioningState(): ProvisioningStateResult {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
+  const api = useApi();
   // Two-phase blocked-state polling cadence: 5s for the first minute, then
   // 30s. `blockedFastPhase` is a *generation counter* — each new blocked
   // entry (or manual refresh) bumps it, the effect below tracks generations
@@ -68,49 +69,40 @@ export function useProvisioningState(): ProvisioningStateResult {
 
   const fetcher = useCallback(
     async (url: string): Promise<FetchResult> => {
-      const token = await getToken();
-      if (!token) throw new Error("No auth token");
-      const res = await fetch(`${BACKEND_URL}${url}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.status === 404) return { kind: "no-container" };
-      if (res.status === 402) {
-        // FastAPI's HTTPException(detail=...) serializes to
-        // {"detail": <whatever was passed>}. Backend passes
-        // gate.to_payload() which is {"blocked": {...}}, so the wire
-        // shape is {"detail": {"blocked": {...}}}. Read from the
-        // detail envelope; fall back to a top-level "blocked" key
-        // (used by some test fixtures and to be defensive about
-        // transport quirks) so this hook stays robust either way.
-        const body = await res.json();
-        const envelope =
-          (body && typeof body === "object" ? (body as Record<string, unknown>) : {}) || {};
-        const detail = envelope.detail;
-        const blocked =
-          detail && typeof detail === "object" && "blocked" in (detail as object)
-            ? (detail as { blocked: BlockedPayload }).blocked
-            : (envelope.blocked as BlockedPayload | undefined);
-        if (!blocked) {
-          // Defensive: 402 without a recognizable blocked payload — surface
-          // as ApiError so we don't silently render an empty blocked screen.
-          throw new ApiError(res.status, body);
+      try {
+        const data = (await api.get(url)) as ContainerInfo;
+        return { kind: "container", data };
+      } catch (err) {
+        if (!(err instanceof ApiError)) throw err;
+        if (err.status === 404) return { kind: "no-container" };
+        if (err.status === 402) {
+          // FastAPI's HTTPException(detail=...) serializes to
+          // {"detail": <whatever was passed>}. Backend passes
+          // gate.to_payload() which is {"blocked": {...}}, so the wire
+          // shape is {"detail": {"blocked": {...}}}. Read from the
+          // detail envelope; fall back to a top-level "blocked" key
+          // (used by some test fixtures and to be defensive about
+          // transport quirks) so this hook stays robust either way.
+          const envelope =
+            (err.body && typeof err.body === "object"
+              ? (err.body as Record<string, unknown>)
+              : {}) || {};
+          const detail = envelope.detail;
+          const blocked =
+            detail && typeof detail === "object" && "blocked" in (detail as object)
+              ? (detail as { blocked: BlockedPayload }).blocked
+              : (envelope.blocked as BlockedPayload | undefined);
+          // Defensive: 402 without a recognizable blocked payload — re-throw
+          // the original ApiError so we don't silently render an empty
+          // blocked screen.
+          if (!blocked) throw err;
+          return { kind: "blocked", data: blocked };
         }
-        return { kind: "blocked", data: blocked };
+        // Other ApiError statuses propagate normally.
+        throw err;
       }
-      if (!res.ok) {
-        // Unexpected status — surface as ApiError so downstream sees it.
-        let body: unknown = null;
-        try {
-          body = await res.json();
-        } catch {
-          // ignore
-        }
-        throw new ApiError(res.status, body);
-      }
-      const data = (await res.json()) as ContainerInfo;
-      return { kind: "container", data };
     },
-    [getToken],
+    [api],
   );
 
   const { data, mutate } = useSWR<FetchResult>(

@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { BACKEND_URL } from "@/lib/api";
+import { useApi, ApiError } from "@/lib/api";
 
 /**
  * Cold-start phase from `routers/container.py::_resolve_cold_start_phase`.
@@ -39,26 +39,25 @@ interface UseContainerStatusOptions {
 
 export function useContainerStatus(options: UseContainerStatusOptions = {}) {
   const { refreshInterval = 0, enabled = true } = options;
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
+  const api = useApi();
 
+  // 404: no container row yet. 402: a provision gate is up (handled by
+  // useProvisioningState in the stepper). For non-stepper consumers (e.g.
+  // OverviewPanel, HealthIndicator), both states mean "no container info to
+  // render" — return null instead of letting the ApiError propagate.
   const fetcher = useCallback(
-    async (url: string) => {
-      const token = await getToken();
-      if (!token) throw new Error("No auth token");
-
-      const res = await fetch(`${BACKEND_URL}${url}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      // 404: no container row yet. 402: a provision gate is up (handled by
-      // useProvisioningState in the stepper). For non-stepper consumers (e.g.
-      // OverviewPanel, HealthIndicator), both states mean "no container info to
-      // render" — return null instead of throwing.
-      if (res.status === 404 || res.status === 402) return null;
-      if (!res.ok) throw new Error("Failed to fetch container status");
-      return res.json();
+    async (url: string): Promise<ContainerStatus | null> => {
+      try {
+        return (await api.get(url)) as ContainerStatus;
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 404 || err.status === 402)) {
+          return null;
+        }
+        throw err;
+      }
     },
-    [getToken],
+    [api],
   );
 
   const { data, error, isLoading, mutate } = useSWR<ContainerStatus | null>(

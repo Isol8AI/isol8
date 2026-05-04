@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import useSWR from "swr";
 import { useAuth } from "@clerk/nextjs";
-import { BACKEND_URL } from "@/lib/api";
+import { useApi, ApiError } from "@/lib/api";
 
 // =============================================================================
 // Flat-fee billing hook. Backend response shapes match
@@ -47,23 +47,28 @@ export interface UsageSummary {
   by_member: MemberUsage[];
 }
 
+interface PortalResponse {
+  portal_url: string;
+}
+
 export function useBilling() {
-  const { getToken, isSignedIn } = useAuth();
+  const { isSignedIn } = useAuth();
+  const api = useApi();
 
+  // /billing/account returns 404 when the owner has no billing row yet
+  // (pre-subscribe, pre-Stripe-customer). Treat that as the empty state
+  // ("no account") rather than an error so the UI can render the
+  // subscribe CTA. Any other ApiError surfaces normally.
   const fetcher = useCallback(
-    async (url: string) => {
-      const token = await getToken();
-      if (!token) throw new Error("No auth token");
-
-      const res = await fetch(`${BACKEND_URL}${url}`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (res.status === 404) return null;
-      if (!res.ok) throw new Error("Failed to fetch billing data");
-      return res.json();
+    async (url: string): Promise<BillingAccount | null> => {
+      try {
+        return (await api.get(url)) as BillingAccount;
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
     },
-    [getToken],
+    [api],
   );
 
   const {
@@ -81,35 +86,19 @@ export function useBilling() {
   );
 
   const openPortal = useCallback(async () => {
-    const token = await getToken();
-    if (!token) throw new Error("No auth token");
-
-    const res = await fetch(`${BACKEND_URL}/billing/portal`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-    });
-
-    if (!res.ok) throw new Error("Failed to create portal session");
-
-    const { portal_url } = await res.json();
+    const { portal_url } = (await api.post("/billing/portal", {})) as PortalResponse;
     window.location.href = portal_url;
-  }, [getToken]);
+  }, [api]);
 
+  // Same 404→null contract as /billing/account.
   const fetchUsage = useCallback(async (): Promise<UsageSummary | null> => {
-    const token = await getToken();
-    if (!token) throw new Error("No auth token");
-
-    const res = await fetch(`${BACKEND_URL}/billing/usage`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (res.status === 404) return null;
-    if (!res.ok) throw new Error("Failed to fetch usage data");
-    return res.json();
-  }, [getToken]);
+    try {
+      return (await api.get("/billing/usage")) as UsageSummary;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null;
+      throw err;
+    }
+  }, [api]);
 
   const isSubscribed = account?.is_subscribed === true;
   const refresh = useCallback(() => mutate(), [mutate]);
