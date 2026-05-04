@@ -70,6 +70,19 @@ async def test_submit_listing_transitions_draft_to_review(mock_listings):
 
 @pytest.mark.asyncio
 @patch("core.services.marketplace_service._listings_table")
+async def test_submit_for_review_populates_published_at_for_moderation_gsi(mock_listings):
+    """Regression: status-published-index has published_at as its sort key.
+    DynamoDB sparse-GSI semantics exclude items whose sort key is None, so
+    submit_for_review MUST set published_at or the moderation queue is
+    structurally empty (Codex P1 on PR #517, commit 597f4a5d)."""
+    mock_listings.return_value.update_item = MagicMock(return_value={"Attributes": {"status": "review"}})
+    await marketplace_service.submit_for_review(listing_id="l1", seller_id="user_abc")
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert "published_at" in kwargs["UpdateExpression"]
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
 async def test_submit_rejects_when_not_in_draft(mock_listings):
     from botocore.exceptions import ClientError
 

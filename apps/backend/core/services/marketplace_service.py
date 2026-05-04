@@ -213,9 +213,18 @@ async def submit_for_review(*, listing_id: str, seller_id: str) -> dict:
         raise ArtifactNotUploadedError("upload artifact before submitting for review")
 
     try:
+        # Populate published_at at submit time even though the listing isn't
+        # yet "published". status-published-index has published_at as its
+        # sort key; DynamoDB's sparse-GSI semantics exclude items whose sort
+        # key is missing. Without a value here the moderation queue
+        # (status="review") is structurally empty regardless of how many
+        # listings are awaiting review. The approve flow overwrites this on
+        # the actual publish transition, so the field still tells you when
+        # the listing went live (or when it last entered the review pipeline,
+        # if rejected).
         resp = table.update_item(
             Key={"listing_id": listing_id, "version": 1},
-            UpdateExpression="SET #s = :review, updated_at = :now",
+            UpdateExpression="SET #s = :review, updated_at = :now, published_at = :now",
             ConditionExpression="seller_id = :sid AND #s = :draft",
             ExpressionAttributeNames={"#s": "status"},
             ExpressionAttributeValues={
