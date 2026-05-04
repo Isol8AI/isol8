@@ -17,7 +17,7 @@ import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const { isLoaded } = useAuth();
+  const { isLoaded, orgId: authOrgId } = useAuth();
   const { user } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
   const { userMemberships, userInvitations, isLoaded: orgsLoaded, setActive } = useOrganizationList({
@@ -172,11 +172,21 @@ export default function OnboardingPage() {
   }
 
   if (mode === "org") {
-    // After Clerk creates the org, `organization` becomes non-null.
-    // Mount our custom <InviteTeammatesStep> so all invites flow through
-    // the backend's Gate A (rejecting personal-subscriber emails) instead
-    // of Clerk's built-in invite UI which calls Clerk directly.
-    if (organization) {
+    // Two-stage gate after Clerk's <CreateOrganization> finishes:
+    //
+    //   Stage A: `organization` is non-null but the JWT hasn't picked up
+    //   the new org yet (Clerk's setActive → JWT refresh is async). Show
+    //   a transient "Activating…" message so the user knows we're working
+    //   on it. Without this gate, the first invite POST hits Gate A's
+    //   auth.org_id == org_id check on the backend with a pre-org JWT and
+    //   returns 403 "Cannot invite to a different org" — flaky right
+    //   after org creation.
+    //
+    //   Stage B: JWT now carries the new org. Mount InviteTeammatesStep
+    //   so all invites flow through our backend's Gate A (rejecting
+    //   personal-subscriber emails) instead of Clerk's built-in invite
+    //   UI which calls Clerk directly.
+    if (organization && authOrgId === organization.id) {
       return (
         <InviteTeammatesStep
           orgId={organization.id}
@@ -189,6 +199,14 @@ export default function OnboardingPage() {
             router.push("/chat");
           }}
         />
+      );
+    }
+    if (organization && authOrgId !== organization.id) {
+      return (
+        <div className="flex flex-col items-center justify-center min-h-screen gap-4 bg-background">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-primary" />
+          <p className="text-sm text-muted-foreground">Activating your organization…</p>
+        </div>
       );
     }
     return (

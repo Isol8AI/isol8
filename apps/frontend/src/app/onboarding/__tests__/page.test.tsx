@@ -5,7 +5,7 @@ import { render, screen } from "@testing-library/react";
 const buildClerkMocks = (
   overrides: { invitations?: unknown[]; memberships?: unknown[] } = {},
 ) => ({
-  useAuth: () => ({ isLoaded: true }),
+  useAuth: () => ({ isLoaded: true, orgId: null }),
   useUser: () => ({ user: { update: vi.fn() } }),
   useOrganization: () => ({ organization: null, isLoaded: true }),
   useOrganizationList: () => ({
