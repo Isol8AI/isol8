@@ -23,6 +23,8 @@ from typing import Any, Awaitable, Callable
 import websockets
 from websockets.exceptions import WebSocketException
 
+from core.observability.metrics import put_metric
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +98,13 @@ class PaperclipEventClient:
                 ) as ws:
                     self._connected = True
                     attempt = 0  # successful connect resets backoff
+                    put_metric(
+                        "teams.client.connect",
+                        dimensions={
+                            "outcome": "ok",
+                            "kind": "reconnect" if is_reconnect else "initial",
+                        },
+                    )
                     logger.info("paperclip event WS connected url=%s reconnect=%s", self._url, is_reconnect)
                     if is_reconnect:
                         # Synthetic event so the broker can flush downstream
@@ -108,6 +117,7 @@ class PaperclipEventClient:
                     await self._receive_loop(ws)
             except (WebSocketException, OSError) as e:
                 logger.warning("paperclip event WS connect/recv error: %s", e)
+                put_metric("teams.client.connect", dimensions={"outcome": "error"})
             finally:
                 self._connected = False
 
@@ -123,6 +133,7 @@ class PaperclipEventClient:
                 continue
         if attempt >= _MAX_RECONNECT_ATTEMPTS:
             logger.error("paperclip event WS giving up after %d attempts url=%s", attempt, self._url)
+            put_metric("teams.client.give_up")
 
     async def _receive_loop(self, ws) -> None:
         """Read frames until the connection drops."""
@@ -133,9 +144,11 @@ class PaperclipEventClient:
                 event = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 logger.warning("paperclip event WS dropped malformed frame")
+                put_metric("teams.client.event", dimensions={"outcome": "malformed"})
                 continue
             try:
                 await self._on_event(event)
+                put_metric("teams.client.event", dimensions={"outcome": "ok"})
             except Exception:
                 logger.exception("on_event raised; continuing")
 

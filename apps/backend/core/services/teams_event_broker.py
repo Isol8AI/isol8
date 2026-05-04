@@ -15,6 +15,8 @@ import asyncio
 import logging
 from typing import Any, Awaitable, Callable, Protocol
 
+from core.observability.metrics import gauge, put_metric, timing
+
 logger = logging.getLogger(__name__)
 
 
@@ -84,6 +86,7 @@ class TeamsEventBroker:
                 grace.cancel()
 
             if user_id in self._clients:
+                put_metric("teams.broker.subscribe", dimensions={"outcome": "reused"})
                 return
 
             try:
@@ -91,6 +94,10 @@ class TeamsEventBroker:
                 cookie = await self._resolve_cookie(user_id)
             except Exception:
                 logger.exception("teams broker: cannot subscribe user=%s", user_id)
+                put_metric(
+                    "teams.broker.subscribe",
+                    dimensions={"outcome": "factory_failed"},
+                )
                 subs = self._subscribers.get(user_id)
                 if subs is not None:
                     subs.discard(connection_id)
@@ -108,7 +115,10 @@ class TeamsEventBroker:
                 on_event=_on_event,
             )
             await client.start()
+            put_metric("teams.broker.subscribe", dimensions={"outcome": "ok"})
+            put_metric("teams.broker.client", dimensions={"event": "opened"})
             self._clients[user_id] = client
+            gauge("teams.broker.users.active", len(self._clients))
             logger.info("teams broker: opened backing WS for user=%s company=%s", user_id, company_id)
 
     async def unsubscribe(self, user_id: str, connection_id: str) -> None:
@@ -120,12 +130,20 @@ class TeamsEventBroker:
             if subs:
                 subs.discard(connection_id)
             if subs:
+                put_metric(
+                    "teams.broker.unsubscribe",
+                    dimensions={"outcome": "still_active"},
+                )
                 return  # still has subscribers
             self._subscribers.pop(user_id, None)
 
             if user_id in self._clients and user_id not in self._grace_tasks:
                 self._grace_tasks[user_id] = asyncio.create_task(
                     self._grace_teardown(user_id),
+                )
+                put_metric(
+                    "teams.broker.unsubscribe",
+                    dimensions={"outcome": "grace_started"},
                 )
 
     async def _grace_teardown(self, user_id: str) -> None:
@@ -144,6 +162,8 @@ class TeamsEventBroker:
             except Exception:
                 logger.exception("teams broker: close() failed for user=%s", user_id)
             logger.info("teams broker: closed backing WS for idle user=%s", user_id)
+            put_metric("teams.broker.client", dimensions={"event": "closed"})
+            gauge("teams.broker.users.active", len(self._clients))
         # Prune the per-user lock now that the user is fully torn down. Done
         # AFTER releasing the lock — popping from inside the `async with` is
         # safe but easier to reason about outside. The next subscribe will
@@ -152,6 +172,10 @@ class TeamsEventBroker:
 
     async def _handle_event(self, user_id: str, event: dict[str, Any]) -> None:
         """Wrap and fan out one event to all of the user's connections."""
+        put_metric(
+            "teams.broker.event.received",
+            dimensions={"event_type": event.get("type", "unknown")},
+        )
         wrapped = {
             "type": "event",
             "event": f"teams.{event.get('type', 'unknown')}",
@@ -167,15 +191,33 @@ class TeamsEventBroker:
             conn_ids = await self._conn_svc.query_by_user_id(user_id)
         except Exception:
             logger.exception("teams broker: query_by_user_id failed user=%s", user_id)
+            put_metric(
+                "teams.broker.fanout",
+                dimensions={"outcome": "lookup_failed"},
+            )
             return
 
-        for conn_id in conn_ids:
-            try:
-                ok = self._mgmt.send_message(conn_id, wrapped)
-                if ok is False:
-                    self._conn_svc.delete_connection(conn_id)
-            except Exception:
-                logger.exception("teams broker: send_message failed conn=%s", conn_id)
+        with timing("teams.broker.fanout.latency"):
+            for conn_id in conn_ids:
+                try:
+                    ok = self._mgmt.send_message(conn_id, wrapped)
+                    if ok is False:
+                        put_metric(
+                            "teams.broker.fanout",
+                            dimensions={"outcome": "gone"},
+                        )
+                        self._conn_svc.delete_connection(conn_id)
+                    else:
+                        put_metric(
+                            "teams.broker.fanout",
+                            dimensions={"outcome": "ok"},
+                        )
+                except Exception:
+                    logger.exception("teams broker: send_message failed conn=%s", conn_id)
+                    put_metric(
+                        "teams.broker.fanout",
+                        dimensions={"outcome": "error"},
+                    )
 
     async def shutdown(self) -> None:
         """Close every backing client + cancel grace tasks. Lifespan shutdown."""

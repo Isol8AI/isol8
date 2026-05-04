@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 import websockets
@@ -214,3 +215,59 @@ async def test_event_client_ignores_malformed_messages():
 
     assert len(received) == 1
     assert received[0]["type"] == "agent.status"
+
+
+@pytest.mark.asyncio
+async def test_event_client_emits_connect_metric_on_initial_connect():
+    """Happy path: first successful connect emits teams.client.connect with
+    outcome=ok and kind=initial."""
+    from core.services.paperclip_event_client import PaperclipEventClient
+
+    received: list[dict] = []
+
+    async def handler(ws):
+        await ws.send(
+            json.dumps(
+                {
+                    "id": 1,
+                    "companyId": "co_x",
+                    "type": "activity.logged",
+                    "createdAt": "2026-05-04T01:00:00Z",
+                    "payload": {},
+                }
+            )
+        )
+        await ws.wait_closed()
+
+    server, base_url = await _make_fake_server(handler)
+
+    async def on_event(event: dict[str, Any]) -> None:
+        received.append(event)
+
+    with patch("core.services.paperclip_event_client.put_metric") as put_metric_mock:
+        client = PaperclipEventClient(
+            url=base_url,
+            cookie="c=1",
+            on_event=on_event,
+        )
+        await client.start()
+        for _ in range(50):
+            if received:
+                break
+            await asyncio.sleep(0.02)
+        await client.close()
+        server.close()
+        await server.wait_closed()
+
+    # At least one call to teams.client.connect with outcome=ok, kind=initial.
+    matching = [
+        c
+        for c in put_metric_mock.call_args_list
+        if c.args
+        and c.args[0] == "teams.client.connect"
+        and c.kwargs.get("dimensions", {}).get("outcome") == "ok"
+        and c.kwargs.get("dimensions", {}).get("kind") == "initial"
+    ]
+    assert matching, (
+        f"expected teams.client.connect ok/initial; got: {[(c.args, c.kwargs) for c in put_metric_mock.call_args_list]}"
+    )

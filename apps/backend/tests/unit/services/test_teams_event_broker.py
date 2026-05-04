@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import Awaitable, Callable
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -200,6 +200,58 @@ async def test_concurrent_subscribes_do_not_double_open_client(fake_components):
         broker.subscribe("user_a", "c3"),
     )
     assert len(fake_components["clients"]) == 1
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_emits_subscribe_ok_metric(fake_components):
+    """Happy path: first subscribe emits teams.broker.subscribe outcome=ok."""
+    with patch("core.services.teams_event_broker.put_metric") as put_metric_mock:
+        broker = _build_broker(fake_components)
+        await broker.subscribe("user_a", "conn_1")
+        await broker.shutdown()
+
+    matching = [
+        c
+        for c in put_metric_mock.call_args_list
+        if c.args and c.args[0] == "teams.broker.subscribe" and c.kwargs.get("dimensions", {}).get("outcome") == "ok"
+    ]
+    assert matching, (
+        f"expected teams.broker.subscribe ok; got: {[(c.args, c.kwargs) for c in put_metric_mock.call_args_list]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_event_handling_emits_received_and_fanout_ok_metrics(fake_components):
+    """Happy path: an event triggers teams.broker.event.received +
+    teams.broker.fanout outcome=ok per connection sent to."""
+    broker = _build_broker(fake_components)
+    await broker.subscribe("user_a", "conn_1")
+    fake_components["conn_svc"].query_by_user_id.return_value = ["conn_1"]
+
+    with patch("core.services.teams_event_broker.put_metric") as put_metric_mock:
+        await fake_components["clients"][0].trigger(
+            {
+                "id": 1,
+                "companyId": "co_user_a",
+                "type": "activity.logged",
+                "createdAt": "2026-05-04T01:00:00Z",
+                "payload": {"actor": "x"},
+            }
+        )
+
+    received_calls = [
+        c for c in put_metric_mock.call_args_list if c.args and c.args[0] == "teams.broker.event.received"
+    ]
+    fanout_ok_calls = [
+        c
+        for c in put_metric_mock.call_args_list
+        if c.args and c.args[0] == "teams.broker.fanout" and c.kwargs.get("dimensions", {}).get("outcome") == "ok"
+    ]
+    assert received_calls, "expected teams.broker.event.received"
+    assert fanout_ok_calls, "expected teams.broker.fanout outcome=ok"
+    # event_type dimension should be set
+    assert received_calls[0].kwargs.get("dimensions", {}).get("event_type") == "activity.logged"
     await broker.shutdown()
 
 

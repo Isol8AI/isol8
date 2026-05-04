@@ -237,18 +237,31 @@ async def ws_message(
         from core.services import teams_event_broker_singleton
 
         broker = teams_event_broker_singleton.get_broker()
-        if broker is not None:
+        if broker is None:
+            put_metric(
+                "teams.dispatch",
+                dimensions={"type": msg_type, "outcome": "broker_disabled"},
+            )
+        else:
             try:
                 if msg_type == "teams.subscribe":
                     await broker.subscribe(user_id, x_connection_id)
                 else:
                     await broker.unsubscribe(user_id, x_connection_id)
+                put_metric(
+                    "teams.dispatch",
+                    dimensions={"type": msg_type, "outcome": "ok"},
+                )
             except Exception:
                 logger.exception(
                     "teams broker dispatch failed type=%s user=%s conn=%s",
                     msg_type,
                     user_id,
                     x_connection_id[:12] if x_connection_id else "?",
+                )
+                put_metric(
+                    "teams.dispatch",
+                    dimensions={"type": msg_type, "outcome": "error"},
                 )
         return Response(status_code=200)
 
