@@ -68,7 +68,7 @@ This step has no code deliverable — it's a runbook executed once. No script is
 @router.post("/{org_id}/invitations", status_code=201)
 async def create_invitation(
     org_id: str,
-    body: CreateInvitationRequest,  # { email: EmailStr, role: Literal["org:admin", "basic_member"] }
+    body: CreateInvitationRequest,  # { email: EmailStr, role: Literal["org:admin", "org:member"] }
     auth: AuthContext = Depends(require_org_admin),
 ) -> CreateInvitationResponse:  # { invitation_id: str }
     # Caller must be admin of the target org
@@ -115,7 +115,7 @@ async def create_invitation(
 ```python
 class CreateInvitationRequest(BaseModel):
     email: EmailStr
-    role: Literal["org:admin", "basic_member"] = "basic_member"
+    role: Literal["org:admin", "org:member"] = "org:member"
 
 class CreateInvitationResponse(BaseModel):
     invitation_id: str
