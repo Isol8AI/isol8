@@ -52,6 +52,18 @@ Thumbs.db
 localstack/generated.env
 localstack_data/
 .localstack/
-.worktrees/
 apps/frontend/package-lock.json
+
+# Worktrees
 .worktrees/
+
+# Tool scratch directories
+.claude/
+.superpowers/
+.hypothesis/
+.tmp-*/
+apps/desktop/src-tauri/.sidecar-tmp/
+
+# Read-only upstream reference clones (mirror the ~/Desktop/openclaw pattern;
+# see CLAUDE.md). Cloned locally for greppable reference, never committed.
+paperclip/
