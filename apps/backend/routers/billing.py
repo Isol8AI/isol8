@@ -158,6 +158,8 @@ async def get_billing_account(
         lifetime_spend=lifetime_spend,
         subscription_status=subscription_status,
         trial_end=int(trial_end) if trial_end is not None else None,
+        provider_choice=account.get("provider_choice") if account else None,
+        byo_provider=account.get("byo_provider") if account else None,
     )
 
 

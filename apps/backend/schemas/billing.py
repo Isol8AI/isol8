@@ -12,6 +12,12 @@ class BillingAccountResponse(BaseModel):
     # days-left countdown. Both null until the user signs up.
     subscription_status: str | None = None
     trial_end: int | None = None  # Unix epoch seconds
+    # Workstream B: provider_choice lives on billing_accounts (per-owner),
+    # not on the user row. Frontend reads these here to determine whether
+    # to show ProviderPicker (skip when set) and which provider's settings
+    # panel to render.
+    provider_choice: str | None = None
+    byo_provider: str | None = None
 
 
 class PortalResponse(BaseModel):
