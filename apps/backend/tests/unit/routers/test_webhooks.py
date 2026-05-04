@@ -90,3 +90,38 @@ async def test_membership_created_without_personal_billing_emits_no_violation(ca
     assert not any("tenancy_invariant.violated" in rec.message for rec in caplog.records)
     metric_names = [call.args[0] for call in mock_metric.call_args_list]
     assert "tenancy_invariant.violation" not in metric_names
+
+
+@pytest.mark.asyncio
+async def test_membership_created_invariant_probe_failure_does_not_block_provisioning(caplog):
+    """If the personal-billing lookup itself raises (e.g. DDB throttling),
+    the observer must swallow + log via logger.exception, and provisioning
+    must still proceed. This is the load-bearing isolation guarantee — the
+    observer can never break a real provisioning path."""
+    payload = {
+        "organization": {"id": "org_xyz", "created_by": "user_admin"},
+        "public_user_data": {
+            "user_id": "user_member_x",
+            "identifier": "member@example.com",
+        },
+    }
+
+    with (
+        patch("routers.webhooks.billing_repo") as mock_billing,
+        patch("routers.webhooks._get_paperclip_provisioning") as mock_prov,
+        patch("routers.webhooks._lookup_owner_email", AsyncMock(return_value="owner@example.com")),
+    ):
+        mock_billing.get_by_owner_id = AsyncMock(side_effect=RuntimeError("ddb boom"))
+        provisioning = AsyncMock()
+        provisioning.provision_member = AsyncMock()
+        mock_prov.return_value = provisioning
+
+        with caplog.at_level(logging.ERROR, logger="routers.webhooks"):
+            from routers.webhooks import _handle_organization_membership_created
+
+            await _handle_organization_membership_created(payload)
+
+    # Probe failure routed through logger.exception, not raised
+    assert any("tenancy invariant probe failed" in rec.message for rec in caplog.records)
+    # Critical: provisioning still ran despite the probe blowing up
+    provisioning.provision_member.assert_awaited_once()
