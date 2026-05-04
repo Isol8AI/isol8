@@ -43,6 +43,7 @@ from routers import (
     desktop_auth,
     integrations,
     oauth,
+    orgs,
     paperclip_proxy,
     settings_keys,
     updates,
@@ -511,6 +512,9 @@ app.include_router(websocket_chat.router, prefix="/api/v1/ws")
 
 # Billing routes
 app.include_router(billing.router, prefix="/api/v1/billing", tags=["billing"])
+
+# Organization management (Gate A — invite-creation tenancy invariant)
+app.include_router(orgs.router, prefix="/api/v1/orgs", tags=["orgs"])
 
 # Container lifecycle management (GET /status, POST /retry)
 app.include_router(container.router, prefix="/api/v1/container", tags=["container"])
