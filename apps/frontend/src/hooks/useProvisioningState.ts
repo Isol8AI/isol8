@@ -75,8 +75,27 @@ export function useProvisioningState(): ProvisioningStateResult {
       });
       if (res.status === 404) return { kind: "no-container" };
       if (res.status === 402) {
+        // FastAPI's HTTPException(detail=...) serializes to
+        // {"detail": <whatever was passed>}. Backend passes
+        // gate.to_payload() which is {"blocked": {...}}, so the wire
+        // shape is {"detail": {"blocked": {...}}}. Read from the
+        // detail envelope; fall back to a top-level "blocked" key
+        // (used by some test fixtures and to be defensive about
+        // transport quirks) so this hook stays robust either way.
         const body = await res.json();
-        return { kind: "blocked", data: body.blocked as BlockedPayload };
+        const envelope =
+          (body && typeof body === "object" ? (body as Record<string, unknown>) : {}) || {};
+        const detail = envelope.detail;
+        const blocked =
+          detail && typeof detail === "object" && "blocked" in (detail as object)
+            ? (detail as { blocked: BlockedPayload }).blocked
+            : (envelope.blocked as BlockedPayload | undefined);
+        if (!blocked) {
+          // Defensive: 402 without a recognizable blocked payload — surface
+          // as ApiError so we don't silently render an empty blocked screen.
+          throw new ApiError(res.status, body);
+        }
+        return { kind: "blocked", data: blocked };
       }
       if (!res.ok) {
         // Unexpected status — surface as ApiError so downstream sees it.
