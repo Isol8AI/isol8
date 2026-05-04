@@ -69,6 +69,17 @@ class PaperclipEventClient:
     def is_connected(self) -> bool:
         return self._connected
 
+    def is_alive(self) -> bool:
+        """Return True if the background reconnect loop is still running.
+
+        Distinct from ``is_connected``: ``is_alive`` is False ONLY after
+        the loop has terminated (give-up after max attempts or explicit
+        close), whereas ``is_connected`` flips false during normal
+        disconnect/reconnect cycles. The broker uses ``is_alive`` to
+        detect a dead client that should be replaced instead of reused.
+        """
+        return self._task is not None and not self._task.done()
+
     async def start(self) -> None:
         """Begin the connect-loop in the background."""
         if self._task is not None:

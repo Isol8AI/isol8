@@ -23,12 +23,24 @@ class FakeClient:
         self._on_event = on_event
         self.start_called = 0
         self.close_called = 0
+        self._alive = True
 
     async def start(self) -> None:
         self.start_called += 1
 
     async def close(self) -> None:
         self.close_called += 1
+        self._alive = False
+
+    def is_alive(self) -> bool:
+        return self._alive
+
+    def kill(self) -> None:
+        """Test helper: simulate the reconnect loop terminating
+        (e.g. max-attempts give-up). Mirrors PaperclipEventClient
+        behaviour where the background task ends but close() is not
+        called by the broker yet."""
+        self._alive = False
 
     async def trigger(self, event: dict) -> None:
         await self._on_event(event)
@@ -306,4 +318,65 @@ async def test_grace_teardown_keeps_user_lock_to_avoid_race(fake_components):
     # And the client + subscriber state IS cleared.
     assert "user_a" not in broker._clients
     assert "user_a" not in broker._subscribers
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_subscribe_replaces_dead_client_after_reconnect_giveup(fake_components):
+    """Codex P1 on PR #518: PaperclipEventClient stops its background loop
+    after 30 failed reconnect attempts. If the broker treats _clients[user_id]
+    as reusable forever, realtime stays permanently dead until grace teardown.
+    A subsequent subscribe must detect is_alive()==False and replace the dead
+    client with a fresh one."""
+    broker = _build_broker(fake_components)
+    await broker.subscribe("user_a", "conn_1")
+    assert len(fake_components["clients"]) == 1
+    assert fake_components["clients"][0].is_alive()
+
+    # Simulate the upstream WS giving up after exhausted reconnects.
+    fake_components["clients"][0].kill()
+    assert not fake_components["clients"][0].is_alive()
+
+    # A new subscribe (e.g. user opens a fresh tab) must spin up a NEW client.
+    await broker.subscribe("user_a", "conn_2")
+    assert len(fake_components["clients"]) == 2
+    # Dead client got close()d during replacement.
+    assert fake_components["clients"][0].close_called == 1
+    assert fake_components["clients"][1].is_alive()
+    assert fake_components["clients"][1].start_called == 1
+    await broker.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fanout_skips_non_subscribed_connections(fake_components):
+    """Codex P2 on PR #518: events must fan out only to browsers that
+    subscribed via teams.subscribe — NOT to all of the user's WS conns.
+    Desktop node-role sockets share the same userId in ws-connections
+    but never opt into Teams events; sending to them is wasted bandwidth.
+    """
+    broker = _build_broker(fake_components)
+    await broker.subscribe("user_a", "conn_browser")
+    # Even if DDB happened to know about a node socket, the broker's
+    # fanout MUST iterate self._subscribers — not query_by_user_id.
+    fake_components["conn_svc"].query_by_user_id.return_value = [
+        "conn_browser",
+        "conn_node_desktop",  # never subscribed to teams events
+    ]
+
+    await fake_components["clients"][0].trigger(
+        {
+            "id": 1,
+            "companyId": "co_user_a",
+            "type": "activity.logged",
+            "createdAt": "2026-05-04T01:00:00Z",
+            "payload": {},
+        }
+    )
+
+    sent_to = [c.args[0] for c in fake_components["mgmt"].send_message.call_args_list]
+    assert sent_to == ["conn_browser"]
+    assert "conn_node_desktop" not in sent_to
+    # Crucially, query_by_user_id is NOT called for fanout (only local
+    # subscriber set is consulted).
+    fake_components["conn_svc"].query_by_user_id.assert_not_called()
     await broker.shutdown()

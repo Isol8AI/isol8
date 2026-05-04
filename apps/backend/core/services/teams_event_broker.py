@@ -28,6 +28,7 @@ class _Client(Protocol):
 
     async def start(self) -> None: ...
     async def close(self) -> None: ...
+    def is_alive(self) -> bool: ...
 
 
 ClientFactory = Callable[..., _Client]
@@ -85,9 +86,30 @@ class TeamsEventBroker:
             if grace and not grace.done():
                 grace.cancel()
 
-            if user_id in self._clients:
-                put_metric("teams.broker.subscribe", dimensions={"outcome": "reused"})
-                return
+            existing = self._clients.get(user_id)
+            if existing is not None:
+                # Codex P1 on PR #518: a backing client that exhausted its
+                # reconnect attempts (~15 min of failures) lingers in
+                # self._clients but its background loop has terminated —
+                # reusing it means the user gets no live updates until
+                # all their tabs close long enough for grace teardown.
+                # Replace dead clients before reusing.
+                if existing.is_alive():
+                    put_metric("teams.broker.subscribe", dimensions={"outcome": "reused"})
+                    return
+                logger.warning(
+                    "teams broker: replacing dead backing client user=%s",
+                    user_id,
+                )
+                try:
+                    await existing.close()
+                except Exception:
+                    logger.exception(
+                        "teams broker: close() failed on dead client user=%s",
+                        user_id,
+                    )
+                self._clients.pop(user_id, None)
+                put_metric("teams.broker.client", dimensions={"event": "replaced_dead"})
 
             try:
                 company_id = await self._resolve_company_id(user_id)
@@ -195,15 +217,15 @@ class TeamsEventBroker:
             event.get("type", "unknown"),
         )
 
-        try:
-            conn_ids = await self._conn_svc.query_by_user_id(user_id)
-        except Exception:
-            logger.exception("teams broker: query_by_user_id failed user=%s", user_id)
-            put_metric(
-                "teams.broker.fanout",
-                dimensions={"outcome": "lookup_failed"},
-            )
-            return
+        # Codex P2 on PR #518: fan out only to browsers that explicitly
+        # subscribed via teams.subscribe (tracked in self._subscribers),
+        # NOT to every WS connection the user has. ws-connections-by-userId
+        # would also return desktop node-role sockets that never asked for
+        # Teams events; sending events there is wasted bandwidth + adds
+        # parser/backpressure load on the node connection path.
+        # Snapshot the subscriber set so the iteration is stable even if
+        # an unsubscribe lands mid-loop.
+        conn_ids = list(self._subscribers.get(user_id, ()))
 
         gone_conn_ids: list[str] = []
         with timing("teams.broker.fanout.latency"):
