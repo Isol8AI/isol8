@@ -200,20 +200,3 @@ async def clear_provider_choice(owner_id: str) -> None:
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
-
-
-async def scan_all():
-    """Async iterator over all billing rows. Used by the one-shot
-    provider_choice migration. Not for production hot paths.
-    """
-    table = _get_table()
-    response = await run_in_thread(table.scan)
-    for item in response.get("Items", []):
-        yield item
-    while response.get("LastEvaluatedKey"):
-        response = await run_in_thread(
-            table.scan,
-            ExclusiveStartKey=response["LastEvaluatedKey"],
-        )
-        for item in response.get("Items", []):
-            yield item
