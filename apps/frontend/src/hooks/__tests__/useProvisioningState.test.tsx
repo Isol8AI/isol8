@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { renderHook, waitFor, act } from "@testing-library/react";
 import { SWRConfig } from "swr";
 import { useProvisioningState } from "../useProvisioningState";
 
@@ -109,12 +109,14 @@ describe("useProvisioningState", () => {
     global.fetch = vi.fn().mockResolvedValue(
       new Response(
         JSON.stringify({
-          blocked: {
-            code: "credits_required",
-            title: "",
-            message: "",
-            action: { kind: "link", label: "", href: "", admin_only: false },
-            owner_role: "admin",
+          detail: {
+            blocked: {
+              code: "credits_required",
+              title: "",
+              message: "",
+              action: { kind: "link", label: "", href: "", admin_only: false },
+              owner_role: "admin",
+            },
           },
         }),
         { status: 402, headers: { "Content-Type": "application/json" } },
@@ -123,5 +125,57 @@ describe("useProvisioningState", () => {
     const { result } = renderHook(() => useProvisioningState(), { wrapper });
     await waitFor(() => expect(result.current.phase).toBe("blocked"));
     expect(result.current.refreshInterval).toBe(5000);
+  });
+
+  it("refresh() while blocked restarts the 60s fast-poll window", async () => {
+    // Codex P2 on PR #519: clicking "Check again" must restart the
+    // 60s 5s-poll window. The earlier `[isBlocked]`-only timer effect
+    // never re-fired on subsequent generations, so a refresh after the
+    // first minute could leave the cadence stuck at 5s indefinitely.
+    // Here we verify that immediately after `refresh()`, the cadence
+    // is still 5s (within the new generation's 60s window).
+    vi.useFakeTimers();
+    try {
+      global.fetch = vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            detail: {
+              blocked: {
+                code: "credits_required",
+                title: "",
+                message: "",
+                action: { kind: "link", label: "", href: "", admin_only: false },
+                owner_role: "admin",
+              },
+            },
+          }),
+          { status: 402, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+      const { result } = renderHook(() => useProvisioningState(), { wrapper });
+      await vi.waitFor(() => expect(result.current.phase).toBe("blocked"));
+      expect(result.current.refreshInterval).toBe(5000);
+
+      // Advance past the first 60s window — cadence should drop to 30s.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
+
+      // Manual refresh should bring us back to 5s for another 60s.
+      await act(async () => {
+        result.current.refresh();
+      });
+      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(5_000));
+
+      // And after another 60s, cadence drops back to 30s — confirming
+      // the timer effect actually re-fired for the new generation.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(61_000);
+      });
+      await vi.waitFor(() => expect(result.current.refreshInterval).toBe(30_000));
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
