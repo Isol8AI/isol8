@@ -337,10 +337,18 @@ async def _handle_account_updated(account: dict) -> None:
             for purchase in page.get("Items", []):
                 if purchase.get("seller_transfer_id"):
                     continue  # already transferred on a prior flush
+                # Skip refunded purchases — license_service.revoke leaves
+                # price_paid_cents intact (so the buyer's history still
+                # shows what they paid), so without an explicit refund
+                # check the flush would Transfer to the seller for a
+                # purchase the buyer was already refunded for. That's a
+                # direct accounting loss: buyer refunded AND seller paid.
+                if purchase.get("license_key_revoked") or purchase.get("status") == "refunded":
+                    continue
                 amount = int(purchase.get("price_paid_cents", 0))
                 tg = purchase.get("stripe_transfer_group")
                 if amount <= 0 or not tg:
-                    continue  # legacy / refunded / malformed row
+                    continue  # legacy / malformed row
                 # listing-created-index is eventually consistent: a replayed
                 # account.updated (or a concurrent run) can re-read the same
                 # purchase before the previous run's seller_transfer_id is

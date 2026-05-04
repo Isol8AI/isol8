@@ -239,6 +239,96 @@ def test_webhook_async_payment_succeeded_grants_license(
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases._purchases_table")
 @patch("routers.marketplace_purchases._payout_accounts_table")
+def test_account_updated_skips_refunded_purchases(
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+):
+    """Regression: payout flush must skip refunded purchases. license_service
+    .revoke leaves price_paid_cents intact (preserves buyer history), so
+    without an explicit refund check the flush would still Transfer the
+    seller for a purchase the buyer was already refunded for — direct
+    accounting loss (Codex P1 round 11, commit 69c76f5e).
+    """
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_acct_refunded",
+        "type": "account.updated",
+        "data": {
+            "object": {
+                "id": "acct_1",
+                "payouts_enabled": True,
+                "metadata": {"seller_id": "s1"},
+            }
+        },
+    }
+    mock_pa_table.return_value.get_item = MagicMock(
+        return_value={
+            "Item": {
+                "seller_id": "s1",
+                "balance_held_cents": 5000,
+                "stripe_connect_account_id": "acct_1",
+            }
+        }
+    )
+    mock_pa_table.return_value.update_item = MagicMock()
+    listings_table = MagicMock()
+    listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
+    fake_resource = MagicMock()
+    fake_resource.Table.return_value = listings_table
+    mock_boto.return_value = fake_resource
+    # Two purchases: one paid, one refunded. The refunded one should be skipped.
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "price_paid_cents": 2000,
+                    "stripe_transfer_group": "purchase_l1_b1",
+                    "license_key_revoked": False,
+                },
+                {
+                    "buyer_id": "b2",
+                    "purchase_id": "p2",
+                    "price_paid_cents": 3000,
+                    "stripe_transfer_group": "purchase_l1_b2",
+                    "license_key_revoked": True,  # refunded BEFORE seller onboarded
+                    "license_key_revoked_reason": "refunded",
+                },
+            ]
+        }
+    )
+    mock_purchases_table.return_value.update_item = MagicMock()
+
+    async def fake_transfer(*, connect_account_id, amount_cents, transfer_group):
+        return f"tr_{transfer_group}"
+
+    mock_transfer.side_effect = fake_transfer
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_acct_refunded"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    # Only ONE Transfer should have been called — for the un-refunded purchase.
+    assert mock_transfer.call_count == 1
+    transfer_groups = [call.kwargs["transfer_group"] for call in mock_transfer.call_args_list]
+    assert "purchase_l1_b1" in transfer_groups
+    assert "purchase_l1_b2" not in transfer_groups
+    # Held balance decremented by ONLY the un-refunded amount.
+    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
+    assert pa_update["ExpressionAttributeValues"][":t"] == 2000
+
+
+@patch("routers.marketplace_purchases.boto3.resource")
+@patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
 def test_account_updated_skips_already_transferred_purchases_idempotently(
     mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
 ):
