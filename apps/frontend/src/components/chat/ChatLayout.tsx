@@ -135,7 +135,8 @@ export function ChatLayout({
   const needsAutoActivate = clerkLoaded && isSignedIn === true && !organization && hasMemberships;
   // Tenancy invariant: pending invitations beat the unsafeMetadata.onboarded
   // flag. A user who completed personal onboarding earlier and was later
-  // invited to an org MUST be routed to /onboarding/invitations to accept,
+  // invited to an org MUST be routed to /onboarding (where forcedInvitations
+  // surfaces the accept UI), not silently sent to /chat in personal context,
   // because the invariant forbids personal-tenancy + pending-org-invite
   // coexisting. Dropping `!isOnboarded` is what makes the post-wipe flow
   // for users like aden self-recover.
