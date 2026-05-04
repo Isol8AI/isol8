@@ -299,6 +299,10 @@ async def create_portal(
 
 class TrialCheckoutRequest(BaseModel):
     provider_choice: str = Field(..., description="chatgpt_oauth | byo_key | bedrock_claude")
+    byo_provider: str | None = Field(
+        None,
+        description="openai | anthropic — required when provider_choice='byo_key'",
+    )
 
 
 @router.post(
@@ -325,6 +329,12 @@ async def create_trial_checkout(
 
     if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
         raise HTTPException(status_code=400, detail="unknown provider_choice")
+
+    if body.provider_choice == "byo_key" and not body.byo_provider:
+        raise HTTPException(
+            status_code=400,
+            detail="byo_provider required when provider_choice == 'byo_key'",
+        )
 
     # Org-context users cannot pick ChatGPT OAuth — see
     # memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30:
@@ -421,6 +431,21 @@ async def create_trial_checkout(
                     status_code=409,
                     detail=f"already_subscribed:{live_sub.get('status')}",
                 )
+
+    # Synchronously persist provider_choice on the billing row BEFORE
+    # creating the Stripe Checkout session. Closes the race where the user
+    # lands on /chat and triggers /container/provision before the
+    # customer.subscription.created webhook lands (the webhook can be
+    # delayed by seconds-to-minutes). The webhook handler still writes to
+    # billing_repo as an idempotent backup.
+    # Spec: docs/superpowers/specs/2026-05-03-provider-choice-per-owner-design.md
+    owner_type_val = account.get("owner_type", get_owner_type(auth))
+    await billing_repo.set_provider_choice(
+        account["owner_id"],
+        provider_choice=body.provider_choice,
+        byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
+        owner_type=owner_type_val,
+    )
 
     try:
         session = await create_flat_fee_checkout(
