@@ -15,6 +15,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from core.tenancy_codes import PENDING_ORG_INVITATION
+
 
 _BLOCKED_LOCAL_STATUSES = [
     "active",
@@ -105,7 +107,7 @@ async def test_trial_checkout_with_pending_org_invitation_returns_409(mock_repo,
     )
     assert resp.status_code == 409
     body = resp.json()
-    assert body["detail"]["code"] == "pending_org_invitation"
+    assert body["detail"]["code"] == PENDING_ORG_INVITATION
     assert "Acme Org" in body["detail"]["message"]
     assert body["detail"]["redirect_to"] == "/onboarding/invitations"
 
@@ -125,7 +127,7 @@ async def test_trial_checkout_with_pending_invite_no_org_name_falls_back(mock_re
     )
     assert resp.status_code == 409
     body = resp.json()
-    assert body["detail"]["code"] == "pending_org_invitation"
+    assert body["detail"]["code"] == PENDING_ORG_INVITATION
     assert "an organization" in body["detail"]["message"]
 
 
@@ -149,7 +151,7 @@ async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(mock_rep
         # Gate B's detail is a dict with code; the older "already_subscribed:*"
         # guard returns a string. Either way, code != pending_org_invitation.
         if isinstance(detail, dict):
-            assert detail.get("code") != "pending_org_invitation"
+            assert detail.get("code") != PENDING_ORG_INVITATION
     mock_clerk.list_pending_invitations_for_user.assert_awaited_once()
 
 

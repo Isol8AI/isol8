@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from core.auth import AuthContext
+from core.tenancy_codes import PERSONAL_USER_EXISTS
 from routers import orgs
 
 
@@ -121,7 +122,7 @@ def test_invite_to_email_with_active_personal_returns_409(app, admin_auth, statu
         )
     assert resp.status_code == 409
     body = resp.json()
-    assert body["detail"]["code"] == "personal_user_exists"
+    assert body["detail"]["code"] == PERSONAL_USER_EXISTS
     assert "subscriber@example.com" in body["detail"]["message"]
     mock_clerk.create_organization_invitation.assert_not_awaited()
 

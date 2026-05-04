@@ -8,6 +8,7 @@ from core.auth import AuthContext, get_current_user, require_org_admin
 from core.observability.metrics import put_metric
 from core.repositories import billing_repo
 from core.services import clerk_admin
+from core.tenancy_codes import PERSONAL_USER_EXISTS
 from schemas.orgs import CreateInvitationRequest, CreateInvitationResponse
 
 logger = logging.getLogger(__name__)
@@ -46,7 +47,7 @@ async def create_invitation(
     if existing is not None:
         account = await billing_repo.get_by_owner_id(existing["id"])
         if account and account.get("subscription_status") in ("active", "trialing"):
-            put_metric("orgs.invitation.blocked", dimensions={"reason": "personal_user_exists"})
+            put_metric("orgs.invitation.blocked", dimensions={"reason": PERSONAL_USER_EXISTS})
             logger.info(
                 "orgs.invitation.blocked owner_id=%s personal_status=%s",
                 existing["id"],
@@ -55,7 +56,7 @@ async def create_invitation(
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "personal_user_exists",
+                    "code": PERSONAL_USER_EXISTS,
                     # body.email preserves the inviter's typed casing for the
                     # human-readable message; invitee_email (above) is lowercased
                     # for the Clerk lookup itself.

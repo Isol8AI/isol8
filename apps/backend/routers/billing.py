@@ -17,6 +17,7 @@ from core.services import clerk_admin, credit_ledger
 from core.services.billing_service import BillingService
 from core.services.usage_service import get_usage_summary
 from core.billing.bedrock_pricing import get_all_rates
+from core.tenancy_codes import PENDING_ORG_INVITATION
 from schemas.billing import (
     BillingAccountResponse,
     PortalResponse,
@@ -380,7 +381,7 @@ async def create_trial_checkout(
             org_name = (pending[0].get("public_organization_data") or {}).get("name") or "an organization"
             put_metric(
                 "billing.trial_checkout.blocked",
-                dimensions={"reason": "pending_org_invitation"},
+                dimensions={"reason": PENDING_ORG_INVITATION},
             )
             logger.info(
                 "billing.trial_checkout.blocked user=%s reason=pending_org_invitation org=%s",
@@ -390,7 +391,7 @@ async def create_trial_checkout(
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "pending_org_invitation",
+                    "code": PENDING_ORG_INVITATION,
                     "message": (
                         f"You have a pending invitation to {org_name}. Accept it before subscribing personally."
                     ),
