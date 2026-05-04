@@ -227,13 +227,17 @@ def test_clerk_find_user_by_email_returns_none_proceeds_to_create(app, admin_aut
 
 def test_clerk_response_missing_id_raises_500(app, admin_auth):
     """A malformed Clerk response without 'id' should fail loudly, not 200 with
-    invitation_id=''. Pydantic raises on construction; FastAPI surfaces as 500."""
+    invitation_id=''. The endpoint raises KeyError; FastAPI translates to 500.
+
+    raise_server_exceptions=False is required because Starlette's TestClient
+    re-raises server exceptions to the caller by default — we want to assert
+    the framework's 500 translation, which is the actual production behavior."""
     _override_auth(app, admin_auth)
     with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo"):
         mock_clerk.find_user_by_email = AsyncMock(return_value=None)
         # Clerk returned a dict without 'id' — KeyError at invite["id"].
         mock_clerk.create_organization_invitation = AsyncMock(return_value={})
-        client = TestClient(app)
+        client = TestClient(app, raise_server_exceptions=False)
         resp = client.post(
             "/api/v1/orgs/org_test/invitations",
             json={"email": "malformed@example.com", "role": "org:member"},
