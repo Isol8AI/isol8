@@ -330,3 +330,15 @@ Plus one root-level `THIRD_PARTY_NOTICES.md` (or addition to the existing one if
 - **No feature flag**: replacement is simpler; per-PR revert is the rollback path.
 - **Drop "drawer" idea**: upstream uses full-page detail nav; matching upstream means matching this. Drawer pattern was a scope-cut idea before user clarified "full parity".
 - **Workspaces deferred**: per user note, Isol8's per-user EFS may map onto workspace concept; deserves its own sub-project later.
+
+## Implementation notes (post-#3a)
+
+PR #3a (https://github.com/Isol8AI/isol8/pull/524) shipped on 2026-05-04. Three drift items vs. this spec:
+
+- **Route rename**: spec said `GET /teams/runs/{id}`. Implemented as `GET /teams/heartbeat-runs/{id}` because `agents.py` already had a legacy `GET /teams/runs/{id}` route forwarding to `/api/runs/{id}` (a different upstream concept — generic agent run, not heartbeat-loop run). The renamed path mirrors upstream's `/api/heartbeat-runs/{id}` and avoids the routing collision.
+- **Dropped `list_company_projects`**: spec called for a new admin-client method. Implementation reuses the pre-existing `list_projects(company_id, session_cookie)` instead — same signature, same upstream URL, full duplicate.
+- **Skipped `/teams/projects` router**: spec called for a new `routers/teams/projects.py`. Implementation discovered `/teams/projects` already exists in `routers/teams/work.py:118` calling `list_projects` — the new router would duplicate.
+
+Subsequent PRs (#3b/c/d) should:
+- Use `/teams/heartbeat-runs/{id}` for the agent-run page link (not `/teams/runs/{id}`)
+- Use the existing `/teams/projects` endpoint for the project filter dropdown
