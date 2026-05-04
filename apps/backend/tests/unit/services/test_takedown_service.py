@@ -68,6 +68,37 @@ async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns,
 
 
 @pytest.mark.asyncio
+@patch("core.services.takedown_service._purchases_table")
+@patch("core.services.takedown_service._listings_table")
+@patch("core.services.takedown_service._takedowns_table")
+@patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
+async def test_execute_full_takedown_flips_currently_published_version(mock_takedowns, mock_listings, mock_purchases):
+    """Regression: takedown must flip the currently-published row, not
+    hardcode v=1. Under publish_v2, v1 is retired and v2 is published; a
+    hardcoded v=1 update marks the already-retired row, leaving v2 live —
+    admin "success" but listing remains purchasable
+    (Codex P1 on PR #517, commit ba89f60c).
+    """
+    takedown_service.license_service.revoke.reset_mock()
+    mock_purchases.return_value.query = MagicMock(return_value={"Items": []})
+    mock_listings.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {"listing_id": "l1", "version": 2, "status": "published"},
+                {"listing_id": "l1", "version": 1, "status": "retired"},
+            ]
+        }
+    )
+    mock_listings.return_value.update_item = MagicMock()
+    mock_takedowns.return_value.update_item = MagicMock()
+
+    await takedown_service.execute_full_takedown(listing_id="l1", takedown_id="t1", decided_by="admin_xyz")
+
+    update_kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert update_kwargs["Key"] == {"listing_id": "l1", "version": 2}
+
+
+@pytest.mark.asyncio
 @patch("core.services.takedown_service._takedowns_table")
 async def test_file_takedown_creates_row(mock_table):
     mock_table.return_value.put_item = MagicMock()

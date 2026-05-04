@@ -159,6 +159,7 @@ async def listing_preview(
         # than 500. The admin UI shows "no artifact uploaded yet".
         return schemas.ListingPreviewResponse(
             listing_id=listing_id,
+            version=int(listing.get("version", 1)),
             slug=listing.get("slug", ""),
             name=listing.get("name", ""),
             seller_id=listing.get("seller_id", ""),
@@ -241,6 +242,7 @@ async def listing_preview(
 
     return schemas.ListingPreviewResponse(
         listing_id=listing_id,
+        version=int(listing.get("version", 1)),
         slug=listing.get("slug", ""),
         name=listing.get("name", ""),
         seller_id=listing.get("seller_id", ""),

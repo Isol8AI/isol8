@@ -116,23 +116,44 @@ export async function listReviewQueue(): Promise<ActionResult> {
   return adminGet("/admin/marketplace/listings");
 }
 
-/** Approve a pending listing so it becomes visible in the marketplace. */
-export async function approveListing(listingId: string): Promise<ActionResult> {
+/**
+ * Approve a pending listing so it becomes visible in the marketplace.
+ *
+ * `version` MUST be passed through from the review row (defaults to 1 only
+ * for safety on legacy callers). The backend defaults `version=1`, so a
+ * v2+ moderation action without this would target the wrong row and 409.
+ *
+ * `prevVersion` triggers the publish_v2 atomic flip on backend (retires
+ * the previous published version + publishes the new one in one
+ * TransactWriteItems). Pass it for any version > 1.
+ */
+export async function approveListing(
+  listingId: string,
+  options: { version?: number; prevVersion?: number } = {},
+): Promise<ActionResult> {
+  const { version = 1, prevVersion } = options;
+  const params = new URLSearchParams({ version: String(version) });
+  if (prevVersion !== undefined) params.set("prev_version", String(prevVersion));
   return adminPost(
-    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/approve`,
+    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/approve?${params.toString()}`,
   );
 }
 
 /**
  * Reject a pending listing. `notes` is surfaced to the publisher and recorded
  * on the moderation audit log.
+ *
+ * `version` MUST be passed through from the review row (see approveListing).
  */
 export async function rejectListing(
   listingId: string,
   notes: string,
+  options: { version?: number } = {},
 ): Promise<ActionResult> {
+  const { version = 1 } = options;
+  const params = new URLSearchParams({ version: String(version) });
   return adminPost(
-    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/reject`,
+    `/admin/marketplace/listings/${encodeURIComponent(listingId)}/reject?${params.toString()}`,
     { notes },
   );
 }

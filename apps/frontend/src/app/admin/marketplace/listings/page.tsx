@@ -11,6 +11,7 @@ export const dynamic = "force-dynamic";
 
 interface ReviewQueueListing {
   listing_id: string;
+  version: number;
   name: string;
   slug: string;
   format: string;
@@ -90,6 +91,7 @@ export default async function ListingsReview() {
               listingId={listing.listing_id}
               listingName={listing.name}
               slug={listing.slug}
+              version={listing.version ?? 1}
             />
           </li>
         ))}

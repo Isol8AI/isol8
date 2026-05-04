@@ -32,6 +32,7 @@ interface OpenclawSummary {
 
 interface ListingPreview {
   listing_id: string;
+  version: number;
   slug: string;
   name: string;
   seller_id: string;
@@ -184,6 +185,7 @@ export default async function ListingDetail({
           listingId={preview.listing_id}
           listingName={preview.name}
           slug={preview.slug}
+          version={preview.version ?? 1}
           prefilledRejectionNotes={flagsToRejectionPrefill(preview.safety_flags)}
         />
       </section>

@@ -154,6 +154,7 @@ class ListingPreviewResponse(BaseModel):
     """
 
     listing_id: str
+    version: int
     slug: str
     name: str
     seller_id: str

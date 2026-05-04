@@ -170,6 +170,100 @@ def test_webhook_async_payment_succeeded_grants_license(
     mock_purchases_table.return_value.put_item.assert_called_once()
 
 
+@patch("routers.marketplace_purchases.boto3.resource")
+@patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_account_updated_flushes_per_purchase_using_purchase_transfer_group(
+    mock_pa_table, mock_purchases_table, mock_dedup, mock_construct, mock_transfer, mock_boto, client
+):
+    """Regression: payout flush must create one Transfer per purchase using
+    each purchase's stored stripe_transfer_group. A single batched
+    flush_{seller}_{ts} transfer would not be findable by
+    stripe.Transfer.list at refund time, so refunds couldn't reverse the
+    seller transfer (platform eats the cost) (Codex P1 on PR #517,
+    commit ba89f60c).
+    """
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_acct_1",
+        "type": "account.updated",
+        "data": {
+            "object": {
+                "id": "acct_1",
+                "payouts_enabled": True,
+                "metadata": {"seller_id": "s1"},
+            }
+        },
+    }
+    # Payout account row with held balance.
+    mock_pa_table.return_value.get_item = MagicMock(
+        return_value={
+            "Item": {
+                "seller_id": "s1",
+                "balance_held_cents": 5000,
+                "stripe_connect_account_id": "acct_1",
+            }
+        }
+    )
+    mock_pa_table.return_value.update_item = MagicMock()
+    # Listings table query (seller-created-index) returns one listing.
+    listings_table = MagicMock()
+    listings_table.query = MagicMock(return_value={"Items": [{"listing_id": "l1", "seller_id": "s1"}]})
+    mock_resource = MagicMock()
+    mock_resource.Table.return_value = listings_table
+    mock_boto.return_value = mock_resource
+    # Purchases table query (listing-created-index) returns two purchases.
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "price_paid_cents": 2000,
+                    "stripe_transfer_group": "purchase_l1_b1_111",
+                },
+                {
+                    "buyer_id": "b2",
+                    "purchase_id": "p2",
+                    "price_paid_cents": 3000,
+                    "stripe_transfer_group": "purchase_l1_b2_222",
+                },
+            ]
+        }
+    )
+    mock_purchases_table.return_value.update_item = MagicMock()
+
+    async def fake_transfer(*, connect_account_id, amount_cents, transfer_group):
+        return f"tr_{transfer_group}"
+
+    mock_transfer.side_effect = fake_transfer
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_acct_1"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    # One Transfer per purchase, each with the purchase's transfer_group.
+    assert mock_transfer.call_count == 2
+    transfer_groups = [call.kwargs["transfer_group"] for call in mock_transfer.call_args_list]
+    assert "purchase_l1_b1_111" in transfer_groups
+    assert "purchase_l1_b2_222" in transfer_groups
+
+    # Each purchase row got its seller_transfer_id stamped.
+    assert mock_purchases_table.return_value.update_item.call_count == 2
+
+    # Held balance decremented by the sum, not zeroed.
+    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
+    assert pa_update["ExpressionAttributeValues"][":t"] == 5000
+
+
 @patch("routers.marketplace_purchases.webhook_dedup.delete_event")
 @patch("routers.marketplace_purchases._handle_checkout_completed")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")

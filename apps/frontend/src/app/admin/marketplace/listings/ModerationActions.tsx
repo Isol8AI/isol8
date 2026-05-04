@@ -26,6 +26,19 @@ export interface ModerationActionsProps {
   listingName: string;
   slug: string;
   /**
+   * Listing version to action on. The review queue is multi-version
+   * (publish_v2 flow), so this MUST come from the review row — calling
+   * approve/reject without it falls through to backend default version=1
+   * and either targets the wrong row or 409s for v2+ items.
+   */
+  version: number;
+  /**
+   * For publish_v2: the previously-published version to retire when this
+   * one is approved. Triggers the atomic flip on backend. Omit for
+   * first-publish (v1) listings.
+   */
+  prevVersion?: number;
+  /**
    * Optional starter copy for the reject-notes textarea. Used by the
    * listing detail page to pre-fill `marketplace_safety` high-severity
    * findings; admins can edit before sending. Empty/undefined preserves
@@ -51,6 +64,8 @@ export function ModerationActions({
   listingId,
   listingName,
   slug,
+  version,
+  prevVersion,
   prefilledRejectionNotes,
 }: ModerationActionsProps) {
   const router = useRouter();
@@ -61,7 +76,7 @@ export function ModerationActions({
 
   async function handleApprove() {
     setError(null);
-    const result = await approveListing(listingId);
+    const result = await approveListing(listingId, { version, prevVersion });
     if (!result.ok) {
       setError(result.error ?? `approve_failed_${result.status}`);
       return;
@@ -77,7 +92,7 @@ export function ModerationActions({
     setBusy(true);
     setError(null);
     try {
-      const result = await rejectListing(listingId, trimmed);
+      const result = await rejectListing(listingId, trimmed, { version });
       if (!result.ok) {
         setError(result.error ?? `reject_failed_${result.status}`);
         return;

@@ -234,7 +234,27 @@ async def _handle_charge_refunded(charge: dict) -> None:
 
 
 async def _handle_account_updated(account: dict) -> None:
-    """If onboarding completed, flush held balance via Transfer."""
+    """When seller onboarding completes, flush held balance via per-purchase
+    Transfers — each one keyed by the purchase's stored transfer_group.
+
+    Per-purchase rather than batched: refund flow looks up the seller
+    transfer for reversal via ``stripe.Transfer.list(transfer_group=…)``
+    using the purchase row's stored ``stripe_transfer_group``. A single
+    aggregated ``flush_{seller}_{ts}`` transfer would not be findable that
+    way, so refunds would issue to the buyer without clawing back the
+    seller's funds (platform eats the cost). Iterating per-purchase keeps
+    refund reversal correct.
+
+    Idempotency: each purchase row carries ``seller_transfer_id`` once
+    transferred; subsequent calls (Stripe replays, repeat onboarding
+    events) skip already-paid rows. Stripe's idempotency_key on
+    Transfer.create (keyed off transfer_group) is a defense-in-depth
+    second layer.
+
+    Race tolerance: balance_held_cents is decremented (not zeroed) by the
+    transferred amount, so a new purchase arriving mid-flush still has
+    its held balance preserved for the next onboarding/flush event.
+    """
     if not account.get("payouts_enabled"):
         return
     seller_id = (account.get("metadata") or {}).get("seller_id")
@@ -245,24 +265,60 @@ async def _handle_account_updated(account: dict) -> None:
     pa = resp.get("Item", {})
     held = pa.get("balance_held_cents", 0)
     connect_account_id = pa.get("stripe_connect_account_id") or account.get("id")
-    if held > 0 and connect_account_id:
-        await payout_service.transfer_held_balance(
-            connect_account_id=connect_account_id,
-            amount_cents=held,
-            transfer_group=f"flush_{seller_id}_{int(time.time())}",
-        )
+    if held <= 0 or not connect_account_id:
+        return
+
+    listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+    purchases_table = _purchases_table()
+    seller_listings = listings_table.query(
+        IndexName="seller-created-index",
+        KeyConditionExpression="seller_id = :s",
+        ExpressionAttributeValues={":s": seller_id},
+    ).get("Items", [])
+
+    transferred_total = 0
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    for listing in seller_listings:
+        listing_id = listing["listing_id"]
+        kwargs: dict = {
+            "IndexName": "listing-created-index",
+            "KeyConditionExpression": "listing_id = :l",
+            "ExpressionAttributeValues": {":l": listing_id},
+        }
+        while True:
+            page = purchases_table.query(**kwargs)
+            for purchase in page.get("Items", []):
+                if purchase.get("seller_transfer_id"):
+                    continue  # already transferred on a prior flush
+                amount = int(purchase.get("price_paid_cents", 0))
+                tg = purchase.get("stripe_transfer_group")
+                if amount <= 0 or not tg:
+                    continue  # legacy / refunded / malformed row
+                transfer_id = await payout_service.transfer_held_balance(
+                    connect_account_id=connect_account_id,
+                    amount_cents=amount,
+                    transfer_group=tg,
+                )
+                purchases_table.update_item(
+                    Key={"buyer_id": purchase["buyer_id"], "purchase_id": purchase["purchase_id"]},
+                    UpdateExpression="SET seller_transfer_id = :t, transferred_at = :now",
+                    ExpressionAttributeValues={":t": transfer_id, ":now": now_iso},
+                )
+                transferred_total += amount
+            last = page.get("LastEvaluatedKey")
+            if not last:
+                break
+            kwargs["ExclusiveStartKey"] = last
+
+    if transferred_total > 0:
         pa_table.update_item(
             Key={"seller_id": seller_id},
             UpdateExpression=(
-                "SET balance_held_cents = :zero, "
+                "SET balance_held_cents = balance_held_cents - :t, "
                 "    onboarding_status = :done, "
-                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :h"
+                "    lifetime_earned_cents = if_not_exists(lifetime_earned_cents, :zero) + :t"
             ),
-            ExpressionAttributeValues={
-                ":zero": 0,
-                ":done": "completed",
-                ":h": held,
-            },
+            ExpressionAttributeValues={":zero": 0, ":done": "completed", ":t": transferred_total},
         )
 
 

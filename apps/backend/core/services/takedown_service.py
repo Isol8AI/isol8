@@ -114,14 +114,25 @@ async def _cascade_takedown(
             reason="takedown",
         )
 
-    # Guard against upsert: if the takedown was granted on a non-existent
-    # listing_id (malformed admin request, race with seller deletion), DDB
-    # would otherwise create a new partial row {listing_id, version:1,
-    # status:"taken_down", updated_at} and the cascade would appear to
-    # succeed for content that never existed.
+    # Resolve the currently-published version dynamically — hardcoding v=1
+    # leaves a v2 listing live after takedown (publish_v2 retires v1 and
+    # publishes v2; admin "success" but listing remains purchasable).
+    # Falls back to the highest-version row if nothing is currently
+    # published, so a takedown on a draft/review listing still flips state.
+    listings_table = _listings_table()
+    rows = listings_table.query(
+        KeyConditionExpression="listing_id = :l",
+        ExpressionAttributeValues={":l": listing_id},
+        ScanIndexForward=False,  # newest version first
+    ).get("Items", [])
+    if not rows:
+        raise ListingNotFoundError(f"listing {listing_id} does not exist")
+    target = next((r for r in rows if r.get("status") == "published"), rows[0])
+    target_version = int(target["version"])
+
     try:
-        _listings_table().update_item(
-            Key={"listing_id": listing_id, "version": 1},
+        listings_table.update_item(
+            Key={"listing_id": listing_id, "version": target_version},
             UpdateExpression="SET #s = :taken, updated_at = :now",
             ConditionExpression="attribute_exists(listing_id)",
             ExpressionAttributeNames={"#s": "status"},
@@ -129,7 +140,7 @@ async def _cascade_takedown(
         )
     except ClientError as e:
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            raise ListingNotFoundError(f"listing {listing_id} v1 does not exist")
+            raise ListingNotFoundError(f"listing {listing_id} v{target_version} does not exist")
         raise
     _takedowns_table().update_item(
         Key={"listing_id": listing_id, "takedown_id": takedown_id},
