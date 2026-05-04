@@ -25,7 +25,7 @@ async def test_no_billing_account_returns_subscription_required():
 async def test_active_subscription_bedrock_zero_balance_returns_credits_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice") as gp,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate.credit_ledger") as cl,
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -46,7 +46,7 @@ async def test_active_subscription_bedrock_zero_balance_returns_credits_required
 async def test_trialing_with_credits_returns_none():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice") as gp,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
         patch("core.services.provision_gate.credit_ledger") as cl,
     ):
         repo.get_by_owner_id = AsyncMock(
@@ -81,8 +81,8 @@ async def test_past_due_returns_payment_past_due():
 async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,
-        patch("core.services.provision_gate._get_provider_choice") as gp,
-        patch("core.services.provision_gate._has_oauth_tokens") as ht,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
+        patch("core.services.provision_gate._has_oauth_tokens", new_callable=AsyncMock) as ht,
     ):
         repo.get_by_owner_id = AsyncMock(
             return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
