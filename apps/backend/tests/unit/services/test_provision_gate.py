@@ -74,6 +74,31 @@ async def test_past_due_returns_payment_past_due():
 
 
 @pytest.mark.asyncio
+async def test_bedrock_balance_keyed_on_owner_id():
+    """Org members hitting /onboarding's pre-provision check must read the
+    pooled org balance, not their personal user_id row (which is empty
+    after the org-pooled-credits cutover)."""
+    with (
+        patch("core.services.provision_gate.billing_repo") as repo,
+        patch("core.services.provision_gate._get_provider_choice", new_callable=AsyncMock) as gp,
+        patch("core.services.provision_gate.credit_ledger") as cl,
+    ):
+        repo.get_by_owner_id = AsyncMock(
+            return_value={"subscription_status": "active", "stripe_subscription_id": "sub_x"},
+        )
+        gp.return_value = "bedrock_claude"
+        balance_mock = AsyncMock(return_value=5_000_000)
+        cl.get_balance = balance_mock
+        gate = await evaluate_provision_gate(
+            owner_id="org_Y",
+            clerk_user_id="user_member_X",
+        )
+    assert gate is None  # gate passes
+    args, _ = balance_mock.call_args
+    assert args[0] == "org_Y"
+
+
+@pytest.mark.asyncio
 async def test_chatgpt_oauth_no_tokens_returns_oauth_required():
     with (
         patch("core.services.provision_gate.billing_repo") as repo,

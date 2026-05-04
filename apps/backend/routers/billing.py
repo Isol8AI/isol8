@@ -519,7 +519,10 @@ class AutoReloadRequest(BaseModel):
     description=("Returns the user's current prepaid Claude credit balance in microcents and dollars (formatted)."),
 )
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
-    balance_uc = await credit_ledger.get_balance(ctx.user_id)
+    # Credits pool at the owner level (org_id for org context, user_id for
+    # personal). Keying on ctx.user_id meant org members couldn't see the
+    # admin-funded balance and got blocked at chat with out_of_credits.
+    balance_uc = await credit_ledger.get_balance(resolve_owner_id(ctx))
     dollars = f"{balance_uc / 1_000_000:.2f}"
     return {"balance_microcents": balance_uc, "balance_dollars": dollars}
 
@@ -557,7 +560,6 @@ async def top_up_credits(
     try:
         session = await create_credit_top_up_checkout(
             owner_id=owner_id,
-            user_id=ctx.user_id,
             amount_cents=body.amount_cents,
         )
     except BillingServiceError as e:
@@ -580,7 +582,7 @@ async def set_auto_reload(
             detail="threshold_cents and amount_cents required when enabling",
         )
     await credit_ledger.set_auto_reload(
-        ctx.user_id,
+        resolve_owner_id(ctx),
         enabled=body.enabled,
         threshold_cents=body.threshold_cents,
         amount_cents=body.amount_cents,
@@ -806,9 +808,13 @@ async def handle_stripe_webhook(
             )
             return Response(status_code=200)
 
-        user_id = session["metadata"].get("user_id")
-        amount_cents_str = session["metadata"].get("amount_cents")
-        if not user_id or not amount_cents_str:
+        # owner_id is the credit ledger key — org_id for org context,
+        # user_id for personal. See create_credit_top_up_checkout for
+        # where we write it.
+        metadata = session["metadata"]
+        owner_id = metadata.get("owner_id")
+        amount_cents_str = metadata.get("amount_cents")
+        if not owner_id or not amount_cents_str:
             logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
             return Response(status_code=200)
 
@@ -822,7 +828,7 @@ async def handle_stripe_webhook(
         amount_cents = int(amount_cents_str)
         amount_microcents = amount_cents * 10_000
         await credit_ledger.top_up(
-            user_id,
+            owner_id,
             amount_microcents=amount_microcents,
             # Use session id as the idempotency key on the ledger side —
             # one Checkout completion = one credit grant, even if Stripe

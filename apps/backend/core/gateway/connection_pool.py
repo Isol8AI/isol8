@@ -675,15 +675,13 @@ class GatewayConnection:
 
             # Plan 3 Task 5: card-3 (bedrock_claude) deduct credits in
             # addition to the legacy usage_service path. Other cards skip.
-            # Synchronous so the next chat sees the updated balance.
-            # Pass the resolved member_user_id explicitly — for channel/DM
-            # session keys, the key alone doesn't carry the member id and
-            # _maybe_deduct_credits would fall back to self.user_id (the
-            # org owner). Codex P1 on PR #393.
+            # Synchronous so the next chat sees the updated balance. The
+            # ledger is owner-scoped — _maybe_deduct_credits keys on
+            # self.user_id (the container owner), so org members share
+            # one pooled balance.
             try:
                 await self._maybe_deduct_credits(
                     chat_session_id=session_key,
-                    member_user_id=member_user_id,
                     model=model,
                     input_tokens=input_tokens,
                     output_tokens=output_tokens,
@@ -705,7 +703,6 @@ class GatewayConnection:
         self,
         *,
         chat_session_id: str,
-        member_user_id: str | None = None,
         model: str,
         input_tokens: int,
         output_tokens: int,
@@ -723,11 +720,10 @@ class GatewayConnection:
 
         Markup is applied here (1.4x raw) per the spec's pricing model.
 
-        ``member_user_id`` should be the per-Clerk-user id resolved by the
-        caller (``_fetch_and_record_usage`` already does this for channel/DM
-        sessions via the channel-link lookup). When omitted, falls back to
-        parsing the session key (works for personal/org webchat) and finally
-        to ``self.user_id``. Codex P1 on PR #393.
+        Both provider_choice (per Workstream B 2026-05-03) and the credit
+        ledger key are owner-scoped — ``self.user_id`` IS the container
+        owner (org_id for org members, user_id for personal). Org members
+        sharing a container all draw from one pooled balance.
         """
         from core.billing.bedrock_pricing import (
             UnknownModelError,
@@ -736,21 +732,6 @@ class GatewayConnection:
         from core.repositories import billing_repo
         from core.services import credit_ledger
 
-        # Prefer the explicitly-resolved member id from the caller; only
-        # fall back to session-key parsing when the caller didn't pass one.
-        # For channel/DM/group session keys without a member_id segment,
-        # the parser returns owner-context only — that's the wrong row for
-        # credit deduction.
-        if member_user_id:
-            billing_user_id = member_user_id
-        else:
-            parsed = _parse_session_key(chat_session_id)
-            billing_user_id = parsed.get("member_id") or self.user_id
-
-        # Workstream B (2026-05-03): provider_choice lives on billing_accounts
-        # (per-owner), not on the user row. Keys on self.user_id (owner) — the
-        # member who sent the chat (billing_user_id) doesn't own the choice.
-        # Credits below stay keyed on the member.
         account = await billing_repo.get_by_owner_id(self.user_id)
         if not account or account.get("provider_choice") != "bedrock_claude":
             return
@@ -783,15 +764,15 @@ class GatewayConnection:
         # throughout the credit ledger.
         marked_up = raw * 14 // 10
         await credit_ledger.deduct(
-            billing_user_id,
+            self.user_id,
             amount_microcents=marked_up,
             chat_session_id=chat_session_id,
             raw_cost_microcents=raw,
             markup_multiplier=1.4,
         )
         logger.info(
-            "Deducted credits for user %s session %s: raw=%d marked_up=%d model=%s",
-            billing_user_id,
+            "Deducted credits for owner %s session %s: raw=%d marked_up=%d model=%s",
+            self.user_id,
             chat_session_id,
             raw,
             marked_up,
@@ -1070,29 +1051,27 @@ class GatewayConnectionPool:
         conn = self._connections.get(user_id)
         return conn is not None and conn.is_connected
 
-    async def gate_chat(self, *, user_id: str, owner_id: str | None = None) -> dict:
+    async def gate_chat(self, *, user_id: str, owner_id: str) -> dict:
         """Pre-chat hard-stop for card-3 (bedrock_claude) users.
 
         Two layers (audit M1 expanded the second one):
 
-        1. **Subscription status.** When ``owner_id`` is supplied, the
-           billing row's ``subscription_status`` must be ``active`` or
-           ``trialing``. Cards 1 + 2 used to bypass the gate entirely
-           because their LLM cost lives on the user's own provider
-           account — but the *container* itself is on us, so a canceled
-           subscription should still block chat. Without this, an
-           org/personal user whose ``subscription.deleted`` webhook
-           landed could keep talking through the gateway indefinitely
-           on cards 1 + 2.
+        1. **Subscription status.** The billing row's ``subscription_status``
+           must be ``active`` or ``trialing``. Cards 1 + 2 used to bypass
+           the gate entirely because their LLM cost lives on the user's
+           own provider account — but the *container* itself is on us, so
+           a canceled subscription should still block chat. Without this,
+           an org/personal user whose ``subscription.deleted`` webhook
+           landed could keep talking through the gateway indefinitely on
+           cards 1 + 2.
         2. **Card-3 balance.** When ``provider_choice`` is
            ``bedrock_claude``, the credit balance must be > 0. Cards 1
            + 2 don't draw from prepaid credits, so they're not gated
            on balance.
 
-        ``owner_id`` is optional for back-compat with old test fixtures
-        and any callers that don't have it; when it's omitted, the
-        subscription check is skipped and only the legacy balance gate
-        runs. New callers should always pass it.
+        Both layers key on ``owner_id`` (org_id for org context, user_id
+        for personal). ``user_id`` is the chatting member, retained on
+        the signature for logging / future per-user telemetry.
 
         Returns:
             ``{"blocked": False}`` when chat may proceed.
@@ -1106,39 +1085,37 @@ class GatewayConnectionPool:
         from core.services import credit_ledger
 
         # --- Layer 1: subscription status ----------------------------
-        account: dict | None = None
-        if owner_id is not None:
-            account = await billing_repo.get_by_owner_id(owner_id)
-            # Three cases that pass this gate:
-            #   1. Billing row exists with status in {active, trialing}.
-            #   2. Legacy pre-Plan-3 row: stripe_subscription_id is set
-            #      but subscription_status hasn't been backfilled. Don't
-            #      lock those users out mid-deploy.
-            # Anything else — including a *missing* billing row — gets
-            # blocked. The original M1 fix lumped "no row" with "legacy
-            # row" and let unfunded users chat through cards 1+2 (whose
-            # LLM is on the user but whose container is on us). Codex
-            # P1 round-2 on PR #488.
-            status = (account or {}).get("subscription_status")
-            has_legacy_sub = bool((account or {}).get("stripe_subscription_id"))
-            is_ok = status in ("active", "trialing") or (status is None and has_legacy_sub)
-            if not is_ok:
-                return {
-                    "blocked": True,
-                    "code": "subscription_inactive",
-                    "message": ("Your subscription is not active. Reactivate to continue chatting."),
-                }
+        account = await billing_repo.get_by_owner_id(owner_id)
+        # Three cases that pass this gate:
+        #   1. Billing row exists with status in {active, trialing}.
+        #   2. Legacy pre-Plan-3 row: stripe_subscription_id is set
+        #      but subscription_status hasn't been backfilled. Don't
+        #      lock those users out mid-deploy.
+        # Anything else — including a *missing* billing row — gets
+        # blocked. The original M1 fix lumped "no row" with "legacy
+        # row" and let unfunded users chat through cards 1+2 (whose
+        # LLM is on the user but whose container is on us). Codex
+        # P1 round-2 on PR #488.
+        status = (account or {}).get("subscription_status")
+        has_legacy_sub = bool((account or {}).get("stripe_subscription_id"))
+        is_ok = status in ("active", "trialing") or (status is None and has_legacy_sub)
+        if not is_ok:
+            return {
+                "blocked": True,
+                "code": "subscription_inactive",
+                "message": ("Your subscription is not active. Reactivate to continue chatting."),
+            }
 
         # --- Layer 2: card-3 credit balance --------------------------
-        # Workstream B (2026-05-03): provider_choice lives on billing_accounts
-        # (per-owner), not on the user row. Keyed on owner_id, not the
-        # chatting member (user_id). Credits stay per-member below.
-        # When owner_id wasn't supplied (back-compat callers), we have no
-        # owner-scoped row to consult, so skip the gate.
+        # provider_choice lives on the billing_accounts row (per owner)
+        # since Workstream B 2026-05-03; credits also pool at the owner
+        # level so org members all draw from one balance funded by the
+        # admin. Keying on user_id meant org members saw balance=0 and
+        # got blocked at chat with code=out_of_credits.
         if account is None or account.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}
 
-        balance = await credit_ledger.get_balance(user_id, consistent=True)
+        balance = await credit_ledger.get_balance(owner_id, consistent=True)
         if balance <= 0:
             return {
                 "blocked": True,
