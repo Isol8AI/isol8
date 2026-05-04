@@ -80,3 +80,104 @@ async def test_trial_checkout_409s_when_live_stripe_status_is_canceled(
     )
     assert resp.status_code == 409
     mock_create_checkout.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_trial_checkout_with_pending_org_invitation_returns_409(mock_repo, mock_clerk, async_client):
+    """Caller in personal context with a pending invite must be redirected
+    to /onboarding/invitations, not allowed to subscribe personally."""
+    # No prior billing row — gate B fires before billing-row checks.
+    mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(
+        return_value=[
+            {
+                "id": "orginv_pending",
+                "public_organization_data": {"name": "Acme Org"},
+            }
+        ]
+    )
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["detail"]["code"] == "pending_org_invitation"
+    assert "Acme Org" in body["detail"]["message"]
+    assert body["detail"]["redirect_to"] == "/onboarding/invitations"
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_trial_checkout_with_pending_invite_no_org_name_falls_back(mock_repo, mock_clerk, async_client):
+    """When Clerk's pending invite is missing public_organization_data,
+    the message uses the generic 'an organization' fallback."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[{"id": "orginv_no_data"}])
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["detail"]["code"] == "pending_org_invitation"
+    assert "an organization" in body["detail"]["message"]
+
+
+@pytest.mark.asyncio
+@patch("routers.billing.clerk_admin")
+@patch("routers.billing.billing_repo")
+async def test_trial_checkout_with_no_pending_invitations_passes_gate_b(mock_repo, mock_clerk, async_client):
+    """Empty pending-invitations list passes Gate B; downstream checks still
+    apply. We assert that if the response IS a 409, it's NOT the gate-B kind
+    (so we know gate B let the request through)."""
+    mock_repo.get_by_owner_id = AsyncMock(return_value=None)
+    mock_clerk.list_pending_invitations_for_user = AsyncMock(return_value=[])
+
+    resp = await async_client.post(
+        "/api/v1/billing/trial-checkout",
+        json={"provider_choice": "bedrock_claude"},
+    )
+    if resp.status_code == 409:
+        body = resp.json()
+        detail = body.get("detail")
+        # Gate B's detail is a dict with code; the older "already_subscribed:*"
+        # guard returns a string. Either way, code != pending_org_invitation.
+        if isinstance(detail, dict):
+            assert detail.get("code") != "pending_org_invitation"
+    mock_clerk.list_pending_invitations_for_user.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_trial_checkout_in_org_context_skips_pending_invite_check(app, mock_org_admin_user):
+    """Org-context callers (org admins running org trial-checkout) must
+    skip the pending-invite check — they're creating an org subscription,
+    not a personal one."""
+    from core.auth import get_current_user
+    from httpx import AsyncClient, ASGITransport
+
+    app.dependency_overrides[get_current_user] = mock_org_admin_user
+    try:
+        with patch("routers.billing.clerk_admin") as mock_clerk, patch("routers.billing.billing_repo") as mock_repo:
+            mock_clerk.list_pending_invitations_for_user = AsyncMock()
+            mock_repo.get_by_owner_id = AsyncMock(
+                return_value={
+                    "owner_id": "org_test_456",
+                    "stripe_subscription_id": "sub_existing",
+                    "subscription_status": "active",  # forces a 409, but NOT from gate B
+                }
+            )
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+                await ac.post(
+                    "/api/v1/billing/trial-checkout",
+                    json={"provider_choice": "bedrock_claude"},
+                )
+            # Critical assertion: gate B was NOT invoked for org context.
+            mock_clerk.list_pending_invitations_for_user.assert_not_awaited()
+    finally:
+        app.dependency_overrides.clear()
