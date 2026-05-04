@@ -47,9 +47,19 @@ export function InviteTeammatesStep({
       // useApi throws an ApiError with `.status` and `.body`. The backend's 409
       // PERSONAL_USER_EXISTS / PENDING_ORG_INVITATION responses encode the
       // human-readable reason at body.detail.message — surface it inline.
-      const e = err as { status?: number; body?: { detail?: { message?: string } } };
+      // Defensive: only display when message is a non-empty string; otherwise
+      // a 401 / 500 / network error (which use a different body shape) would
+      // render "Failed to send invitation" instead of crashing on a
+      // non-string child.
+      const apiErr = err as {
+        status?: number;
+        body?: { detail?: { message?: string } };
+      };
+      const candidate = apiErr.body?.detail?.message;
       const msg =
-        e.body?.detail?.message ?? "Failed to send invitation. Please try again.";
+        typeof candidate === "string" && candidate.length > 0
+          ? candidate
+          : "Failed to send invitation. Please try again.";
       setError(msg);
     } finally {
       setSubmitting(false);
@@ -100,7 +110,10 @@ export function InviteTeammatesStep({
           </select>
         </div>
         {error && (
-          <div className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive">
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/50 bg-destructive/10 p-3 text-sm text-destructive"
+          >
             {error}
           </div>
         )}
@@ -126,7 +139,7 @@ export function InviteTeammatesStep({
         </ul>
       )}
 
-      <Button variant="ghost" onClick={onComplete}>
+      <Button type="button" variant="ghost" onClick={onComplete}>
         Done
       </Button>
     </div>

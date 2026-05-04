@@ -62,4 +62,63 @@ describe("InviteTeammatesStep", () => {
     fireEvent.click(screen.getByRole("button", { name: /done/i }));
     expect(onComplete).toHaveBeenCalled();
   });
+
+  it("submits role=org:admin when admin is selected", async () => {
+    mockPost.mockResolvedValueOnce({ invitation_id: "orginv_2" });
+    render(<InviteTeammatesStep orgId="org_test" onComplete={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "admin@example.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/role/i), {
+      target: { value: "org:admin" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
+
+    await waitFor(() => {
+      expect(mockPost).toHaveBeenCalledWith("/orgs/org_test/invitations", {
+        email: "admin@example.com",
+        role: "org:admin",
+      });
+    });
+  });
+
+  it("renders the fallback message when 409 has no body.detail.message", async () => {
+    // 401 / 500 / network errors don't carry the structured detail.message
+    // shape — verify the component falls back to its own copy instead of
+    // crashing on a missing-property render.
+    mockPost.mockRejectedValueOnce({ status: 500, body: null });
+    render(<InviteTeammatesStep orgId="org_test" onComplete={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "x@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
+
+    expect(
+      await screen.findByText(/Failed to send invitation\. Please try again\./i),
+    ).toBeInTheDocument();
+  });
+
+  it("accumulates multiple sent invites in the list", async () => {
+    mockPost
+      .mockResolvedValueOnce({ invitation_id: "inv_1" })
+      .mockResolvedValueOnce({ invitation_id: "inv_2" });
+    render(<InviteTeammatesStep orgId="org_test" onComplete={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "a@b.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
+    await screen.findByText("a@b.com");
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "c@d.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
+    await screen.findByText("c@d.com");
+
+    expect(screen.getByText("a@b.com")).toBeInTheDocument();
+    expect(screen.getByText("c@d.com")).toBeInTheDocument();
+  });
 });
