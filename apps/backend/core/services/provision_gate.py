@@ -4,10 +4,18 @@ can provision a container, and *why not* when they can't.
 Both `/container/provision` and `/container/status` consult this helper and
 return its structured payload on 402, so the two endpoints can never
 disagree about the gate state.
+
+This module also owns the two pure billing-state predicates that
+``evaluate_provision_gate`` (and several callers outside the gate) need:
+``is_subscription_active`` and ``is_trial_blocked``. They live here so
+every site that asks "is this billing account currently usable?" hits
+the same code path — see the call sites in ``core.gateway.connection_pool``,
+``routers.config``, and ``routers.billing``.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,7 +23,78 @@ from core.repositories import billing_repo
 from core.services import credit_ledger
 
 
-_PROVISION_OK_STATUSES = frozenset({"active", "trialing"})
+# Stripe statuses that grant platform use right now. Trialing is included
+# because the trial itself is a valid subscription state on Stripe — billing
+# kicks in at trial_end without any state transition the caller can see.
+_ACTIVE_STATUSES = frozenset({"active", "trialing"})
+
+# Stripe statuses that indicate this account has *ever* been on a paid
+# subscription (or is currently mid-attempt). Used to block fresh
+# trial-creation so a churned customer can't loop POST /trial-checkout
+# forever; Stripe charges us for ECS Fargate either way and the trial
+# itself never bills. A user who legitimately wants to re-subscribe after
+# cancel must go through customer support.
+#
+# Exported so the legacy-row recovery path in ``routers.billing`` can
+# apply the same set against a *live Stripe Subscription object* (not
+# the local billing row). ``is_trial_blocked`` is the right call when
+# you have a billing-account row; for a raw Stripe status string, test
+# against this constant directly.
+TRIAL_BLOCKED_STATUSES = frozenset(
+    {
+        "active",
+        "trialing",
+        "past_due",
+        "canceled",
+        "incomplete",
+        "incomplete_expired",
+        "unpaid",
+        "paused",
+    }
+)
+
+
+def is_subscription_active(account: Mapping[str, Any] | None) -> bool:
+    """Whether this billing-account row currently allows platform use.
+
+    Returns True when:
+      - ``subscription_status`` is in {"active", "trialing"}, OR
+      - ``subscription_status`` is None *and* ``stripe_subscription_id`` is
+        set — the legacy pre-Plan-3 fallback for rows whose status hadn't
+        been backfilled by ``customer.subscription.updated`` yet. Without
+        the fallback, paid users mid-cutover got pushed back into the
+        payment phase (Codex P1 on PR #393).
+
+    Otherwise False, including for ``None`` accounts (no billing row =
+    not subscribed).
+
+    The legacy fallback is intentionally guarded on ``status is None`` —
+    a *non-None* status that isn't in the active set (e.g. "canceled",
+    "past_due") must be treated as not-subscribed regardless of whether
+    ``stripe_subscription_id`` is still on the row. Our cancel path
+    (``billing_service.cancel_subscription``) clears
+    ``stripe_subscription_id`` so the field-stale case shouldn't happen
+    in practice, but pinning the strict semantic here prevents any
+    future code change from silently re-introducing the divergence.
+    """
+    if not account:
+        return False
+    status = account.get("subscription_status")
+    if status in _ACTIVE_STATUSES:
+        return True
+    return status is None and bool(account.get("stripe_subscription_id"))
+
+
+def is_trial_blocked(account: Mapping[str, Any] | None) -> bool:
+    """Whether this account has a subscription state that should block
+    creating a fresh 14-day trial. See ``TRIAL_BLOCKED_STATUSES``.
+
+    Returns False for missing accounts (a brand-new owner with no row
+    is the canonical "trial-allowed" state).
+    """
+    if not account:
+        return False
+    return account.get("subscription_status") in TRIAL_BLOCKED_STATUSES
 
 
 @dataclass(frozen=True)
@@ -108,10 +187,8 @@ async def evaluate_provision_gate(
             action_admin_only=True,
             owner_role=owner_role,
         )
-    status = account.get("subscription_status")
-    has_legacy_sub = bool(account.get("stripe_subscription_id"))
-    is_ok = status in _PROVISION_OK_STATUSES or (status is None and has_legacy_sub)
-    if not is_ok:
+    if not is_subscription_active(account):
+        status = account.get("subscription_status")
         if status == "past_due":
             return Gate(
                 code="payment_past_due",

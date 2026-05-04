@@ -15,6 +15,11 @@ from core.observability.metrics import put_metric, timing
 from core.repositories import billing_repo, usage_repo
 from core.services import credit_ledger
 from core.services.billing_service import BillingService
+from core.services.provision_gate import (
+    TRIAL_BLOCKED_STATUSES,
+    is_subscription_active,
+    is_trial_blocked,
+)
 from core.services.usage_service import get_usage_summary
 from core.billing.bedrock_pricing import get_all_rates
 from schemas.billing import (
@@ -144,14 +149,12 @@ async def get_billing_account(
     subscription_status = account.get("subscription_status") if account else None
     trial_end = account.get("trial_end") if account else None
 
-    # is_subscribed is keyed off subscription_status when present, but falls
-    # back to the legacy stripe_subscription_id marker for accounts that
-    # predate the cutover or haven't yet received a customer.subscription
-    # .updated webhook. Without the fallback, paid users get pushed back into
-    # the payment phase. Codex P1 on PR #393.
-    is_subscribed = subscription_status in ("active", "trialing") or (
-        account is not None and bool(account.get("stripe_subscription_id"))
-    )
+    # is_subscribed shares the same predicate every gate site (chat,
+    # provision, channel-binding) consults — see
+    # ``core.services.provision_gate.is_subscription_active``. Single
+    # source of truth so the response shape and the gates can never
+    # disagree about whether a billing row counts as subscribed.
+    is_subscribed = is_subscription_active(account)
 
     return BillingAccountResponse(
         is_subscribed=is_subscribed,
@@ -392,30 +395,17 @@ async def create_trial_checkout(
     # past the 5-minute idempotency-bucket window would charge the
     # customer twice (Codex P1 on PR #393).
     #
-    # Originally this only blocked {active, trialing, past_due}, but
-    # that left a trial-gaming hole (audit C3): a user could complete a
-    # 14-day trial, cancel before day 15 (no charge), and immediately
-    # POST /trial-checkout again to mint a new 14-day trial — repeating
-    # forever. ECS Fargate is recurring on us either way; the trial
-    # itself never charges. We now also block {canceled, incomplete,
-    # incomplete_expired, unpaid, paused}. A user who legitimately wants
-    # to re-subscribe after cancel must go through customer support so
-    # we can verify they're not gaming the trial.
-    _BLOCKED_REPEAT_STATUSES = frozenset(
-        {
-            "active",
-            "trialing",
-            "past_due",
-            "canceled",
-            "incomplete",
-            "incomplete_expired",
-            "unpaid",
-            "paused",
-        }
-    )
+    # ``is_trial_blocked`` (canonical set in ``provision_gate.py``) blocks
+    # any state that has ever billed or might still bill —
+    # {active, trialing, past_due, canceled, incomplete, incomplete_expired,
+    # unpaid, paused}. The {canceled, …} entries close the trial-gaming
+    # hole from audit C3 (a user could otherwise complete a 14-day trial,
+    # cancel before day 15, and immediately POST /trial-checkout again to
+    # mint a new trial — ECS Fargate is recurring on us either way).
+    # Legitimate re-subscribe-after-cancel goes through customer support.
     existing_status = account.get("subscription_status")
     has_legacy_sub = bool(account.get("stripe_subscription_id"))
-    if existing_status in _BLOCKED_REPEAT_STATUSES:
+    if is_trial_blocked(account):
         raise HTTPException(
             status_code=409,
             detail=f"already_subscribed:{existing_status}",
@@ -442,7 +432,7 @@ async def create_trial_checkout(
             # Same expanded blocklist as the local-row path — a stale
             # canceled/incomplete subscription in Stripe is still a
             # "this account already trialed" signal (audit C3).
-            if live_sub.get("status") in _BLOCKED_REPEAT_STATUSES:
+            if live_sub.get("status") in TRIAL_BLOCKED_STATUSES:
                 raise HTTPException(
                     status_code=409,
                     detail=f"already_subscribed:{live_sub.get('status')}",
