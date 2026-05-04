@@ -158,6 +158,24 @@ async def test_set_auto_reload_persists(async_client, credit_ledger_tables):
 
 
 @pytest.mark.asyncio
+async def test_set_auto_reload_org_uses_owner_id(async_client_org_admin, credit_ledger_tables):
+    """Auto-reload settings live on the same row as the balance — must be
+    owner-keyed so they survive across org members."""
+    captured: dict = {}
+
+    async def fake_set(key, *, enabled, threshold_cents, amount_cents):
+        captured["key"] = key
+
+    with patch("routers.billing.credit_ledger.set_auto_reload", new=fake_set):
+        resp = await async_client_org_admin.put(
+            "/api/v1/billing/credits/auto_reload",
+            json={"enabled": True, "threshold_cents": 500, "amount_cents": 5000},
+        )
+    assert resp.status_code == 200
+    assert captured["key"] == "org_test_456"
+
+
+@pytest.mark.asyncio
 async def test_checkout_session_completed_credits_ledger(async_client, monkeypatch, credit_ledger_tables):
     """Charged top-up: amount_total matches metadata.amount_cents — full
     Stripe transaction, no discount applied."""

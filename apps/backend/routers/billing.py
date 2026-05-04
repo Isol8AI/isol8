@@ -583,7 +583,7 @@ async def set_auto_reload(
             detail="threshold_cents and amount_cents required when enabling",
         )
     await credit_ledger.set_auto_reload(
-        ctx.user_id,
+        resolve_owner_id(ctx),
         enabled=body.enabled,
         threshold_cents=body.threshold_cents,
         amount_cents=body.amount_cents,
