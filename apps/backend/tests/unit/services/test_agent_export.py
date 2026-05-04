@@ -79,6 +79,29 @@ def test_export_skips_junk_dirs(fake_efs):
     assert not any(".git" in n for n in names)
 
 
+def test_export_skips_dotfiles_anywhere_in_tree(fake_efs, tmp_path):
+    """Regression: hidden files / hidden dirs at any depth must NOT ship in
+    the marketplace artifact. Sellers commonly have .env, .ssh/*, .aws/
+    credentials, .openclaw/secrets in their workspace; bundling them
+    would deliver secrets directly to buyers
+    (Codex P1 round 13, commit fc0581bd).
+    """
+    seller_id, agent_id, agent_dir = fake_efs
+    # Plant a bunch of dotfile / dotdir scenarios.
+    (agent_dir / ".env").write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+    (agent_dir / ".ssh").mkdir()
+    (agent_dir / ".ssh" / "id_rsa").write_text("-----BEGIN PRIVATE KEY-----\n", encoding="utf-8")
+    # Hidden file nested inside an otherwise-allowed directory.
+    (agent_dir / "scripts" / ".secret").write_text("password=hunter2\n", encoding="utf-8")
+
+    pkg = agent_export.export_agent_from_efs(seller_id=seller_id, agent_id=agent_id)
+    names = _list_tar_names(pkg.tarball_bytes)
+    # None of the dotfile paths show up.
+    assert not any(".env" in n.split("/")[-1] for n in names if n != "."), names
+    assert not any(".ssh" in n for n in names), names
+    assert not any(".secret" in n for n in names), names
+
+
 def test_export_invalid_agent_id_format(fake_efs):
     seller_id, _, _ = fake_efs
     with pytest.raises(agent_export.InvalidAgentIdError):

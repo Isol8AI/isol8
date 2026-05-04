@@ -96,6 +96,17 @@ def _build_tarball(agent_dir: Path) -> tuple[bytes, list[str]]:
             parts = tarinfo.name.split("/")
             if any(p in _SKIP_DIR_NAMES for p in parts):
                 return None
+            # Skip hidden files / hidden dirs anywhere in the tree. The
+            # leading "." in tarinfo.name is the arcname root (we pass
+            # arcname="."), so ignore it; any other path segment starting
+            # with "." is a dotfile/dotdir. Without this, .env, .ssh/*,
+            # .aws/credentials, .openclaw/secrets — anything a seller had
+            # in their workspace — would ship in the marketplace artifact.
+            for p in parts:
+                if p in (".", ""):
+                    continue
+                if p.startswith("."):
+                    return None
             # Reject symlinks defensively (catalog_package.untar already does
             # the receiving-side check, but rejecting here keeps the artifact
             # auditable).
