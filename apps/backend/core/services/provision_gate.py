@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from core.repositories import billing_repo, user_repo
+from core.repositories import billing_repo
 from core.services import credit_ledger
 
 
@@ -54,12 +54,14 @@ class Gate:
         }
 
 
-async def _get_provider_choice(clerk_user_id: str) -> str:
-    """Read provider_choice from user_repo (current model — Workstream B
-    will move this to billing_repo). Falls back to bedrock_claude when no
-    row exists, matching the existing behavior in container.py.
+async def _get_provider_choice(owner_id: str) -> str:
+    """Read provider_choice from the billing row (Workstream B model).
+
+    Falls back to bedrock_claude when no row or choice is persisted —
+    matches the legacy default and keeps recovery flows working for
+    owners onboarded before Workstream B.
     """
-    row = await user_repo.get(clerk_user_id)
+    row = await billing_repo.get_by_owner_id(owner_id)
     return (row or {}).get("provider_choice") or "bedrock_claude"
 
 
@@ -131,7 +133,8 @@ async def evaluate_provision_gate(
         )
 
     # Layer 2/3 — provider-specific.
-    provider_choice = await _get_provider_choice(clerk_user_id)
+    # provider_choice lives on the billing row (Workstream B), keyed by owner_id.
+    provider_choice = await _get_provider_choice(owner_id)
 
     if provider_choice == "bedrock_claude":
         balance = await credit_ledger.get_balance(clerk_user_id)
