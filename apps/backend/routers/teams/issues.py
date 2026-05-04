@@ -60,3 +60,53 @@ async def patch_issue(
         body=body.model_dump(exclude_none=True),
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.post("/issues/{issue_id}/archive")
+async def archive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Archive an issue from the inbox.
+
+    Maps to upstream ``POST /api/issues/{id}/inbox-archive``. The Inbox
+    UI fades the row out + shows an undo toast for ~8s.
+    """
+    return await _agents._admin().archive_issue(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/unarchive")
+async def unarchive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Restore an archived issue back to the inbox.
+
+    Maps to upstream ``DELETE /api/issues/{id}/inbox-archive``. Drives the
+    undo-archive toast.
+    """
+    return await _agents._admin().unarchive_issue(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/mark-read")
+async def mark_issue_read(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Mark an issue as read for the signed-in user.
+
+    Maps to upstream ``POST /api/issues/{id}/read``.
+    """
+    return await _agents._admin().mark_issue_read(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/mark-unread")
+async def mark_issue_unread(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Mark an issue as unread for the signed-in user.
+
+    Maps to upstream ``DELETE /api/issues/{id}/read``.
+    """
+    return await _agents._admin().mark_issue_unread(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )

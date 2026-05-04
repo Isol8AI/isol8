@@ -76,3 +76,77 @@ def test_create_issue_rejects_unknown_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_archive_issue(client, monkeypatch):
+    """`POST /teams/issues/{id}/archive` archives the issue from the inbox."""
+    admin = MagicMock()
+    admin.archive_issue = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/archive",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.archive_issue.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_unarchive_issue(client, monkeypatch):
+    """`POST /teams/issues/{id}/unarchive` (undo) restores the issue."""
+    admin = MagicMock()
+    admin.unarchive_issue = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/unarchive",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.unarchive_issue.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_mark_issue_read(client, monkeypatch):
+    admin = MagicMock()
+    admin.mark_issue_read = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/mark-read",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.mark_issue_read.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_mark_issue_unread(client, monkeypatch):
+    admin = MagicMock()
+    admin.mark_issue_unread = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/mark-unread",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.mark_issue_unread.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
