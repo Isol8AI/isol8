@@ -191,7 +191,7 @@ export function ProvisioningStepper({
   // Plain members see link-only flows or get sent straight to ready.
   const isAdmin = !isOrg || membership?.role === "org:admin";
   const api = useApi();
-  const { isLoading: billingLoading, isSubscribed } = useBilling();
+  const { account, isLoading: billingLoading, isSubscribed } = useBilling();
   const provisionRequestedRef = useRef(false);
   // Set when we first enter the container/gateway phase — _not_ at component
   // mount. Time spent on the pre-provision steps (provider choice, billing
@@ -658,30 +658,19 @@ export function ProvisioningStepper({
 
   // Plan 3: provider-specific signup step. Renders the right component
   // based on `?provider=` and advances the wizard once the user finishes.
-  // ChatGPTOAuthStep / CreditsStep don't have a sub-choice, so the wizard
-  // posts /users/sync here. ByoKeyStep posts its own (it knows the chosen
-  // openai|anthropic sub-provider).
+  //
+  // Workstream B (2026-05-03, provider-choice-per-owner): provider_choice
+  // is no longer persisted via /users/sync here. The ProviderPicker's
+  // "Subscribe" step writes it synchronously to billing_accounts via
+  // POST /billing/trial-checkout, which is the canonical (and only) write
+  // path now. Prior to Workstream B this hook double-wrote to user_repo;
+  // that path is gone — billing_repo (owner-keyed) is the source of truth.
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
-      try {
-        if (providerChoice !== "byo_key") {
-          await api.post("/users/sync", { provider_choice: providerChoice });
-        }
-        posthog?.capture("onboarding_provider_completed", {
-          provider_choice: providerChoice,
-        });
-        setProviderStepDone(true);
-      } catch (err) {
-        // Sync MUST succeed before we advance — backend gating + credit
-        // deduction key off the persisted provider_choice. Letting the
-        // wizard proceed without it lets bedrock_claude users chat for
-        // free until ChatLayout's /users/sync (which doesn't pass
-        // provider_choice) eventually retries. Codex P1 on PR #393.
-        console.error("Provider /users/sync failed:", err);
-        alert(
-          "Couldn't save your provider choice — please try again. If this keeps happening, contact support@isol8.co.",
-        );
-      }
+      posthog?.capture("onboarding_provider_completed", {
+        provider_choice: providerChoice,
+      });
+      setProviderStepDone(true);
     };
     return (
       <div className="flex-1 flex items-center justify-center p-6 bg-[#faf7f2]">
@@ -713,7 +702,22 @@ export function ProvisioningStepper({
   // to `/chat?provider=X`, which routes the wizard into the provider phase
   // below. The provider phase runs the chosen flow (OAuth / BYO key /
   // credits) and creates the trial subscription.
-  if (!isSubscribed) {
+  //
+  // Skip picker only when the owner is fully onboarded (has a provider
+  // choice AND an active subscription). Two cases this handles:
+  //
+  //   1. Org member joining an already-onboarded org (Workstream B
+  //      cofounder bug fix from 2026-05-03): admin already picked +
+  //      subscribed, so the member skips the picker and falls through
+  //      to provisioning.
+  //
+  //   2. User who picks then cancels Stripe Checkout: `provider_choice`
+  //      is persisted before the Stripe redirect (Workstream B race
+  //      fix), so `account.provider_choice` is set but `isSubscribed`
+  //      is false. They MUST see the picker again to restart checkout.
+  //      Codex P1 on PR #521 (#3179594652).
+  const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
+  if (!ownerOnboarded) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 

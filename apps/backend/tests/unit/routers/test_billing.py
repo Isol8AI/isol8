@@ -293,17 +293,21 @@ class TestStripeWebhook:
         assert kwargs.get("trial_end") == 1700000000
 
     @pytest.mark.asyncio
-    @patch("core.repositories.user_repo.set_provider_choice")
     @patch("routers.billing.billing_repo")
     @patch("routers.billing.stripe")
     async def test_subscription_created_persists_status_and_provider_choice(
-        self, mock_stripe, mock_repo, mock_set_provider_choice, async_client, dedup_table_and_settings
+        self, mock_stripe, mock_repo, async_client, dedup_table_and_settings
     ):
         """customer.subscription.created (the FIRST event for a new trial)
         must persist subscription_status + trial_end + provider_choice — same
         as customer.subscription.updated. Without this branch, users finishing
         Stripe Checkout are stuck on the provider picker because is_subscribed
         stays False.
+
+        Workstream B: provider_choice is persisted on the *billing_accounts*
+        row keyed by ``account["owner_id"]`` (not the legacy users-table
+        write keyed by clerk_user_id). The webhook is now an idempotent
+        backup for /trial-checkout's synchronous write.
         """
         mock_stripe.Webhook.construct_event.return_value = {
             "id": "evt_created_x",
@@ -315,7 +319,7 @@ class TestStripeWebhook:
                     "status": "trialing",
                     "trial_end": 1700000000,
                     "metadata": {
-                        "provider_choice": "chatgpt_oauth",
+                        "provider_choice": "bedrock_claude",
                         "clerk_user_id": "user_clerk_x",
                     },
                 }
@@ -324,19 +328,21 @@ class TestStripeWebhook:
         mock_repo.list_by_stripe_customer_id = AsyncMock(
             return_value=[
                 {
-                    "owner_id": "user_clerk_x",
+                    "owner_id": "org_x",
+                    "owner_type": "org",
                     "stripe_customer_id": "cus_created_x",
                 }
             ]
         )
         mock_repo.get_by_owner_id = AsyncMock(
             return_value={
-                "owner_id": "user_clerk_x",
+                "owner_id": "org_x",
+                "owner_type": "org",
                 "stripe_customer_id": "cus_created_x",
             }
         )
         mock_repo.set_subscription = AsyncMock()
-        mock_set_provider_choice.return_value = None  # AsyncMock by default since the patched target is async
+        mock_repo.set_provider_choice = AsyncMock()
 
         response = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
@@ -347,13 +353,17 @@ class TestStripeWebhook:
         assert response.status_code == 200
         mock_repo.set_subscription.assert_awaited_once()
         kwargs = mock_repo.set_subscription.await_args.kwargs
-        assert kwargs["owner_id"] == "user_clerk_x"
+        assert kwargs["owner_id"] == "org_x"
         assert kwargs["subscription_id"] == "sub_created_x"
         assert kwargs["status"] == "trialing"
         assert kwargs["trial_end"] == 1700000000
-        mock_set_provider_choice.assert_awaited_once_with(
-            "user_clerk_x",
-            provider_choice="chatgpt_oauth",
+        # Webhook backup writes provider_choice to billing_repo, keyed on
+        # account["owner_id"] (NOT clerk_user_id, NOT user_repo).
+        mock_repo.set_provider_choice.assert_awaited_once_with(
+            "org_x",
+            provider_choice="bedrock_claude",
+            byo_provider=None,
+            owner_type="org",
         )
 
     @pytest.mark.asyncio
@@ -529,6 +539,10 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B: trial-checkout synchronously persists provider_choice
+        # via billing_repo.set_provider_choice before creating the Stripe
+        # Checkout session. Mock as AsyncMock so the await works.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_byo"
@@ -537,7 +551,7 @@ class TestTrialCheckoutProviderRules:
 
         resp = await async_client.post(
             "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "byo_key"},
+            json={"provider_choice": "byo_key", "byo_provider": "anthropic"},
         )
         assert resp.status_code == 200
         assert resp.json()["checkout_url"] == "https://checkout.stripe.test/sess_byo"
@@ -556,6 +570,8 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B sync-persist of provider_choice — see byo test above.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_bed"
@@ -584,6 +600,8 @@ class TestTrialCheckoutProviderRules:
                 "subscription_status": None,
             }
         )
+        # Workstream B sync-persist of provider_choice — see byo test above.
+        mock_repo.set_provider_choice = AsyncMock()
 
         class _Session:
             url = "https://checkout.stripe.test/sess_personal"

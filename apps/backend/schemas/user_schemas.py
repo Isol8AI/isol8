@@ -8,27 +8,21 @@ from pydantic import BaseModel, Field
 class SyncUserRequest(BaseModel):
     """Optional body for POST /users/sync.
 
-    The frontend onboarding wizard (Plan 3 Task 11) calls /users/sync
-    after the user picks a provider card. The body fields are all
-    optional so existing callers (ChatLayout mount, settings page) that
-    just want idempotent user creation keep working.
-
-    ``provider_choice`` records which signup card was selected; the
-    gateway branches on it (Plan 3 Tasks 4 + 5) to decide whether to
-    gate chat on credits and whether to deduct on ``chat.final``.
-
-    ``byo_provider`` is only meaningful when
-    ``provider_choice == "byo_key"`` -- it identifies which key was
-    saved. The endpoint enforces this invariant.
+    The frontend onboarding wizard previously sent ``provider_choice`` /
+    ``byo_provider`` here. As of Workstream B (2026-05-03) the canonical
+    write path is POST /billing/trial-checkout (persists synchronously
+    to billing_accounts before creating the Stripe Checkout session).
+    The fields are kept on this schema so old frontends keep parsing,
+    but the server silently ignores them.
     """
 
     provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] | None = Field(
         default=None,
-        description="Which signup card the user picked.",
+        description="DEPRECATED: writes via /billing/trial-checkout. Silently ignored on /users/sync.",
     )
     byo_provider: Literal["openai", "anthropic"] | None = Field(
         default=None,
-        description="Which BYO key was saved. Required when provider_choice='byo_key'.",
+        description="DEPRECATED: writes via /billing/trial-checkout. Silently ignored on /users/sync.",
     )
 
 

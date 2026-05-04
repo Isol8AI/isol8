@@ -28,12 +28,14 @@ class TestContainerRecover:
             yield mock_rpc
 
     @pytest.fixture(autouse=True)
-    def mock_user_repo(self):
-        """Recovery now reads provider_choice from user_repo before
-        reprovisioning (Codex P1 on PR #393). Mock the lookup so tests
-        don't hit DDB."""
-        with patch("routers.container_recover.user_repo") as mock_repo:
-            mock_repo.get = AsyncMock(return_value=None)  # falls through to bedrock_claude default
+    def mock_billing_repo(self):
+        """Recovery reads provider_choice from billing_repo (keyed on
+        owner_id) before reprovisioning. Workstream B (2026-05-03) moved
+        the lookup off user_repo onto billing_accounts. Mock the lookup
+        so tests don't hit DDB."""
+        with patch("routers.container_recover.billing_repo") as mock_repo:
+            # No row / no choice persisted -> falls through to bedrock_claude default.
+            mock_repo.get_by_owner_id = AsyncMock(return_value=None)
             yield mock_repo
 
     # --- CONTAINER_DOWN: full re-provision ---

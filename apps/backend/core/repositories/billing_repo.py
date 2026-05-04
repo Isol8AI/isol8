@@ -125,6 +125,95 @@ async def set_subscription(
     return existing
 
 
+_VALID_PROVIDER_CHOICES = frozenset({"bedrock_claude", "byo_key", "chatgpt_oauth"})
+
+
+async def set_provider_choice(
+    owner_id: str,
+    *,
+    provider_choice: str,
+    byo_provider: str | None,
+    owner_type: str,
+) -> dict:
+    """Persist the provider choice on a billing row.
+
+    Args:
+        owner_id: org_id or personal user_id (the billing row's PK).
+        provider_choice: one of ``bedrock_claude``, ``byo_key``, ``chatgpt_oauth``.
+        byo_provider: optional even when ``provider_choice == "byo_key"`` —
+            the picker submits ``byo_key`` alone at /trial-checkout time, and
+            the BYO wizard fills in ``byo_provider`` (openai vs anthropic) +
+            the actual API key in a later step (Codex P1 #3179631946). The
+            row's ``byo_provider`` attribute is REMOVE'd whenever it's
+            ``None`` so a switch away from byo_key, or a re-pick of byo_key
+            without a chosen provider yet, doesn't leave stale data.
+        owner_type: ``"personal"`` or ``"org"``. Used for the org invariant.
+
+    Raises:
+        ValueError: unknown provider_choice, or chatgpt_oauth on an org row.
+    """
+    if provider_choice not in _VALID_PROVIDER_CHOICES:
+        raise ValueError(f"unknown provider_choice: {provider_choice!r}")
+    if owner_type == "org" and provider_choice == "chatgpt_oauth":
+        # Decision 2026-04-30: ChatGPT OAuth is personal-only — orgs use
+        # Bedrock or BYO API key. See memory/project_chatgpt_oauth_personal_only.md.
+        raise ValueError(
+            "chatgpt_oauth is not allowed for org owners; orgs must use bedrock_claude or byo_key",
+        )
+
+    now = utc_now_iso()
+    table = _get_table()
+    if provider_choice == "byo_key" and byo_provider is not None:
+        update_expr = "SET provider_choice = :pc, byo_provider = :bp, updated_at = :t"
+        values: dict = {":pc": provider_choice, ":bp": byo_provider, ":t": now}
+    else:
+        # provider_choice != byo_key, OR byo_key without a chosen byo_provider
+        # yet. Drop any prior byo_provider so a switch away from byo_key, or a
+        # re-pick of byo_key before the BYO wizard fills in the provider,
+        # doesn't leak a stale value onto the row. DDB also rejects SETting
+        # an attribute to None — REMOVE is the correct verb here.
+        update_expr = "SET provider_choice = :pc, updated_at = :t REMOVE byo_provider"
+        values = {":pc": provider_choice, ":t": now}
+
+    response = await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression=update_expr,
+        ExpressionAttributeValues=values,
+        ReturnValues="ALL_NEW",
+    )
+    return response["Attributes"]
+
+
+async def clear_provider_choice(owner_id: str) -> None:
+    """Remove provider_choice and byo_provider from a billing row."""
+    now = utc_now_iso()
+    table = _get_table()
+    await run_in_thread(
+        table.update_item,
+        Key={"owner_id": owner_id},
+        UpdateExpression="REMOVE provider_choice, byo_provider SET updated_at = :t",
+        ExpressionAttributeValues={":t": now},
+    )
+
+
 async def delete(owner_id: str) -> None:
     table = _get_table()
     await run_in_thread(table.delete_item, Key={"owner_id": owner_id})
+
+
+async def scan_all():
+    """Async iterator over all billing rows. Used by the one-shot
+    provider_choice migration. Not for production hot paths.
+    """
+    table = _get_table()
+    response = await run_in_thread(table.scan)
+    for item in response.get("Items", []):
+        yield item
+    while response.get("LastEvaluatedKey"):
+        response = await run_in_thread(
+            table.scan,
+            ExclusiveStartKey=response["LastEvaluatedKey"],
+        )
+        for item in response.get("Items", []):
+            yield item

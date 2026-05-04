@@ -101,17 +101,15 @@ async def test_provision_rejects_bedrock_with_zero_balance():
             "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
+                "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
+                # Workstream B: provider_choice lives on billing_accounts now.
+                "provider_choice": "bedrock_claude",
             },
         ),
         patch(
-            "core.services.provision_gate.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": "bedrock_claude"},
-        ),
-        patch(
-            "core.services.provision_gate.credit_ledger.get_balance",
+            "core.services.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=0,
         ),
@@ -139,27 +137,17 @@ async def test_provision_allows_bedrock_with_positive_balance():
             "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
+                "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "trialing",
+                # Workstream B: provider_choice lives on billing_accounts now.
+                "provider_choice": "bedrock_claude",
             },
         ),
         patch(
-            "core.services.provision_gate.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": "bedrock_claude"},
-        ),
-        patch(
-            "core.services.provision_gate.credit_ledger.get_balance",
+            "core.services.credit_ledger.get_balance",
             new_callable=AsyncMock,
             return_value=10_000_000,
-        ),
-        # _resolve_provider_choice in routers.container also reads user_repo
-        # after the gate passes — patch that binding too so provisioning
-        # doesn't hit DDB.
-        patch(
-            "routers.container.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": "bedrock_claude"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):
@@ -193,26 +181,17 @@ async def test_provision_skips_balance_check_for_non_bedrock(provider_choice):
             "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
+                "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_123",
                 "subscription_status": "active",
+                # Workstream B: provider_choice lives on billing_accounts now.
+                "provider_choice": provider_choice,
             },
-        ),
-        patch(
-            "core.services.provision_gate.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": provider_choice},
         ),
         patch(
             "core.services.oauth_service.get_decrypted_tokens",
             new_callable=AsyncMock,
             return_value={"access_token": "x"},
-        ),
-        # _resolve_provider_choice in routers.container also reads user_repo
-        # after the gate passes — patch that binding too.
-        patch(
-            "routers.container.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": provider_choice},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):
@@ -248,24 +227,17 @@ async def test_provision_allows_legacy_row_with_subscription_id_but_no_status():
             "core.services.provision_gate.billing_repo.get_by_owner_id",
             new_callable=AsyncMock,
             return_value={
+                "owner_id": "user_paid",
                 "stripe_subscription_id": "sub_legacy_pre_plan_3",
                 # subscription_status deliberately absent / None
+                # Workstream B: provider_choice lives on billing_accounts now.
+                "provider_choice": "chatgpt_oauth",
             },
-        ),
-        patch(
-            "core.services.provision_gate.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": "chatgpt_oauth"},
         ),
         patch(
             "core.services.oauth_service.get_decrypted_tokens",
             new_callable=AsyncMock,
             return_value={"access_token": "x"},
-        ),
-        patch(
-            "routers.container.user_repo.get",
-            new_callable=AsyncMock,
-            return_value={"provider_choice": "chatgpt_oauth"},
         ),
         patch("routers.container.get_ecs_manager", return_value=fake_ecs),
     ):

@@ -63,14 +63,20 @@ class TestSyncUser:
 
 
 class TestSyncUserProviderChoice:
-    """Tests for Plan 3 Task 3: provider_choice persistence on /users/sync."""
+    """Workstream B (2026-05-03): /users/sync no longer writes provider_choice.
+
+    The canonical write path is POST /billing/trial-checkout, which
+    persists synchronously to billing_accounts before creating the
+    Stripe Checkout session. /users/sync is now a pure user-row sync
+    and silently ignores any provider_choice / byo_provider it receives
+    so old frontends keep working.
+    """
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_persists_provider_choice(self, mock_repo, async_client):
-        """POST /users/sync with provider_choice persists via user_repo."""
-        mock_repo.get = AsyncMock(return_value=None)
-        mock_repo.put = AsyncMock(return_value=None)
+    async def test_sync_does_not_persist_provider_choice(self, mock_repo, async_client):
+        """provider_choice in the body is silently ignored — no user_repo write."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
 
         response = await async_client.post(
@@ -79,16 +85,13 @@ class TestSyncUserProviderChoice:
         )
 
         assert response.status_code == 200
-        mock_repo.set_provider_choice.assert_awaited_once()
-        _, kwargs = mock_repo.set_provider_choice.call_args
-        assert kwargs["provider_choice"] == "bedrock_claude"
-        assert kwargs.get("byo_provider") is None
+        mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_persists_byo_key_with_provider(self, mock_repo, async_client):
-        """byo_key + byo_provider together persist both values."""
-        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123", "created_at": "2026-01-01T00:00:00Z"})
+    async def test_sync_does_not_persist_byo_key(self, mock_repo, async_client):
+        """byo_key + byo_provider in the body are also silently ignored."""
+        mock_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
 
         response = await async_client.post(
@@ -97,15 +100,17 @@ class TestSyncUserProviderChoice:
         )
 
         assert response.status_code == 200
-        mock_repo.set_provider_choice.assert_awaited_once()
-        _, kwargs = mock_repo.set_provider_choice.call_args
-        assert kwargs["provider_choice"] == "byo_key"
-        assert kwargs["byo_provider"] == "openai"
+        mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
-    async def test_sync_byo_key_without_provider_rejected(self, mock_repo, async_client):
-        """byo_key without byo_provider is a 400 (or 422 if pydantic catches it)."""
+    async def test_sync_byo_key_without_provider_no_longer_400s(self, mock_repo, async_client):
+        """The pre-Workstream-B 400 on byo_key-without-byo_provider is gone.
+
+        The endpoint now silently ignores both fields, so a body that
+        previously triggered a 400 just succeeds with no repo write.
+        Pydantic Literal validation still rejects unknown values (422).
+        """
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -115,13 +120,13 @@ class TestSyncUserProviderChoice:
             json={"provider_choice": "byo_key"},
         )
 
-        assert response.status_code in (400, 422)
+        assert response.status_code == 200
         mock_repo.set_provider_choice.assert_not_called()
 
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_sync_without_provider_choice_unchanged(self, mock_repo, async_client):
-        """Existing callers (no body / empty body) bypass set_provider_choice."""
+        """Existing callers (no body / empty body) still work and bypass set_provider_choice."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -147,7 +152,7 @@ class TestSyncUserProviderChoice:
     @pytest.mark.asyncio
     @patch("routers.users.user_repo")
     async def test_sync_invalid_provider_choice_rejected(self, mock_repo, async_client):
-        """Unknown provider_choice value is 422 (pydantic Literal)."""
+        """Unknown provider_choice value is still 422 (pydantic Literal)."""
         mock_repo.get = AsyncMock(return_value=None)
         mock_repo.put = AsyncMock(return_value=None)
         mock_repo.set_provider_choice = AsyncMock(return_value=None)
@@ -159,3 +164,94 @@ class TestSyncUserProviderChoice:
 
         assert response.status_code == 422
         mock_repo.set_provider_choice.assert_not_called()
+
+
+class TestGetMe:
+    """Tests for GET /api/v1/users/me.
+
+    Workstream B (2026-05-03) moved the canonical provider_choice store from
+    user_repo to billing_repo (per-owner). For backwards compat with frontend
+    callers (ControlSidebar, ControlPanelRouter, LLMPanel, OutOfCreditsBanner),
+    /me still surfaces provider_choice and byo_provider — but reads them from
+    billing_repo by resolved owner_id (Codex P1 fix, PR #521).
+    """
+
+    @pytest.mark.asyncio
+    @patch("routers.users.billing_repo")
+    @patch("routers.users.user_repo")
+    async def test_me_returns_provider_choice_from_billing_repo(self, mock_user_repo, mock_billing_repo, async_client):
+        """provider_choice + byo_provider come from billing_repo, not user_repo."""
+        mock_user_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_billing_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "provider_choice": "byo_key",
+                "byo_provider": "openai",
+            }
+        )
+
+        response = await async_client.get("/api/v1/users/me")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user_id"] == "user_test_123"
+        assert body["provider_choice"] == "byo_key"
+        assert body["byo_provider"] == "openai"
+
+    @pytest.mark.asyncio
+    @patch("routers.users.billing_repo")
+    @patch("routers.users.user_repo")
+    async def test_me_provider_choice_null_when_no_billing_row(self, mock_user_repo, mock_billing_repo, async_client):
+        """No billing row yet -> provider fields surface as null (loading state)."""
+        mock_user_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_billing_repo.get_by_owner_id = AsyncMock(return_value=None)
+
+        response = await async_client.get("/api/v1/users/me")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user_id"] == "user_test_123"
+        assert body["provider_choice"] is None
+        assert body["byo_provider"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.users.billing_repo")
+    @patch("routers.users.user_repo")
+    async def test_me_unsynced_user_still_returns_shape(self, mock_user_repo, mock_billing_repo, async_client):
+        """Unsynced user (no /users row) still returns the full provider shape."""
+        mock_user_repo.get = AsyncMock(return_value=None)
+        mock_billing_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "provider_choice": "bedrock_claude",
+            }
+        )
+
+        response = await async_client.get("/api/v1/users/me")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["user_id"] == "user_test_123"
+        assert body["provider_choice"] == "bedrock_claude"
+        # byo_provider not set on this row -> serialized as null
+        assert body["byo_provider"] is None
+
+    @pytest.mark.asyncio
+    @patch("routers.users.billing_repo")
+    @patch("routers.users.user_repo")
+    async def test_me_bedrock_claude_no_byo_provider(self, mock_user_repo, mock_billing_repo, async_client):
+        """bedrock_claude row -> byo_provider is null (not set on the row)."""
+        mock_user_repo.get = AsyncMock(return_value={"user_id": "user_test_123"})
+        mock_billing_repo.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_test_123",
+                "provider_choice": "bedrock_claude",
+            }
+        )
+
+        response = await async_client.get("/api/v1/users/me")
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["provider_choice"] == "bedrock_claude"
+        assert body["byo_provider"] is None

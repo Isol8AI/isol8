@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from typing import Literal
 
 import httpx
 import stripe
@@ -158,6 +159,8 @@ async def get_billing_account(
         lifetime_spend=lifetime_spend,
         subscription_status=subscription_status,
         trial_end=int(trial_end) if trial_end is not None else None,
+        provider_choice=account.get("provider_choice") if account else None,
+        byo_provider=account.get("byo_provider") if account else None,
     )
 
 
@@ -296,7 +299,24 @@ async def create_portal(
 
 
 class TrialCheckoutRequest(BaseModel):
-    provider_choice: str = Field(..., description="chatgpt_oauth | byo_key | bedrock_claude")
+    # Pydantic Literal validates at request time (422 on unknown values), so
+    # the body never reaches billing_repo / Stripe with junk that would later
+    # blow up ECS provisioning. byo_provider is optional even for byo_key —
+    # the picker submits {provider_choice: "byo_key"} alone, then a later
+    # wizard step collects byo_provider + the actual API key (Codex P1
+    # #3179631946).
+    provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
+        ...,
+        description="chatgpt_oauth | byo_key | bedrock_claude",
+    )
+    byo_provider: Literal["openai", "anthropic"] | None = Field(
+        None,
+        description=(
+            "Optional. Set later via the BYO wizard step after Stripe checkout "
+            "completes. The gateway/provisioner enforces a populated byo_provider "
+            "(plus an actual key) as a separate downstream gate."
+        ),
+    )
 
 
 @router.post(
@@ -321,8 +341,16 @@ async def create_trial_checkout(
         create_flat_fee_checkout,
     )
 
-    if body.provider_choice not in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
-        raise HTTPException(status_code=400, detail="unknown provider_choice")
+    # Note: provider_choice and byo_provider enums are enforced by pydantic
+    # Literal in TrialCheckoutRequest — invalid values produce 422 before
+    # reaching this handler. byo_provider is intentionally optional even
+    # for byo_key: ProvisioningStepper.ProviderPicker submits
+    # {provider_choice: "byo_key"} alone, then collects byo_provider
+    # (openai vs anthropic) and the actual API key in a later wizard step
+    # after Stripe checkout completes (Codex P1 #3179631946 — fixing the
+    # BYO signup regression). The gateway/provisioner enforces "byo_key
+    # + populated byo_provider + populated key" as a separate downstream
+    # gate before any agent run.
 
     # Org-context users cannot pick ChatGPT OAuth — see
     # memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30:
@@ -420,10 +448,26 @@ async def create_trial_checkout(
                     detail=f"already_subscribed:{live_sub.get('status')}",
                 )
 
+    # Synchronously persist provider_choice on the billing row BEFORE
+    # creating the Stripe Checkout session. Closes the race where the user
+    # lands on /chat and triggers /container/provision before the
+    # customer.subscription.created webhook lands (the webhook can be
+    # delayed by seconds-to-minutes). The webhook handler still writes to
+    # billing_repo as an idempotent backup.
+    # Spec: docs/superpowers/specs/2026-05-03-provider-choice-per-owner-design.md
+    owner_type_val = account.get("owner_type", get_owner_type(auth))
+    await billing_repo.set_provider_choice(
+        account["owner_id"],
+        provider_choice=body.provider_choice,
+        byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
+        owner_type=owner_type_val,
+    )
+
     try:
         session = await create_flat_fee_checkout(
             owner_id=owner_id,
             provider_choice=body.provider_choice,
+            byo_provider=body.byo_provider if body.provider_choice == "byo_key" else None,
             # auth.user_id is the Clerk user actually clicking the button —
             # in org context this is the admin, NOT the org id. Threaded
             # through subscription_data.metadata so the webhook can persist
@@ -619,27 +663,37 @@ async def handle_stripe_webhook(
                 status=event_data.get("status", "active"),
                 trial_end=event_data.get("trial_end"),
             )
-            # Trial-checkout threads provider_choice + clerk_user_id into
-            # subscription metadata so we can persist provider_choice on
-            # the right per-Clerk-user row. account["owner_id"] is the
-            # org_id in org context, which is NOT a valid user_repo key —
-            # chat gating reads provider_choice keyed by Clerk user_id.
-            # Codex P1 on PR #393.
             metadata = event_data.get("metadata") or {}
             metadata_provider = metadata.get("provider_choice")
-            metadata_clerk_user_id = metadata.get("clerk_user_id") or account["owner_id"]
+            metadata_byo = metadata.get("byo_provider")
             if metadata_provider in ("chatgpt_oauth", "byo_key", "bedrock_claude"):
-                from core.repositories import user_repo
-
+                # Workstream B: provider_choice now lives on billing_accounts
+                # (per-owner), not on the user row. /trial-checkout writes
+                # synchronously before creating the Stripe Checkout session;
+                # this webhook write is the idempotent backup for any legacy
+                # Stripe sessions that predate the synchronous write, or for
+                # direct-API callers who skipped the /trial-checkout entry
+                # point.
                 try:
-                    await user_repo.set_provider_choice(
-                        metadata_clerk_user_id,
+                    await billing_repo.set_provider_choice(
+                        account["owner_id"],
                         provider_choice=metadata_provider,
+                        byo_provider=metadata_byo if metadata_provider == "byo_key" else None,
+                        owner_type=account.get("owner_type", "personal"),
+                    )
+                except ValueError:
+                    # Org invariant violation (chatgpt_oauth on org). Should
+                    # not happen post-Workstream-B because /trial-checkout's
+                    # router-level guard rejects the same combo, but
+                    # defense-in-depth.
+                    logger.exception(
+                        "Webhook tried to set invalid provider_choice for owner %s",
+                        account["owner_id"],
                     )
                 except Exception:
                     logger.exception(
-                        "Failed to persist provider_choice from sub metadata for clerk_user_id %s",
-                        metadata_clerk_user_id,
+                        "Failed to persist provider_choice for owner %s",
+                        account["owner_id"],
                     )
 
     elif event_type == "customer.subscription.trial_will_end":

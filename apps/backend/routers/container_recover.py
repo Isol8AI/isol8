@@ -16,21 +16,26 @@ import websockets
 from core.auth import AuthContext, get_current_user, resolve_owner_id
 from core.containers import get_ecs_manager
 from core.containers.ecs_manager import GATEWAY_PORT
-from core.repositories import container_repo, user_repo
+from core.repositories import billing_repo, container_repo
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-async def _resolve_provider_choice(user_id: str) -> tuple[str, str | None]:
-    """Look up the user's saved provider_choice for recovery reprovisions.
+async def _resolve_provider_choice(owner_id: str) -> tuple[str, str | None]:
+    """Look up the owner's provider_choice (+ byo_provider) from billing_repo.
 
-    Falls back to ``bedrock_claude`` when the row exists but no choice is
-    persisted yet — keeps recovery working for users who provisioned before
-    Plan 3 introduced the field.
+    Workstream B (2026-05-03): provider_choice now lives on billing_accounts,
+    keyed on ``owner_id`` (org_id in org context, user_id in personal
+    context), not on the user row. This matches the per-owner billing
+    model — one provider choice per billing account, not per Clerk user.
+
+    Falls back to ``bedrock_claude`` when no row or no choice is persisted,
+    matching the legacy default and keeping recovery working for owners
+    onboarded before Workstream B.
     """
-    row = await user_repo.get(user_id)
+    row = await billing_repo.get_by_owner_id(owner_id)
     provider_choice = (row or {}).get("provider_choice") or "bedrock_claude"
     byo_provider = (row or {}).get("byo_provider") if provider_choice == "byo_key" else None
     return provider_choice, byo_provider
@@ -198,9 +203,10 @@ async def container_recover(
             reason = container.get("last_error", f"Container is {status}")
             logger.info("Recovering owner %s: reprovision (status=%s)", owner_id, status)
             try:
-                # Read user's saved provider_choice so recovery rebuilds
-                # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                # Read the owner's saved provider_choice so recovery rebuilds
+                # with the correct LLM path. Workstream B (2026-05-03) keys
+                # this on owner_id via billing_repo.
+                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,
@@ -220,9 +226,10 @@ async def container_recover(
         if not ip:
             logger.warning("Owner %s: running container but no IP, reprovisioning", owner_id)
             try:
-                # Read user's saved provider_choice so recovery rebuilds
-                # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                # Read the owner's saved provider_choice so recovery rebuilds
+                # with the correct LLM path. Workstream B (2026-05-03) keys
+                # this on owner_id via billing_repo.
+                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,
@@ -261,9 +268,10 @@ async def container_recover(
             logger.warning("Owner %s: gateway restart failed, escalating to reprovision", owner_id)
             await container_repo.update_error(owner_id, "Gateway restart failed — reprovisioning")
             try:
-                # Read user's saved provider_choice so recovery rebuilds
-                # with the correct LLM path (Codex P1 on PR #393).
-                provider_choice, byo_provider = await _resolve_provider_choice(auth.user_id)
+                # Read the owner's saved provider_choice so recovery rebuilds
+                # with the correct LLM path. Workstream B (2026-05-03) keys
+                # this on owner_id via billing_repo.
+                provider_choice, byo_provider = await _resolve_provider_choice(owner_id)
                 await ecs_manager.provision_user_container(
                     owner_id,
                     provider_choice=provider_choice,
