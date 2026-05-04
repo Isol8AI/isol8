@@ -257,6 +257,16 @@ export class ApiStack extends cdk.Stack {
       timeToLiveAttribute: "ttl",
     });
 
+    // GSI to fan out realtime events from the Teams BFF: given a user_id,
+    // return every active browser WS connection for that user. KEYS_ONLY
+    // projection — broker only needs connectionId, full row lives at the
+    // base table. Spec: docs/superpowers/specs/2026-05-04-teams-realtime-design.md
+    connectionsTable.addGlobalSecondaryIndex({
+      indexName: "by-user-id",
+      partitionKey: { name: "userId", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.KEYS_ONLY,
+    });
+
     this.connectionsTableName = connectionsTable.tableName;
 
     // =========================================================================
