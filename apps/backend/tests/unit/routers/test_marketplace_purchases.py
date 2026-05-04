@@ -74,16 +74,18 @@ def test_my_purchases_sorts_by_created_at_not_uuid(mock_purchases_table, mock_bo
     assert items[1]["created_at"] == "2026-01-01T00:00:00Z"
 
 
+@patch("routers.marketplace_purchases.boto3.client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
 def test_webhook_checkout_completed_grants_license(
-    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_111"}
+    fake_ddb = MagicMock()
+    fake_ddb.transact_write_items = MagicMock(return_value={})
+    mock_boto_client.return_value = fake_ddb
     from core.services.webhook_dedup import WebhookDedupResult
 
     mock_dedup.return_value = WebhookDedupResult.RECORDED
@@ -105,16 +107,17 @@ def test_webhook_checkout_completed_grants_license(
             }
         },
     }
-    mock_purchases_table.return_value.put_item = MagicMock()
-    mock_pa_table.return_value.update_item = MagicMock()
-
     resp = client.post(
         "/api/v1/marketplace/webhooks/stripe-marketplace",
         headers={"stripe-signature": "test"},
         content=b'{"id":"evt_1","type":"checkout.session.completed"}',
     )
     assert resp.status_code == 200
-    mock_purchases_table.return_value.put_item.assert_called_once()
+    fake_ddb.transact_write_items.assert_called_once()
+    transact = fake_ddb.transact_write_items.call_args.kwargs["TransactItems"]
+    # Atomic: Put purchase + Update payout-accounts in one transaction.
+    assert len(transact) == 2
+    assert transact[0]["Put"]["ConditionExpression"] == "attribute_not_exists(purchase_id)"
 
 
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
@@ -185,16 +188,18 @@ def test_webhook_skips_fulfillment_for_unpaid_delayed_payment(
     mock_pa_table.return_value.update_item.assert_not_called()
 
 
+@patch("routers.marketplace_purchases.boto3.client")
 @patch("routers.marketplace_purchases.stripe.PaymentIntent.retrieve")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
 @patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
 @patch("routers.marketplace_purchases.license_service.generate", return_value="iml_test")
-@patch("routers.marketplace_purchases._purchases_table")
-@patch("routers.marketplace_purchases._payout_accounts_table")
 def test_webhook_async_payment_succeeded_grants_license(
-    mock_pa_table, mock_purchases_table, mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, client
+    mock_gen, mock_dedup, mock_construct, mock_pi_retrieve, mock_boto_client, client
 ):
     mock_pi_retrieve.return_value = {"transfer_group": "purchase_l1_b1_async"}
+    fake_ddb = MagicMock()
+    fake_ddb.transact_write_items = MagicMock(return_value={})
+    mock_boto_client.return_value = fake_ddb
     """Regression: async_payment_succeeded is the settle event for delayed
     methods. Must run the same fulfillment path as a synchronous paid
     checkout.session.completed."""
@@ -219,16 +224,13 @@ def test_webhook_async_payment_succeeded_grants_license(
             }
         },
     }
-    mock_purchases_table.return_value.put_item = MagicMock()
-    mock_pa_table.return_value.update_item = MagicMock()
-
     resp = client.post(
         "/api/v1/marketplace/webhooks/stripe-marketplace",
         headers={"stripe-signature": "test"},
         content=b'{"id":"evt_async_paid"}',
     )
     assert resp.status_code == 200
-    mock_purchases_table.return_value.put_item.assert_called_once()
+    fake_ddb.transact_write_items.assert_called_once()
 
 
 @patch("routers.marketplace_purchases.boto3.resource")

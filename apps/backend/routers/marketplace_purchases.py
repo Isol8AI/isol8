@@ -176,52 +176,72 @@ async def _handle_checkout_completed(session: dict) -> None:
         pi = stripe.PaymentIntent.retrieve(payment_intent_id)
         transfer_group = pi.get("transfer_group") or ""
 
-    # Deterministic purchase_id keyed on the Stripe checkout session id so
-    # the put_item is idempotent: a Stripe retry (after webhook_dedup
-    # rollback on transient failure) re-runs this handler with the same
-    # session_id, the conditional put fails on attribute_not_exists, and we
-    # treat that as already-fulfilled and skip the seller balance bump.
-    # Without this guard, every retry minted a fresh uuid4 → duplicate
-    # purchase row + duplicate license + double balance credit.
+    # Atomic fulfillment via TransactWriteItems: the purchase row write
+    # AND the seller balance credit happen in a single ACID transaction,
+    # so partial-failure replay can never leave the system in a state
+    # where the buyer has a license but the seller's accounting is missing
+    # the credit (or vice versa).
+    #
+    # Idempotency: purchase_id is deterministic from the Stripe checkout
+    # session_id (one buy = one session), and the Put is conditional on
+    # attribute_not_exists. A Stripe retry (after webhook_dedup rollback)
+    # re-runs the whole transaction; the conditional fails, the entire
+    # transaction is canceled, and NEITHER the purchase nor the balance
+    # are written a second time. Net: exactly one purchase row + exactly
+    # one balance credit per checkout session.
     session_id = session.get("id")
     if not session_id:
         return  # Stripe always sends id on completed sessions; defensive.
     purchase_id = f"cs_{session_id}"
     license_key = license_service.generate()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    client = boto3.client("dynamodb")
     try:
-        _purchases_table().put_item(
-            Item={
-                "buyer_id": buyer_id,
-                "purchase_id": purchase_id,
-                "listing_id": listing_id,
-                "listing_version_at_purchase": version,
-                "entitlement_version_floor": version,
-                "price_paid_cents": amount,
-                "stripe_payment_intent_id": payment_intent_id,
-                "stripe_checkout_session_id": session_id,
-                "stripe_transfer_group": transfer_group,
-                "license_key": license_key,
-                "license_key_revoked": False,
-                "status": "paid",
-                "install_count": 0,
-                "created_at": now_iso,
-            },
-            ConditionExpression="attribute_not_exists(purchase_id)",
+        client.transact_write_items(
+            TransactItems=[
+                {
+                    "Put": {
+                        "TableName": settings.MARKETPLACE_PURCHASES_TABLE,
+                        "Item": {
+                            "buyer_id": {"S": buyer_id},
+                            "purchase_id": {"S": purchase_id},
+                            "listing_id": {"S": listing_id},
+                            "listing_version_at_purchase": {"N": str(version)},
+                            "entitlement_version_floor": {"N": str(version)},
+                            "price_paid_cents": {"N": str(amount)},
+                            "stripe_payment_intent_id": {"S": payment_intent_id or ""},
+                            "stripe_checkout_session_id": {"S": session_id},
+                            "stripe_transfer_group": {"S": transfer_group},
+                            "license_key": {"S": license_key},
+                            "license_key_revoked": {"BOOL": False},
+                            "status": {"S": "paid"},
+                            "install_count": {"N": "0"},
+                            "created_at": {"S": now_iso},
+                        },
+                        "ConditionExpression": "attribute_not_exists(purchase_id)",
+                    },
+                },
+                {
+                    "Update": {
+                        "TableName": settings.MARKETPLACE_PAYOUT_ACCOUNTS_TABLE,
+                        "Key": {"seller_id": {"S": seller_id}},
+                        "UpdateExpression": (
+                            "SET balance_held_cents = if_not_exists(balance_held_cents, :zero) + :amt, "
+                            "    last_balance_update_at = :now"
+                        ),
+                        "ExpressionAttributeValues": {
+                            ":zero": {"N": "0"},
+                            ":amt": {"N": str(amount)},
+                            ":now": {"S": now_iso},
+                        },
+                    },
+                },
+            ]
         )
     except ClientError as e:
-        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+        if e.response["Error"]["Code"] in ("TransactionCanceledException", "ConditionalCheckFailedException"):
             return  # Already fulfilled on a prior delivery; idempotent no-op.
         raise
-
-    _payout_accounts_table().update_item(
-        Key={"seller_id": seller_id},
-        UpdateExpression=(
-            "SET balance_held_cents = if_not_exists(balance_held_cents, :zero) + :amt, "
-            "    last_balance_update_at = :now"
-        ),
-        ExpressionAttributeValues={":zero": 0, ":amt": amount, ":now": now_iso},
-    )
 
 
 async def _handle_charge_refunded(charge: dict) -> None:

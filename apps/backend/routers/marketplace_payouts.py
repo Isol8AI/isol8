@@ -4,6 +4,7 @@ from typing import Annotated
 
 import boto3
 import stripe
+from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends
 
 from core.auth import AuthContext, get_current_user
@@ -34,15 +35,34 @@ async def onboard(auth: Annotated[AuthContext, Depends(get_current_user)]):
         account_id = await payout_service.create_connect_account(
             seller_id=auth.user_id, email=auth.email or "", country="US"
         )
-        table.put_item(
-            Item={
-                "seller_id": auth.user_id,
-                "stripe_connect_account_id": account_id,
-                "onboarding_status": "started",
-                "balance_held_cents": pa.get("balance_held_cents", 0),
-                "lifetime_earned_cents": pa.get("lifetime_earned_cents", 0),
-            }
-        )
+        # update_item (not put_item) preserves any balance_held_cents /
+        # lifetime_earned_cents that a concurrent checkout webhook wrote
+        # between our get_item above and the write below. A blind put_item
+        # would clobber those fields back to the stale values from `pa`,
+        # corrupting seller balances at first onboarding.
+        # ConditionExpression guards against a parallel onboarding-double-
+        # click also writing a Stripe account_id; we lose the second
+        # account_id rather than overwriting the first.
+        try:
+            table.update_item(
+                Key={"seller_id": auth.user_id},
+                UpdateExpression=("SET stripe_connect_account_id = :aid, onboarding_status = :started"),
+                ConditionExpression=(
+                    "attribute_not_exists(stripe_connect_account_id) OR stripe_connect_account_id = :aid"
+                ),
+                ExpressionAttributeValues={":aid": account_id, ":started": "started"},
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                # Another concurrent onboarding wrote first. Re-read to use
+                # the winning account_id (Stripe tolerates orphan empty
+                # accounts; the second create_connect_account is operational
+                # cost we accept v0).
+                resp = table.get_item(Key={"seller_id": auth.user_id})
+                pa = resp.get("Item", {}) or {}
+                account_id = pa.get("stripe_connect_account_id") or account_id
+            else:
+                raise
 
     url = await payout_service.create_onboarding_link(
         connect_account_id=account_id,
