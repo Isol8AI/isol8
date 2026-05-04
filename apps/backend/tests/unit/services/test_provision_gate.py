@@ -4,7 +4,12 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from core.services.provision_gate import Gate, evaluate_provision_gate
+from core.services.provision_gate import (
+    Gate,
+    evaluate_provision_gate,
+    is_subscription_active,
+    is_trial_blocked,
+)
 
 
 @pytest.mark.asyncio
@@ -134,3 +139,93 @@ def test_gate_to_payload_shape():
     assert payload["blocked"]["action"]["admin_only"] is False
     assert payload["blocked"]["owner_role"] == "admin"
     assert payload["detail"]  # legacy string preserved
+
+
+# ---------------------------------------------------------------------------
+# Pure predicates: is_subscription_active / is_trial_blocked
+# ---------------------------------------------------------------------------
+#
+# Every gate site (chat, provision, channel-binding, /billing/account
+# response) consults ``is_subscription_active``. Pinning every Stripe
+# status case here is what locks the predicate's contract.
+#
+# The single load-bearing case is ``canceled + stale stripe_subscription_id``
+# at the bottom of the table — it's the convergence case from the
+# 2026-05-04 audit. Before the predicate was extracted, the
+# /billing/account response returned ``is_subscribed=True`` for this row
+# while the chat / provision / config gates returned ``is_ok=False``.
+# That divergence is what this test class prevents from drifting back in.
+
+
+@pytest.mark.parametrize(
+    "account, expected",
+    [
+        # Missing / empty rows.
+        (None, False),
+        ({}, False),
+        # Active states.
+        ({"subscription_status": "active"}, True),
+        ({"subscription_status": "trialing"}, True),
+        # Inactive states — none of these grant access regardless of
+        # whether ``stripe_subscription_id`` is still set on the row.
+        ({"subscription_status": "past_due"}, False),
+        ({"subscription_status": "canceled"}, False),
+        ({"subscription_status": "incomplete"}, False),
+        ({"subscription_status": "incomplete_expired"}, False),
+        ({"subscription_status": "unpaid"}, False),
+        ({"subscription_status": "paused"}, False),
+        ({"subscription_status": "unknown_future_state"}, False),
+        # Legacy fallback: status not yet backfilled, sub_id present.
+        ({"subscription_status": None, "stripe_subscription_id": "sub_legacy"}, True),
+        # Legacy fallback NEGATIVE: sub_id missing → not subscribed.
+        ({"subscription_status": None, "stripe_subscription_id": None}, False),
+        ({"subscription_status": None}, False),
+        # *** LOAD-BEARING REGRESSION CASE ***
+        # canceled status + stale stripe_subscription_id must NOT count
+        # as subscribed. Pre-convergence, the /billing/account response
+        # site reported True for this row (status-less ``or has_legacy_sub``
+        # fallback) while every gate site reported False.
+        (
+            {"subscription_status": "canceled", "stripe_subscription_id": "sub_stale"},
+            False,
+        ),
+        # Same shape on past_due / paused — leftover sub_id never
+        # overrides a non-active explicit status.
+        (
+            {"subscription_status": "past_due", "stripe_subscription_id": "sub_x"},
+            False,
+        ),
+        (
+            {"subscription_status": "paused", "stripe_subscription_id": "sub_x"},
+            False,
+        ),
+    ],
+)
+def test_is_subscription_active_table(account, expected):
+    assert is_subscription_active(account) is expected
+
+
+@pytest.mark.parametrize(
+    "account, expected",
+    [
+        # No row → trial allowed (the canonical "fresh signup" path).
+        (None, False),
+        ({}, False),
+        ({"subscription_status": None}, False),
+        # Every state in TRIAL_BLOCKED_STATUSES blocks fresh trials.
+        ({"subscription_status": "active"}, True),
+        ({"subscription_status": "trialing"}, True),
+        ({"subscription_status": "past_due"}, True),
+        ({"subscription_status": "canceled"}, True),
+        ({"subscription_status": "incomplete"}, True),
+        ({"subscription_status": "incomplete_expired"}, True),
+        ({"subscription_status": "unpaid"}, True),
+        ({"subscription_status": "paused"}, True),
+        # Unknown/future status doesn't block — fail-open is the right
+        # choice for the trial-checkout gate (worst case is one extra
+        # trial; cancel-loop is gated by Stripe support workflow).
+        ({"subscription_status": "unknown_future_state"}, False),
+    ],
+)
+def test_is_trial_blocked_table(account, expected):
+    assert is_trial_blocked(account) is expected
