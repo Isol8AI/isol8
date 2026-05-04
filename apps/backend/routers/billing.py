@@ -519,7 +519,10 @@ class AutoReloadRequest(BaseModel):
     description=("Returns the user's current prepaid Claude credit balance in microcents and dollars (formatted)."),
 )
 async def get_credits_balance(ctx: AuthContext = Depends(get_current_user)):
-    balance_uc = await credit_ledger.get_balance(ctx.user_id)
+    # Credits pool at the owner level (org_id for org context, user_id for
+    # personal). Keying on ctx.user_id meant org members couldn't see the
+    # admin-funded balance and got blocked at chat with out_of_credits.
+    balance_uc = await credit_ledger.get_balance(resolve_owner_id(ctx))
     dollars = f"{balance_uc / 1_000_000:.2f}"
     return {"balance_microcents": balance_uc, "balance_dollars": dollars}
 

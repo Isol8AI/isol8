@@ -65,6 +65,40 @@ async def test_get_balance_returns_microcents(async_client, credit_ledger_tables
 
 
 @pytest.mark.asyncio
+async def test_get_balance_org_member_reads_owner_id(async_client_org_member, credit_ledger_tables):
+    """Org members and admin share one credit balance, keyed on owner_id (org_id).
+    Without this, every org member sees balance=0 because their personal user_id
+    has no credit row — the bug that blocked org members at chat with
+    code=out_of_credits in prod."""
+    captured: dict = {}
+
+    async def fake_get_balance(key, *, consistent: bool = False):
+        captured["key"] = key
+        return 9_876_543
+
+    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
+        resp = await async_client_org_member.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert resp.json() == {"balance_microcents": 9_876_543, "balance_dollars": "9.88"}
+    assert captured["key"] == "org_test_456"
+
+
+@pytest.mark.asyncio
+async def test_get_balance_personal_uses_user_id(async_client, credit_ledger_tables):
+    """Personal users have owner_id == user_id, so the read is unchanged."""
+    captured: dict = {}
+
+    async def fake_get_balance(key, *, consistent: bool = False):
+        captured["key"] = key
+        return 1_000_000
+
+    with patch("routers.billing.credit_ledger.get_balance", new=fake_get_balance):
+        resp = await async_client.get("/api/v1/billing/credits/balance")
+    assert resp.status_code == 200
+    assert captured["key"] == "user_test_123"
+
+
+@pytest.mark.asyncio
 async def test_top_up_creates_checkout_session(async_client, credit_ledger_tables):
     """Top-up endpoint returns a Stripe Checkout URL (Elements-flow
     replacement). The session has allow_promotion_codes=True so an
