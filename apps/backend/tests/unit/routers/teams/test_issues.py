@@ -76,3 +76,137 @@ def test_create_issue_rejects_unknown_field(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_archive_issue(client, monkeypatch):
+    """`POST /teams/issues/{id}/archive` archives the issue from the inbox."""
+    admin = MagicMock()
+    admin.archive_issue = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/archive",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.archive_issue.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_unarchive_issue(client, monkeypatch):
+    """`POST /teams/issues/{id}/unarchive` (undo) restores the issue."""
+    admin = MagicMock()
+    admin.unarchive_issue = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/unarchive",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.unarchive_issue.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_mark_issue_read(client, monkeypatch):
+    admin = MagicMock()
+    admin.mark_issue_read = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/mark-read",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.mark_issue_read.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_mark_issue_unread(client, monkeypatch):
+    admin = MagicMock()
+    admin.mark_issue_unread = AsyncMock(return_value={"ok": True})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/mark-unread",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.mark_issue_unread.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_list_issue_comments(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(return_value={"comments": [{"id": "cmt_1", "body": "hi"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"comments": [{"id": "cmt_1", "body": "hi"}]}
+    admin.list_issue_comments.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_add_issue_comment(client, monkeypatch):
+    """POST `/teams/issues/{id}/comments` with whitelisted body."""
+    admin = MagicMock()
+    admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.add_issue_comment.assert_awaited_once_with(
+        issue_id="iss_1",
+        body={"body": "hello"},
+        session_cookie="cookie",
+    )
+
+
+def test_add_issue_comment_rejects_extra_fields(client):
+    """Body schema is strict — extras (esp. adapterType) must 422."""
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello", "adapterType": "evil"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_add_issue_comment_requires_body_field(client):
+    """Empty body is invalid (min_length=1)."""
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422

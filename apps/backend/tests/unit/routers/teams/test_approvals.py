@@ -98,3 +98,34 @@ def test_reject_requires_reason(client):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 422
+
+
+def test_get_approval_detail(client, monkeypatch):
+    """`GET /teams/approvals/{id}` returns upstream's full approval detail
+    shape verbatim."""
+    admin = MagicMock()
+    admin.get_approval = AsyncMock(
+        return_value={
+            "id": "apv_1",
+            "status": "pending",
+            "type": "tool_call",
+            "payload": {"tool": "shell", "args": "ls -la"},
+            "createdAt": "2026-05-04T01:00:00Z",
+        }
+    )
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/approvals/apv_1",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == "apv_1"
+    assert body["status"] == "pending"
+    admin.get_approval.assert_awaited_once_with(
+        approval_id="apv_1",
+        session_cookie="cookie",
+    )

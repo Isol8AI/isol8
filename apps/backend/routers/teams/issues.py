@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 
 from . import agents as _agents
 from .deps import TeamsContext
-from .schemas import CreateIssueBody, PatchIssueBody
+from .schemas import AddCommentBody, CreateIssueBody, PatchIssueBody
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -58,5 +58,81 @@ async def patch_issue(
     return await _agents._admin().patch_issue(
         issue_id=issue_id,
         body=body.model_dump(exclude_none=True),
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/archive")
+async def archive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Archive an issue from the inbox.
+
+    Maps to upstream ``POST /api/issues/{id}/inbox-archive``. The Inbox
+    UI fades the row out + shows an undo toast for ~8s.
+    """
+    return await _agents._admin().archive_issue(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/unarchive")
+async def unarchive_issue(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Restore an archived issue back to the inbox.
+
+    Maps to upstream ``DELETE /api/issues/{id}/inbox-archive``. Drives the
+    undo-archive toast.
+    """
+    return await _agents._admin().unarchive_issue(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/mark-read")
+async def mark_issue_read(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Mark an issue as read for the signed-in user.
+
+    Maps to upstream ``POST /api/issues/{id}/read``.
+    """
+    return await _agents._admin().mark_issue_read(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/mark-unread")
+async def mark_issue_unread(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Mark an issue as unread for the signed-in user.
+
+    Maps to upstream ``DELETE /api/issues/{id}/read``.
+    """
+    return await _agents._admin().mark_issue_unread(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/comments")
+async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List comments on an issue.
+
+    Maps to upstream ``GET /api/issues/{id}/comments``.
+    """
+    return await _agents._admin().list_issue_comments(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/comments")
+async def add_issue_comment(
+    issue_id: str,
+    body: AddCommentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Post a comment on an issue. Body is whitelisted to ``{body: str}``."""
+    return await _agents._admin().add_issue_comment(
+        issue_id=issue_id,
+        body=body.model_dump(),
         session_cookie=ctx.session_cookie,
     )

@@ -55,3 +55,16 @@ async def reject(
         reason=body.reason,
         session_cookie=ctx.session_cookie,
     )
+
+
+@router.get("/approvals/{approval_id}")
+async def get_approval(approval_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """Fetch a single approval by id.
+
+    Maps to upstream ``GET /api/approvals/{id}``. Used by the approval
+    detail page that Inbox approval rows link into.
+    """
+    return await _agents._admin().get_approval(
+        approval_id=approval_id,
+        session_cookie=ctx.session_cookie,
+    )
