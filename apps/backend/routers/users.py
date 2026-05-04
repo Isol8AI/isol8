@@ -4,8 +4,8 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.auth import get_current_user, AuthContext
-from core.repositories import user_repo
+from core.auth import get_current_user, resolve_owner_id, AuthContext
+from core.repositories import billing_repo, user_repo
 from schemas.user_schemas import SyncUserRequest, SyncUserResponse
 
 logger = logging.getLogger(__name__)
@@ -68,26 +68,40 @@ async def sync_user(
     "/me",
     summary="Get the authenticated user's record",
     description=(
-        "Returns the authenticated user's id. provider_choice/byo_provider "
-        "moved to GET /billing/account in Workstream B (2026-05-03)."
+        "Returns the authenticated user's id, plus provider_choice/byo_provider "
+        "for backwards compatibility. In Workstream B (2026-05-03) the canonical "
+        "store moved from user_repo (per-user) to billing_repo (per-owner); this "
+        "endpoint reads from billing_repo by resolved owner_id but still surfaces "
+        "the fields here so existing clients (ControlSidebar, LLMPanel, "
+        "OutOfCreditsBanner, ControlPanelRouter) keep working until they migrate "
+        "to GET /billing/account."
     ),
     operation_id="get_me",
     responses={401: {"description": "Missing or invalid Clerk JWT token"}},
 )
 async def get_me(auth: AuthContext = Depends(get_current_user)) -> dict:
     user = await user_repo.get(auth.user_id)
+
+    # Read provider_choice / byo_provider from billing_accounts (Workstream B
+    # storage model — per-owner, not per-user). We surface a copy on /me too
+    # for backwards compatibility with frontend code that still gates UI on
+    # these fields (e.g. ControlSidebar, ControlPanelRouter, LLMPanel,
+    # OutOfCreditsBanner). New clients should prefer GET /billing/account.
+    owner_id = resolve_owner_id(auth)
+    billing_row = await billing_repo.get_by_owner_id(owner_id)
+    provider_choice = (billing_row or {}).get("provider_choice")
+    byo_provider = (billing_row or {}).get("byo_provider")
+
     if not user:
         # Frontend treats absent record as "not yet synced" — return an
         # empty shape so the panel's Loading state can resolve cleanly.
         return {
             "user_id": auth.user_id,
-            # provider_choice/byo_provider were removed from this endpoint in
-            # Workstream B (2026-05-03). The frontend now reads them from
-            # GET /billing/account (per-owner instead of per-user).
+            "provider_choice": provider_choice,
+            "byo_provider": byo_provider,
         }
     return {
         "user_id": auth.user_id,
-        # provider_choice/byo_provider were removed from this endpoint in
-        # Workstream B (2026-05-03). The frontend now reads them from
-        # GET /billing/account (per-owner instead of per-user).
+        "provider_choice": provider_choice,
+        "byo_provider": byo_provider,
     }
