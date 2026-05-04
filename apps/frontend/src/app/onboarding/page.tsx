@@ -13,6 +13,7 @@ import { useApi } from "@/lib/api";
 import { usePostHog } from "posthog-js/react";
 import { Button } from "@/components/ui/button";
 import { User, Users, Mail } from "lucide-react";
+import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -30,11 +31,12 @@ export default function OnboardingPage() {
 
   const pendingInvitations = userInvitations?.data ?? [];
 
-  // Derive initial mode: show invitations if any exist, otherwise "choose".
-  // User can navigate away with setExplicitMode; once they do, we stop
-  // auto-detecting invitations.
+  // Tenancy invariant: when the user has pending invitations, force the
+  // invitations screen — no escape hatch into personal onboarding because
+  // a user can't have personal tenancy AND a pending org invite.
   const [explicitMode, setExplicitMode] = useState<"choose" | "personal" | "org" | "invitations" | null>(null);
-  const mode = explicitMode ?? (isLoaded && orgsLoaded && pendingInvitations.length > 0 ? "invitations" : "choose");
+  const forcedInvitations = isLoaded && orgsLoaded && pendingInvitations.length > 0;
+  const mode = forcedInvitations ? "invitations" : (explicitMode ?? "choose");
   const setMode = setExplicitMode;
 
   // Two redirect triggers:
@@ -56,10 +58,10 @@ export default function OnboardingPage() {
   // time they log in on a new browser.
   //
   // IMPORTANT: skip when mode === "org" — the user is actively inside
-  // Clerk's CreateOrganization component (which includes the invitation
-  // screen). Clerk sets `organization` the instant the org is created,
-  // BEFORE the invitation step. If we redirect on that signal, the
-  // invitation screen never shows.
+  // Clerk's CreateOrganization component (now mounted with
+  // skipInvitationScreen={true}), and our <InviteTeammatesStep> takes
+  // over once `organization` resolves. If we redirected on the
+  // organization signal, we'd never render the custom invite step.
   useEffect(() => {
     if (!isLoaded || !orgLoaded || !orgsLoaded) return;
     if (mode === "org") return; // let CreateOrganization handle its flow
@@ -165,18 +167,30 @@ export default function OnboardingPage() {
             </div>
           ))}
         </div>
-
-        <div className="flex flex-col items-center gap-2 mt-4">
-          <p className="text-sm text-muted-foreground">Or set up your own workspace instead</p>
-          <Button variant="ghost" onClick={() => setMode("choose")}>
-            Skip invitations
-          </Button>
-        </div>
       </div>
     );
   }
 
   if (mode === "org") {
+    // After Clerk creates the org, `organization` becomes non-null.
+    // Mount our custom <InviteTeammatesStep> so all invites flow through
+    // the backend's Gate A (rejecting personal-subscriber emails) instead
+    // of Clerk's built-in invite UI which calls Clerk directly.
+    if (organization) {
+      return (
+        <InviteTeammatesStep
+          orgId={organization.id}
+          onComplete={async () => {
+            try {
+              await user?.update({ unsafeMetadata: { onboarded: true } });
+            } catch {
+              // best-effort; ChatLayout's auto-activate fallback covers this
+            }
+            router.push("/chat");
+          }}
+        />
+      );
+    }
     return (
       <div className="flex flex-col items-center justify-center min-h-screen gap-6 bg-background">
         <div className="text-center mb-4">
@@ -186,16 +200,12 @@ export default function OnboardingPage() {
           </p>
         </div>
         <CreateOrganization
-          // Round-trip back through /onboarding (NOT /chat). The effect at
-          // the top of this file will then detect the freshly-created org
-          // in userMemberships.data, call setActive() so the JWT has the
-          // right org_id, await it, and redirect to /chat with a fully-
-          // settled session. If we redirected straight to /chat, ChatLayout
-          // could mount ProvisioningStepper while the JWT is still mid-
-          // switch between personal and org context — causing the double-
-          // provision bug where the same human ends up with two containers.
-          afterCreateOrganizationUrl="/chat"
-          skipInvitationScreen={false}
+          // skipInvitationScreen={true} → Clerk creates the org and stops.
+          // <InviteTeammatesStep> takes over above (rendered when
+          // `organization` resolves) so all invites route through our
+          // backend's Gate A.
+          afterCreateOrganizationUrl="/onboarding"
+          skipInvitationScreen={true}
         />
         <Button variant="ghost" onClick={() => setMode("choose")}>
           Back
