@@ -206,6 +206,7 @@ async def _handle_checkout_completed(session: dict) -> None:
                             "buyer_id": {"S": buyer_id},
                             "purchase_id": {"S": purchase_id},
                             "listing_id": {"S": listing_id},
+                            "seller_id": {"S": seller_id},
                             "listing_version_at_purchase": {"N": str(version)},
                             "entitlement_version_floor": {"N": str(version)},
                             "price_paid_cents": {"N": str(amount)},
@@ -267,6 +268,41 @@ async def _handle_charge_refunded(charge: dict) -> None:
         buyer_id=purchase["buyer_id"],
         reason="refunded",
     )
+    # Reconcile held balance for pre-payout refunds. The original
+    # checkout added price_paid_cents to balance_held_cents but nothing
+    # subtracts on refund — combined with R11's skip-refunded-in-flush,
+    # the seller's held balance would stay permanently inflated. Only
+    # decrement when seller_transfer_id is absent: if the transfer
+    # already happened, refund_purchase already triggered a Transfer
+    # Reversal which separately clawed back the money on the seller
+    # ledger, so the held balance was already drained at flush time.
+    seller_id = purchase.get("seller_id") or (purchase.get("metadata") or {}).get("seller_id")
+    if not seller_id:
+        # Older purchase rows wrote seller_id into checkout metadata only;
+        # look it up from the listing as a fallback. New rows store it
+        # directly (post-R10 atomic write).
+        listing_id = purchase.get("listing_id")
+        if listing_id:
+            listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+            v_at_purchase = int(purchase.get("listing_version_at_purchase", 1)) or 1
+            li = listings_table.get_item(Key={"listing_id": listing_id, "version": v_at_purchase}).get("Item")
+            seller_id = (li or {}).get("seller_id")
+    if not purchase.get("seller_transfer_id") and seller_id:
+        amount = int(purchase.get("price_paid_cents", 0))
+        if amount > 0:
+            try:
+                _payout_accounts_table().update_item(
+                    Key={"seller_id": seller_id},
+                    UpdateExpression="SET balance_held_cents = balance_held_cents - :amt",
+                    ConditionExpression="balance_held_cents >= :amt",
+                    ExpressionAttributeValues={":amt": amount},
+                )
+            except ClientError as e:
+                if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+                    raise
+                # Held balance is already short of this amount — likely a
+                # concurrent flush+refund race or a manual ops correction.
+                # Leave the row alone rather than going negative.
 
 
 async def _handle_account_updated(account: dict) -> None:

@@ -233,6 +233,120 @@ def test_webhook_async_payment_succeeded_grants_license(
     fake_ddb.transact_write_items.assert_called_once()
 
 
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.revoke")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_charge_refunded_debits_held_balance_when_pre_payout(
+    mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
+):
+    """Regression: charge.refunded must subtract from balance_held_cents
+    when the purchase hasn't been transferred yet. Otherwise R11's
+    skip-refunded-in-flush leaves the held balance permanently inflated
+    (Codex P1 round 12, commit b6d66c05).
+    """
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_refund_pre_payout",
+        "type": "charge.refunded",
+        "data": {"object": {"payment_intent": "pi_1"}},
+    }
+    # Purchase row WITHOUT seller_transfer_id — refund happened before payout.
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "listing_id": "l1",
+                    "seller_id": "s1",
+                    "price_paid_cents": 2000,
+                    "license_key_revoked": False,
+                    # no seller_transfer_id => money still in held balance
+                }
+            ]
+        }
+    )
+
+    async def fake_revoke(*, purchase_id, buyer_id, reason):
+        return None
+
+    mock_revoke.side_effect = fake_revoke
+    mock_pa_table.return_value.update_item = MagicMock()
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_refund_pre_payout"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    # License was revoked AND held balance was debited by the purchase amount.
+    mock_revoke.assert_awaited_once()
+    mock_pa_table.return_value.update_item.assert_called_once()
+    pa_update = mock_pa_table.return_value.update_item.call_args.kwargs
+    assert pa_update["Key"] == {"seller_id": "s1"}
+    assert pa_update["ExpressionAttributeValues"][":amt"] == 2000
+    assert "balance_held_cents - :amt" in pa_update["UpdateExpression"]
+
+
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.license_service.revoke")
+@patch("routers.marketplace_purchases._purchases_table")
+@patch("routers.marketplace_purchases._payout_accounts_table")
+def test_charge_refunded_skips_held_balance_debit_when_already_transferred(
+    mock_pa_table, mock_purchases_table, mock_revoke, mock_dedup, mock_construct, client
+):
+    """Regression: when the purchase was already transferred to the seller
+    (seller_transfer_id present), refund_purchase already issues a
+    Transfer Reversal which separately moves the money. The held balance
+    was already drained at flush time, so don't decrement again."""
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_refund_post_payout",
+        "type": "charge.refunded",
+        "data": {"object": {"payment_intent": "pi_2"}},
+    }
+    mock_purchases_table.return_value.query = MagicMock(
+        return_value={
+            "Items": [
+                {
+                    "buyer_id": "b1",
+                    "purchase_id": "p1",
+                    "listing_id": "l1",
+                    "seller_id": "s1",
+                    "price_paid_cents": 2000,
+                    "seller_transfer_id": "tr_xyz",  # already paid out
+                    "license_key_revoked": False,
+                }
+            ]
+        }
+    )
+
+    async def fake_revoke(*, purchase_id, buyer_id, reason):
+        return None
+
+    mock_revoke.side_effect = fake_revoke
+    mock_pa_table.return_value.update_item = MagicMock()
+
+    resp = client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_refund_post_payout"}',
+    )
+    assert resp.status_code == 200, resp.text
+
+    mock_revoke.assert_awaited_once()
+    # Held balance NOT decremented — Transfer Reversal handled the seller side.
+    mock_pa_table.return_value.update_item.assert_not_called()
+
+
 @patch("routers.marketplace_purchases.boto3.resource")
 @patch("routers.marketplace_purchases.payout_service.transfer_held_balance")
 @patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
