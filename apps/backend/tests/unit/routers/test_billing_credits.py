@@ -424,17 +424,17 @@ async def test_top_up_org_admin_writes_org_id_to_metadata(async_client_org_admin
 
 
 @pytest.mark.asyncio
-async def test_webhook_legacy_metadata_user_id_falls_back_with_metric(async_client, monkeypatch, credit_ledger_tables):
-    """Bridge: a Stripe Checkout that started before this deploy carries
-    only metadata.user_id (no owner_id). Credit it (so we don't lose
-    customer money) but emit credit.top_up.legacy_metadata so we can
-    verify the fallback can be removed in a follow-up PR."""
+async def test_webhook_legacy_metadata_personal_session_credits_user(async_client, monkeypatch, credit_ledger_tables):
+    """Pre-cutover personal top-up: session.customer matches the user's
+    own billing account, so metadata.user_id IS the owner_id (in personal
+    context owner_id == user_id). Safe to credit."""
     fake_event = {
-        "id": "evt_legacy",
+        "id": "evt_legacy_personal",
         "type": "checkout.session.completed",
         "data": {
             "object": {
-                "id": "cs_legacy",
+                "id": "cs_legacy_personal",
+                "customer": "cus_personal",
                 "payment_status": "paid",
                 "amount_total": 2000,
                 "metadata": {
@@ -448,7 +448,13 @@ async def test_webhook_legacy_metadata_user_id_falls_back_with_metric(async_clie
     monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: fake_event)
     metric_calls: list = []
     monkeypatch.setattr("routers.billing.put_metric", lambda *a, **k: metric_calls.append((a, k)))
-    with patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)) as mock_top_up:
+    with (
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "u_legacy", "stripe_customer_id": "cus_personal"}),
+        ),
+        patch("routers.billing.credit_ledger.top_up", new=AsyncMock(return_value=20_000_000)) as mock_top_up,
+    ):
         resp = await async_client.post(
             "/api/v1/billing/webhooks/stripe",
             content=json.dumps(fake_event),
@@ -458,3 +464,50 @@ async def test_webhook_legacy_metadata_user_id_falls_back_with_metric(async_clie
     args, _ = mock_top_up.call_args
     assert args[0] == "u_legacy"
     assert any(a and a[0] == "credit.top_up.legacy_metadata" for a, _ in metric_calls)
+
+
+@pytest.mark.asyncio
+async def test_webhook_legacy_metadata_org_session_refuses_credit(async_client, monkeypatch, credit_ledger_tables):
+    """Pre-cutover org top-up: session.customer is the ORG's customer, but
+    metadata.user_id is just the admin's clerk id. Crediting metadata.user_id
+    would land credits on the admin's personal row (org pool stays empty)
+    — same bug we're fixing. Refuse + log + emit metric so ops can adjust
+    manually. Codex P1 caught this hole in the original fallback."""
+    fake_event = {
+        "id": "evt_legacy_org",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_legacy_org",
+                "customer": "cus_org",
+                "payment_status": "paid",
+                "amount_total": 5000,
+                "metadata": {
+                    "purpose": "credit_top_up",
+                    "user_id": "admin_clerk_id",
+                    "amount_cents": "5000",
+                },
+            }
+        },
+    }
+    monkeypatch.setattr("stripe.Webhook.construct_event", lambda body, sig, secret: fake_event)
+    metric_calls: list = []
+    monkeypatch.setattr("routers.billing.put_metric", lambda *a, **k: metric_calls.append((a, k)))
+    with (
+        # Admin's personal billing row has a DIFFERENT customer — proves
+        # this top-up was for a different (org) owner. We can't safely
+        # resolve the org_id from session data, so refuse to credit.
+        patch(
+            "routers.billing.billing_repo.get_by_owner_id",
+            new=AsyncMock(return_value={"owner_id": "admin_clerk_id", "stripe_customer_id": "cus_admin_personal"}),
+        ),
+        patch("routers.billing.credit_ledger.top_up", new=AsyncMock()) as mock_top_up,
+    ):
+        resp = await async_client.post(
+            "/api/v1/billing/webhooks/stripe",
+            content=json.dumps(fake_event),
+            headers={"stripe-signature": "ignored"},
+        )
+    assert resp.status_code == 200
+    mock_top_up.assert_not_called()
+    assert any(a and a[0] == "credit.top_up.legacy_metadata_unresolved" for a, _ in metric_calls)
