@@ -27,6 +27,12 @@ class ListingNotFoundError(Exception):
     """Takedown was granted on a listing_id that does not exist."""
 
 
+class TakedownNotFoundError(Exception):
+    """Cascade was invoked with a takedown_id that does not exist (the row
+    must be written by file_takedown / execute_admin_initiated_takedown
+    before the cascade flips it to 'granted')."""
+
+
 # Stable sentinel used for `filed_by_email` on admin-initiated takedowns —
 # there is no real claimant, so we record an internal marker rather than
 # leaving the field blank or reusing the admin's user_id (which already lives
@@ -142,16 +148,29 @@ async def _cascade_takedown(
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise ListingNotFoundError(f"listing {listing_id} v{target_version} does not exist")
         raise
-    _takedowns_table().update_item(
-        Key={"listing_id": listing_id, "takedown_id": takedown_id},
-        UpdateExpression=("SET decision = :granted, decided_by = :by, decided_at = :now, affected_purchases = :n"),
-        ExpressionAttributeValues={
-            ":granted": "granted",
-            ":by": decided_by,
-            ":now": now_iso,
-            ":n": len(items),
-        },
-    )
+    # Guard against upsert: a malformed grant request with a fabricated
+    # takedown_id would otherwise create a partial row {listing_id,
+    # takedown_id, decision:'granted', decided_by, decided_at,
+    # affected_purchases} with no claimant fields. The takedown row is
+    # written by the caller (file_takedown / execute_admin_initiated_
+    # takedown) before this cascade runs, so attribute_exists is the
+    # correct invariant.
+    try:
+        _takedowns_table().update_item(
+            Key={"listing_id": listing_id, "takedown_id": takedown_id},
+            UpdateExpression=("SET decision = :granted, decided_by = :by, decided_at = :now, affected_purchases = :n"),
+            ConditionExpression="attribute_exists(takedown_id)",
+            ExpressionAttributeValues={
+                ":granted": "granted",
+                ":by": decided_by,
+                ":now": now_iso,
+                ":n": len(items),
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise TakedownNotFoundError(f"takedown {takedown_id} for listing {listing_id} does not exist")
+        raise
     return len(items)
 
 

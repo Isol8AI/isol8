@@ -99,6 +99,31 @@ async def test_execute_full_takedown_flips_currently_published_version(mock_take
 
 
 @pytest.mark.asyncio
+@patch("core.services.takedown_service._purchases_table")
+@patch("core.services.takedown_service._listings_table")
+@patch("core.services.takedown_service._takedowns_table")
+@patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
+async def test_takedowns_grant_update_guards_with_attribute_exists(mock_takedowns, mock_listings, mock_purchases):
+    """Pre-emptive: the takedown-row 'grant' update must guard with
+    attribute_exists(takedown_id), mirroring the listings-row guard added
+    earlier. Without it, a malformed grant on a fabricated takedown_id
+    would upsert a partial row.
+    """
+    takedown_service.license_service.revoke.reset_mock()
+    mock_purchases.return_value.query = MagicMock(return_value={"Items": []})
+    mock_listings.return_value.query = MagicMock(
+        return_value={"Items": [{"listing_id": "l1", "version": 1, "status": "published"}]}
+    )
+    mock_listings.return_value.update_item = MagicMock()
+    mock_takedowns.return_value.update_item = MagicMock()
+
+    await takedown_service.execute_full_takedown(listing_id="l1", takedown_id="t1", decided_by="admin_xyz")
+
+    grant_kwargs = mock_takedowns.return_value.update_item.call_args.kwargs
+    assert grant_kwargs.get("ConditionExpression") == "attribute_exists(takedown_id)"
+
+
+@pytest.mark.asyncio
 @patch("core.services.takedown_service._takedowns_table")
 async def test_file_takedown_creates_row(mock_table):
     mock_table.return_value.put_item = MagicMock()

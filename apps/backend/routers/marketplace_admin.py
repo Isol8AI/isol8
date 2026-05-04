@@ -142,10 +142,25 @@ async def listing_preview(
     response that the admin UI renders as a file tree + content viewer +
     safety-flag banner.
     """
+    # Pick the live (or in-review) version dynamically — admin opens the
+    # preview from the review queue, which can hold a v_new=2 row while
+    # v_prev=1 is published. Hardcoding version=1 would 404 for any v2+
+    # listing the moderator wants to inspect.
     table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
-    listing = table.get_item(Key={"listing_id": listing_id, "version": 1}).get("Item")
-    if not listing:
+    rows = table.query(
+        KeyConditionExpression="listing_id = :l",
+        ExpressionAttributeValues={":l": listing_id},
+        ScanIndexForward=False,  # newest version first
+    ).get("Items", [])
+    if not rows:
         raise HTTPException(status_code=404, detail="listing not found")
+    # Prefer the row in 'review' state (the moderation target), then the
+    # currently published row, then the highest-version row of any state.
+    listing = (
+        next((r for r in rows if r.get("status") == "review"), None)
+        or next((r for r in rows if r.get("status") == "published"), None)
+        or rows[0]
+    )
 
     s3 = boto3.client("s3")
     bucket = settings.MARKETPLACE_ARTIFACTS_BUCKET

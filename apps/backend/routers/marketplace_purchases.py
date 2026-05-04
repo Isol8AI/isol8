@@ -270,11 +270,22 @@ async def _handle_account_updated(account: dict) -> None:
 
     listings_table = boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
     purchases_table = _purchases_table()
-    seller_listings = listings_table.query(
-        IndexName="seller-created-index",
-        KeyConditionExpression="seller_id = :s",
-        ExpressionAttributeValues={":s": seller_id},
-    ).get("Items", [])
+    # Page through all of the seller's listings — DynamoDB Query caps each
+    # page at 1MB, so a prolific seller could otherwise have purchases on
+    # later listings silently skipped during payout flush.
+    seller_listings: list[dict] = []
+    listings_kwargs: dict = {
+        "IndexName": "seller-created-index",
+        "KeyConditionExpression": "seller_id = :s",
+        "ExpressionAttributeValues": {":s": seller_id},
+    }
+    while True:
+        page = listings_table.query(**listings_kwargs)
+        seller_listings.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            break
+        listings_kwargs["ExclusiveStartKey"] = last
 
     transferred_total = 0
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
