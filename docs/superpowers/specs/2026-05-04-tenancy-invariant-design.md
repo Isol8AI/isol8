@@ -261,15 +261,17 @@ The metric should be zero in steady state. A non-zero count means a gate leaked 
 
 ## Rollout
 
-Single PR. Deploy must happen BEFORE the wipe, not after — explained below.
+Three phases, in this order. The orphan wipe and the code merge are independent; aden's wipe MUST come after the code deploys.
 
-1. **Merge PR + deploy** (backend + frontend together; one PR, two pipelines). At this point Gate A starts refusing invites to existing personal subscribers, Gate B starts refusing personal trial-checkout for users with pending invites, and the relaxed `needsInvitationFlow` in `ChatLayout.tsx` starts honouring pending invites regardless of `unsafeMetadata.onboarded`.
+1. **Wipe the orphan first** (manual ops, today). `user_3CxcOiaf5GaHb69Gv1B7IYj8MBG` is already deleted from Clerk per the provider-choice-per-owner spec — verify via Clerk dashboard search before proceeding (no user found = safe to wipe). The orphan has no Clerk session, no living human user, and no impact on any flow. Wiping it now reclaims the running ECS service ($/hour), the EFS access point, and the DDB rows that no live user can reach. This is independent of the code changes.
 
-2. **Wipe aden + orphan** (manual ops, after deploy). Order matters: aden's `unsafeMetadata.onboarded=true` is still set from his earlier personal flow, and only the relaxed routing in 2d makes `needsInvitationFlow` fire for an "already-onboarded" user with a pending invite. If we wiped before deploy, aden's next sign-in would land on `/chat`, find no billing row, and re-trigger the ProviderPicker for a fresh personal flow — same bug class. After deploy + wipe, his next sign-in routes to `/onboarding/invitations` automatically.
+2. **Merge PR + deploy** (backend + frontend together; one PR, two pipelines). Gate A starts refusing invites to existing personal subscribers, Gate B starts refusing personal trial-checkout for users with pending invites, and the relaxed `needsInvitationFlow` in `ChatLayout.tsx` starts honouring pending invites regardless of `unsafeMetadata.onboarded`.
 
-3. **Verify post-wipe**: aden signs in → lands on `/onboarding/invitations` → accepts → org context activates → reaches `/chat` with `provider_choice` already set on the org's billing row → no picker.
+3. **Wipe aden's personal** (manual ops, after deploy only). Aden's `unsafeMetadata.onboarded=true` is still set from his earlier personal flow; only the relaxed routing in 2d makes `needsInvitationFlow` fire for an "already-onboarded" user with a pending invite. If we wiped him before deploy, his next sign-in would land on `/chat`, find no billing row, and re-trigger the ProviderPicker for a fresh personal flow — same bug class. After deploy + wipe, his next sign-in routes to `/onboarding/invitations` automatically.
 
-4. **Smoke-test the gates**: send a test invite to a brand-new email → succeeds. Send an invite to an email with a known active personal sub (a test account) → 409 surfaces in the new dialog. Try `/billing/trial-checkout` from a Clerk user with a pending invite → 409 + redirect to `/onboarding/invitations`.
+4. **Verify post-wipe**: aden signs in → lands on `/onboarding/invitations` → accepts → org context activates → reaches `/chat` with `provider_choice` already set on the org's billing row → no picker.
+
+5. **Smoke-test the gates**: send a test invite to a brand-new email → succeeds. Send an invite to an email with a known active personal sub (a test account) → 409 surfaces in the new dialog. Try `/billing/trial-checkout` from a Clerk user with a pending invite → 409 + redirect to `/onboarding/invitations`.
 
 No feature flag. No DB schema migration. The blast radius is org-admin invite UX (changes from Clerk's modal to ours) and the personal-checkout race window.
 
