@@ -44,21 +44,33 @@ export function InviteTeammatesStep({
       ]);
       setEmail("");
     } catch (err: unknown) {
-      // useApi throws an ApiError with `.status` and `.body`. The backend's 409
-      // PERSONAL_USER_EXISTS / PENDING_ORG_INVITATION responses encode the
-      // human-readable reason at body.detail.message — surface it inline.
-      // Defensive: only display when message is a non-empty string; otherwise
-      // a 401 / 500 / network error (which use a different body shape) would
-      // render "Failed to send invitation" instead of crashing on a
-      // non-string child.
+      // useApi throws an ApiError with `.status` and `.body`. The backend
+      // surfaces error reasons at `body.detail`, which can take TWO shapes:
+      //
+      //   (a) Object: `{detail: {code, message, ...}}` — used by the
+      //       structured 409s (PERSONAL_USER_EXISTS, PENDING_ORG_INVITATION).
+      //   (b) String: `{detail: "duplicate invitation"}` — used by Clerk
+      //       errors that the backend forwards verbatim via
+      //       `HTTPException(detail=response.text)` (clerk_admin.py).
+      //
+      // Both shapes carry actionable info for the org admin. Falling back
+      // to the generic message hides Clerk's "already invited" / "invalid
+      // role" reasons and forces guesswork. Handle both before falling
+      // through.
       const apiErr = err as {
         status?: number;
-        body?: { detail?: { message?: string } };
+        body?: { detail?: string | { message?: string } };
       };
-      const candidate = apiErr.body?.detail?.message;
+      const detail = apiErr.body?.detail;
+      let resolved: string | undefined;
+      if (typeof detail === "string") {
+        resolved = detail;
+      } else if (detail && typeof detail.message === "string") {
+        resolved = detail.message;
+      }
       const msg =
-        typeof candidate === "string" && candidate.length > 0
-          ? candidate
+        resolved && resolved.length > 0
+          ? resolved
           : "Failed to send invitation. Please try again.";
       setError(msg);
     } finally {

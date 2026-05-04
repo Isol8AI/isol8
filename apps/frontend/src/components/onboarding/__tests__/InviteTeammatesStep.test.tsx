@@ -100,6 +100,28 @@ describe("InviteTeammatesStep", () => {
     ).toBeInTheDocument();
   });
 
+  it("surfaces a string detail (Clerk error forwarded by backend)", async () => {
+    // clerk_admin.create_organization_invitation raises
+    // HTTPException(detail=response.text) on Clerk failures, so duplicate-
+    // invite / invalid-role errors arrive as {detail: "<clerk message>"}.
+    // Without string-detail handling, org admins would see the generic
+    // copy and lose actionable info.
+    mockPost.mockRejectedValueOnce({
+      status: 422,
+      body: { detail: "duplicate invitation: this user is already invited" },
+    });
+    render(<InviteTeammatesStep orgId="org_test" onComplete={vi.fn()} />);
+
+    fireEvent.change(screen.getByLabelText(/email/i), {
+      target: { value: "dup@example.com" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /send invite/i }));
+
+    expect(
+      await screen.findByText(/duplicate invitation: this user is already invited/i),
+    ).toBeInTheDocument();
+  });
+
   it("accumulates multiple sent invites in the list", async () => {
     mockPost
       .mockResolvedValueOnce({ invitation_id: "inv_1" })
