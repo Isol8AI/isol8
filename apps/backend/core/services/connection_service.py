@@ -187,6 +187,47 @@ class ConnectionService:
                 f"Failed to count connections for user {user_id}: {e.response['Error']['Message']}"
             ) from e
 
+    async def query_by_user_id(self, user_id: str) -> list[str]:
+        """Return every active connection ID owned by ``user_id``.
+
+        Uses the ``by-user-id`` GSI added in
+        ``apps/infra/lib/stacks/api-stack.ts``. KEYS_ONLY projection means
+        only ``connectionId`` is returned per row — sufficient for the
+        TeamsEventBroker fanout. Paginates ``LastEvaluatedKey`` because a
+        single Query page caps at ~1MB; in practice one page suffices
+        (a typical user has 1-3 live tabs) but pagination keeps the
+        contract correct under load.
+
+        Returns an empty list if the user has no live connections.
+        """
+
+        def _query() -> list[str]:
+            paginator = self._client.get_paginator("query")
+            pages = paginator.paginate(
+                TableName=self.table_name,
+                IndexName="by-user-id",
+                KeyConditionExpression="userId = :u",
+                ExpressionAttributeValues={":u": {"S": user_id}},
+                ProjectionExpression="connectionId",
+            )
+            ids: list[str] = []
+            for page in pages:
+                for item in page.get("Items", []):
+                    ids.append(item["connectionId"]["S"])
+            return ids
+
+        try:
+            return await asyncio.to_thread(_query)
+        except ClientError as e:
+            logger.error(
+                "Failed to query connections for user %s: %s",
+                user_id,
+                e.response["Error"]["Message"],
+            )
+            raise ConnectionServiceError(
+                f"Failed to query connections for user {user_id}: {e.response['Error']['Message']}"
+            ) from e
+
     async def delete_all_for_user(self, user_id: str) -> int:
         """Delete every WS connection row owned by ``user_id``.
 

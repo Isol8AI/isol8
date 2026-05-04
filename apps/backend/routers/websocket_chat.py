@@ -177,6 +177,24 @@ async def ws_disconnect(
             pool = get_gateway_pool()
             pool.remove_frontend_connection(owner_id, x_connection_id)
 
+            # Tear down any teams-event subscription this conn had. Without
+            # this, a tab crash / network drop leaves a dead conn-id in the
+            # broker's subscriber set, blocking grace teardown of the
+            # backing Paperclip WS. The browser SHOULD send teams.unsubscribe
+            # on unmount but can't be relied on.
+            from core.services import teams_event_broker_singleton
+
+            broker = teams_event_broker_singleton.get_broker()
+            if broker is not None:
+                try:
+                    await broker.unsubscribe(user_id, x_connection_id)
+                except Exception:
+                    logger.exception(
+                        "teams broker disconnect cleanup failed user=%s conn=%s",
+                        user_id,
+                        x_connection_id[:12] if x_connection_id else "?",
+                    )
+
             # Additionally tear down the node upstream + per-user state
             # if this was a node connection.
             if is_node_connection(x_connection_id):
@@ -227,6 +245,42 @@ async def ws_message(
     if msg_type == "ping":
         management_api = await get_management_api_client()
         management_api.send_message(x_connection_id, {"type": "pong"})
+        return Response(status_code=200)
+
+    # Teams BFF realtime: browser opts into / out of Paperclip event fanout.
+    # Best-effort — if the broker singleton isn't configured (local dev
+    # without Paperclip env), 200 silently and /teams just runs without
+    # live updates.
+    if msg_type in ("teams.subscribe", "teams.unsubscribe"):
+        from core.services import teams_event_broker_singleton
+
+        broker = teams_event_broker_singleton.get_broker()
+        if broker is None:
+            put_metric(
+                "teams.dispatch",
+                dimensions={"type": msg_type, "outcome": "broker_disabled"},
+            )
+        else:
+            try:
+                if msg_type == "teams.subscribe":
+                    await broker.subscribe(user_id, x_connection_id)
+                else:
+                    await broker.unsubscribe(user_id, x_connection_id)
+                put_metric(
+                    "teams.dispatch",
+                    dimensions={"type": msg_type, "outcome": "ok"},
+                )
+            except Exception:
+                logger.exception(
+                    "teams broker dispatch failed type=%s user=%s conn=%s",
+                    msg_type,
+                    user_id,
+                    x_connection_id[:12] if x_connection_id else "?",
+                )
+                put_metric(
+                    "teams.dispatch",
+                    dimensions={"type": msg_type, "outcome": "error"},
+                )
         return Response(status_code=200)
 
     # Lazy-register the frontend connection with the gateway pool. The

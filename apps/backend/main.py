@@ -217,6 +217,82 @@ async def _resume_provisioning_transitions() -> None:
         logger.info("Resumed provisioning -> running poller for %s", owner_id)
 
 
+async def _build_teams_event_broker():
+    """Construct the singleton TeamsEventBroker used by /ws/message.
+
+    Returns None when the dependencies aren't configured (e.g. local
+    dev without Paperclip running) — the broker is best-effort and
+    /teams continues to work via REST without realtime updates.
+    """
+    try:
+        from core.repositories.paperclip_repo import PaperclipRepo
+        from core.services.connection_service import ConnectionService
+        from core.services.management_api_client import ManagementApiClient
+        from core.services.paperclip_event_client import PaperclipEventClient
+        from core.services.paperclip_user_session import get_user_session_cookie
+        from core.services.teams_event_broker import TeamsEventBroker
+
+        # Best-effort: if the Paperclip env isn't configured (no internal
+        # URL), don't try to start the broker — /teams REST still works,
+        # just without live updates.
+        paperclip_url = (settings.PAPERCLIP_INTERNAL_URL or "").strip()
+        if not paperclip_url:
+            logger.info("teams broker: PAPERCLIP_INTERNAL_URL unset; skipping startup")
+            return None
+
+        # Resolve ws:// / wss:// from the http(s):// internal URL.
+        if paperclip_url.startswith("https://"):
+            ws_base = "wss://" + paperclip_url[len("https://") :]
+        elif paperclip_url.startswith("http://"):
+            ws_base = "ws://" + paperclip_url[len("http://") :]
+        else:
+            ws_base = paperclip_url
+        ws_base = ws_base.rstrip("/")
+
+        repo = PaperclipRepo(table_name="paperclip-companies")
+        conn_svc = ConnectionService()
+        mgmt_api = ManagementApiClient()
+
+        # Per-user dependencies share the existing helpers from agents.py.
+        from routers.teams.agents import _admin, _resolve_user_email
+
+        async def resolve_company_id(user_id: str) -> str:
+            company = await repo.get(user_id)
+            if company is None:
+                raise RuntimeError(f"no paperclip company for user {user_id}")
+            return company.company_id
+
+        async def resolve_session_cookie(user_id: str) -> str:
+            return await get_user_session_cookie(
+                user_id=user_id,
+                repo=repo,
+                admin_client=_admin(),
+                clerk_email_resolver=_resolve_user_email,
+            )
+
+        def client_factory(*, user_id: str, company_id: str, cookie: str, on_event):
+            return PaperclipEventClient(
+                url=f"{ws_base}/api/companies/{company_id}/events/ws",
+                cookie=cookie,
+                on_event=on_event,
+                user_id=user_id,
+                company_id=company_id,
+            )
+
+        broker = TeamsEventBroker(
+            client_factory=client_factory,
+            management_api=mgmt_api,
+            connection_service=conn_svc,
+            resolve_company_id=resolve_company_id,
+            resolve_session_cookie=resolve_session_cookie,
+        )
+        logger.info("teams broker: started; ws_base=%s", ws_base)
+        return broker
+    except Exception:
+        logger.exception("teams broker: startup failed; /teams will run without live updates")
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
@@ -225,6 +301,16 @@ async def lifespan(app: FastAPI):
     await startup_containers()
     await _resume_provisioning_transitions()
     worker_task = asyncio.create_task(run_scheduled_worker())
+
+    # Teams event broker — proxies Paperclip's per-company live-events WS
+    # to subscribed browser tabs via API Gateway Management API. Started
+    # after the gateway pool (so management_api singleton is initialized)
+    # but before anything that depends on its API.
+    broker = await _build_teams_event_broker()
+    if broker is not None:
+        from core.services import teams_event_broker_singleton
+
+        teams_event_broker_singleton.set_broker(broker)
 
     gauge_task = asyncio.create_task(_running_count_gauge_loop())
 
@@ -250,6 +336,13 @@ async def lifespan(app: FastAPI):
         await worker_task
     except asyncio.CancelledError:
         pass
+
+    if broker is not None:
+        from core.services import teams_event_broker_singleton
+
+        await broker.shutdown()
+        teams_event_broker_singleton.set_broker(None)
+
     await shutdown_containers()
 
 

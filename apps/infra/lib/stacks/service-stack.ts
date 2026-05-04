@@ -530,6 +530,10 @@ export class ServiceStack extends cdk.Stack {
         ],
         resources: [
           `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}`,
+          // GSI ARN — required to Query the by-user-id index added in
+          // api-stack.ts. Without this, broker fanout queries 400 with
+          // AccessDeniedException at runtime.
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${props.connectionsTableName}/index/*`,
         ],
       }),
     );
