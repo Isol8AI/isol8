@@ -24,14 +24,32 @@ router = APIRouter()
 _ctx = _agents._ctx
 
 
+# Tab → upstream filter composition. Mirrors what Paperclip's own Inbox.tsx
+# does for board users (GET /api/companies/{co}/issues with these filters).
+_TAB_FILTERS: dict[str, dict[str, str]] = {
+    "mine": {
+        "touchedByUserId": "me",
+        "inboxArchivedByUserId": "me",
+        "status": "in_review,pending,review,todo,in_progress",
+    },
+    "recent": {
+        "status": "in_review,pending,review,todo,in_progress",
+    },
+    "all": {},
+    "unread": {
+        "inboxArchivedByUserId": "me",
+        "status": "in_review,pending,review,todo,in_progress",
+    },
+}
+# Tabs that don't fetch from issues at all — they live at sibling routes.
+# Frontend should hit /teams/inbox/runs, /teams/approvals, etc. directly,
+# but if a stale call lands here we return an empty envelope.
+_TABS_NOT_ON_ISSUES = frozenset({"approvals", "runs", "joins"})
+
+
 @router.get("/inbox")
 async def list_inbox(
     ctx: TeamsContext = Depends(_ctx),
-    # Tab values mirror upstream's inbox-lite tab segments. The original
-    # spec listed mine/recent/all/unread as the 4 work-item tabs, but
-    # Paperclip's Inbox UI also routes approvals/runs/joins through this
-    # same endpoint as separate tabs (Codex P1 on PR #524). Forward the
-    # full set so the frontend doesn't 422 on legitimate tab clicks.
     tab: Optional[str] = Query(default=None, pattern=r"^(mine|recent|all|unread|approvals|runs|joins)$"),
     status: Optional[str] = Query(default=None, max_length=40),
     project: Optional[str] = Query(default=None, max_length=80),
@@ -40,39 +58,58 @@ async def list_inbox(
     search: Optional[str] = Query(default=None, max_length=200),
     limit: Optional[int] = Query(default=None, ge=1, le=500),
 ):
-    """List inbox items for the signed-in user, filter-aware.
+    """List inbox items for the signed-in board user.
 
-    Calls ``GET /api/agents/me/inbox-lite`` upstream. Filter params are
-    forwarded verbatim. Response is reshaped from the raw issue array
-    into the ``{items: [...]}`` envelope the InboxPanel expects (kept
-    from the tier-1 stub for back-compat — PR #3c will switch the panel
-    to consume the full upstream Issue shape).
+    Calls upstream ``GET /api/companies/{companyId}/issues`` with
+    tab-derived filter params. Mirrors what Paperclip's own Inbox.tsx
+    does for board users — the prior implementation called
+    ``/api/agents/me/inbox-lite`` which is AGENT-ONLY and 401's our
+    board-user session cookie.
+
+    Tabs ``approvals`` / ``runs`` / ``joins`` route through sibling
+    endpoints (``/teams/approvals``, ``/teams/inbox/runs``,
+    ``/teams/inbox/live-runs``); for those tab values this handler
+    returns an empty envelope so the frontend can keep one tab handler.
     """
-    params: dict[str, str] = {}
-    if tab is not None:
-        params["tab"] = tab
-    if status is not None:
-        params["status"] = status
-    if project is not None:
-        params["project"] = project
-    if assignee is not None:
-        params["assignee"] = assignee
-    if creator is not None:
-        params["creator"] = creator
-    if search is not None:
-        params["search"] = search
-    if limit is not None:
-        params["limit"] = str(limit)
+    if tab in _TABS_NOT_ON_ISSUES:
+        return {"items": []}
 
-    # Only forward ``params`` when at least one filter is set, so the
-    # zero-filter call shape stays identical to the tier-1 stub (back-compat
-    # with the original unit test + any other existing callers).
-    kwargs: dict[str, Any] = {"session_cookie": ctx.session_cookie}
-    if params:
-        kwargs["params"] = params
-    rows = await _agents._admin().list_inbox_for_session_user(**kwargs)
-    if not isinstance(rows, list):
-        rows = []
+    # Start with the per-tab filter composition (or {} when no tab).
+    upstream_params: dict[str, str] = dict(_TAB_FILTERS.get(tab or "", {}))
+
+    # Per-filter overrides. ``status`` from the caller wins over the
+    # tab-derived status default — frontend passes status explicitly only
+    # when the user picks one in the filters popover.
+    if status is not None:
+        upstream_params["status"] = status
+    if project is not None:
+        upstream_params["projectId"] = project
+    if assignee is not None:
+        upstream_params["assigneeUserId"] = assignee
+    if creator is not None:
+        upstream_params["createdByUserId"] = creator
+    if search is not None:
+        upstream_params["search"] = search
+    if limit is not None:
+        upstream_params["limit"] = str(limit)
+
+    kwargs: dict[str, Any] = {
+        "company_id": ctx.company_id,
+        "session_cookie": ctx.session_cookie,
+    }
+    if upstream_params:
+        kwargs["params"] = upstream_params
+
+    rows = await _agents._admin().list_issues(**kwargs)
+
+    # Upstream returns either a list or an envelope. Normalize to {items}.
+    if isinstance(rows, list):
+        items_in = rows
+    elif isinstance(rows, dict):
+        items_in = rows.get("issues") or rows.get("items") or []
+    else:
+        items_in = []
+
     items = [
         {
             "id": row.get("id"),
@@ -80,7 +117,7 @@ async def list_inbox(
             "title": row.get("title") or row.get("identifier") or "(untitled)",
             "createdAt": row.get("updatedAt"),
         }
-        for row in rows
+        for row in items_in
         if isinstance(row, dict)
     ]
     return {"items": items}

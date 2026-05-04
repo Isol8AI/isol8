@@ -907,14 +907,19 @@ class PaperclipAdminClient:
         *,
         session_cookie: str,
         company_id: str,
+        params: Optional[dict[str, Any]] = None,
     ) -> dict:
         """List issues for the company.
 
-        Maps to ``GET /api/companies/{companyId}/issues``.
+        Maps to ``GET /api/companies/{companyId}/issues``. Optional
+        ``params`` is forwarded as the upstream query string so callers
+        (BFF inbox listing) can pass through filters like
+        ``touchedByUserId=me&inboxArchivedByUserId=me&status=...``.
         """
         return await self._get(
             f"/api/companies/{company_id}/issues",
             session_cookie=session_cookie,
+            params=params,
         )
 
     async def get_issue(

@@ -36,14 +36,11 @@ def client(teams_ctx):
         app.dependency_overrides.pop(agents_mod._ctx, None)
 
 
-def test_list_inbox_proxies_with_session(client, monkeypatch):
-    """The BFF must call ``/api/agents/me/inbox-lite`` (NOT the
-    invented ``/api/companies/{co}/inbox`` which doesn't exist in
-    Paperclip) and reshape the upstream issue array into the
-    ``{items: [...]}`` envelope the InboxPanel expects."""
+def test_list_inbox_proxies_to_company_issues(client, monkeypatch):
+    """The BFF must call ``GET /api/companies/{co}/issues`` (the board-
+    user-friendly endpoint) and reshape into ``{items: []}``."""
     admin = MagicMock()
-    admin.list_inbox_for_session_user = AsyncMock(return_value=[])
-    # Patch the shared singleton on agents — inbox.py imports the same name.
+    admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
@@ -51,16 +48,17 @@ def test_list_inbox_proxies_with_session(client, monkeypatch):
     r = client.get("/api/v1/teams/inbox", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
     assert r.json() == {"items": []}
-    admin.list_inbox_for_session_user.assert_awaited_once_with(
+    admin.list_issues.assert_awaited_once_with(
+        company_id="co_abc",
         session_cookie="cookie",
     )
 
 
 def test_list_inbox_reshapes_issue_rows(client, monkeypatch):
-    """Confirm the BFF maps Paperclip's inbox-lite issue array into the
+    """Confirm the BFF maps Paperclip's issue list into the
     InboxPanel's ``{items: [{id, type, title, createdAt}]}`` shape."""
     admin = MagicMock()
-    admin.list_inbox_for_session_user = AsyncMock(
+    admin.list_issues = AsyncMock(
         return_value=[
             {
                 "id": "iss_1",
@@ -85,8 +83,7 @@ def test_list_inbox_reshapes_issue_rows(client, monkeypatch):
 
     r = client.get("/api/v1/teams/inbox", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    body = r.json()
-    assert body == {
+    assert r.json() == {
         "items": [
             {
                 "id": "iss_1",
@@ -122,12 +119,57 @@ def test_dismiss_proxies_with_session(client, monkeypatch):
     )
 
 
-def test_list_inbox_forwards_filter_params(client, monkeypatch):
-    """The expanded /inbox accepts query params (tab, status, project,
-    assignee, creator, search, limit) and forwards them verbatim to the
-    upstream inbox-lite endpoint."""
+def test_list_inbox_translates_tab_mine_to_upstream_filters(client, monkeypatch):
+    """tab=mine derives the upstream filter composition that Paperclip's
+    own Inbox.tsx uses: touchedByUserId=me + inboxArchivedByUserId=me +
+    status=in_review,pending,review,todo,in_progress."""
     admin = MagicMock()
-    admin.list_inbox_for_session_user = AsyncMock(return_value=[])
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/inbox?tab=mine",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    call = admin.list_issues.call_args
+    assert call.kwargs["company_id"] == "co_abc"
+    assert call.kwargs["session_cookie"] == "cookie"
+    assert call.kwargs["params"] == {
+        "touchedByUserId": "me",
+        "inboxArchivedByUserId": "me",
+        "status": "in_review,pending,review,todo,in_progress",
+    }
+
+
+def test_list_inbox_user_status_overrides_tab_default(client, monkeypatch):
+    """When the user picks an explicit status in the filters popover,
+    that wins over the tab-derived status."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/inbox?tab=mine&status=blocked",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    call = admin.list_issues.call_args
+    assert call.kwargs["params"]["status"] == "blocked"
+    # Other tab-derived filters preserved:
+    assert call.kwargs["params"]["touchedByUserId"] == "me"
+
+
+def test_list_inbox_forwards_explicit_filter_params(client, monkeypatch):
+    """Explicit filter params are passed through with their upstream
+    field-name translation (project → projectId, assignee →
+    assigneeUserId, creator → createdByUserId)."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
@@ -135,10 +177,8 @@ def test_list_inbox_forwards_filter_params(client, monkeypatch):
     r = client.get(
         "/api/v1/teams/inbox",
         params={
-            "tab": "mine",
-            "status": "todo",
             "project": "proj_1",
-            "assignee": "agent_2",
+            "assignee": "user_2",
             "creator": "user_3",
             "search": "fix bug",
             "limit": 250,
@@ -146,37 +186,50 @@ def test_list_inbox_forwards_filter_params(client, monkeypatch):
         headers={"Authorization": "Bearer x"},
     )
     assert r.status_code == 200
-    admin.list_inbox_for_session_user.assert_awaited_once()
-    call = admin.list_inbox_for_session_user.call_args
-    assert call.kwargs["session_cookie"] == "cookie"
+    call = admin.list_issues.call_args
     assert call.kwargs["params"] == {
-        "tab": "mine",
-        "status": "todo",
-        "project": "proj_1",
-        "assignee": "agent_2",
-        "creator": "user_3",
+        "projectId": "proj_1",
+        "assigneeUserId": "user_2",
+        "createdByUserId": "user_3",
         "search": "fix bug",
         "limit": "250",
     }
 
 
-def test_list_inbox_omits_unset_filter_params(client, monkeypatch):
-    """Filter params that are not provided must NOT be forwarded as
-    empty strings to upstream — empty params dict (or None) instead."""
+def test_list_inbox_omits_params_when_no_filters(client, monkeypatch):
+    """When no tab/filter is set, the BFF must omit the params kwarg
+    entirely so the call shape stays clean."""
     admin = MagicMock()
-    admin.list_inbox_for_session_user = AsyncMock(return_value=[])
+    admin.list_issues = AsyncMock(return_value=[])
     from routers.teams import agents as agents_mod
 
     monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
 
     r = client.get("/api/v1/teams/inbox", headers={"Authorization": "Bearer x"})
     assert r.status_code == 200
-    call = admin.list_inbox_for_session_user.call_args
-    # Lock the back-compat contract: when no filters are set, the BFF
-    # MUST omit the params kwarg entirely. test_list_inbox_proxies_with_session
-    # asserts the kwargs shape `{session_cookie: "cookie"}` — passing
-    # params=None or params={} would break that assertion.
+    call = admin.list_issues.call_args
     assert "params" not in call.kwargs
+
+
+@pytest.mark.parametrize("tab", ["approvals", "runs", "joins"])
+def test_list_inbox_returns_empty_for_sibling_route_tabs(client, monkeypatch, tab):
+    """approvals/runs/joins tabs route through sibling endpoints
+    (/teams/approvals, /teams/inbox/runs, /teams/inbox/live-runs).
+    /teams/inbox returns an empty envelope so a stale call from the
+    frontend doesn't break — the frontend's tab handler stays uniform."""
+    admin = MagicMock()
+    admin.list_issues = AsyncMock(return_value=[])
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        f"/api/v1/teams/inbox?tab={tab}",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"items": []}
+    admin.list_issues.assert_not_called()
 
 
 def test_list_inbox_runs_returns_failed_runs(client, monkeypatch):
@@ -216,27 +269,6 @@ def test_list_inbox_live_runs(client, monkeypatch):
         company_id="co_abc",
         session_cookie="cookie",
     )
-
-
-@pytest.mark.parametrize("tab", ["mine", "recent", "all", "unread", "approvals", "runs", "joins"])
-def test_list_inbox_accepts_all_documented_tabs(client, monkeypatch, tab):
-    """Codex P1 on PR #524: the tab regex must accept the full set of
-    upstream Inbox tabs, not just the 4 work-item tabs. The Paperclip
-    Inbox UI also uses approvals/runs/joins as tab values that route
-    through this same endpoint; rejecting them at the BFF blocks the
-    Approvals/Runs/Joins tabs from ever loading."""
-    admin = MagicMock()
-    admin.list_inbox_for_session_user = AsyncMock(return_value=[])
-    from routers.teams import agents as agents_mod
-
-    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
-
-    r = client.get(
-        "/api/v1/teams/inbox",
-        params={"tab": tab},
-        headers={"Authorization": "Bearer x"},
-    )
-    assert r.status_code == 200, f"tab={tab} was rejected: {r.json()}"
 
 
 def test_list_inbox_rejects_unknown_tab(client):
