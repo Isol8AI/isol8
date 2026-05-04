@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 
 from . import agents as _agents
 from .deps import TeamsContext
-from .schemas import CreateIssueBody, PatchIssueBody
+from .schemas import AddCommentBody, CreateIssueBody, PatchIssueBody
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -108,5 +108,31 @@ async def mark_issue_unread(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
     """
     return await _agents._admin().mark_issue_unread(
         issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.get("/issues/{issue_id}/comments")
+async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
+    """List comments on an issue.
+
+    Maps to upstream ``GET /api/issues/{id}/comments``.
+    """
+    return await _agents._admin().list_issue_comments(
+        issue_id=issue_id,
+        session_cookie=ctx.session_cookie,
+    )
+
+
+@router.post("/issues/{issue_id}/comments")
+async def add_issue_comment(
+    issue_id: str,
+    body: AddCommentBody,
+    ctx: TeamsContext = Depends(_ctx),
+):
+    """Post a comment on an issue. Body is whitelisted to ``{body: str}``."""
+    return await _agents._admin().add_issue_comment(
+        issue_id=issue_id,
+        body=body.model_dump(),
         session_cookie=ctx.session_cookie,
     )

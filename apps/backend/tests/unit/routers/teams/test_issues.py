@@ -150,3 +150,63 @@ def test_mark_issue_unread(client, monkeypatch):
         issue_id="iss_1",
         session_cookie="cookie",
     )
+
+
+def test_list_issue_comments(client, monkeypatch):
+    admin = MagicMock()
+    admin.list_issue_comments = AsyncMock(return_value={"comments": [{"id": "cmt_1", "body": "hi"}]})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.get(
+        "/api/v1/teams/issues/iss_1/comments",
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    assert r.json() == {"comments": [{"id": "cmt_1", "body": "hi"}]}
+    admin.list_issue_comments.assert_awaited_once_with(
+        issue_id="iss_1",
+        session_cookie="cookie",
+    )
+
+
+def test_add_issue_comment(client, monkeypatch):
+    """POST `/teams/issues/{id}/comments` with whitelisted body."""
+    admin = MagicMock()
+    admin.add_issue_comment = AsyncMock(return_value={"id": "cmt_new", "body": "hello"})
+    from routers.teams import agents as agents_mod
+
+    monkeypatch.setattr(agents_mod, "_admin", lambda: admin)
+
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 200
+    admin.add_issue_comment.assert_awaited_once_with(
+        issue_id="iss_1",
+        body={"body": "hello"},
+        session_cookie="cookie",
+    )
+
+
+def test_add_issue_comment_rejects_extra_fields(client):
+    """Body schema is strict — extras (esp. adapterType) must 422."""
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={"body": "hello", "adapterType": "evil"},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
+
+
+def test_add_issue_comment_requires_body_field(client):
+    """Empty body is invalid (min_length=1)."""
+    r = client.post(
+        "/api/v1/teams/issues/iss_1/comments",
+        json={},
+        headers={"Authorization": "Bearer x"},
+    )
+    assert r.status_code == 422
