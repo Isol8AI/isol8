@@ -52,6 +52,8 @@ class PaperclipEventClient:
         cookie: str,
         on_event: Callable[[dict[str, Any]], Awaitable[None]],
         reconnect_initial_delay: float = 1.0,
+        user_id: str = "",
+        company_id: str = "",
     ) -> None:
         self._url = url
         self._cookie = cookie
@@ -60,6 +62,8 @@ class PaperclipEventClient:
         self._task: asyncio.Task[None] | None = None
         self._stop = asyncio.Event()
         self._connected = False
+        self._user_id = user_id
+        self._company_id = company_id
 
     @property
     def is_connected(self) -> bool:
@@ -105,18 +109,28 @@ class PaperclipEventClient:
                             "kind": "reconnect" if is_reconnect else "initial",
                         },
                     )
-                    logger.info("paperclip event WS connected url=%s reconnect=%s", self._url, is_reconnect)
+                    logger.info(
+                        "paperclip event WS connected user=%s company=%s url=%s reconnect=%s",
+                        self._user_id,
+                        self._company_id,
+                        self._url,
+                        is_reconnect,
+                    )
                     if is_reconnect:
                         # Synthetic event so the broker can flush downstream
                         # SWR caches (no upstream replay cursor exists).
                         try:
                             await self._on_event({"type": "stream.resumed"})
                         except Exception:
-                            logger.exception("on_event raised on stream.resumed")
+                            logger.exception("on_event raised on stream.resumed user=%s", self._user_id)
                     is_reconnect = True
                     await self._receive_loop(ws)
             except (WebSocketException, OSError) as e:
-                logger.warning("paperclip event WS connect/recv error: %s", e)
+                logger.warning(
+                    "paperclip event WS connect/recv error user=%s err=%s",
+                    self._user_id,
+                    e,
+                )
                 put_metric("teams.client.connect", dimensions={"outcome": "error"})
             finally:
                 self._connected = False
@@ -125,14 +139,24 @@ class PaperclipEventClient:
                 return
             attempt += 1
             delay = self._backoff(attempt)
-            logger.info("paperclip event WS reconnecting in %.1fs (attempt %d)", delay, attempt)
+            logger.info(
+                "paperclip event WS reconnecting user=%s delay_s=%.1f attempt=%d",
+                self._user_id,
+                delay,
+                attempt,
+            )
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=delay)
                 return  # stop fired during sleep
             except asyncio.TimeoutError:
                 continue
         if attempt >= _MAX_RECONNECT_ATTEMPTS:
-            logger.error("paperclip event WS giving up after %d attempts url=%s", attempt, self._url)
+            logger.error(
+                "paperclip event WS giving up user=%s attempts=%d url=%s",
+                self._user_id,
+                attempt,
+                self._url,
+            )
             put_metric("teams.client.give_up")
 
     async def _receive_loop(self, ws) -> None:
@@ -143,14 +167,14 @@ class PaperclipEventClient:
             try:
                 event = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
-                logger.warning("paperclip event WS dropped malformed frame")
+                logger.warning("paperclip event WS dropped malformed frame user=%s", self._user_id)
                 put_metric("teams.client.event", dimensions={"outcome": "malformed"})
                 continue
             try:
                 await self._on_event(event)
                 put_metric("teams.client.event", dimensions={"outcome": "ok"})
             except Exception:
-                logger.exception("on_event raised; continuing")
+                logger.exception("on_event raised; continuing user=%s", self._user_id)
 
     def _backoff(self, attempt: int) -> float:
         """Capped exponential backoff with ±20% jitter."""

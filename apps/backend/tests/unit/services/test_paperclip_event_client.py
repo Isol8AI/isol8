@@ -271,3 +271,24 @@ async def test_event_client_emits_connect_metric_on_initial_connect():
     assert matching, (
         f"expected teams.client.connect ok/initial; got: {[(c.args, c.kwargs) for c in put_metric_mock.call_args_list]}"
     )
+
+
+@pytest.mark.asyncio
+async def test_event_client_passes_user_company_through_for_logging(caplog):
+    """The constructor accepts user_id + company_id and stores them as
+    instance state for log-correlation. No behavior change — purely a
+    logging-context concern."""
+    from core.services.paperclip_event_client import PaperclipEventClient
+
+    async def on_event(event):
+        pass
+
+    client = PaperclipEventClient(
+        url="ws://localhost:1",
+        cookie="x",
+        on_event=on_event,
+        user_id="user_abc",
+        company_id="co_xyz",
+    )
+    assert client._user_id == "user_abc"
+    assert client._company_id == "co_xyz"

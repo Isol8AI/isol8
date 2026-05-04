@@ -275,6 +275,8 @@ async def _build_teams_event_broker():
                 url=f"{ws_base}/api/companies/{company_id}/events/ws",
                 cookie=cookie,
                 on_event=on_event,
+                user_id=user_id,
+                company_id=company_id,
             )
 
         broker = TeamsEventBroker(

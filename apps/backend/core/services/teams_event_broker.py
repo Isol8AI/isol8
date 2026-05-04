@@ -187,6 +187,12 @@ class TeamsEventBroker:
         if "createdAt" in event:
             wrapped["createdAt"] = event["createdAt"]
 
+        logger.debug(
+            "teams broker: dispatching event user=%s event_type=%s",
+            user_id,
+            event.get("type", "unknown"),
+        )
+
         try:
             conn_ids = await self._conn_svc.query_by_user_id(user_id)
         except Exception:
@@ -213,7 +219,11 @@ class TeamsEventBroker:
                             dimensions={"outcome": "ok"},
                         )
                 except Exception:
-                    logger.exception("teams broker: send_message failed conn=%s", conn_id)
+                    logger.exception(
+                        "teams broker: send_message failed user=%s conn=%s",
+                        user_id,
+                        conn_id,
+                    )
                     put_metric(
                         "teams.broker.fanout",
                         dimensions={"outcome": "error"},
