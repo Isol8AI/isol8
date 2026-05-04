@@ -266,12 +266,31 @@ async def create_organization_invitation(
         "inviter_user_id": inviter_user_id,
     }
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
-        response = await client.post(
-            f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
-            headers=headers,
-            json=body,
+    # Lazy import keeps `fastapi` out of this module's import graph except
+    # on the error paths that genuinely need it.
+    from fastapi import HTTPException
+
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT_S) as client:
+            response = await client.post(
+                f"{_CLERK_API_BASE}/organizations/{org_id}/invitations",
+                headers=headers,
+                json=body,
+            )
+    except (httpx.TimeoutException, httpx.NetworkError) as e:
+        # Transport-level failure (DNS, TLS handshake, connection reset,
+        # read timeout). Convert to a 503 HTTPException so:
+        #   1. The orgs router's `except HTTPException` catch fires the
+        #      `orgs.invitation.failed` metric (observability).
+        #   2. The org admin sees "Clerk API unavailable" instead of a
+        #      bare 500 from the framework.
+        logger.warning(
+            "clerk_admin.create_organization_invitation transport error org=%s email=%s err=%s",
+            org_id,
+            email,
+            e,
         )
+        raise HTTPException(status_code=503, detail="Clerk API unavailable") from e
 
     if response.status_code >= 400:
         logger.warning(
@@ -284,8 +303,6 @@ async def create_organization_invitation(
         # Surface Clerk's error verbatim so the admin sees real causes
         # (duplicate invitation, invalid role, etc.). Caller wraps in
         # HTTPException with the same status code.
-        from fastapi import HTTPException
-
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
     return response.json()
