@@ -733,22 +733,26 @@ class GatewayConnection:
             UnknownModelError,
             cost_microcents,
         )
-        from core.repositories import user_repo
+        from core.repositories import billing_repo
         from core.services import credit_ledger
 
         # Prefer the explicitly-resolved member id from the caller; only
         # fall back to session-key parsing when the caller didn't pass one.
         # For channel/DM/group session keys without a member_id segment,
         # the parser returns owner-context only — that's the wrong row for
-        # provider_choice + credit deduction.
+        # credit deduction.
         if member_user_id:
             billing_user_id = member_user_id
         else:
             parsed = _parse_session_key(chat_session_id)
             billing_user_id = parsed.get("member_id") or self.user_id
 
-        user = await user_repo.get(billing_user_id)
-        if not user or user.get("provider_choice") != "bedrock_claude":
+        # Workstream B (2026-05-03): provider_choice lives on billing_accounts
+        # (per-owner), not on the user row. Keys on self.user_id (owner) — the
+        # member who sent the chat (billing_user_id) doesn't own the choice.
+        # Credits below stay keyed on the member.
+        account = await billing_repo.get_by_owner_id(self.user_id)
+        if not account or account.get("provider_choice") != "bedrock_claude":
             return
 
         # Bedrock model ids may be passed with or without a provider prefix
@@ -1098,10 +1102,11 @@ class GatewayConnectionPool:
         Reads use ``ConsistentRead=True`` so a top-up that just landed
         via Stripe webhook unblocks the next message immediately.
         """
-        from core.repositories import billing_repo, user_repo
+        from core.repositories import billing_repo
         from core.services import credit_ledger
 
         # --- Layer 1: subscription status ----------------------------
+        account: dict | None = None
         if owner_id is not None:
             account = await billing_repo.get_by_owner_id(owner_id)
             # Three cases that pass this gate:
@@ -1125,8 +1130,12 @@ class GatewayConnectionPool:
                 }
 
         # --- Layer 2: card-3 credit balance --------------------------
-        user = await user_repo.get(user_id)
-        if not user or user.get("provider_choice") != "bedrock_claude":
+        # Workstream B (2026-05-03): provider_choice lives on billing_accounts
+        # (per-owner), not on the user row. Keyed on owner_id, not the
+        # chatting member (user_id). Credits stay per-member below.
+        # When owner_id wasn't supplied (back-compat callers), we have no
+        # owner-scoped row to consult, so skip the gate.
+        if account is None or account.get("provider_choice") != "bedrock_claude":
             return {"blocked": False}
 
         balance = await credit_ledger.get_balance(user_id, consistent=True)

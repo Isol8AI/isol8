@@ -9,6 +9,10 @@ Two surfaces:
   from ``_fetch_and_record_usage`` after token counts come back from
   ``sessions.list``; deducts from credit_ledger for card-3 only with
   1.4x markup.
+
+Workstream B (2026-05-03): ``provider_choice`` is read from the
+``billing_accounts`` row (per owner_id), NOT from the ``users`` row.
+Credit balance + deduction stay keyed on the chatting member.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -26,15 +30,20 @@ async def test_card3_with_zero_balance_blocked():
     pool = GatewayConnectionPool(management_api=None)
     with (
         patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "active",
+                    "provider_choice": "bedrock_claude",
+                }
+            ),
         ),
         patch(
             "core.services.credit_ledger.get_balance",
             new=AsyncMock(return_value=0),
         ),
     ):
-        result = await pool.gate_chat(user_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result["blocked"] is True
     assert result["code"] == "out_of_credits"
     assert "Top up" in result["message"]
@@ -45,15 +54,20 @@ async def test_card3_with_positive_balance_allowed():
     pool = GatewayConnectionPool(management_api=None)
     with (
         patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "active",
+                    "provider_choice": "bedrock_claude",
+                }
+            ),
         ),
         patch(
             "core.services.credit_ledger.get_balance",
             new=AsyncMock(return_value=5_000_000),
         ),
     ):
-        result = await pool.gate_chat(user_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
 
 
@@ -65,59 +79,107 @@ async def test_card3_uses_consistent_read():
     get_balance_mock = AsyncMock(return_value=10_000_000)
     with (
         patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "active",
+                    "provider_choice": "bedrock_claude",
+                }
+            ),
         ),
         patch("core.services.credit_ledger.get_balance", new=get_balance_mock),
     ):
-        await pool.gate_chat(user_id="u_1")
+        await pool.gate_chat(user_id="u_1", owner_id="o_1")
     _, kwargs = get_balance_mock.call_args
     assert kwargs.get("consistent") is True
 
 
 @pytest.mark.asyncio
+async def test_card3_balance_keyed_on_member_provider_keyed_on_owner():
+    """Workstream B regression: gate_chat reads provider_choice from
+    billing_repo.get_by_owner_id(owner_id), and credit balance from
+    credit_ledger.get_balance(user_id) — different keys.
+    """
+    pool = GatewayConnectionPool(management_api=None)
+    billing_mock = AsyncMock(
+        return_value={
+            "subscription_status": "active",
+            "provider_choice": "bedrock_claude",
+        }
+    )
+    balance_mock = AsyncMock(return_value=1_000_000)
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock),
+        patch("core.services.credit_ledger.get_balance", new=balance_mock),
+    ):
+        result = await pool.gate_chat(user_id="member_X", owner_id="org_Y")
+
+    assert result == {"blocked": False}
+    # Provider check used the owner.
+    billing_mock.assert_awaited_once_with("org_Y")
+    # Credit balance used the member.
+    balance_args, balance_kwargs = balance_mock.call_args
+    assert balance_args[0] == "member_X"
+
+
+@pytest.mark.asyncio
 async def test_card1_oauth_user_never_gated_by_credits():
     pool = GatewayConnectionPool(management_api=None)
-    with patch(
-        "core.repositories.user_repo.get",
-        new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+    balance_mock = AsyncMock()
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "active",
+                    "provider_choice": "chatgpt_oauth",
+                }
+            ),
+        ),
+        patch("core.services.credit_ledger.get_balance", new=balance_mock),
     ):
-        result = await pool.gate_chat(user_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
+    balance_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_card2_byo_user_never_gated_by_credits():
     pool = GatewayConnectionPool(management_api=None)
-    with patch(
-        "core.repositories.user_repo.get",
-        new=AsyncMock(return_value={"provider_choice": "byo_key"}),
+    balance_mock = AsyncMock()
+    with (
+        patch(
+            "core.repositories.billing_repo.get_by_owner_id",
+            new=AsyncMock(
+                return_value={
+                    "subscription_status": "active",
+                    "provider_choice": "byo_key",
+                }
+            ),
+        ),
+        patch("core.services.credit_ledger.get_balance", new=balance_mock),
     ):
-        result = await pool.gate_chat(user_id="u_1")
+        result = await pool.gate_chat(user_id="u_1", owner_id="o_1")
     assert result == {"blocked": False}
+    balance_mock.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_user_without_provider_choice_never_gated():
-    """Legacy users (pre-pivot, no provider_choice) shouldn't be locked
-    out — they keep working until they re-onboard."""
+async def test_billing_row_without_provider_choice_never_gated():
+    """Legacy billing rows (pre-Workstream-B) without provider_choice
+    shouldn't be locked out — they keep working until provider is set."""
     pool = GatewayConnectionPool(management_api=None)
     with patch(
-        "core.repositories.user_repo.get",
-        new=AsyncMock(return_value={"user_id": "u_legacy"}),
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(
+            return_value={
+                # legacy row carries stripe_subscription_id, no
+                # subscription_status, no provider_choice
+                "stripe_subscription_id": "sub_legacy",
+            }
+        ),
     ):
-        result = await pool.gate_chat(user_id="u_legacy")
-    assert result == {"blocked": False}
-
-
-@pytest.mark.asyncio
-async def test_missing_user_record_never_gated():
-    pool = GatewayConnectionPool(management_api=None)
-    with patch(
-        "core.repositories.user_repo.get",
-        new=AsyncMock(return_value=None),
-    ):
-        result = await pool.gate_chat(user_id="u_missing")
+        result = await pool.gate_chat(user_id="u_legacy", owner_id="o_legacy")
     assert result == {"blocked": False}
 
 
@@ -147,16 +209,16 @@ async def test_inactive_subscription_blocks_chat_regardless_of_provider(status):
 @pytest.mark.parametrize("status", ["active", "trialing"])
 async def test_active_or_trialing_subscription_does_not_trigger_sub_gate(status):
     """active/trialing pass the subscription gate (then fall through to
-    the legacy provider_choice + balance check)."""
+    the provider_choice + balance check). Without provider_choice set,
+    Layer-2 returns blocked=False."""
     pool = GatewayConnectionPool(management_api=None)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"subscription_status": status}),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(
+            return_value={
+                "subscription_status": status,
+                "provider_choice": "chatgpt_oauth",
+            }
         ),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
@@ -186,14 +248,13 @@ async def test_legacy_billing_row_without_status_does_not_block():
     subscription_status backfilled — those should NOT be locked out
     mid-deploy."""
     pool = GatewayConnectionPool(management_api=None)
-    with (
-        patch(
-            "core.repositories.billing_repo.get_by_owner_id",
-            new=AsyncMock(return_value={"stripe_subscription_id": "sub_legacy"}),
-        ),
-        patch(
-            "core.repositories.user_repo.get",
-            new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
+    with patch(
+        "core.repositories.billing_repo.get_by_owner_id",
+        new=AsyncMock(
+            return_value={
+                "stripe_subscription_id": "sub_legacy",
+                "provider_choice": "chatgpt_oauth",
+            }
         ),
     ):
         result = await pool.gate_chat(user_id="u_1", owner_id="u_1")
@@ -201,15 +262,16 @@ async def test_legacy_billing_row_without_status_does_not_block():
 
 
 @pytest.mark.asyncio
-async def test_owner_id_omitted_skips_subscription_gate_for_back_compat():
-    """Old callers that don't pass owner_id keep their pre-M1 behavior."""
+async def test_owner_id_omitted_skips_all_gates_for_back_compat():
+    """Old callers that don't pass owner_id keep their pre-Workstream-B
+    behavior — neither the subscription nor the provider gate runs.
+    """
     pool = GatewayConnectionPool(management_api=None)
-    with patch(
-        "core.repositories.user_repo.get",
-        new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
-    ):
+    billing_mock = AsyncMock()
+    with patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock):
         result = await pool.gate_chat(user_id="u_1")  # no owner_id
     assert result == {"blocked": False}
+    billing_mock.assert_not_called()
 
 
 # --------- Task 5: connection._maybe_deduct_credits ---------
@@ -235,7 +297,7 @@ async def test_deduct_for_card3_sonnet_with_markup():
     deduct_mock = AsyncMock(return_value=8_000_000)
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -264,7 +326,7 @@ async def test_deduct_for_card3_opus_with_markup():
     deduct_mock = AsyncMock(return_value=0)
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -281,12 +343,41 @@ async def test_deduct_for_card3_opus_with_markup():
 
 
 @pytest.mark.asyncio
+async def test_deduct_provider_keyed_on_owner_credits_keyed_on_member():
+    """Workstream B regression: _maybe_deduct_credits reads
+    provider_choice from billing_repo.get_by_owner_id(self.user_id)
+    (the owner), but deducts credits keyed on the chatting member.
+    """
+    conn = _make_connection(user_id="org_Y")
+    billing_mock = AsyncMock(return_value={"provider_choice": "bedrock_claude"})
+    deduct_mock = AsyncMock(return_value=0)
+    with (
+        patch("core.repositories.billing_repo.get_by_owner_id", new=billing_mock),
+        patch("core.services.credit_ledger.deduct", new=deduct_mock),
+    ):
+        await conn._maybe_deduct_credits(
+            chat_session_id="sess_1",
+            member_user_id="member_X",
+            model="amazon-bedrock/anthropic.claude-sonnet-4-6",
+            input_tokens=1000,
+            output_tokens=500,
+        )
+
+    # Provider lookup keyed on owner.
+    billing_mock.assert_awaited_once_with("org_Y")
+    # Credit deduct keyed on member (passed as positional arg).
+    deduct_mock.assert_awaited_once()
+    args, _ = deduct_mock.call_args
+    assert args[0] == "member_X"
+
+
+@pytest.mark.asyncio
 async def test_skip_deduct_for_card1():
     conn = _make_connection()
     deduct_mock = AsyncMock()
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "chatgpt_oauth"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -306,7 +397,7 @@ async def test_skip_deduct_for_card2():
     deduct_mock = AsyncMock()
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "byo_key"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -328,7 +419,7 @@ async def test_unknown_model_skips_deduct():
     deduct_mock = AsyncMock()
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -350,7 +441,7 @@ async def test_model_id_without_provider_prefix_works():
     deduct_mock = AsyncMock(return_value=0)
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value={"provider_choice": "bedrock_claude"}),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
@@ -365,12 +456,14 @@ async def test_model_id_without_provider_prefix_works():
 
 
 @pytest.mark.asyncio
-async def test_missing_user_record_skips_deduct():
+async def test_missing_billing_row_skips_deduct():
+    """No billing row for owner → skip credit deduction (no provider
+    choice to gate on)."""
     conn = _make_connection()
     deduct_mock = AsyncMock()
     with (
         patch(
-            "core.repositories.user_repo.get",
+            "core.repositories.billing_repo.get_by_owner_id",
             new=AsyncMock(return_value=None),
         ),
         patch("core.services.credit_ledger.deduct", new=deduct_mock),
