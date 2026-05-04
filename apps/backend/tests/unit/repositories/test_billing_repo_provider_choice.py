@@ -136,15 +136,21 @@ async def test_set_provider_choice_unknown_provider_rejected(dynamodb_table):
 
 
 @pytest.mark.asyncio
-async def test_set_provider_choice_byo_key_without_provider_rejected(dynamodb_table):
+async def test_set_provider_choice_byo_key_without_provider_now_allowed(dynamodb_table):
+    """byo_provider can be set later via the BYO settings step; not required
+    at /trial-checkout time. Codex P1 #3179631946 — fixing the BYO signup
+    regression where the picker submits {provider_choice: 'byo_key'} alone.
+    """
     await billing_repo.create_if_not_exists("user_v", "cus_vwx", owner_type="personal")
-    with pytest.raises(ValueError, match="byo_provider"):
-        await billing_repo.set_provider_choice(
-            "user_v",
-            provider_choice="byo_key",
-            byo_provider=None,
-            owner_type="personal",
-        )
+    await billing_repo.set_provider_choice(
+        "user_v",
+        provider_choice="byo_key",
+        byo_provider=None,
+        owner_type="personal",
+    )
+    row = await billing_repo.get_by_owner_id("user_v")
+    assert row["provider_choice"] == "byo_key"
+    assert row.get("byo_provider") is None
 
 
 @pytest.mark.asyncio

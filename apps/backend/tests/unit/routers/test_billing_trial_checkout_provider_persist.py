@@ -11,7 +11,8 @@ nothing.
 These tests pin down:
   1. provider_choice (no byo_provider) is persisted before the Stripe call
   2. byo_provider is persisted alongside provider_choice when byo_key
-  3. byo_key without byo_provider 400s before any DDB write
+  3. byo_key without byo_provider succeeds (picker submits it alone; the
+     BYO wizard fills in byo_provider later — Codex P1 #3179631946)
 """
 
 from unittest.mock import AsyncMock, patch
@@ -88,20 +89,39 @@ async def test_trial_checkout_persists_byo_provider_when_byo_key(async_client):
 
 
 @pytest.mark.asyncio
-async def test_trial_checkout_byo_key_without_provider_rejected(async_client):
-    """If provider_choice=byo_key, byo_provider is required (400 before any DDB write)."""
-    with patch(
-        "routers.billing.billing_repo.set_provider_choice",
-        new_callable=AsyncMock,
-    ) as mock_set_pc:
+async def test_trial_checkout_byo_key_without_provider_now_allowed(async_client):
+    """The picker submits {provider_choice: 'byo_key'} alone; byo_provider
+    gets set later in the BYO wizard step after Stripe checkout completes.
+    Per Codex P1 #3179631946 — fixing the BYO signup regression.
+    """
+    fake_account = {
+        "owner_id": "user_v",
+        "owner_type": "personal",
+        "stripe_customer_id": "cus_stu",
+    }
+
+    with (
+        patch("routers.billing._get_billing_account", new_callable=AsyncMock, return_value=fake_account),
+        patch("routers.billing.billing_repo.set_provider_choice", new_callable=AsyncMock) as mock_set_pc,
+        patch(
+            "core.services.billing_service.create_flat_fee_checkout",
+            new_callable=AsyncMock,
+        ) as mock_checkout,
+    ):
+        mock_checkout.return_value = type("S", (), {"url": "https://checkout.stripe.com/foo"})()
+
         resp = await async_client.post(
             "/api/v1/billing/trial-checkout",
-            json={"provider_choice": "byo_key"},  # missing byo_provider
+            json={"provider_choice": "byo_key"},  # no byo_provider
         )
 
-    assert resp.status_code == 400
-    assert "byo_provider" in resp.json().get("detail", "")
-    mock_set_pc.assert_not_awaited()
+    assert resp.status_code == 200
+    mock_set_pc.assert_awaited_once_with(
+        "user_v",
+        provider_choice="byo_key",
+        byo_provider=None,
+        owner_type="personal",
+    )
 
 
 @pytest.mark.asyncio

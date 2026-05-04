@@ -140,15 +140,17 @@ async def set_provider_choice(
     Args:
         owner_id: org_id or personal user_id (the billing row's PK).
         provider_choice: one of ``bedrock_claude``, ``byo_key``, ``chatgpt_oauth``.
-        byo_provider: required when ``provider_choice == "byo_key"``; ``None``
-            otherwise. The row's ``byo_provider`` attribute is REMOVE'd
-            when not byo_key so a switch from byo_key to bedrock_claude
-            doesn't leave stale data.
+        byo_provider: optional even when ``provider_choice == "byo_key"`` —
+            the picker submits ``byo_key`` alone at /trial-checkout time, and
+            the BYO wizard fills in ``byo_provider`` (openai vs anthropic) +
+            the actual API key in a later step (Codex P1 #3179631946). The
+            row's ``byo_provider`` attribute is REMOVE'd whenever it's
+            ``None`` so a switch away from byo_key, or a re-pick of byo_key
+            without a chosen provider yet, doesn't leave stale data.
         owner_type: ``"personal"`` or ``"org"``. Used for the org invariant.
 
     Raises:
-        ValueError: unknown provider_choice, or chatgpt_oauth on an org row,
-            or byo_key without byo_provider.
+        ValueError: unknown provider_choice, or chatgpt_oauth on an org row.
     """
     if provider_choice not in _VALID_PROVIDER_CHOICES:
         raise ValueError(f"unknown provider_choice: {provider_choice!r}")
@@ -158,15 +160,18 @@ async def set_provider_choice(
         raise ValueError(
             "chatgpt_oauth is not allowed for org owners; orgs must use bedrock_claude or byo_key",
         )
-    if provider_choice == "byo_key" and byo_provider is None:
-        raise ValueError("byo_provider required when provider_choice == 'byo_key'")
 
     now = utc_now_iso()
     table = _get_table()
-    if provider_choice == "byo_key":
+    if provider_choice == "byo_key" and byo_provider is not None:
         update_expr = "SET provider_choice = :pc, byo_provider = :bp, updated_at = :t"
         values: dict = {":pc": provider_choice, ":bp": byo_provider, ":t": now}
     else:
+        # provider_choice != byo_key, OR byo_key without a chosen byo_provider
+        # yet. Drop any prior byo_provider so a switch away from byo_key, or a
+        # re-pick of byo_key before the BYO wizard fills in the provider,
+        # doesn't leak a stale value onto the row. DDB also rejects SETting
+        # an attribute to None — REMOVE is the correct verb here.
         update_expr = "SET provider_choice = :pc, updated_at = :t REMOVE byo_provider"
         values = {":pc": provider_choice, ":t": now}
 

@@ -301,16 +301,21 @@ async def create_portal(
 class TrialCheckoutRequest(BaseModel):
     # Pydantic Literal validates at request time (422 on unknown values), so
     # the body never reaches billing_repo / Stripe with junk that would later
-    # blow up ECS provisioning. The endpoint still raises 400 on the
-    # byo_key-without-byo_provider invariant — Literal enforces the enum,
-    # not the cross-field requirement.
+    # blow up ECS provisioning. byo_provider is optional even for byo_key —
+    # the picker submits {provider_choice: "byo_key"} alone, then a later
+    # wizard step collects byo_provider + the actual API key (Codex P1
+    # #3179631946).
     provider_choice: Literal["chatgpt_oauth", "byo_key", "bedrock_claude"] = Field(
         ...,
         description="chatgpt_oauth | byo_key | bedrock_claude",
     )
     byo_provider: Literal["openai", "anthropic"] | None = Field(
         None,
-        description="Required when provider_choice='byo_key'",
+        description=(
+            "Optional. Set later via the BYO wizard step after Stripe checkout "
+            "completes. The gateway/provisioner enforces a populated byo_provider "
+            "(plus an actual key) as a separate downstream gate."
+        ),
     )
 
 
@@ -338,13 +343,14 @@ async def create_trial_checkout(
 
     # Note: provider_choice and byo_provider enums are enforced by pydantic
     # Literal in TrialCheckoutRequest — invalid values produce 422 before
-    # reaching this handler. The cross-field invariant (byo_key requires a
-    # byo_provider value) is still enforced manually below.
-    if body.provider_choice == "byo_key" and not body.byo_provider:
-        raise HTTPException(
-            status_code=400,
-            detail="byo_provider required when provider_choice == 'byo_key'",
-        )
+    # reaching this handler. byo_provider is intentionally optional even
+    # for byo_key: ProvisioningStepper.ProviderPicker submits
+    # {provider_choice: "byo_key"} alone, then collects byo_provider
+    # (openai vs anthropic) and the actual API key in a later wizard step
+    # after Stripe checkout completes (Codex P1 #3179631946 — fixing the
+    # BYO signup regression). The gateway/provisioner enforces "byo_key
+    # + populated byo_provider + populated key" as a separate downstream
+    # gate before any agent run.
 
     # Org-context users cannot pick ChatGPT OAuth — see
     # memory/project_chatgpt_oauth_personal_only.md (decision 2026-04-30:
