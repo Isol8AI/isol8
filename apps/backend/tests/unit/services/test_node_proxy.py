@@ -3,7 +3,7 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from routers.node_proxy import (
+from core.services.node_proxy import (
     handle_node_connect,
     handle_node_disconnect,
     get_user_node,
@@ -27,7 +27,7 @@ def clear_module_state():
 
 @pytest.fixture
 def mock_ecs():
-    with patch("routers.node_proxy.get_ecs_manager") as m:
+    with patch("core.services.node_proxy.get_ecs_manager") as m:
         ecs = AsyncMock()
         ecs.resolve_running_container = AsyncMock(return_value=({"gateway_token": "tok123"}, "10.0.1.1"))
         m.return_value = ecs
@@ -36,7 +36,7 @@ def mock_ecs():
 
 @pytest.fixture
 def mock_pool():
-    with patch("routers.node_proxy.get_gateway_pool") as m:
+    with patch("core.services.node_proxy.get_gateway_pool") as m:
         pool = MagicMock()
         pool.broadcast_to_member = AsyncMock()
         m.return_value = pool
@@ -45,7 +45,7 @@ def mock_pool():
 
 @pytest.fixture
 def mock_upstream():
-    with patch("routers.node_proxy.NodeUpstreamConnection") as cls:
+    with patch("core.services.node_proxy.NodeUpstreamConnection") as cls:
         upstream = AsyncMock()
         upstream.connect = AsyncMock(return_value={"ok": True, "payload": {"protocol": 3}})
         upstream.start_reader = AsyncMock()
@@ -57,7 +57,7 @@ def mock_upstream():
 
 @pytest.fixture
 def mock_config_patcher():
-    with patch("routers.node_proxy.patch_openclaw_config", new_callable=AsyncMock) as m:
+    with patch("core.services.node_proxy.patch_openclaw_config", new_callable=AsyncMock) as m:
         yield m
 
 
@@ -227,7 +227,7 @@ async def test_disconnect_is_idempotent_on_double_call(mock_ecs, mock_pool, mock
     can trigger handle_node_disconnect for the same connection. Calling
     twice must not double-decrement _node_count (ref counter) — the
     second call must be a no-op."""
-    from routers.node_proxy import _node_count
+    from core.services.node_proxy import _node_count
 
     mgmt = MagicMock()
     await handle_node_connect(
@@ -263,7 +263,7 @@ async def test_upstream_closed_callback_cleans_up_user_state(mock_ecs, mock_pool
     callback installed in handle_node_connect must tear down _user_nodes
     and emit node_status=disconnected — otherwise the agent keeps
     binding sessions to a dead nodeId while the desktop is still alive."""
-    from routers.node_proxy import _user_nodes
+    from core.services.node_proxy import _user_nodes
 
     mgmt = MagicMock()
     await handle_node_connect(

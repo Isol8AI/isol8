@@ -22,7 +22,7 @@ from core.containers import get_ecs_manager, get_gateway_pool
 from core.observability.metrics import put_metric
 from core.services.connection_service import ConnectionService, ConnectionServiceError
 from core.services.management_api_client import ManagementApiClient
-from routers.node_proxy import (
+from core.services.node_proxy import (
     handle_node_connect,
     handle_node_message,
     handle_node_disconnect,
@@ -691,7 +691,7 @@ async def _process_agent_chat_background(
         )
 
         # --- Node binding: pin this session to the user's Mac if connected ---
-        from routers.node_proxy import get_user_node, get_patched_session, set_patched_session
+        from core.services.node_proxy import get_user_node, get_patched_session, set_patched_session
 
         node_info = get_user_node(user_id)
         if node_info:

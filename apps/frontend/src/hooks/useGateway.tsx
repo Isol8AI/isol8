@@ -439,9 +439,12 @@ export function GatewayProvider({ children }: { children: ReactNode }) {
 
   // ---- send (raw fire-and-forget) ----
 
-  // Fire-and-forget send for best-effort signals (e.g. user_active pings
-  // for the free-tier scale-to-zero reaper). Silent no-op when the socket
-  // isn't open — callers retry on their own cadence.
+  // Fire-and-forget send for best-effort signals — currently the
+  // teams.subscribe / teams.unsubscribe envelopes from
+  // TeamsEventsProvider, but kept generic so future ws-broker
+  // subscription kinds can reuse it. Silent no-op when the socket
+  // isn't open; callers retry on their own cadence (TeamsEventsProvider
+  // re-fires on isConnected transitions).
   const send = useCallback((payload: unknown): void => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== WebSocket.OPEN) {

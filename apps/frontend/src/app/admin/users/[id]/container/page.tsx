@@ -178,7 +178,7 @@ export default async function AdminUserContainerPage({ params }: PageProps) {
       </section>
 
       {/* Actions */}
-      <ContainerActionsPanel userId={id} currentTier={container.subscription_status ?? undefined} />
+      <ContainerActionsPanel userId={id} />
     </div>
   );
 }
