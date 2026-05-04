@@ -811,53 +811,10 @@ async def handle_stripe_webhook(
         # owner_id is the credit ledger key — org_id for org context,
         # user_id for personal. See create_credit_top_up_checkout for
         # where we write it.
-        #
-        # Bridge: in-flight Checkout sessions started before the
-        # owner-pool deploy carry only metadata.user_id. Naively
-        # crediting that key is wrong for the ORG case (admin paid the
-        # org's Stripe customer, but metadata.user_id is the admin's
-        # clerk id — crediting it leaves the org pool empty, the same
-        # bug we're fixing). To resolve safely we cross-check against
-        # session.customer: if the user_id's billing row uses that same
-        # customer, the top-up was personal (owner_id == user_id).
-        # Otherwise we can't disambiguate which org owns it from the
-        # session data alone, so we refuse + emit a metric. Ops can run
-        # credit_ledger.adjustment(...) manually for the small number of
-        # affected sessions. Codex P1 on PR #526.
         metadata = session["metadata"]
+        owner_id = metadata.get("owner_id")
         amount_cents_str = metadata.get("amount_cents")
-        ledger_key = metadata.get("owner_id")
-        if not ledger_key and metadata.get("user_id"):
-            legacy_user_id = metadata["user_id"]
-            session_customer = session.get("customer")
-            user_account = await billing_repo.get_by_owner_id(legacy_user_id)
-            user_customer = (user_account or {}).get("stripe_customer_id")
-            if session_customer and user_customer == session_customer:
-                ledger_key = legacy_user_id
-                put_metric("credit.top_up.legacy_metadata")
-                logger.warning(
-                    "Credit top-up using legacy metadata.user_id for session %s — "
-                    "personal in-flight checkout from before owner-pool deploy",
-                    session.get("id"),
-                )
-            else:
-                # Org top-up pre-cutover. metadata.user_id is the admin
-                # clerk id, session.customer is the org's customer; we
-                # have no safe way to recover the org_id without scanning
-                # billing-accounts. Refuse + log loudly so ops can run a
-                # manual adjustment.
-                put_metric("credit.top_up.legacy_metadata_unresolved")
-                logger.error(
-                    "Credit top-up legacy metadata.user_id=%s but session.customer=%s "
-                    "does not match that user's billing account (%s); cannot resolve "
-                    "owner_id. Manual adjustment required for session %s",
-                    legacy_user_id,
-                    session_customer,
-                    user_customer,
-                    session.get("id"),
-                )
-                return Response(status_code=200)
-        if not ledger_key or not amount_cents_str:
+        if not owner_id or not amount_cents_str:
             logger.error("Credit top-up checkout.session missing metadata: %s", session.get("id"))
             return Response(status_code=200)
 
@@ -871,7 +828,7 @@ async def handle_stripe_webhook(
         amount_cents = int(amount_cents_str)
         amount_microcents = amount_cents * 10_000
         await credit_ledger.top_up(
-            ledger_key,
+            owner_id,
             amount_microcents=amount_microcents,
             # Use session id as the idempotency key on the ledger side —
             # one Checkout completion = one credit grant, even if Stripe
