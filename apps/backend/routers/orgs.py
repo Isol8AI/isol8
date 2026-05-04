@@ -16,6 +16,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _has_active_personal_tenancy(account: dict) -> bool:
+    """A `billing_accounts` row counts as an active personal tenancy when:
+
+    1. ``subscription_status`` is ``active`` or ``trialing`` — the canonical
+       case for rows written after the per-owner subscription_status backfill.
+    2. ``stripe_subscription_id`` is set AND ``subscription_status`` is
+       missing/null — pre-cutover legacy row that was created before the
+       backfill landed. We do NOT call Stripe here to verify the live status:
+       conservatively block the invite and let the user cancel cleanly via
+       the Stripe customer portal before joining an org. Mirrors the legacy-
+       row handling in ``/billing/trial-checkout`` (which DOES call Stripe,
+       but that path needs to allow re-checkout for genuinely-canceled subs;
+       we don't).
+    """
+    if account.get("subscription_status") in ("active", "trialing"):
+        return True
+    if account.get("stripe_subscription_id") and not account.get("subscription_status"):
+        return True
+    return False
+
+
 @router.post(
     "/{org_id}/invitations",
     response_model=CreateInvitationResponse,
@@ -46,12 +67,13 @@ async def create_invitation(
     existing = await clerk_admin.find_user_by_email(invitee_email)
     if existing is not None:
         account = await billing_repo.get_by_owner_id(existing["id"])
-        if account and account.get("subscription_status") in ("active", "trialing"):
+        if account and _has_active_personal_tenancy(account):
             put_metric("orgs.invitation.blocked", dimensions={"reason": PERSONAL_USER_EXISTS})
             logger.info(
-                "orgs.invitation.blocked owner_id=%s personal_status=%s",
+                "orgs.invitation.blocked owner_id=%s personal_status=%s legacy_sub=%s",
                 existing["id"],
                 account.get("subscription_status"),
+                bool(account.get("stripe_subscription_id")),
             )
             raise HTTPException(
                 status_code=409,

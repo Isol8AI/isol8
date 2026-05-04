@@ -106,6 +106,34 @@ def test_invite_to_email_with_inactive_billing_succeeds(app, admin_auth):
     assert resp.status_code == 201
 
 
+def test_invite_to_email_with_legacy_sub_no_status_returns_409(app, admin_auth):
+    """Pre-cutover legacy rows have stripe_subscription_id set but
+    subscription_status null/missing. Conservatively treat as active
+    personal tenancy and refuse the invite — let the user cancel cleanly
+    via Stripe portal first. Codex P1 on PR #531."""
+    _override_auth(app, admin_auth)
+    with patch("routers.orgs.clerk_admin") as mock_clerk, patch("routers.orgs.billing_repo") as mock_billing:
+        mock_clerk.find_user_by_email = AsyncMock(return_value={"id": "user_legacy"})
+        mock_billing.get_by_owner_id = AsyncMock(
+            return_value={
+                "owner_id": "user_legacy",
+                "stripe_customer_id": "cus_legacy",
+                "stripe_subscription_id": "sub_legacy",
+                "subscription_status": None,  # not backfilled yet
+            }
+        )
+        mock_clerk.create_organization_invitation = AsyncMock()
+        client = TestClient(app)
+        resp = client.post(
+            "/api/v1/orgs/org_test/invitations",
+            json={"email": "legacy@example.com", "role": "org:member"},
+        )
+    assert resp.status_code == 409
+    body = resp.json()
+    assert body["detail"]["code"] == "personal_user_exists"
+    mock_clerk.create_organization_invitation.assert_not_awaited()
+
+
 @pytest.mark.parametrize("status", ["active", "trialing"])
 def test_invite_to_email_with_active_personal_returns_409(app, admin_auth, status):
     _override_auth(app, admin_auth)
