@@ -248,15 +248,6 @@ export default function OnboardingPage() {
           </span>
         </button>
       </div>
-
-      {pendingInvitations.length > 0 && (
-        <button
-          onClick={() => setMode("invitations")}
-          className="text-sm text-primary underline underline-offset-4 hover:text-primary/80"
-        >
-          You have {pendingInvitations.length} pending invitation{pendingInvitations.length > 1 ? "s" : ""}
-        </button>
-      )}
     </div>
   );
 }

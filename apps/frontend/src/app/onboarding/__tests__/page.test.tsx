@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 // Minimal Clerk mocks — pending invitations + no memberships + no org.
@@ -25,6 +25,14 @@ vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser: vi.fn() }) }));
 vi.mock("posthog-js/react", () => ({ usePostHog: () => null }));
 
 describe("OnboardingPage", () => {
+  // vitest caches dynamically-imported modules, so a `vi.doMock` registered
+  // in test N has no effect on test N+1 unless we reset the module cache
+  // (and the previous mock) between tests.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doUnmock("@clerk/nextjs");
+  });
+
   it("forces invitation mode when pending invitations exist — no Skip button", async () => {
     vi.doMock("@clerk/nextjs", () =>
       buildClerkMocks({
@@ -39,10 +47,10 @@ describe("OnboardingPage", () => {
     );
     const { default: Page } = await import("../page");
     render(<Page />);
-    // Invitation card is shown
-    expect(
-      screen.getByText(/Acme Org|Pending invitation/i),
-    ).toBeInTheDocument();
+    // Invitation card is shown — the org name is the unique anchor
+    // (the "Pending invitation" helper text appears alongside it but
+    // is not a single-match anchor).
+    expect(screen.getByText("Acme Org")).toBeInTheDocument();
     // No "Skip invitations" escape hatch
     expect(
       screen.queryByRole("button", { name: /skip invitations/i }),
