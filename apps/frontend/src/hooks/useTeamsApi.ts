@@ -4,6 +4,22 @@ import useSWR, { type SWRConfiguration, type SWRResponse } from "swr";
 import { useApi } from "@/lib/api";
 
 /**
+ * The BFF emits ``HTTPException(status_code=202, detail="team workspace
+ * provisioning")`` when ``_ctx`` lazy-provisions a missing workspace. fetch()
+ * treats any 2xx as success and surfaces the body verbatim, so panels would
+ * otherwise see ``{detail}`` envelopes and render misleading empty/undefined
+ * states. Detect the envelope at the read layer and convert it into a
+ * thrown sentinel error so SWR's error path is uniformly hit on every
+ * panel — TeamsLayout then handles the polling/UI globally.
+ */
+const PROVISIONING_DETAIL = "team workspace provisioning";
+
+export interface TeamsApiError extends Error {
+  status: number;
+  detail?: string;
+}
+
+/**
  * Hook for the teams BFF surface (`/api/v1/teams/*`).
  *
  * Centralizes all Clerk-authenticated calls into the BFF so re-routing the
@@ -32,7 +48,20 @@ export function useTeamsApi() {
   function useRead<T = unknown>(path: string, swrOpts?: SWRConfiguration<T>): SWRResponse<T> {
     return useSWR<T>(
       `/teams${path}`,
-      () => api.get(`/teams${path}`) as Promise<T>,
+      async () => {
+        const body = (await api.get(`/teams${path}`)) as T | { detail?: string };
+        if (
+          body &&
+          typeof body === "object" &&
+          (body as { detail?: string }).detail === PROVISIONING_DETAIL
+        ) {
+          const err = new Error(PROVISIONING_DETAIL) as TeamsApiError;
+          err.status = 202;
+          err.detail = PROVISIONING_DETAIL;
+          throw err;
+        }
+        return body as T;
+      },
       swrOpts,
     );
   }
@@ -55,4 +84,47 @@ export function useTeamsApi() {
   }
 
   return { read: useRead, post, patch, del };
+}
+
+export type TeamsWorkspaceStatus =
+  | { kind: "loading" }
+  | { kind: "ready" }
+  | { kind: "provisioning" }
+  | { kind: "subscribe_required" }
+  | { kind: "error"; error: TeamsApiError | Error };
+
+/**
+ * Single source of truth for "is the user's Teams workspace ready?".
+ *
+ * Consumed by ``TeamsLayout`` so the entire ``/teams/*`` tree shares one
+ * provisioning/subscribe overlay rather than each panel rolling its own
+ * detection. Drives an SWR auto-poll while in the provisioning state so
+ * the layout flips to ``ready`` as soon as the BFF returns 200.
+ *
+ * Implementation: hits ``/teams/dashboard`` (cheapest existing endpoint;
+ * SWR cache shares the request with ``DashboardPanel`` when the user is
+ * actually on /teams/dashboard) and inspects the response/error.
+ */
+export function useTeamsWorkspaceStatus(): TeamsWorkspaceStatus {
+  const { read } = useTeamsApi();
+  // Auto-retry only on the 202 "provisioning" sentinel. Other errors
+  // (402 subscribe-required, 5xx, etc.) stop retrying so the layout
+  // can render its terminal state. ``errorRetryCount`` caps the
+  // polling at ~90s before giving up — provision_org realistically
+  // completes in 10-30s, so 30 retries × 3s is generous headroom.
+  const { data, error, isLoading } = read<unknown>("/dashboard", {
+    errorRetryInterval: 3000,
+    errorRetryCount: 30,
+    shouldRetryOnError: (err: unknown) =>
+      (err as TeamsApiError | undefined)?.status === 202,
+  });
+  if (error) {
+    const e = error as TeamsApiError;
+    if (e.status === 202) return { kind: "provisioning" };
+    if (e.status === 402) return { kind: "subscribe_required" };
+    return { kind: "error", error: e };
+  }
+  if (isLoading) return { kind: "loading" };
+  if (data) return { kind: "ready" };
+  return { kind: "loading" };
 }
