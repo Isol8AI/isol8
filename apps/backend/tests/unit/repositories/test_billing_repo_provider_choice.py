@@ -187,3 +187,32 @@ async def test_clear_provider_choice(dynamodb_table):
     row = await billing_repo.get_by_owner_id("user_s")
     assert row.get("provider_choice") is None
     assert row.get("byo_provider") is None
+
+
+@pytest.mark.asyncio
+async def test_clear_provider_choice_no_row_is_noop(dynamodb_table):
+    """Per Codex P1 #3179825257: clear_provider_choice must NOT create a
+    phantom billing row when called for an owner without one. Otherwise
+    /billing/trial-checkout's `if not account` check sees the phantom and
+    skips Stripe customer creation."""
+    await billing_repo.clear_provider_choice("user_does_not_exist")
+    row = await billing_repo.get_by_owner_id("user_does_not_exist")
+    assert row is None  # no phantom row created
+
+
+@pytest.mark.asyncio
+async def test_clear_provider_choice_existing_row_clears_fields(dynamodb_table):
+    """Sanity: when the row exists, clear still works."""
+    await billing_repo.create_if_not_exists("user_y2", "cus_xyz", owner_type="personal")
+    await billing_repo.set_provider_choice(
+        "user_y2",
+        provider_choice="byo_key",
+        byo_provider="openai",
+        owner_type="personal",
+    )
+    await billing_repo.clear_provider_choice("user_y2")
+    row = await billing_repo.get_by_owner_id("user_y2")
+    assert row is not None  # row preserved
+    assert row.get("provider_choice") is None
+    assert row.get("byo_provider") is None
+    assert row.get("stripe_customer_id") == "cus_xyz"  # original fields preserved

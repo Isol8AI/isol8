@@ -104,14 +104,17 @@ async def disconnect(ctx: AuthContext = Depends(get_current_user)):
         pass
     # Clear provider_choice so the next /chat visit routes the user back to
     # onboarding to pick a provider. Without this, the wizard sees
-    # provider_choice=chatgpt_oauth on a user with no auth.json and the
+    # provider_choice=chatgpt_oauth on a billing row with no auth.json and the
     # container starts but cannot run inference.
-    from core.repositories import user_repo
+    #
+    # ChatGPT OAuth is personal-only (see memory/project_chatgpt_oauth_personal_only.md),
+    # so the billing row's owner_id IS ctx.user_id.
+    from core.repositories import billing_repo
 
     try:
-        await user_repo.clear_provider_choice(ctx.user_id)
+        await billing_repo.clear_provider_choice(ctx.user_id)
     except Exception:
         # Best-effort. The OAuth row + EFS file are already gone; missing
-        # user_repo update just means the user has to manually re-pick.
+        # billing_repo update just means the user has to manually re-pick.
         pass
     return {"status": "disconnected"}
