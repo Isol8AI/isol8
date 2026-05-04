@@ -277,9 +277,15 @@ async def create_organization_invitation(
                 headers=headers,
                 json=body,
             )
-    except (httpx.TimeoutException, httpx.NetworkError) as e:
-        # Transport-level failure (DNS, TLS handshake, connection reset,
-        # read timeout). Convert to a 503 HTTPException so:
+    except httpx.TransportError as e:
+        # Transport-level failure — covers all of httpx's transport
+        # subclasses: TimeoutException, NetworkError (DNS, connection
+        # reset, read errors), ProtocolError (malformed request/response
+        # framing), ProxyError, UnsupportedProtocol. Catching the parent
+        # class instead of an enumerated tuple prevents future httpx
+        # additions from leaking out as bare 500s.
+        #
+        # Convert to a 503 HTTPException so:
         #   1. The orgs router's `except HTTPException` catch fires the
         #      `orgs.invitation.failed` metric (observability).
         #   2. The org admin sees "Clerk API unavailable" instead of a

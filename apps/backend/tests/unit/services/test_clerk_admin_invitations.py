@@ -187,3 +187,42 @@ async def test_create_organization_invitation_raises_503_on_timeout():
             )
 
     assert exc_info.value.status_code == 503
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "exc",
+    [
+        httpx.RemoteProtocolError("malformed framing"),
+        httpx.ProxyError("proxy unreachable"),
+        httpx.UnsupportedProtocol("ftp scheme"),
+    ],
+)
+async def test_create_organization_invitation_raises_503_on_other_transport_errors(exc):
+    """Catch everything under httpx.TransportError — Codex P2 on PR #531
+    flagged that the original tuple of (TimeoutException, NetworkError)
+    missed ProtocolError / ProxyError / UnsupportedProtocol. Pin the
+    contract so future httpx subclass additions don't silently leak out
+    as bare 500s."""
+    from fastapi import HTTPException
+
+    with (
+        patch.object(clerk_admin, "settings") as mock_settings,
+        patch("core.services.clerk_admin.httpx.AsyncClient") as mock_client_cls,
+    ):
+        mock_settings.CLERK_SECRET_KEY = "sk_test_123"
+        mock_client = AsyncMock()
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = None
+        mock_client.post.side_effect = exc
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(HTTPException) as exc_info:
+            await clerk_admin.create_organization_invitation(
+                org_id="org_test",
+                email="x@example.com",
+                role="org:member",
+                inviter_user_id="user_inviter",
+            )
+
+    assert exc_info.value.status_code == 503
