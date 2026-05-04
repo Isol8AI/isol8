@@ -252,3 +252,40 @@ async def test_provision_existing_container_skips_payment_gate():
         result = await container_provision(auth=_auth())
     assert result["already_existed"] is True
     assert result["status"] == "running"
+
+
+@pytest.mark.asyncio
+async def test_provision_402_returns_structured_blocked_payload():
+    """Per provision-gate-ui spec: _assert_provision_allowed must raise
+    402 with a structured `blocked` payload (not a free-form string)."""
+    from core.services.provision_gate import Gate
+
+    fake_gate = Gate(
+        code="credits_required",
+        title="Top up Claude credits to start your container",
+        message="Top up some Claude credits to start your Bedrock container.",
+        action_label="Top up now",
+        action_href="/settings/billing#credits",
+        action_admin_only=False,
+        owner_role="admin",
+    )
+
+    with patch(
+        "routers.container.evaluate_provision_gate",
+        new_callable=AsyncMock,
+    ) as mock_gate:
+        mock_gate.return_value = fake_gate
+
+        from routers.container import _assert_provision_allowed
+
+        with pytest.raises(HTTPException) as exc:
+            await _assert_provision_allowed(
+                owner_id="user_x",
+                clerk_user_id="user_x",
+                is_admin=True,
+            )
+
+    assert exc.value.status_code == 402
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["blocked"]["code"] == "credits_required"
+    assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
