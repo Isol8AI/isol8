@@ -56,6 +56,10 @@ export interface ServiceStackProps extends cdk.StackProps {
     oauthTokensTable: dynamodb.Table;
     webhookDedupTable: dynamodb.Table;
     paperclipCompaniesTable: dynamodb.Table;
+    marketplaceListingsTable: dynamodb.Table;
+    marketplacePurchasesTable: dynamodb.Table;
+    marketplacePayoutAccountsTable: dynamodb.Table;
+    marketplaceTakedownsTable: dynamodb.Table;
   };
   /** Pass secret names (strings) to avoid cross-stack KMS auto-grant cycles. */
   secretNames: SecretNames;
@@ -301,6 +305,14 @@ export class ServiceStack extends cdk.Stack {
     // password. Without this grant the proxy 500s on every Teams click with
     // an AccessDeniedException, even when Clerk auth succeeds.
     props.database.paperclipCompaniesTable.grantReadWriteData(this.taskRole);
+
+    // Marketplace tables — backend needs read/write on listings, purchases,
+    // payout-accounts, takedowns. Browse + search are served by the in-process
+    // search service (60s-TTL DDB scan), so the same listings grant covers it.
+    props.database.marketplaceListingsTable.grantReadWriteData(this.taskRole);
+    props.database.marketplacePurchasesTable.grantReadWriteData(this.taskRole);
+    props.database.marketplacePayoutAccountsTable.grantReadWriteData(this.taskRole);
+    props.database.marketplaceTakedownsTable.grantReadWriteData(this.taskRole);
 
     // Bedrock
     this.taskRole.addToPolicy(
@@ -554,6 +566,34 @@ export class ServiceStack extends cdk.Stack {
     agentCatalogBucket.grantReadWrite(this.taskRole);
 
     // -------------------------------------------------------------------------
+    // Marketplace Artifacts S3 Bucket
+    //
+    // Stores artifacts uploaded for marketplace listings (agent bundles,
+    // screenshots, manifests, signed receipts). Versioned so a bad publish
+    // can be rolled back without losing buyer history. Blocked from public
+    // access; bytes are served via signed URLs from the marketplace API.
+    // -------------------------------------------------------------------------
+    const marketplaceArtifactsBucket = new s3.Bucket(this, "MarketplaceArtifactsBucket", {
+      bucketName: `isol8-${env}-marketplace-artifacts`,
+      versioned: true,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      removalPolicy:
+        env === "prod" ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
+      autoDeleteObjects: env !== "prod",
+    });
+
+    marketplaceArtifactsBucket.grantReadWrite(this.taskRole);
+
+    // -------------------------------------------------------------------------
+    // Marketplace browse / search is served by the backend's in-process
+    // search service (apps/backend/core/services/marketplace_search.py) —
+    // a 60s-TTL DDB scan over published listings. At v0 scale the listing
+    // count is small enough that we don't need an external SaaS index;
+    // there is no separate sync Lambda or Stream subscriber.
+    // -------------------------------------------------------------------------
+
+    // -------------------------------------------------------------------------
     // Task Execution Role
     // -------------------------------------------------------------------------
     const taskExecutionRole = new iam.Role(this, "TaskExecutionRole", {
@@ -720,6 +760,29 @@ export class ServiceStack extends cdk.Stack {
           props.database.creditTransactionsTable.tableName,
         OAUTH_TOKENS_TABLE: props.database.oauthTokensTable.tableName,
         AGENT_CATALOG_BUCKET: agentCatalogBucket.bucketName,
+        // Marketplace DDB tables + S3 artifacts bucket. Backend reads these
+        // env vars via core.config.settings; empty defaults keep the app
+        // booting in non-marketplace contexts (unit tests, smoke tests).
+        MARKETPLACE_LISTINGS_TABLE:
+          props.database.marketplaceListingsTable.tableName,
+        MARKETPLACE_PURCHASES_TABLE:
+          props.database.marketplacePurchasesTable.tableName,
+        MARKETPLACE_PAYOUT_ACCOUNTS_TABLE:
+          props.database.marketplacePayoutAccountsTable.tableName,
+        MARKETPLACE_TAKEDOWNS_TABLE:
+          props.database.marketplaceTakedownsTable.tableName,
+        MARKETPLACE_ARTIFACTS_BUCKET: marketplaceArtifactsBucket.bucketName,
+        // Stripe Connect onboarding redirects — environment-specific so
+        // dev/prod hit the correct marketplace host. Stripe-hosted onboarding
+        // bounces sellers back here on refresh + completion.
+        STRIPE_CONNECT_REFRESH_URL:
+          env === "prod"
+            ? "https://marketplace.isol8.co/payouts/refresh"
+            : "https://marketplace.dev.isol8.co/payouts/refresh",
+        STRIPE_CONNECT_RETURN_URL:
+          env === "prod"
+            ? "https://marketplace.isol8.co/payouts/return"
+            : "https://marketplace.dev.isol8.co/payouts/return",
         // PostHog server-side reads for the admin Activity tab.
         // us.posthog.com is the API host for US Cloud (our project lives
         // there). Project ID is public — visible in the PostHog dashboard

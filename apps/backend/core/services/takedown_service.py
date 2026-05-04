@@ -1,0 +1,183 @@
+"""Takedown workflow (admin-initiated).
+
+Under the Isol8-internal scope there is no public DMCA filing form, so the
+takedown queue is structurally empty. The supported flow is:
+
+- execute_admin_initiated_takedown(): admin types a reason on the listing
+  detail page and grants the takedown in one shot. Writes the takedown row
+  AND cascades license revocation + listing status flip + audit metadata.
+
+The lower-level helpers below (file_takedown / execute_full_takedown) remain
+as building blocks for forward-compatibility if a public filing form is ever
+added; nothing in the live request path calls them today.
+"""
+
+import time
+import uuid
+from typing import Literal
+
+import boto3
+
+from core.config import settings
+from core.services import license_service
+
+
+# Stable sentinel used for `filed_by_email` on admin-initiated takedowns —
+# there is no real claimant, so we record an internal marker rather than
+# leaving the field blank or reusing the admin's user_id (which already lives
+# in `decided_by`).
+ADMIN_FILED_BY_EMAIL = "admin@isol8.internal"
+
+
+def _takedowns_table():
+    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_TAKEDOWNS_TABLE)
+
+
+def _purchases_table():
+    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_PURCHASES_TABLE)
+
+
+def _listings_table():
+    return boto3.resource("dynamodb").Table(settings.MARKETPLACE_LISTINGS_TABLE)
+
+
+async def file_takedown(
+    *,
+    listing_id: str,
+    reason: Literal["dmca", "policy", "fraud", "seller-request"],
+    claimant_name: str,
+    claimant_email: str,
+    basis_md: str,
+) -> str:
+    """Create a pending takedown row. Returns takedown_id.
+
+    Retained for forward-compatibility with a future public filing form; not
+    called by any live route today.
+    """
+    tid = str(uuid.uuid4())
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    _takedowns_table().put_item(
+        Item={
+            "listing_id": listing_id,
+            "takedown_id": tid,
+            "reason": reason,
+            "filed_by_name": claimant_name,
+            "filed_by_email": claimant_email,
+            "basis_md": basis_md,
+            "filed_at": now_iso,
+            "decision": "pending",
+        }
+    )
+    return tid
+
+
+async def _cascade_takedown(
+    *,
+    listing_id: str,
+    takedown_id: str,
+    decided_by: str,
+    now_iso: str,
+) -> int:
+    """Cascade the side effects of granting a takedown.
+
+    Revokes every purchase's license, flips the listing status to
+    `taken_down`, and stamps the takedown row with the granted decision +
+    affected-purchases count. Returns the number of revoked purchases.
+    """
+    purchases = _purchases_table().query(
+        IndexName="listing-created-index",
+        KeyConditionExpression="listing_id = :l",
+        ExpressionAttributeValues={":l": listing_id},
+    )
+    items = purchases.get("Items", [])
+    for purchase in items:
+        await license_service.revoke(
+            purchase_id=purchase["purchase_id"],
+            buyer_id=purchase["buyer_id"],
+            reason="takedown",
+        )
+
+    _listings_table().update_item(
+        Key={"listing_id": listing_id, "version": 1},
+        UpdateExpression="SET #s = :taken, updated_at = :now",
+        ExpressionAttributeNames={"#s": "status"},
+        ExpressionAttributeValues={":taken": "taken_down", ":now": now_iso},
+    )
+    _takedowns_table().update_item(
+        Key={"listing_id": listing_id, "takedown_id": takedown_id},
+        UpdateExpression=("SET decision = :granted, decided_by = :by, decided_at = :now, affected_purchases = :n"),
+        ExpressionAttributeValues={
+            ":granted": "granted",
+            ":by": decided_by,
+            ":now": now_iso,
+            ":n": len(items),
+        },
+    )
+    return len(items)
+
+
+async def execute_full_takedown(*, listing_id: str, takedown_id: str, decided_by: str) -> None:
+    """Admin action: flip listing to taken_down, revoke all licenses.
+
+    Retained for forward-compatibility with a future public filing form; not
+    called by any live route today.
+    """
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    await _cascade_takedown(
+        listing_id=listing_id,
+        takedown_id=takedown_id,
+        decided_by=decided_by,
+        now_iso=now_iso,
+    )
+
+
+async def execute_admin_initiated_takedown(
+    *,
+    listing_id: str,
+    reason: Literal["dmca", "policy", "fraud", "seller-request"],
+    basis_md: str,
+    decided_by: str,
+) -> dict:
+    """Admin-initiated takedown.
+
+    Writes a takedown row and immediately cascades license revocation +
+    listing status flip in one shot. The admin's `user_id` is recorded in
+    `decided_by`; `filed_by_email` is the internal admin sentinel so the
+    audit-log view can distinguish admin-initiated rows from any future
+    publicly filed ones.
+
+    Returns ``{ "takedown_id", "listing_id", "affected_purchases" }``.
+    """
+    tid = str(uuid.uuid4())
+    now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+    # Symmetric with `file_takedown` + `execute_full_takedown`: write a
+    # "pending" row first, then let `_cascade_takedown` perform the single
+    # granted-stamp + affected-purchases count. Avoids a transient state
+    # where the row carries `granted` but no `affected_purchases`, and keeps
+    # the cascade path the only place that ever flips decision → granted.
+    _takedowns_table().put_item(
+        Item={
+            "listing_id": listing_id,
+            "takedown_id": tid,
+            "reason": reason,
+            "filed_by_name": "admin",
+            "filed_by_email": ADMIN_FILED_BY_EMAIL,
+            "basis_md": basis_md,
+            "filed_at": now_iso,
+            "decision": "pending",
+        }
+    )
+
+    affected = await _cascade_takedown(
+        listing_id=listing_id,
+        takedown_id=tid,
+        decided_by=decided_by,
+        now_iso=now_iso,
+    )
+
+    return {
+        "takedown_id": tid,
+        "listing_id": listing_id,
+        "affected_purchases": affected,
+    }

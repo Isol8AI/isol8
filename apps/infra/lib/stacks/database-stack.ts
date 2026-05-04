@@ -42,6 +42,11 @@ export class DatabaseStack extends cdk.Stack {
   public readonly paperclipDbCluster: rds.DatabaseCluster;
   public readonly paperclipDbSecurityGroup: ec2.SecurityGroup;
 
+  public readonly marketplaceListingsTable: dynamodb.Table;
+  public readonly marketplacePurchasesTable: dynamodb.Table;
+  public readonly marketplacePayoutAccountsTable: dynamodb.Table;
+  public readonly marketplaceTakedownsTable: dynamodb.Table;
+
   constructor(scope: Construct, id: string, props: DatabaseStackProps) {
     super(scope, id, props);
 
@@ -278,6 +283,90 @@ export class DatabaseStack extends cdk.Stack {
     new cdk.CfnOutput(this, "PaperclipCompaniesTableName", {
       value: this.paperclipCompaniesTable.tableName,
       exportName: `${this.stackName}-paperclip-companies-table`,
+    });
+
+    this.marketplaceListingsTable = new dynamodb.Table(this, "MarketplaceListingsTable", {
+      tableName: `isol8-${env}-marketplace-listings`,
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "slug-version-index",
+      partitionKey: { name: "slug", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "version", type: dynamodb.AttributeType.NUMBER },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "seller-created-index",
+      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "status-published-index",
+      partitionKey: { name: "status", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplaceListingsTable.addGlobalSecondaryIndex({
+      indexName: "tag-published-index",
+      partitionKey: { name: "tag", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "published_at", type: dynamodb.AttributeType.STRING },
+    });
+
+    this.marketplacePurchasesTable = new dynamodb.Table(this, "MarketplacePurchasesTable", {
+      tableName: `isol8-${env}-marketplace-purchases`,
+      partitionKey: { name: "buyer_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "purchase_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
+      indexName: "listing-created-index",
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "created_at", type: dynamodb.AttributeType.STRING },
+    });
+    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
+      indexName: "license-key-index",
+      partitionKey: { name: "license_key", type: dynamodb.AttributeType.STRING },
+    });
+    // Used by the charge.refunded Stripe webhook to find the purchase row
+    // matching a Stripe payment_intent ID without scanning the full table.
+    // Sparse: only paid purchases (which all carry stripe_payment_intent_id)
+    // appear in the index — refund/revoke writes don't add load.
+    this.marketplacePurchasesTable.addGlobalSecondaryIndex({
+      indexName: "payment-intent-index",
+      partitionKey: {
+        name: "stripe_payment_intent_id",
+        type: dynamodb.AttributeType.STRING,
+      },
+    });
+
+    this.marketplacePayoutAccountsTable = new dynamodb.Table(this, "MarketplacePayoutAccountsTable", {
+      tableName: `isol8-${env}-marketplace-payout-accounts`,
+      partitionKey: { name: "seller_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
+    });
+
+    this.marketplaceTakedownsTable = new dynamodb.Table(this, "MarketplaceTakedownsTable", {
+      tableName: `isol8-${env}-marketplace-takedowns`,
+      partitionKey: { name: "listing_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "takedown_id", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: config.removalPolicy,
+      pointInTimeRecovery: true,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: props.kmsKey,
     });
 
     new cdk.CfnOutput(this, "DynamoTablePrefix", {

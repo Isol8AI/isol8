@@ -90,6 +90,10 @@ export class Isol8Stage extends cdk.Stage {
         oauthTokensTable: database.oauthTokensTable,
         webhookDedupTable: database.webhookDedupTable,
         paperclipCompaniesTable: database.paperclipCompaniesTable,
+        marketplaceListingsTable: database.marketplaceListingsTable,
+        marketplacePurchasesTable: database.marketplacePurchasesTable,
+        marketplacePayoutAccountsTable: database.marketplacePayoutAccountsTable,
+        marketplaceTakedownsTable: database.marketplaceTakedownsTable,
       },
       // Pass secret names as plain strings to avoid cross-stack refs to AuthStack.
       // These names match the secretName used in AuthStack's createSecret helper.

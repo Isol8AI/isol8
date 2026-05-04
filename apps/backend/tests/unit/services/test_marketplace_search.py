@@ -1,0 +1,272 @@
+"""Tests for the in-process marketplace search service."""
+
+import os
+
+os.environ.setdefault("CLERK_ISSUER", "https://test.clerk.accounts.dev")
+
+from unittest.mock import MagicMock, patch  # noqa: E402
+
+import pytest  # noqa: E402
+
+from core.services import marketplace_search  # noqa: E402
+
+
+# Canned listings used across the suite. published_at is ISO-Z so newest-first
+# string-sort matches chronological-newest-first.
+LISTINGS = [
+    {
+        "listing_id": "1",
+        "version": 1,
+        "slug": "postgres-helper",
+        "name": "Postgres Helper",
+        "description_md": "Run SQL queries against your Postgres database.",
+        "format": "openclaw",
+        "tags": ["postgres", "sql", "database"],
+        "status": "published",
+        "published_at": "2026-04-01T00:00:00Z",
+    },
+    {
+        "listing_id": "2",
+        "version": 1,
+        "slug": "redis-tool",
+        "name": "Redis Tool",
+        "description_md": "Manage Redis caches.",
+        "format": "openclaw",
+        "tags": ["redis", "cache"],
+        "status": "published",
+        "published_at": "2026-04-15T00:00:00Z",
+    },
+    {
+        "listing_id": "3",
+        "version": 1,
+        "slug": "sql-formatter",
+        "name": "SQL Formatter",
+        "description_md": "Pretty-print SQL.",
+        "format": "skillmd",
+        "tags": ["sql"],
+        "status": "published",
+        "published_at": "2026-04-10T00:00:00Z",
+    },
+    {
+        "listing_id": "4",
+        "version": 1,
+        "slug": "draft-thing",
+        "name": "Draft Thing",
+        "description_md": "Not yet published.",
+        "format": "openclaw",
+        "tags": ["postgres"],
+        "status": "draft",
+        "published_at": None,
+    },
+]
+
+# Items the scan should return when FilterExpression is status='published'.
+PUBLISHED_LISTINGS = [li for li in LISTINGS if li["status"] == "published"]
+
+
+@pytest.fixture(autouse=True)
+def _reset_cache():
+    """Each test gets a fresh cache."""
+    marketplace_search._reset_cache()
+    yield
+    marketplace_search._reset_cache()
+
+
+@pytest.fixture
+def mock_table():
+    table = MagicMock()
+    table.scan.return_value = {"Items": list(PUBLISHED_LISTINGS)}
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        yield table
+
+
+@pytest.mark.asyncio
+async def test_empty_query_returns_most_recent_published_first(mock_table):
+    results = await marketplace_search.search(query=None)
+    # No drafts.
+    assert all(li["status"] == "published" for li in results)
+    # Newest published first.
+    assert [li["slug"] for li in results] == ["redis-tool", "sql-formatter", "postgres-helper"]
+
+
+@pytest.mark.asyncio
+async def test_query_exact_slug_match_scores_highest(mock_table):
+    results = await marketplace_search.search(query="postgres-helper")
+    assert results[0]["slug"] == "postgres-helper"
+
+
+@pytest.mark.asyncio
+async def test_query_tag_match(mock_table):
+    results = await marketplace_search.search(query="postgres")
+    slugs = [li["slug"] for li in results]
+    # postgres-helper has tag "postgres" (+30) and substring in name (+20)
+    # and substring in description (+5). Should rank first.
+    assert slugs[0] == "postgres-helper"
+    # No other published listings tag/name/description-match "postgres".
+    assert "redis-tool" not in slugs
+    assert "sql-formatter" not in slugs
+
+
+@pytest.mark.asyncio
+async def test_query_substring_in_description(mock_table):
+    # "queries" appears only in description of postgres-helper.
+    results = await marketplace_search.search(query="queries")
+    slugs = [li["slug"] for li in results]
+    assert "postgres-helper" in slugs
+
+
+@pytest.mark.asyncio
+async def test_query_sql_matches_tag_and_description(mock_table):
+    results = await marketplace_search.search(query="sql")
+    slugs = [li["slug"] for li in results]
+    # sql-formatter has tag "sql" (+30) AND substring in name (+20) AND in
+    # description (+5). postgres-helper has tag "sql" (+30) AND substring
+    # in description (+5). sql-formatter > postgres-helper.
+    assert slugs[0] == "sql-formatter"
+    assert "postgres-helper" in slugs
+
+
+@pytest.mark.asyncio
+async def test_format_filter(mock_table):
+    results = await marketplace_search.search(query=None, format="skillmd")
+    assert all(li["format"] == "skillmd" for li in results)
+    assert [li["slug"] for li in results] == ["sql-formatter"]
+
+
+@pytest.mark.asyncio
+async def test_format_filter_with_query(mock_table):
+    # "sql" matches sql-formatter (skillmd) and postgres-helper (openclaw).
+    # With format=openclaw, only postgres-helper survives.
+    results = await marketplace_search.search(query="sql", format="openclaw")
+    slugs = [li["slug"] for li in results]
+    assert slugs == ["postgres-helper"]
+
+
+@pytest.mark.asyncio
+async def test_limit_respected(mock_table):
+    results = await marketplace_search.search(query=None, limit=2)
+    assert len(results) == 2
+
+
+@pytest.mark.asyncio
+async def test_drops_zero_score_results(mock_table):
+    # "nonexistent-token" hits nothing — empty list, not the full snapshot.
+    results = await marketplace_search.search(query="nonexistent-token")
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_drafts_excluded_via_filter_expression(mock_table):
+    # The scan call site must include FilterExpression for status='published'.
+    await marketplace_search.search(query=None)
+    kwargs = mock_table.scan.call_args.kwargs
+    assert "FilterExpression" in kwargs
+    # Defensive: also re-filter in Python in case scan returns extra rows.
+    # Add a stray draft to the scan response and confirm it's still dropped.
+    mock_table.scan.return_value = {"Items": list(LISTINGS)}  # includes draft-thing
+    marketplace_search._reset_cache()
+    results = await marketplace_search.search(query=None)
+    assert all(li["status"] == "published" for li in results)
+    assert "draft-thing" not in [li["slug"] for li in results]
+
+
+@pytest.mark.asyncio
+async def test_cache_ttl_avoids_rescan(mock_table, monkeypatch):
+    fake_now = [1000.0]
+    monkeypatch.setattr(marketplace_search.time, "time", lambda: fake_now[0])
+
+    await marketplace_search.search(query=None)
+    assert mock_table.scan.call_count == 1
+
+    # 30s later: cache hit, no rescan.
+    fake_now[0] += 30
+    await marketplace_search.search(query="postgres")
+    assert mock_table.scan.call_count == 1
+
+    # 60s after first call (boundary): still cached.
+    fake_now[0] = 1059.9
+    await marketplace_search.search(query=None)
+    assert mock_table.scan.call_count == 1
+
+    # >60s: re-scan.
+    fake_now[0] = 1061.0
+    await marketplace_search.search(query=None)
+    assert mock_table.scan.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_refresh_paginates_through_last_evaluated_key():
+    """Refresh loop must follow LastEvaluatedKey across multiple scan pages.
+
+    Pagination correctness was an explicit requirement; without this test the
+    `scan_kwargs["ExclusiveStartKey"] = last` line is uncovered and a
+    refactor could silently drop page 2+ of large listing tables.
+    """
+    page_one = {
+        "listing_id": "p1",
+        "version": 1,
+        "slug": "page-one",
+        "name": "Page One",
+        "description_md": "first page",
+        "format": "openclaw",
+        "tags": [],
+        "status": "published",
+        "published_at": "2026-04-01T00:00:00Z",
+    }
+    page_two = {
+        "listing_id": "p2",
+        "version": 1,
+        "slug": "page-two",
+        "name": "Page Two",
+        "description_md": "second page",
+        "format": "openclaw",
+        "tags": [],
+        "status": "published",
+        "published_at": "2026-04-02T00:00:00Z",
+    }
+
+    table = MagicMock()
+    last_key = {"listing_id": "x", "version": 1}
+    table.scan.side_effect = [
+        {"Items": [page_one], "LastEvaluatedKey": last_key},
+        {"Items": [page_two]},  # no LastEvaluatedKey -> pagination ends
+    ]
+
+    with patch("core.services.marketplace_search._listings_table", return_value=table):
+        results = await marketplace_search.search(query=None)
+
+    # Two scan calls — one for each page.
+    assert table.scan.call_count == 2
+
+    # Second call must thread ExclusiveStartKey from the first page's
+    # LastEvaluatedKey.
+    second_call_kwargs = table.scan.call_args_list[1].kwargs
+    assert second_call_kwargs.get("ExclusiveStartKey") == last_key
+
+    # Both pages' items make it into the snapshot / results.
+    slugs = {li["slug"] for li in results}
+    assert {"page-one", "page-two"} <= slugs
+
+
+@pytest.mark.asyncio
+async def test_default_limit_is_24(mock_table):
+    # Stuff the table with 50 published listings.
+    many = []
+    for i in range(50):
+        many.append(
+            {
+                "listing_id": str(i),
+                "version": 1,
+                "slug": f"item-{i}",
+                "name": f"Item {i}",
+                "description_md": "x",
+                "format": "openclaw",
+                "tags": [],
+                "status": "published",
+                "published_at": f"2026-01-{(i % 28) + 1:02d}T00:00:00Z",
+            }
+        )
+    mock_table.scan.return_value = {"Items": many}
+
+    results = await marketplace_search.search(query=None)
+    assert len(results) == 24

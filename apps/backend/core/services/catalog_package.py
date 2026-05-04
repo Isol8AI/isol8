@@ -4,9 +4,34 @@ from __future__ import annotations
 
 import io
 import tarfile
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
+
+
+@dataclass
+class CatalogPackage:
+    """A packed catalog item ready for upload to S3.
+
+    `format`: "openclaw" (full agent bundle from EFS) or — historically —
+              "skillmd" (a SKILL.md adapter package). The skillmd adapter
+              was removed in the Isol8-internal v0 reduction; the type
+              still exists for forward compatibility.
+    `manifest`: dict written as manifest.json alongside the tarball.
+    `openclaw_slice`: openclaw.json patch (agent + plugins entries) the
+              deploy flow merges into the buyer's config. Empty for
+              non-openclaw formats.
+    `tarball_bytes`: gzipped tar of the workspace contents.
+    `tarball_contents`: sorted list of relative paths inside the tarball
+              (used for catalog list views and audit logs).
+    """
+
+    format: str
+    manifest: dict[str, Any]
+    openclaw_slice: dict[str, Any]
+    tarball_bytes: bytes
+    tarball_contents: list[str] = field(default_factory=list)
 
 
 def build_manifest(

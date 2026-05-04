@@ -9,11 +9,13 @@ import {
   MessageSquare,
   Plus,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { AgentCreateForm } from "./AgentCreateForm";
 import { AgentOverviewTab } from "./AgentOverviewTab";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsSection } from "./AgentChannelsSection";
+import { PublishAgentModal } from "@/components/marketplace/PublishAgentModal";
 import { useBilling } from "@/hooks/useBilling";
 import { useGatewayRpc, useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
 import { Button } from "@/components/ui/button";
@@ -33,6 +35,9 @@ export function AgentsPanel() {
   const [activeTab, setActiveTab] = useState<AgentTab>("overview");
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  // Per-agent "Publish to marketplace" modal — keyed by agent id so the
+  // modal mounts/unmounts on open/close and resets its internal form state.
+  const [publishingAgent, setPublishingAgent] = useState<AgentEntry | null>(null);
 
   const agents: AgentEntry[] = rawData?.agents ?? [];
   const defaultId = rawData?.defaultId;
@@ -153,30 +158,40 @@ export function AgentsPanel() {
         <div className="flex-1 overflow-y-auto px-4">
           {selected ? (
             <>
-              <div className="flex items-center gap-1 border-b border-[#e0dbd0] py-2">
-                {(
-                  [
-                    { id: "overview", icon: Bot, label: "Overview" },
-                    { id: "tools", icon: Wrench, label: "Tools" },
-                    ...(channelsEnabled
-                      ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
-                      : []),
-                  ] as const
-                ).map((tab) => (
-                  <button
-                    key={tab.id}
-                    className={cn(
-                      "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
-                      activeTab === tab.id
-                        ? "bg-[#e8f5e9] text-[#2d8a4e]"
-                        : "text-[#8a8578] hover:text-[#1a1a1a]",
-                    )}
-                    onClick={() => setActiveTab(tab.id)}
-                  >
-                    <tab.icon className="h-3.5 w-3.5" />
-                    {tab.label}
-                  </button>
-                ))}
+              <div className="flex items-center justify-between gap-2 border-b border-[#e0dbd0] py-2">
+                <div className="flex items-center gap-1">
+                  {(
+                    [
+                      { id: "overview", icon: Bot, label: "Overview" },
+                      { id: "tools", icon: Wrench, label: "Tools" },
+                      ...(channelsEnabled
+                        ? [{ id: "channels", icon: MessageSquare, label: "Channels" } as const]
+                        : []),
+                    ] as const
+                  ).map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={cn(
+                        "flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors",
+                        activeTab === tab.id
+                          ? "bg-[#e8f5e9] text-[#2d8a4e]"
+                          : "text-[#8a8578] hover:text-[#1a1a1a]",
+                      )}
+                      onClick={() => setActiveTab(tab.id)}
+                    >
+                      <tab.icon className="h-3.5 w-3.5" />
+                      {tab.label}
+                    </button>
+                  ))}
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setPublishingAgent(selected)}
+                  aria-label={`Publish ${selected.name || selected.id} to marketplace`}
+                >
+                  <Upload className="h-3.5 w-3.5 mr-1" /> Publish to marketplace
+                </Button>
               </div>
 
               {activeTab === "overview" && (
@@ -196,6 +211,19 @@ export function AgentsPanel() {
           )}
         </div>
       </div>
+
+      {publishingAgent && (
+        <PublishAgentModal
+          agent={{
+            agent_id: publishingAgent.id,
+            name: publishingAgent.name || publishingAgent.identity?.name,
+            // The chat app's AgentEntry doesn't carry a description; let the
+            // modal default to an empty body and let the seller fill it in.
+          }}
+          open={true}
+          onClose={() => setPublishingAgent(null)}
+        />
+      )}
     </div>
   );
 }
