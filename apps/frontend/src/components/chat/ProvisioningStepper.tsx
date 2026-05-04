@@ -703,12 +703,21 @@ export function ProvisioningStepper({
   // below. The provider phase runs the chosen flow (OAuth / BYO key /
   // credits) and creates the trial subscription.
   //
-  // Workstream B fix (2026-05-03 cofounder bug): skip the picker entirely
-  // when the owner's billing row already has a provider_choice. This is
-  // the org-member-joining-existing-org case — the org admin already
-  // picked, so a new member arriving in chat shouldn't be re-prompted.
-  // They fall through to the regular subscribe / provision stepper flow.
-  if (!isSubscribed && !account?.provider_choice) {
+  // Skip picker only when the owner is fully onboarded (has a provider
+  // choice AND an active subscription). Two cases this handles:
+  //
+  //   1. Org member joining an already-onboarded org (Workstream B
+  //      cofounder bug fix from 2026-05-03): admin already picked +
+  //      subscribed, so the member skips the picker and falls through
+  //      to provisioning.
+  //
+  //   2. User who picks then cancels Stripe Checkout: `provider_choice`
+  //      is persisted before the Stripe redirect (Workstream B race
+  //      fix), so `account.provider_choice` is set but `isSubscribed`
+  //      is false. They MUST see the picker again to restart checkout.
+  //      Codex P1 on PR #521 (#3179594652).
+  const ownerOnboarded = isSubscribed && Boolean(account?.provider_choice);
+  if (!ownerOnboarded) {
     return <ProviderPicker isOrg={isOrg} orgName={organization?.name} />;
   }
 
