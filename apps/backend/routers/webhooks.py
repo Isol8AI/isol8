@@ -396,6 +396,31 @@ async def _handle_organization_membership_created(data: dict) -> None:
         )
         return
 
+    # Defense-in-depth: Gates A+B should have prevented dual-tenancy.
+    # If a new org member somehow has an active personal billing row,
+    # log loudly and emit a metric — but don't block, because Clerk
+    # has already accepted the membership and refusing here would just
+    # orphan the org provisioning.
+    try:
+        personal_account = await billing_repo.get_by_owner_id(user_id)
+        if personal_account and personal_account.get("subscription_status") in (
+            "active",
+            "trialing",
+        ):
+            logger.error(
+                "tenancy_invariant.violated user=%s org=%s personal_status=%s",
+                user_id,
+                org_id,
+                personal_account.get("subscription_status"),
+            )
+            put_metric(
+                "tenancy_invariant.violation",
+                dimensions={"path": "membership_created"},
+            )
+    except Exception:  # noqa: BLE001
+        # Never let an observability check break a real provisioning path.
+        logger.exception("tenancy invariant probe failed for user=%s org=%s", user_id, org_id)
+
     owner_email = await _lookup_owner_email(org_id=org_id, fallback_user_id=owner_user_id)
     if not owner_email:
         logger.warning(
