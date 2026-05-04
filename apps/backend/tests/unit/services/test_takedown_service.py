@@ -36,6 +36,38 @@ async def test_execute_full_takedown_revokes_all_licenses(mock_takedowns, mock_l
 
 
 @pytest.mark.asyncio
+@patch("core.services.takedown_service._purchases_table")
+@patch("core.services.takedown_service._listings_table")
+@patch("core.services.takedown_service._takedowns_table")
+@patch("core.services.takedown_service.license_service.revoke", new=AsyncMock())
+async def test_execute_full_takedown_pages_through_all_purchases(mock_takedowns, mock_listings, mock_purchases):
+    """Regression: takedown cascade must page through every purchase row.
+    DynamoDB caps Query results at 1MB per page, and a single .query() call
+    leaves later buyers with still-valid licenses on a high-volume listing
+    (Codex P2 on PR #517, commit bee2fa1c).
+    """
+    takedown_service.license_service.revoke.reset_mock()
+    mock_purchases.return_value.query = MagicMock(
+        side_effect=[
+            {
+                "Items": [{"buyer_id": "b1", "purchase_id": "p1"}, {"buyer_id": "b2", "purchase_id": "p2"}],
+                "LastEvaluatedKey": {"buyer_id": "b2", "purchase_id": "p2"},
+            },
+            {"Items": [{"buyer_id": "b3", "purchase_id": "p3"}]},
+        ]
+    )
+    mock_listings.return_value.update_item = MagicMock()
+    mock_takedowns.return_value.update_item = MagicMock()
+
+    await takedown_service.execute_full_takedown(listing_id="l1", takedown_id="t1", decided_by="admin_xyz")
+
+    assert mock_purchases.return_value.query.call_count == 2
+    assert takedown_service.license_service.revoke.await_count == 3
+    second_call_kwargs = mock_purchases.return_value.query.call_args_list[1].kwargs
+    assert second_call_kwargs.get("ExclusiveStartKey") == {"buyer_id": "b2", "purchase_id": "p2"}
+
+
+@pytest.mark.asyncio
 @patch("core.services.takedown_service._takedowns_table")
 async def test_file_takedown_creates_row(mock_table):
     mock_table.return_value.put_item = MagicMock()

@@ -97,6 +97,36 @@ async def test_submit_rejects_when_not_in_draft(mock_listings):
 
 
 @pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_reject_uses_conditional_status_check(mock_listings):
+    """Regression: reject must guard with ConditionExpression so a malformed
+    admin request can't upsert a fabricated listing (DDB UpdateItem upserts
+    by default) or transition a non-review row (Codex P1 on PR #517,
+    commit bee2fa1c).
+    """
+    mock_listings.return_value.update_item = MagicMock()
+    await marketplace_service.reject(listing_id="l1", version=1, notes="incomplete docs", rejected_by="admin_xyz")
+    kwargs = mock_listings.return_value.update_item.call_args.kwargs
+    assert "ConditionExpression" in kwargs
+    assert ":review" in kwargs["ExpressionAttributeValues"]
+
+
+@pytest.mark.asyncio
+@patch("core.services.marketplace_service._listings_table")
+async def test_reject_rejects_non_review_state(mock_listings):
+    from botocore.exceptions import ClientError
+
+    mock_listings.return_value.update_item = MagicMock(
+        side_effect=ClientError(
+            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "x"}},
+            "UpdateItem",
+        )
+    )
+    with pytest.raises(marketplace_service.InvalidStateError):
+        await marketplace_service.reject(listing_id="l1", version=1, notes="x", rejected_by="admin_xyz")
+
+
+@pytest.mark.asyncio
 @patch("core.services.marketplace_service._dynamodb_client")
 async def test_publish_v2_atomically_retires_prev_and_publishes_new(mock_client):
     """Publishing v_new atomically flips prev_version -> retired AND

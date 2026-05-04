@@ -74,3 +74,46 @@ def test_webhook_idempotent_on_replay(mock_construct, mock_dedup, client):
         content=b'{"id":"evt_1"}',
     )
     assert resp.status_code == 200
+
+
+@patch("routers.marketplace_purchases.webhook_dedup.delete_event")
+@patch("routers.marketplace_purchases._handle_checkout_completed")
+@patch("routers.marketplace_purchases.webhook_dedup.record_event_or_skip")
+@patch("routers.marketplace_purchases.stripe.Webhook.construct_event")
+def test_webhook_rolls_back_dedup_on_handler_failure(mock_construct, mock_dedup, mock_handler, mock_delete, client):
+    """Regression: a transient failure in the handler must NOT leave the
+    dedup row behind, otherwise Stripe's retry sees ALREADY_SEEN and
+    silently drops the event (Codex P1 on PR #517, commit bee2fa1c).
+    """
+    from core.services.webhook_dedup import WebhookDedupResult
+
+    mock_dedup.return_value = WebhookDedupResult.RECORDED
+    mock_construct.return_value = {
+        "id": "evt_1",
+        "type": "checkout.session.completed",
+        "data": {"object": {}},
+    }
+
+    async def boom(*_a, **_k):
+        raise RuntimeError("transient DDB error")
+
+    mock_handler.side_effect = boom
+
+    async def del_ok(*_a, **_k):
+        return None
+
+    mock_delete.side_effect = del_ok
+
+    # TestClient's default raise_server_exceptions=True re-raises the
+    # handler's exception. Build a fresh client that returns 500 to the
+    # test instead so we can assert on the rollback side-effect cleanly.
+    from main import app
+
+    raising_client = TestClient(app, raise_server_exceptions=False)
+    resp = raising_client.post(
+        "/api/v1/marketplace/webhooks/stripe-marketplace",
+        headers={"stripe-signature": "test"},
+        content=b'{"id":"evt_1"}',
+    )
+    assert resp.status_code == 500
+    mock_delete.assert_called_once_with(event_id="evt_1")

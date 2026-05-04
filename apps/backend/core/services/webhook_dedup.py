@@ -54,6 +54,16 @@ def _table():
     return boto3.resource("dynamodb", region_name=settings.AWS_REGION).Table(table_name)
 
 
+async def delete_event(event_id: str) -> None:
+    """Drop the dedup row for `event_id`. Used by callers that wrap
+    `record_event_or_skip` in a try/except: if the business-logic handler
+    raises after we've recorded the event, the rollback lets the provider's
+    retry re-attempt instead of silently skipping. No-op if the row is
+    already absent.
+    """
+    _table().delete_item(Key={"event_id": event_id})
+
+
 async def record_event_or_skip(event_id: str, *, source: str) -> WebhookDedupResult:
     """Conditionally record a webhook event_id.
 

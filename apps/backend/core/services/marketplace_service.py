@@ -273,22 +273,32 @@ async def approve(*, listing_id: str, version: int, approved_by: str) -> dict:
 
 
 async def reject(*, listing_id: str, version: int, notes: str, rejected_by: str) -> dict:
-    """Admin transition: review -> draft with rejection notes."""
+    """Admin transition: review -> draft with rejection notes.
+
+    Conditional on status='review' so the call cannot upsert a fabricated
+    listing (DDB UpdateItem upserts by default), nor flip a published or
+    taken_down row back to draft via a malformed admin request.
+    """
     table = _listings_table()
     now_iso = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    table.update_item(
-        Key={"listing_id": listing_id, "version": version},
-        UpdateExpression=(
-            "SET #s = :draft,     rejection_notes = :notes,     rejected_by = :by,     updated_at = :now"
-        ),
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":draft": "draft",
-            ":notes": notes,
-            ":by": rejected_by,
-            ":now": now_iso,
-        },
-    )
+    try:
+        table.update_item(
+            Key={"listing_id": listing_id, "version": version},
+            UpdateExpression=("SET #s = :draft, rejection_notes = :notes, rejected_by = :by, updated_at = :now"),
+            ConditionExpression="#s = :review",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={
+                ":draft": "draft",
+                ":review": "review",
+                ":notes": notes,
+                ":by": rejected_by,
+                ":now": now_iso,
+            },
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise InvalidStateError(f"listing v{version} is not in 'review' state")
+        raise
     return {"status": "draft", "rejection_notes": notes}
 
 

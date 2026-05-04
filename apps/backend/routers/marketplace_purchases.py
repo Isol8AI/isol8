@@ -101,20 +101,30 @@ async def stripe_webhook(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"invalid signature: {e}")
 
+    # Claim-then-rollback dedup. Record the event first (so two concurrent
+    # deliveries can't both run the handler), but if the handler raises
+    # transiently, drop the dedup row so Stripe's retry can re-process.
+    # Without the rollback, a transient DDB/Stripe error surfaces as 500
+    # once and the retry sees ALREADY_SEEN and silently drops the event,
+    # losing the purchase / license grant / held-balance update.
     dedup = await webhook_dedup.record_event_or_skip(event_id=event["id"], source="stripe-marketplace")
     if dedup == WebhookDedupResult.ALREADY_SEEN:
         return {"status": "replay-acked"}
 
     event_type = event["type"]
     obj = event["data"]["object"]
-    if event_type == "checkout.session.completed":
-        await _handle_checkout_completed(obj)
-    elif event_type == "charge.refunded":
-        await _handle_charge_refunded(obj)
-    elif event_type == "account.updated":
-        await _handle_account_updated(obj)
-    # Other events (transfer.failed, payout.paid, payout.failed) are
-    # logged via Stripe; no immediate action in v1.
+    try:
+        if event_type == "checkout.session.completed":
+            await _handle_checkout_completed(obj)
+        elif event_type == "charge.refunded":
+            await _handle_charge_refunded(obj)
+        elif event_type == "account.updated":
+            await _handle_account_updated(obj)
+        # Other events (transfer.failed, payout.paid, payout.failed) are
+        # logged via Stripe; no immediate action in v1.
+    except Exception:
+        await webhook_dedup.delete_event(event_id=event["id"])
+        raise
     return {"status": "ok"}
 
 

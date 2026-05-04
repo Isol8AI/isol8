@@ -84,12 +84,24 @@ async def _cascade_takedown(
     `taken_down`, and stamps the takedown row with the granted decision +
     affected-purchases count. Returns the number of revoked purchases.
     """
-    purchases = _purchases_table().query(
-        IndexName="listing-created-index",
-        KeyConditionExpression="listing_id = :l",
-        ExpressionAttributeValues={":l": listing_id},
-    )
-    items = purchases.get("Items", [])
+    # Page through every purchase row — DynamoDB Query caps each page at 1MB
+    # (or the explicit Limit), so a single .query() call leaves later buyers
+    # with still-valid licenses on a high-volume listing. Loop on
+    # LastEvaluatedKey so the cascade revokes ALL purchases.
+    items: list[dict] = []
+    purchases_table = _purchases_table()
+    query_kwargs: dict = {
+        "IndexName": "listing-created-index",
+        "KeyConditionExpression": "listing_id = :l",
+        "ExpressionAttributeValues": {":l": listing_id},
+    }
+    while True:
+        page = purchases_table.query(**query_kwargs)
+        items.extend(page.get("Items", []))
+        last = page.get("LastEvaluatedKey")
+        if not last:
+            break
+        query_kwargs["ExclusiveStartKey"] = last
     for purchase in items:
         await license_service.revoke(
             purchase_id=purchase["purchase_id"],
