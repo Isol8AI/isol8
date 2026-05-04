@@ -154,6 +154,32 @@ async def async_client(app, mock_current_user) -> AsyncGenerator:
 
 
 @pytest.fixture
+async def async_client_org_admin(app, mock_org_admin_user) -> AsyncGenerator:
+    """Async test client authenticated as org admin (user_test_123 in org_test_456)."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_org_admin_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+async def async_client_org_member(app, mock_org_member_user) -> AsyncGenerator:
+    """Async test client authenticated as org member (user_test_789 in org_test_456)."""
+    from core.auth import get_current_user
+
+    app.dependency_overrides[get_current_user] = mock_org_member_user
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        yield ac
+
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
 async def unauthenticated_async_client(app) -> AsyncGenerator:
     """Async test client without auth mocking (for auth failure tests)."""
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
