@@ -37,6 +37,24 @@ export function deriveWebSocketUrl(apiUrl: string): string {
 
 export const WS_URL = deriveWebSocketUrl(BACKEND_URL);
 
+/**
+ * Thrown by `useApi` helpers when the backend returns a non-2xx response.
+ *
+ * `body` is the parsed JSON response body when Content-Type is JSON, else
+ * null. Callers can switch on `status` and `body` to handle structured
+ * error payloads (e.g. the `blocked` field from /container/* endpoints).
+ */
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly body: unknown,
+    message?: string,
+  ) {
+    super(message ?? `API ${status}`);
+    this.name = "ApiError";
+  }
+}
+
 interface UploadedFile {
   filename: string;
   path: string;
@@ -82,14 +100,25 @@ export function useApi(): ApiMethods {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        const error = new Error(errorData.detail || "API request failed") as Error & {
-          status: number;
-          detail?: string;
-        };
-        error.status = response.status;
-        error.detail = errorData.detail;
-        throw error;
+        // Preserve the parsed body on non-2xx so callers can switch on
+        // structured error fields (e.g. `blocked` from /container/*
+        // endpoints). Falls back to `null` on empty / non-JSON / malformed
+        // bodies.
+        const ct = response.headers.get("Content-Type") ?? "";
+        let body: unknown = null;
+        if (ct.includes("application/json")) {
+          try {
+            body = await response.json();
+          } catch {
+            // empty/malformed JSON — leave body as null
+          }
+        }
+        const detail =
+          body && typeof body === "object" && "detail" in body
+            ? (body as { detail?: unknown }).detail
+            : undefined;
+        const message = typeof detail === "string" ? detail : undefined;
+        throw new ApiError(response.status, body, message);
       }
 
       return response.json();
