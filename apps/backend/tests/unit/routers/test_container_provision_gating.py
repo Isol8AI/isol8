@@ -289,3 +289,46 @@ async def test_provision_402_returns_structured_blocked_payload():
     assert isinstance(exc.value.detail, dict)
     assert exc.value.detail["blocked"]["code"] == "credits_required"
     assert exc.value.detail["blocked"]["action"]["href"] == "/settings/billing#credits"
+
+
+@pytest.mark.asyncio
+async def test_provision_402_subscription_required_payload():
+    """Companion to credits_required test — pin the subscription_required
+    path too, including the admin_only flag on the action.
+
+    Existing test fixtures call _assert_provision_allowed / container_provision
+    directly rather than going through an HTTP TestClient, so this matches
+    that style for consistency with the rest of the file.
+    """
+    from core.services.provision_gate import Gate
+
+    fake_gate = Gate(
+        code="subscription_required",
+        title="Subscribe to start your container",
+        message="An active subscription is required to provision a container.",
+        action_label="Subscribe",
+        action_href="/onboarding",
+        action_admin_only=True,
+        owner_role="admin",
+    )
+
+    with patch(
+        "routers.container.evaluate_provision_gate",
+        new_callable=AsyncMock,
+    ) as mock_gate:
+        mock_gate.return_value = fake_gate
+
+        from routers.container import _assert_provision_allowed
+
+        with pytest.raises(HTTPException) as exc:
+            await _assert_provision_allowed(
+                owner_id="user_x",
+                clerk_user_id="user_x",
+                is_admin=True,
+            )
+
+    assert exc.value.status_code == 402
+    assert isinstance(exc.value.detail, dict)
+    assert exc.value.detail["blocked"]["code"] == "subscription_required"
+    assert exc.value.detail["blocked"]["action"]["admin_only"] is True
+    assert exc.value.detail["blocked"]["action"]["href"] == "/onboarding"
