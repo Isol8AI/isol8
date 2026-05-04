@@ -2,8 +2,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { usePostHog } from "posthog-js/react";
 import useSWR from "swr";
+
+import { capture } from "@/lib/analytics";
 import {
   Loader2,
   XCircle,
@@ -18,7 +19,6 @@ import { useContainerStatus, type ColdStartPhase } from "@/hooks/useContainerSta
 import { useProvisioningState } from "@/hooks/useProvisioningState";
 import { useGatewayRpc } from "@/hooks/useGatewayRpc";
 import { BotSetupWizard } from "@/components/channels/BotSetupWizard";
-import { capture } from "@/lib/analytics";
 import { nextOnboardingCompletion } from "@/components/chat/onboardingAnalytics";
 import { ChatGPTOAuthStep } from "@/components/chat/ChatGPTOAuthStep";
 import { ByoKeyStep } from "@/components/chat/ByoKeyStep";
@@ -184,7 +184,6 @@ export function ProvisioningStepper({
    *  "recovery" = skip billing, start from container provisioning. */
   trigger?: "onboarding" | "recovery";
 }) {
-  const posthog = usePostHog();
   const { organization, membership, isLoaded: orgLoaded } = useOrganization();
   const isOrg = !!organization;
   // Personal accounts (no org) and explicit org admins manage channels.
@@ -648,7 +647,7 @@ export function ProvisioningStepper({
             provider={wizardProvider}
             agentId="main"
             botUsername={wizardBotUsername}
-            onComplete={() => { posthog?.capture("onboarding_completed"); setOnboardingComplete(true); }}
+            onComplete={() => { capture("onboarding_completed"); setOnboardingComplete(true); }}
             onCancel={() => setOnboardingComplete(true)}
           />
         </div>
@@ -667,7 +666,7 @@ export function ProvisioningStepper({
   // that path is gone — billing_repo (owner-keyed) is the source of truth.
   if (phase === "provider" && providerChoice !== null) {
     const handleProviderComplete = async () => {
-      posthog?.capture("onboarding_provider_completed", {
+      capture("onboarding_provider_completed", {
         provider_choice: providerChoice,
       });
       setProviderStepDone(true);

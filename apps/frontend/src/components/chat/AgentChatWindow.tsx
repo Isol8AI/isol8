@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePostHog } from "posthog-js/react";
 
+import { capture } from "@/lib/analytics";
 import { ChatInput } from "./ChatInput";
 import { MessageList, MessageListHandle } from "./MessageList";
 import { useAgentChat, BOOTSTRAP_MESSAGE } from "@/hooks/useAgentChat";
@@ -46,7 +46,6 @@ interface PendingUpdate {
 
 
 function UpdateBanner() {
-  const posthog = usePostHog();
   const api = useApi();
   const { organization, membership } = useOrganization();
   const { onChatMessage } = useGateway();
@@ -91,7 +90,7 @@ function UpdateBanner() {
       setApplying(true);
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "now" });
-        posthog?.capture("update_applied");
+        capture("update_applied");
         setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to apply update:", err);
@@ -99,20 +98,20 @@ function UpdateBanner() {
         setApplying(false);
       }
     },
-    [api, posthog],
+    [api],
   );
 
   const handleScheduleTonight = useCallback(
     async (updateId: string) => {
       try {
         await api.post(`/container/updates/${updateId}/apply`, { schedule: "tonight" });
-        posthog?.capture("update_scheduled");
+        capture("update_scheduled");
         setUpdates((prev) => prev.filter((u) => u.update_id !== updateId));
       } catch (err) {
         console.error("Failed to schedule update:", err);
       }
     },
-    [api, posthog],
+    [api],
   );
 
   const handleRemindLater = useCallback(
