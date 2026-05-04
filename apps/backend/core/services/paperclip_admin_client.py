@@ -267,9 +267,11 @@ class PaperclipAdminClient:
         self,
         path: str,
         session_cookie: str,
+        params: Optional[dict[str, Any]] = None,
     ) -> dict:
         resp = await self._http.get(
             path,
+            params=params,
             headers=self._headers(session_cookie),
         )
         if resp.status_code >= 400:
@@ -731,29 +733,20 @@ class PaperclipAdminClient:
         self,
         *,
         session_cookie: str,
+        params: Optional[dict[str, Any]] = None,
     ) -> list:
         """List the signed-in agent's inbox-lite issue rows.
 
-        Maps to ``GET /api/agents/me/inbox-lite`` (see
-        ``server/src/routes/agents.ts:1545``). The plan/spec invented
-        ``/api/companies/{co}/inbox`` — that endpoint does not exist in
-        Paperclip and was returning 404, which the BFF then crashed on
-        as a generic 500 prior to PaperclipApiError handling.
-
-        The session implicitly scopes the result to the agent rows
-        owned by the signed-in actor, so no ``company_id`` parameter is
-        needed.
-
-        Response shape (per ``agents.ts:1564-1579``): a JSON array of
-        issue summary objects, each shaped as ``{id, identifier, title,
-        status, priority, projectId, goalId, parentId, updatedAt,
-        activeRun, dependencyReady, unresolvedBlockerCount,
-        unresolvedBlockerIssueIds}``. The Teams BFF reshapes this into
-        the ``{items: [...]}`` envelope the InboxPanel expects.
+        Maps to ``GET /api/agents/me/inbox-lite``. The optional ``params``
+        dict is forwarded as query string so the BFF can pass through
+        filter selections (tab, status, project, assignee, creator, search,
+        limit) verbatim. Empty/None params is allowed for back-compat with
+        the existing tier-1 caller.
         """
         return await self._get(
             "/api/agents/me/inbox-lite",
             session_cookie=session_cookie,
+            params=params,
         )
 
     async def dismiss_inbox_item(
@@ -769,6 +762,67 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/inbox/{item_id}/dismiss",
             json={},
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Heartbeat runs (NEW for #3a — Inbox deep port)
+    # ------------------------------------------------------------------
+
+    async def list_company_heartbeat_runs(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> dict:
+        """List heartbeat runs for the company.
+
+        Maps to ``GET /api/companies/{companyId}/heartbeat-runs``. The
+        ``status`` filter (e.g. "failed") is forwarded as a query param
+        so the BFF's Inbox "Runs" tab can show only failed runs.
+        """
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if limit is not None:
+            params["limit"] = str(limit)
+        return await self._get(
+            f"/api/companies/{company_id}/heartbeat-runs",
+            session_cookie=session_cookie,
+            params=params or None,
+        )
+
+    async def list_company_live_runs(
+        self,
+        *,
+        session_cookie: str,
+        company_id: str,
+    ) -> dict:
+        """List currently-running heartbeat runs for the company.
+
+        Maps to ``GET /api/companies/{companyId}/live-runs``. Used by the
+        Inbox UI to show a pulsing "Live" badge on issues with active runs.
+        """
+        return await self._get(
+            f"/api/companies/{company_id}/live-runs",
+            session_cookie=session_cookie,
+        )
+
+    async def get_heartbeat_run(
+        self,
+        *,
+        session_cookie: str,
+        run_id: str,
+    ) -> dict:
+        """Fetch a single heartbeat run by id.
+
+        Maps to ``GET /api/heartbeat-runs/{runId}``. Used by the agent-run
+        detail page that Inbox failed-run rows link into.
+        """
+        return await self._get(
+            f"/api/heartbeat-runs/{run_id}",
             session_cookie=session_cookie,
         )
 
@@ -825,6 +879,22 @@ class PaperclipAdminClient:
         return await self._post(
             f"/api/approvals/{approval_id}/reject",
             json={"reason": reason},
+            session_cookie=session_cookie,
+        )
+
+    async def get_approval(
+        self,
+        *,
+        session_cookie: str,
+        approval_id: str,
+    ) -> dict:
+        """Fetch a single approval by id.
+
+        Maps to ``GET /api/approvals/{id}``. Used by the approval detail
+        page that Inbox approval rows link into.
+        """
+        return await self._get(
+            f"/api/approvals/{approval_id}",
             session_cookie=session_cookie,
         )
 
@@ -892,6 +962,114 @@ class PaperclipAdminClient:
         """
         return await self._patch(
             f"/api/issues/{issue_id}",
+            json=body,
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Issue inbox state (NEW for #3a)
+    # ------------------------------------------------------------------
+
+    async def archive_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Archive an issue from the inbox.
+
+        Maps to ``POST /api/issues/{id}/inbox-archive``. The 49-line BFF
+        stub previously had a ``dismiss`` endpoint that mapped to
+        ``/api/inbox/{itemId}/dismiss`` — that's a different upstream
+        concept (inbox dismissals table) and we keep it. ``archive_issue``
+        is the modern Paperclip flow that flips an issue's
+        ``inbox_archived_at`` column.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/inbox-archive",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def unarchive_issue(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Restore an archived issue back to the inbox.
+
+        Maps to ``DELETE /api/issues/{id}/inbox-archive``. Drives the
+        Inbox UI's undo-archive toast.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}/inbox-archive",
+            session_cookie=session_cookie,
+        )
+
+    async def mark_issue_read(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Mark an issue as read for the signed-in user.
+
+        Maps to ``POST /api/issues/{id}/read``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/read",
+            json={},
+            session_cookie=session_cookie,
+        )
+
+    async def mark_issue_unread(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """Mark an issue as unread for the signed-in user.
+
+        Maps to ``DELETE /api/issues/{id}/read``.
+        """
+        return await self._delete(
+            f"/api/issues/{issue_id}/read",
+            session_cookie=session_cookie,
+        )
+
+    # ------------------------------------------------------------------
+    # Issue comments (NEW for #3a)
+    # ------------------------------------------------------------------
+
+    async def list_issue_comments(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+    ) -> dict:
+        """List comments on an issue.
+
+        Maps to ``GET /api/issues/{id}/comments``.
+        """
+        return await self._get(
+            f"/api/issues/{issue_id}/comments",
+            session_cookie=session_cookie,
+        )
+
+    async def add_issue_comment(
+        self,
+        *,
+        session_cookie: str,
+        issue_id: str,
+        body: dict,
+    ) -> dict:
+        """Add a comment to an issue. Body is whitelisted by the BFF.
+
+        Maps to ``POST /api/issues/{id}/comments``.
+        """
+        return await self._post(
+            f"/api/issues/{issue_id}/comments",
             json=body,
             session_cookie=session_cookie,
         )
