@@ -7,7 +7,7 @@
 // (NewIssueDialog) merges.
 // See spec at docs/superpowers/specs/2026-05-04-teams-ui-parity-roadmap.md
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -28,10 +28,24 @@ export interface CommandPaletteProps {
   onOpenChange: (open: boolean) => void;
 }
 
+// Inner component is mounted only while the dialog is open. Remounting on
+// every open transition is what gives us "reset query + selectedIndex on
+// reopen" without needing a setState-in-effect.
 export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="p-0 max-w-xl gap-0 overflow-hidden">
+        <DialogTitle className="sr-only">Command palette</DialogTitle>
+        {open ? <CommandPaletteContent open={open} onOpenChange={onOpenChange} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function CommandPaletteContent({ open, onOpenChange }: CommandPaletteProps) {
   const router = useRouter();
   const [query, setQuery] = useState("");
-  const [selectedIndex, setSelectedIndex] = useState(0);
+  const [rawSelectedIndex, setSelectedIndex] = useState(0);
 
   const navResults = useMemo(() => filterNavActions(query), [query]);
   const { agents, issues, projects } = useFilteredCommandResults(query, open);
@@ -45,20 +59,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     return items;
   }, [navResults, agents, issues, projects]);
 
-  // Reset state on open
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setSelectedIndex(0);
-    }
-  }, [open]);
-
-  // Clamp selectedIndex when results shrink
-  useEffect(() => {
-    if (selectedIndex >= flatItems.length) {
-      setSelectedIndex(Math.max(0, flatItems.length - 1));
-    }
-  }, [flatItems.length, selectedIndex]);
+  // Derive a clamped index from raw state — no setState-in-effect needed.
+  const selectedIndex = Math.min(rawSelectedIndex, Math.max(0, flatItems.length - 1));
 
   const select = (item: FlatItem) => {
     onOpenChange(false);
@@ -80,21 +82,19 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="p-0 max-w-xl gap-0 overflow-hidden">
-        <DialogTitle className="sr-only">Command palette</DialogTitle>
-        <div className="flex items-center gap-2 border-b border-border px-3">
-          <Search className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
-          <Input
-            autoFocus
-            placeholder="Search agents, issues, projects, or jump to..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={handleKeyDown}
-            className="border-0 shadow-none focus-visible:ring-0 px-0 h-11"
-          />
-        </div>
-        <div className="max-h-[60vh] overflow-y-auto py-2">
+    <>
+      <div className="flex items-center gap-2 border-b border-border px-3">
+        <Search className="h-4 w-4 text-muted-foreground shrink-0" aria-hidden="true" />
+        <Input
+          autoFocus
+          placeholder="Search agents, issues, projects, or jump to..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={handleKeyDown}
+          className="border-0 shadow-none focus-visible:ring-0 px-0 h-11"
+        />
+      </div>
+      <div className="max-h-[60vh] overflow-y-auto py-2">
           {flatItems.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">No results.</div>
           ) : (
@@ -170,8 +170,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
             </>
           )}
         </div>
-      </DialogContent>
-    </Dialog>
+    </>
   );
 }
 
