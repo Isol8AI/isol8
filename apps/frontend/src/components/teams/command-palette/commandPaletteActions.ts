@@ -5,7 +5,7 @@
 
 import {
   LayoutDashboard, Inbox, Bot, CircleDot, ClipboardCheck, Repeat, Target,
-  FolderOpen, History, DollarSign, Hexagon, Users, Settings,
+  FolderOpen, History, DollarSign, Hexagon, Users, Settings, Network,
 } from "lucide-react";
 import type { ComponentType, SVGProps } from "react";
 
@@ -21,6 +21,7 @@ export const NAV_ACTIONS: CommandPaletteAction[] = [
   { id: "go-dashboard", label: "Dashboard", path: "/teams/dashboard", Icon: LayoutDashboard },
   { id: "go-inbox", label: "Inbox", path: "/teams/inbox", Icon: Inbox, keywords: ["mine", "issues"] },
   { id: "go-agents", label: "Agents", path: "/teams/agents", Icon: Bot, keywords: ["bot"] },
+  { id: "go-org-chart", label: "Org chart", path: "/teams/org-chart", Icon: Network, keywords: ["network", "hierarchy"] },
   { id: "go-issues", label: "Issues", path: "/teams/issues", Icon: CircleDot, keywords: ["tasks", "tickets"] },
   { id: "go-approvals", label: "Approvals", path: "/teams/approvals", Icon: ClipboardCheck },
   { id: "go-routines", label: "Routines", path: "/teams/routines", Icon: Repeat, keywords: ["cron", "schedule"] },
