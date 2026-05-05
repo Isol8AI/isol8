@@ -115,23 +115,13 @@ export function matchesInboxIssueSearch(issue: Issue, query: string): boolean {
   return false;
 }
 
-function isSameDayOrLater(issueIso: string | null | undefined, todayStartMs: number): boolean {
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+function isWithinLast24h(issueIso: string | null | undefined, cutoffMs: number): boolean {
   if (!issueIso) return false;
   const t = new Date(issueIso).getTime();
   if (!Number.isFinite(t)) return false;
-  return t >= todayStartMs;
-}
-
-function startOfDayMs(iso: string): number {
-  const d = new Date(iso);
-  if (!Number.isFinite(d.getTime())) {
-    // Fall back to epoch start-of-day so the function never throws — callers
-    // pass `nowIso` from `new Date().toISOString()` so this branch is purely
-    // defensive.
-    return 0;
-  }
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  return t >= cutoffMs;
 }
 
 /**
@@ -140,8 +130,11 @@ function startOfDayMs(iso: string): number {
  * - When `searchQuery` is non-empty, returns a single `{ kind: "search" }`
  *   section containing all items (search-filtering happens upstream of this
  *   call).
- * - Otherwise splits items by `issue.updatedAt` into Today (>= today's
- *   midnight) and Earlier sections. Empty sections are omitted.
+ * - Otherwise splits items by `issue.updatedAt` into Today (within the last
+ *   24h) and Earlier sections. Empty sections are omitted.
+ *
+ * Uses a rolling 24h window (not local-midnight) so the boundary is timezone-
+ * agnostic — matches upstream Paperclip's `Inbox.tsx:2306` (`Date.now() - 24h`).
  *
  * `nowIso` is required so callers can drive the date boundary deterministically
  * in tests.
@@ -156,12 +149,16 @@ export function buildGroupedInboxSections(
     return [{ kind: "search", items }];
   }
 
-  const todayStartMs = startOfDayMs(options.nowIso);
+  const nowMs = new Date(options.nowIso).getTime();
+  if (!Number.isFinite(nowMs)) {
+    throw new Error(`buildGroupedInboxSections: invalid nowIso ${JSON.stringify(options.nowIso)}`);
+  }
+  const todayCutoffMs = nowMs - TWENTY_FOUR_HOURS_MS;
   const today: InboxWorkItem[] = [];
   const earlier: InboxWorkItem[] = [];
   for (const item of items) {
     const ts = item.issue.updatedAt ?? item.issue.lastActivityAt ?? null;
-    if (isSameDayOrLater(ts, todayStartMs)) {
+    if (isWithinLast24h(ts, todayCutoffMs)) {
       today.push(item);
     } else {
       earlier.push(item);

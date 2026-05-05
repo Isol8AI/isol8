@@ -158,21 +158,22 @@ describe("buildGroupedInboxSections", () => {
     expect(sections.map((s) => s.kind)).toEqual(["today"]);
   });
 
-  test("splits items into today vs earlier by updatedAt", () => {
+  test("splits items into today vs earlier by updatedAt (rolling 24h window)", () => {
+    // NOW = 2026-05-04T15:00:00Z → cutoff = 2026-05-03T15:00:00Z.
+    // "today" = items strictly within the last 24h. TZ-agnostic.
     const items: InboxWorkItem[] = [
-      // today (after midnight UTC of NOW)
       {
         kind: "issue",
         issue: makeIssue({ id: "today-1", updatedAt: "2026-05-04T08:00:00.000Z" }),
       },
       {
         kind: "issue",
-        issue: makeIssue({ id: "today-2", updatedAt: "2026-05-04T23:00:00.000Z" }),
+        issue: makeIssue({ id: "today-2", updatedAt: "2026-05-03T20:00:00.000Z" }),
       },
-      // earlier
+      // earlier (older than 24h from NOW)
       {
         kind: "issue",
-        issue: makeIssue({ id: "old-1", updatedAt: "2026-05-03T20:00:00.000Z" }),
+        issue: makeIssue({ id: "old-1", updatedAt: "2026-05-03T10:00:00.000Z" }),
       },
       {
         kind: "issue",
