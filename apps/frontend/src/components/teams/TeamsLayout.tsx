@@ -1,6 +1,7 @@
 "use client";
 
 import { useTeamsWorkspaceStatus } from "@/hooks/useTeamsApi";
+import { CommandPaletteProvider } from "./command-palette/CommandPaletteProvider";
 import { TeamsEventsProvider } from "./TeamsEventsProvider";
 import { TeamsSidebar } from "./TeamsSidebar";
 
@@ -18,7 +19,9 @@ export function TeamsLayout({ children }: { children: React.ReactNode }) {
         ) : status.kind === "error" ? (
           <ErrorOverlay error={status.error} />
         ) : (
-          <TeamsEventsProvider>{children}</TeamsEventsProvider>
+          <TeamsEventsProvider>
+            <CommandPaletteProvider>{children}</CommandPaletteProvider>
+          </TeamsEventsProvider>
         )}
       </main>
     </div>
