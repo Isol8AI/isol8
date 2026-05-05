@@ -129,6 +129,7 @@ export interface Issue {
   id: string;
   identifier?: string | null;
   title: string;
+  description?: string | null;
   status: IssueStatus;
   priority?: IssuePriority | null;
   labels?: IssueLabel[] | null;
