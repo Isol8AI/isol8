@@ -27,13 +27,16 @@ export function SwipeToArchive({
 }: SwipeToArchiveProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const startPointRef = useRef<{ x: number; y: number } | null>(null);
-  const widthRef = useRef(0);
   const timeoutRef = useRef<number | null>(null);
   const suppressClickRef = useRef(false);
   const [offsetX, setOffsetX] = useState(0);
   const [isDragging, setIsDragging] = useState(false);
   const [isCollapsing, setIsCollapsing] = useState(false);
   const [lockedHeight, setLockedHeight] = useState<number | null>(null);
+  // Width is captured on touch-start and read during render to size the
+  // archive-reveal layer; keep it in state so the render-time read doesn't
+  // trip react-hooks/refs.
+  const [width, setWidth] = useState(0);
 
   useEffect(() => {
     return () => {
@@ -57,7 +60,7 @@ export function SwipeToArchive({
     }
     setIsDragging(false);
     setLockedHeight(node.offsetHeight);
-    setOffsetX(-Math.max(widthRef.current, node.offsetWidth));
+    setOffsetX(-Math.max(width, node.offsetWidth));
     window.requestAnimationFrame(() => {
       window.requestAnimationFrame(() => {
         setIsCollapsing(true);
@@ -72,7 +75,7 @@ export function SwipeToArchive({
     if (disabled || event.touches.length !== 1) return;
     const touch = event.touches[0];
     const node = containerRef.current;
-    widthRef.current = node?.offsetWidth ?? 0;
+    setWidth(node?.offsetWidth ?? 0);
     setLockedHeight(node?.offsetHeight ?? null);
     setIsCollapsing(false);
     suppressClickRef.current = false;
@@ -104,7 +107,7 @@ export function SwipeToArchive({
       return;
     }
 
-    const maxSwipe = widthRef.current > 0 ? widthRef.current * MAX_SWIPE : Number.POSITIVE_INFINITY;
+    const maxSwipe = width > 0 ? width * MAX_SWIPE : Number.POSITIVE_INFINITY;
     event.preventDefault();
     setIsDragging(true);
     setOffsetX(Math.max(deltaX, -maxSwipe));
@@ -113,7 +116,7 @@ export function SwipeToArchive({
   const handleTouchEnd = () => {
     if (disabled || isCollapsing) return;
     const shouldCommit =
-      widthRef.current > 0 && Math.abs(offsetX) >= widthRef.current * COMMIT_THRESHOLD;
+      width > 0 && Math.abs(offsetX) >= width * COMMIT_THRESHOLD;
     if (shouldCommit) {
       commitArchive();
       return;
@@ -121,7 +124,7 @@ export function SwipeToArchive({
     reset();
   };
 
-  const archiveReveal = widthRef.current > 0 ? Math.min(Math.abs(offsetX) / widthRef.current, 1) : 0;
+  const archiveReveal = width > 0 ? Math.min(Math.abs(offsetX) / width, 1) : 0;
 
   return (
     <div
