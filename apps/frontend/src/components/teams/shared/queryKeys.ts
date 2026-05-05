@@ -4,6 +4,12 @@
 // (MIT, © 2025 Paperclip AI). Translated from React Query tuple keys to SWR
 // string keys. See spec at
 // docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+//
+// Path-prefix contract: keys are RELATIVE to the Teams BFF base. They do NOT
+// include the leading `/teams` segment because `useTeamsApi.read(path)`
+// composes the final SWR cache key + URL by prepending `/teams` itself
+// (see apps/frontend/src/hooks/useTeamsApi.ts). Returning `/teams/...`
+// here would produce doubled `/teams/teams/...` SWR keys.
 
 export type InboxTab = "mine" | "recent" | "all" | "unread" | "approvals" | "runs" | "joins";
 
@@ -29,18 +35,18 @@ export const teamsQueryKeys = {
   inbox: {
     list: (tab: InboxTab, filters: InboxFilters) => {
       const tail = qs(filters);
-      return tail ? `/teams/inbox?tab=${tab}&${tail}` : `/teams/inbox?tab=${tab}`;
+      return tail ? `/inbox?tab=${tab}&${tail}` : `/inbox?tab=${tab}`;
     },
-    approvals: () => `/teams/inbox/approvals`,
-    runs: () => `/teams/inbox/runs`,
-    liveRuns: () => `/teams/inbox/live-runs`,
+    approvals: () => `/inbox/approvals`,
+    runs: () => `/inbox/runs`,
+    liveRuns: () => `/inbox/live-runs`,
   },
   issues: {
-    detail: (id: string) => `/teams/issues/${id}`,
-    comments: (id: string) => `/teams/issues/${id}/comments`,
+    detail: (id: string) => `/issues/${id}`,
+    comments: (id: string) => `/issues/${id}/comments`,
   },
-  approvals: { detail: (id: string) => `/teams/approvals/${id}` },
-  runs: { detail: (id: string) => `/teams/runs/${id}` },
-  members: () => `/teams/members`,
-  projects: () => `/teams/projects`,
+  approvals: { detail: (id: string) => `/approvals/${id}` },
+  runs: { detail: (id: string) => `/runs/${id}` },
+  members: () => `/members`,
+  projects: () => `/projects`,
 } as const;
