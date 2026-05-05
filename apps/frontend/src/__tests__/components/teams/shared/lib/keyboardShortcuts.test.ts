@@ -181,123 +181,108 @@ describe("findPageSearchShortcutTarget / focusPageSearchShortcutTarget", () => {
 });
 
 describe("resolveInboxUndoArchiveKeyAction", () => {
-  test("returns 'undo' on Cmd+Z", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", metaKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBe("undo");
+  // Mirrors upstream's destructured-arg signature exactly. The shortcut is
+  // unmodified `u`, NOT Cmd+Z. Caller owns the gating context (hasUndoableArchive,
+  // hasOpenDialog, target inspection).
+  const baseArgs = {
+    hasUndoableArchive: true,
+    defaultPrevented: false,
+    key: "u",
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    target: null,
+    hasOpenDialog: false,
+  };
+
+  test("returns 'undo_archive' on plain `u` when armed", () => {
+    expect(resolveInboxUndoArchiveKeyAction(baseArgs)).toBe("undo_archive");
   });
 
-  test("returns 'undo' on Ctrl+Z", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", ctrlKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBe("undo");
+  test("returns 'ignore' when no archive is undoable", () => {
+    expect(
+      resolveInboxUndoArchiveKeyAction({ ...baseArgs, hasUndoableArchive: false })
+    ).toBe("ignore");
   });
 
-  test("returns 'undo' on uppercase Z with metaKey", () => {
-    const e = new KeyboardEvent("keydown", { key: "Z", metaKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBe("undo");
+  test("returns 'ignore' when defaultPrevented", () => {
+    expect(
+      resolveInboxUndoArchiveKeyAction({ ...baseArgs, defaultPrevented: true })
+    ).toBe("ignore");
   });
 
-  test("returns null on plain z (no modifier)", () => {
-    const e = new KeyboardEvent("keydown", { key: "z" });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' on Cmd+u (any modifier rejects)", () => {
+    expect(resolveInboxUndoArchiveKeyAction({ ...baseArgs, metaKey: true })).toBe("ignore");
   });
 
-  test("returns null on Shift+Cmd+Z (redo, not undo)", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", metaKey: true, shiftKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' on Ctrl+u", () => {
+    expect(resolveInboxUndoArchiveKeyAction({ ...baseArgs, ctrlKey: true })).toBe("ignore");
   });
 
-  test("returns null on Shift+Ctrl+Z (redo, not undo)", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", ctrlKey: true, shiftKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' on Alt+u", () => {
+    expect(resolveInboxUndoArchiveKeyAction({ ...baseArgs, altKey: true })).toBe("ignore");
   });
 
-  test("returns null on Alt+Cmd+Z", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", metaKey: true, altKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' on a non-`u` key", () => {
+    expect(resolveInboxUndoArchiveKeyAction({ ...baseArgs, key: "z" })).toBe("ignore");
   });
 
-  test("returns null on Cmd+other-key", () => {
-    const e = new KeyboardEvent("keydown", { key: "x", metaKey: true });
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' when a blocking dialog is open", () => {
+    expect(
+      resolveInboxUndoArchiveKeyAction({ ...baseArgs, hasOpenDialog: true })
+    ).toBe("ignore");
   });
 
-  test("returns null when defaultPrevented", () => {
-    const e = new KeyboardEvent("keydown", { key: "z", metaKey: true, cancelable: true });
-    e.preventDefault();
-    expect(resolveInboxUndoArchiveKeyAction(e)).toBeNull();
+  test("returns 'ignore' when target is a text input", () => {
+    const input = document.createElement("input");
+    expect(
+      resolveInboxUndoArchiveKeyAction({ ...baseArgs, target: input })
+    ).toBe("ignore");
+  });
+
+  test("returns 'ignore' on a modifier-only key like Shift", () => {
+    expect(resolveInboxUndoArchiveKeyAction({ ...baseArgs, key: "Shift" })).toBe("ignore");
   });
 });
 
 describe("shouldBlurPageSearchOnEnter", () => {
-  test("true when Enter pressed on page-search input", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Enter" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEnter(e)).toBe(true);
-  });
-
-  test("false when Enter pressed on a non-page-search element", () => {
-    const input = document.createElement("input");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Enter" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEnter(e)).toBe(false);
+  test("true when Enter pressed and not composing", () => {
+    expect(shouldBlurPageSearchOnEnter({ key: "Enter", isComposing: false })).toBe(true);
   });
 
   test("false on non-Enter key", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "a" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEnter(e)).toBe(false);
+    expect(shouldBlurPageSearchOnEnter({ key: "a", isComposing: false })).toBe(false);
   });
 
   test("false when isComposing (IME)", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Enter", isComposing: true });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEnter(e)).toBe(false);
+    expect(shouldBlurPageSearchOnEnter({ key: "Enter", isComposing: true })).toBe(false);
   });
 });
 
 describe("shouldBlurPageSearchOnEscape", () => {
-  test("true when Escape pressed on page-search input", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Escape" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEscape(e)).toBe(true);
+  // Mirrors upstream's two-step Esc behavior: a populated Esc clears text
+  // first (browser default), then a second Esc on an empty field blurs.
+  test("true when Escape pressed on an empty input", () => {
+    expect(
+      shouldBlurPageSearchOnEscape({ key: "Escape", isComposing: false, currentValue: "" })
+    ).toBe(true);
   });
 
-  test("false when Escape pressed on a non-page-search element", () => {
-    const input = document.createElement("input");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Escape" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEscape(e)).toBe(false);
+  test("false when Escape pressed on a populated input (clear-first)", () => {
+    expect(
+      shouldBlurPageSearchOnEscape({ key: "Escape", isComposing: false, currentValue: "fix" })
+    ).toBe(false);
   });
 
   test("false on non-Escape key", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "a" });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEscape(e)).toBe(false);
+    expect(
+      shouldBlurPageSearchOnEscape({ key: "a", isComposing: false, currentValue: "" })
+    ).toBe(false);
   });
 
   test("false when isComposing (IME)", () => {
-    const input = document.createElement("input");
-    input.setAttribute("data-page-search", "");
-    document.body.appendChild(input);
-    const e = new KeyboardEvent("keydown", { key: "Escape", isComposing: true });
-    Object.defineProperty(e, "target", { value: input });
-    expect(shouldBlurPageSearchOnEscape(e)).toBe(false);
+    expect(
+      shouldBlurPageSearchOnEscape({ key: "Escape", isComposing: true, currentValue: "" })
+    ).toBe(false);
   });
 });

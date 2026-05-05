@@ -6,10 +6,12 @@
 
 // Subset: pure DOM helpers used by the Inbox keyboard-nav hook (Task 6).
 // Skipped from upstream: issue-detail chord shortcuts (g i / g c) and the
-// resolveInboxQuickArchiveKeyAction / resolveIssueDetailGoKeyAction object-
-// signature helpers — Isol8 doesn't yet have those routes/flows. The remaining
-// helpers also use simpler raw-KeyboardEvent signatures (matching the consumer
-// hook's call sites) rather than upstream's destructured-object signatures.
+// resolveInboxQuickArchiveKeyAction / resolveIssueDetailGoKeyAction helpers —
+// Isol8 doesn't yet have those routes/flows. resolveInboxUndoArchiveKeyAction
+// and shouldBlurPageSearchOnEscape preserve upstream's destructured-arg
+// signatures + behavior verbatim (the undo shortcut is the unmodified `u`
+// key, not Cmd+Z; Esc-blurs only when the search input is empty so a populated
+// Esc clears text first). Caller hooks own the gating contracts.
 
 const KEYBOARD_SHORTCUT_TEXT_INPUT_SELECTOR = [
   "input",
@@ -89,39 +91,69 @@ export function focusPageSearchShortcutTarget(root: ParentNode = document): bool
   return true;
 }
 
-/**
- * Returns "undo" for Ctrl+Z / Cmd+Z (without Shift — Shift+Z is redo), null
- * otherwise. Used by the Inbox keyboard-nav hook to undo the last archive.
- */
-export function resolveInboxUndoArchiveKeyAction(event: KeyboardEvent): "undo" | null {
-  if (event.defaultPrevented) return null;
-  if (event.shiftKey) return null; // Shift+Cmd+Z is redo, not undo
-  if (!(event.metaKey || event.ctrlKey)) return null;
-  if (event.altKey) return null;
-  if (event.key.toLowerCase() !== "z") return null;
-  return "undo";
+export type InboxUndoArchiveKeyAction = "ignore" | "undo_archive";
+
+const MODIFIER_ONLY_KEYS = new Set([
+  "Shift",
+  "Control",
+  "Alt",
+  "Meta",
+  "CapsLock",
+  "OS",
+  "ContextMenu",
+]);
+
+function isModifierOnlyKey(key: string): boolean {
+  return MODIFIER_ONLY_KEYS.has(key);
 }
 
 /**
- * True if Enter pressed (and not composing) while focus is on a
- * `data-page-search` element. Caller blurs the input on true.
+ * Resolve whether a keydown should trigger Inbox undo-archive. Mirrors upstream
+ * `paperclip/ui/src/lib/keyboardShortcuts.ts:resolveInboxUndoArchiveKeyAction`
+ * verbatim: the shortcut is the unmodified `u` key (NOT Cmd+Z) and the caller
+ * owns the gating context (`hasUndoableArchive`, `hasOpenDialog`, target
+ * inspection).
  */
-export function shouldBlurPageSearchOnEnter(event: KeyboardEvent): boolean {
-  if (event.key !== "Enter") return false;
-  if (event.isComposing) return false;
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return false;
-  return target.hasAttribute("data-page-search");
+export function resolveInboxUndoArchiveKeyAction(args: {
+  hasUndoableArchive: boolean;
+  defaultPrevented: boolean;
+  key: string;
+  metaKey: boolean;
+  ctrlKey: boolean;
+  altKey: boolean;
+  target: EventTarget | null;
+  hasOpenDialog: boolean;
+}): InboxUndoArchiveKeyAction {
+  const { hasUndoableArchive, defaultPrevented, key, metaKey, ctrlKey, altKey, target, hasOpenDialog } = args;
+  if (!hasUndoableArchive) return "ignore";
+  if (defaultPrevented) return "ignore";
+  if (metaKey || ctrlKey || altKey || isModifierOnlyKey(key)) return "ignore";
+  if (hasOpenDialog || isKeyboardShortcutTextInputTarget(target)) return "ignore";
+  if (key === "u") return "undo_archive";
+  return "ignore";
 }
 
 /**
- * True if Escape pressed (and not composing) while focus is on a
- * `data-page-search` element. Caller blurs the input on true.
+ * True if Enter pressed while focus is on a page-search input. Caller blurs
+ * the input on true. Mirrors upstream's destructured-arg signature.
  */
-export function shouldBlurPageSearchOnEscape(event: KeyboardEvent): boolean {
-  if (event.key !== "Escape") return false;
-  if (event.isComposing) return false;
-  const target = event.target;
-  if (!(target instanceof HTMLElement)) return false;
-  return target.hasAttribute("data-page-search");
+export function shouldBlurPageSearchOnEnter(args: {
+  key: string;
+  isComposing: boolean;
+}): boolean {
+  return args.key === "Enter" && !args.isComposing;
+}
+
+/**
+ * True if Escape pressed while focus is on a page-search input AND the input
+ * is empty. Mirrors upstream's two-step Esc behavior: a populated Esc clears
+ * text first (handled by the input itself), then a second Esc on an empty
+ * field blurs.
+ */
+export function shouldBlurPageSearchOnEscape(args: {
+  key: string;
+  isComposing: boolean;
+  currentValue: string;
+}): boolean {
+  return args.key === "Escape" && !args.isComposing && args.currentValue.length === 0;
 }
