@@ -5,19 +5,29 @@
 // (paperclip/ui/src/lib/inbox.ts, hooks/useInboxBadge.ts) (MIT, (c) 2025 Paperclip AI).
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
+// Deliberate divergences from upstream:
+//   - Key shape `paperclip:inbox:<companyId>:<key>` (vs upstream's
+//     `paperclip:inbox:<key>:<companyId>`) — sidesteps cross-tenant bleed
+//     latent in upstream's per-key-prefix scheme. No upstream prefs to
+//     migrate since this is a fresh BFF surface.
+
 import type { InboxFilterPreferences } from "@/components/teams/shared/lib/inbox";
 import type { InboxTab } from "@/components/teams/shared/queryKeys";
 import { defaultIssueFilterState } from "@/components/teams/shared/lib/issueFilters";
 
-const KNOWN_INBOX_TABS: readonly InboxTab[] = [
-  "mine",
-  "recent",
-  "all",
-  "unread",
-  "approvals",
-  "runs",
-  "joins",
-] as const;
+// Source of truth for runtime tab validation. The Record<InboxTab, true>
+// shape forces a TS error if the InboxTab union grows without updating
+// this map, so `loadLastInboxTab` can never silently accept a stale value.
+const KNOWN_INBOX_TABS_MAP: Record<InboxTab, true> = {
+  mine: true,
+  recent: true,
+  all: true,
+  unread: true,
+  approvals: true,
+  runs: true,
+  joins: true,
+};
+const DEFAULT_INBOX_TAB: InboxTab = "mine";
 
 /**
  * Build the namespaced localStorage key for a per-company inbox preference.
@@ -89,18 +99,20 @@ export function saveLastInboxTab(companyId: string, tab: InboxTab): void {
 }
 
 /**
- * Read + validate the last-active inbox tab. Returns `null` when the key is
- * missing, the stored value isn't a known InboxTab, or storage access throws.
+ * Read + validate the last-active inbox tab. Returns `"mine"` (the upstream
+ * default) when the key is missing, the stored value isn't a known InboxTab,
+ * or storage access throws — matches upstream behavior at
+ * paperclip/ui/src/lib/inbox.ts:614-631.
  */
-export function loadLastInboxTab(companyId: string): InboxTab | null {
+export function loadLastInboxTab(companyId: string): InboxTab {
   let raw: string | null;
   try {
     raw = localStorage.getItem(inboxStorageKey(companyId, "tab"));
   } catch {
-    return null;
+    return DEFAULT_INBOX_TAB;
   }
-  if (!raw) return null;
-  return (KNOWN_INBOX_TABS as readonly string[]).includes(raw) ? (raw as InboxTab) : null;
+  if (!raw) return DEFAULT_INBOX_TAB;
+  return raw in KNOWN_INBOX_TABS_MAP ? (raw as InboxTab) : DEFAULT_INBOX_TAB;
 }
 
 /**

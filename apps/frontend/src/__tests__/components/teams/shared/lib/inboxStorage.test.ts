@@ -146,24 +146,24 @@ describe("saveInboxFilterPreferences", () => {
 
 describe("loadLastInboxTab / saveLastInboxTab", () => {
   test("round-trips a valid tab", () => {
-    saveLastInboxTab("co_1", "mine");
+    saveLastInboxTab("co_1", "recent");
+    expect(loadLastInboxTab("co_1")).toBe("recent");
+  });
+
+  test("returns 'mine' default when key missing (matches upstream)", () => {
     expect(loadLastInboxTab("co_1")).toBe("mine");
   });
 
-  test("returns null when key missing", () => {
-    expect(loadLastInboxTab("co_1")).toBeNull();
-  });
-
-  test("returns null when stored value is not a known tab", () => {
+  test("returns 'mine' default when stored value is not a known tab", () => {
     localStorage.setItem("paperclip:inbox:co_1:tab", "evil-tab");
-    expect(loadLastInboxTab("co_1")).toBeNull();
+    expect(loadLastInboxTab("co_1")).toBe("mine");
   });
 
-  test("returns null when localStorage.getItem throws", () => {
+  test("returns 'mine' default when localStorage.getItem throws", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
       throw new Error("private mode");
     });
-    expect(loadLastInboxTab("co_1")).toBeNull();
+    expect(loadLastInboxTab("co_1")).toBe("mine");
   });
 
   test("saveLastInboxTab does not throw on storage failure", () => {
