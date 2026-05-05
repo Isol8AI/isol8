@@ -9,7 +9,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Search } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -52,6 +52,9 @@ export interface InboxToolbarProps {
 
   unreadCount: number;
   onMarkAllRead: () => void;
+
+  /** Fired when the user clicks the primary "New issue" button. */
+  onNewIssue: () => void;
 }
 
 const TABS: { value: InboxTab; label: string }[] = [
@@ -90,6 +93,7 @@ export function InboxToolbar(props: InboxToolbarProps) {
     currentUserId,
     unreadCount,
     onMarkAllRead,
+    onNewIssue,
   } = props;
 
   const activeFilterCount = useMemo(() => countActiveFilters(filterState), [filterState]);
@@ -200,6 +204,18 @@ export function InboxToolbar(props: InboxToolbarProps) {
             buttonVariant="outline"
             iconOnly
           />
+
+          {/* Primary action: open the New Issue dialog. */}
+          <Button
+            type="button"
+            variant="default"
+            size="sm"
+            onClick={onNewIssue}
+            className="h-8 shrink-0 gap-1.5 text-xs"
+          >
+            <Plus className="h-3 w-3" />
+            <span>New issue</span>
+          </Button>
 
           {/* Mark all as read with confirmation dialog. */}
           <AlertDialog>
