@@ -35,6 +35,12 @@ vi.mock("@clerk/nextjs", () => ({
 // Stub the heavy hooks ChatLayout pulls in — irrelevant to the routing test.
 vi.mock("posthog-js/react", () => ({
   usePostHog: () => ({ capture: vi.fn() }),
+  // ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
+  // load time, so the mock has to expose it (vitest is strict about
+  // import-time destructuring against module mocks). Returning a passthrough
+  // component is enough — these tests don't render the chat shell into
+  // PostHog's actual provider.
+  PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("@/hooks/useGateway", () => ({
   useGateway: () => ({ nodeConnected: false }),

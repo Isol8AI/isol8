@@ -22,7 +22,14 @@ const buildClerkMocks = (
 
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 vi.mock("@/lib/api", () => ({ useApi: () => ({ syncUser: vi.fn() }) }));
-vi.mock("posthog-js/react", () => ({ usePostHog: () => null }));
+// ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
+// load time, so the mock has to expose it (vitest is strict about
+// import-time destructuring against module mocks). Returning a passthrough
+// component is enough — these tests don't render through the real provider.
+vi.mock("posthog-js/react", () => ({
+  usePostHog: () => null,
+  PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
+}));
 
 describe("OnboardingPage", () => {
   // vitest caches dynamically-imported modules, so a `vi.doMock` registered
