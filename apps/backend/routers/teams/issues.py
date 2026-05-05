@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 
 from . import agents as _agents
 from .deps import TeamsContext
-from .schemas import AddCommentBody, CreateIssueBody, PatchIssueBody
+from .schemas import AddIssueCommentBody, CreateIssueBody, PatchIssueBody
 
 router = APIRouter()
 _ctx = _agents._ctx
@@ -127,7 +127,7 @@ async def list_issue_comments(issue_id: str, ctx: TeamsContext = Depends(_ctx)):
 @router.post("/issues/{issue_id}/comments")
 async def add_issue_comment(
     issue_id: str,
-    body: AddCommentBody,
+    body: AddIssueCommentBody,
     ctx: TeamsContext = Depends(_ctx),
 ):
     """Post a comment on an issue. Body is whitelisted to ``{body: str}``."""

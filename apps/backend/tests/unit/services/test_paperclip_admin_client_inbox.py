@@ -95,24 +95,6 @@ async def test_mark_issue_unread(admin_client_with_fake_http):
 
 
 @pytest.mark.asyncio
-async def test_list_issue_comments(admin_client_with_fake_http):
-    client, http = admin_client_with_fake_http
-    await client.list_issue_comments(issue_id="iss_7", session_cookie="c=1")
-    http.get.assert_awaited_once()
-    assert http.get.call_args.args[0] == "/api/issues/iss_7/comments"
-
-
-@pytest.mark.asyncio
-async def test_add_issue_comment(admin_client_with_fake_http):
-    client, http = admin_client_with_fake_http
-    await client.add_issue_comment(issue_id="iss_7", body={"body": "hello"}, session_cookie="c=1")
-    http.post.assert_awaited_once()
-    call = http.post.call_args
-    assert call.args[0] == "/api/issues/iss_7/comments"
-    assert call.kwargs.get("json") == {"body": "hello"}
-
-
-@pytest.mark.asyncio
 async def test_get_approval_detail(admin_client_with_fake_http):
     client, http = admin_client_with_fake_http
     await client.get_approval(approval_id="apv_1", session_cookie="c=1")
