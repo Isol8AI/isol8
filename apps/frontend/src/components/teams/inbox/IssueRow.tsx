@@ -102,6 +102,7 @@ export function IssueRow({
   ) : null;
 
   return (
+    // TODO(#3d): re-evaluate quicklook/prefetch/state props when IssueDetail page lands.
     <Link
       href={createIssueDetailPath(issuePathId)}
       data-inbox-issue-link
@@ -206,14 +207,14 @@ export function IssueRow({
               }}
               className={cn(
                 "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                selected ? "hover:bg-muted/80" : "hover:bg-amber-700/20",
+                selected ? "hover:bg-muted/80" : "hover:bg-amber-700/20 dark:hover:bg-amber-400/20",
               )}
               aria-label="Mark as read"
             >
               <span
                 className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  selected ? "bg-muted-foreground/70" : "bg-amber-700",
+                  selected ? "bg-muted-foreground/70" : "bg-amber-700 dark:bg-amber-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )}
               />

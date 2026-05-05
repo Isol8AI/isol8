@@ -9,40 +9,39 @@ import { ArrowUp, ArrowDown, Minus, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
+import type { IssuePriority } from "@/components/teams/shared/types";
 
 // Inlined copy of the upstream `priorityColor` map from
 // `paperclip/ui/src/lib/status-colors.ts` with the retheme mapping applied:
-//   `text-blue-{400,600}` for `low`  ->  `text-amber-700`
+//   `text-blue-{400,600}` for `low`  ->  `text-amber-700 dark:text-amber-400`
 // Critical / high / medium hues are priority-semantic (red / orange / yellow)
 // and pass through unchanged.
-const priorityColor: Record<string, string> = {
+const priorityColor: Record<IssuePriority, string> = {
   critical: "text-red-600 dark:text-red-400",
   high: "text-orange-600 dark:text-orange-400",
   medium: "text-yellow-600 dark:text-yellow-400",
-  low: "text-amber-700",
+  low: "text-amber-700 dark:text-amber-400",
 };
 
-const priorityColorDefault = "text-yellow-600 dark:text-yellow-400";
-
-const priorityConfig: Record<string, { icon: typeof ArrowUp; color: string; label: string }> = {
-  critical: { icon: AlertTriangle, color: priorityColor.critical ?? priorityColorDefault, label: "Critical" },
-  high: { icon: ArrowUp, color: priorityColor.high ?? priorityColorDefault, label: "High" },
-  medium: { icon: Minus, color: priorityColor.medium ?? priorityColorDefault, label: "Medium" },
-  low: { icon: ArrowDown, color: priorityColor.low ?? priorityColorDefault, label: "Low" },
+const priorityConfig: Record<IssuePriority, { icon: typeof ArrowUp; color: string; label: string }> = {
+  critical: { icon: AlertTriangle, color: priorityColor.critical, label: "Critical" },
+  high: { icon: ArrowUp, color: priorityColor.high, label: "High" },
+  medium: { icon: Minus, color: priorityColor.medium, label: "Medium" },
+  low: { icon: ArrowDown, color: priorityColor.low, label: "Low" },
 };
 
-const allPriorities = ["critical", "high", "medium", "low"];
+const allPriorities: IssuePriority[] = ["critical", "high", "medium", "low"];
 
 interface PriorityIconProps {
-  priority: string;
-  onChange?: (priority: string) => void;
+  priority: IssuePriority;
+  onChange?: (priority: IssuePriority) => void;
   className?: string;
   showLabel?: boolean;
 }
 
 export function PriorityIcon({ priority, onChange, className, showLabel }: PriorityIconProps) {
   const [open, setOpen] = useState(false);
-  const config = priorityConfig[priority] ?? priorityConfig.medium!;
+  const config = priorityConfig[priority] ?? priorityConfig.medium;
   const Icon = config.icon;
 
   const icon = (
@@ -82,7 +81,7 @@ export function PriorityIcon({ priority, onChange, className, showLabel }: Prior
       <PopoverTrigger asChild>{trigger}</PopoverTrigger>
       <PopoverContent className="w-36 p-1" align="start">
         {allPriorities.map((p) => {
-          const c = priorityConfig[p]!;
+          const c = priorityConfig[p];
           const PIcon = c.icon;
           return (
             <Button

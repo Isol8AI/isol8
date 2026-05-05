@@ -25,12 +25,12 @@ export type {
 
 // Inlined copy of the upstream `issueStatusIcon` map from
 // `paperclip/ui/src/lib/status-colors.ts` with the retheme mapping applied:
-//   `text-blue-{600,400}` for `todo`  ->  `text-amber-700`
+//   `text-blue-{600,400}` for `todo`  ->  `text-amber-700 dark:text-amber-400`
 // All other status hues are status-semantic and pass through unchanged
 // (yellow / violet / green / red / neutral / muted-foreground).
 const issueStatusIcon: Record<string, string> = {
   backlog: "text-muted-foreground border-muted-foreground",
-  todo: "text-amber-700 border-amber-700",
+  todo: "text-amber-700 dark:text-amber-400 border-amber-700 dark:border-amber-400",
   in_progress:
     "text-yellow-600 border-yellow-600 dark:text-yellow-400 dark:border-yellow-400",
   in_review:

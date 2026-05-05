@@ -31,7 +31,7 @@ export const ISSUE_STATUSES: readonly IssueStatus[] = [
   "duplicate",
 ];
 
-export type IssuePriority = "urgent" | "high" | "medium" | "low" | "none";
+export type IssuePriority = "critical" | "high" | "medium" | "low";
 
 export interface IssueLabel {
   id: string;

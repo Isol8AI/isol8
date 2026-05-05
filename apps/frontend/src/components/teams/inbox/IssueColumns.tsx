@@ -213,22 +213,22 @@ export function InboxIssueMetaLeading({
         <span
           className={cn(
             "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            "bg-amber-700/10",
+            "bg-amber-700/10 dark:bg-amber-400/10",
           )}
         >
           <span className="relative flex h-2 w-2">
-            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-amber-700 opacity-75" />
+            <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-amber-700 dark:bg-amber-400 opacity-75" />
             <span
               className={cn(
                 "relative inline-flex h-2 w-2 rounded-full",
-                "bg-amber-700",
+                "bg-amber-700 dark:bg-amber-400",
               )}
             />
           </span>
           <span
             className={cn(
               "hidden text-[11px] font-medium sm:inline",
-              "text-amber-700",
+              "text-amber-700 dark:text-amber-400",
             )}
           >
             Live
