@@ -1,0 +1,64 @@
+// apps/frontend/src/components/teams/shared/components/PageSkeleton.tsx
+
+// Ported from upstream Paperclip's components/PageSkeleton.tsx
+// (paperclip/ui/src/components/PageSkeleton.tsx) (MIT, (c) 2025 Paperclip AI).
+// v1: only the 'inbox' variant. Other variants deferred until consumers exist.
+// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+
+import type { JSX } from "react";
+import { cn } from "@/lib/utils";
+
+export interface PageSkeletonProps {
+  variant?: "inbox";
+  /** Number of placeholder rows. Defaults to 5. */
+  rowCount?: number;
+}
+
+/**
+ * Loading placeholder for the Teams Inbox page. Mirrors the visual rhythm of
+ * IssueRow (status-icon + identifier-pill + title + trailing time) so the
+ * shimmer doesn't reflow when real content arrives.
+ *
+ * Uses semantic shadcn tokens (`bg-muted`, `bg-muted-foreground/10`) instead
+ * of literal grays so dark/light themes Just Work.
+ */
+export function PageSkeleton({
+  variant = "inbox",
+  rowCount = 5,
+}: PageSkeletonProps): JSX.Element {
+  // Only `inbox` is implemented; the prop is reserved for future variants.
+  void variant;
+
+  return (
+    <div className="space-y-4 animate-pulse" data-testid="page-skeleton">
+      {/* Header bar: title placeholder + trailing action placeholder */}
+      <div className="flex items-center justify-between">
+        <div className="h-6 w-40 rounded bg-muted" />
+        <div className="h-6 w-24 rounded bg-muted-foreground/10" />
+      </div>
+
+      {/* Row stack — same h-10 rhythm as IssueRow */}
+      <div className="space-y-1">
+        {Array.from({ length: rowCount }).map((_, i) => (
+          <div
+            key={i}
+            data-skeleton-row
+            className={cn(
+              "flex h-10 items-center gap-3 px-3",
+              "border border-border rounded-none",
+            )}
+          >
+            {/* status-icon placeholder */}
+            <div className="h-4 w-4 shrink-0 rounded-full bg-muted-foreground/20" />
+            {/* identifier-pill placeholder */}
+            <div className="h-3 w-12 shrink-0 rounded bg-muted-foreground/15" />
+            {/* title bar — flex-grow */}
+            <div className="h-3 flex-1 rounded bg-muted" />
+            {/* trailing time placeholder */}
+            <div className="h-3 w-10 shrink-0 rounded bg-muted-foreground/10" />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

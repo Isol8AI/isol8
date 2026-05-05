@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useSWRConfig } from "swr";
 import { useGateway } from "@/hooks/useGateway";
 
@@ -16,6 +16,11 @@ import { useGateway } from "@/hooks/useGateway";
  * realtime concerns.
  */
 
+// Each entry below is a path PREFIX. `mutateKeyPrefix` invalidates any SWR
+// cache key that exactly matches `${prefix}` OR starts with `${prefix}?` so
+// query-stringed variants (e.g. `/teams/inbox?tab=mine` from the Inbox page
+// in #3c) get caught alongside the bare `/teams/inbox` key. The `?` boundary
+// keeps `/teams/inbox-foo` from accidentally matching `/teams/inbox`.
 const ALL_KEYS = [
   "/teams/dashboard",
   "/teams/activity",
@@ -46,6 +51,24 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
   // NOT on the first mount when we were already connected.
   const wasConnectedRef = useRef<boolean | null>(null);
 
+  // Invalidate every SWR key that matches `prefix` exactly OR starts with
+  // `${prefix}?`. SWR's `mutate` accepts a predicate; this is the documented
+  // path-prefix invalidation pattern. We use it (instead of plain
+  // `mutate(prefix)`) so panels that compose query strings into their key
+  // — e.g. the Inbox page's `/teams/inbox?tab=mine|recent|all` keys from
+  // `useInboxData` — get refetched on the same events that already drove
+  // the bare `/teams/inbox` key.
+  const mutateKeyPrefix = useCallback(
+    (prefix: string) => {
+      mutate(
+        (key) =>
+          typeof key === "string" &&
+          (key === prefix || key.startsWith(`${prefix}?`)),
+      );
+    },
+    [mutate],
+  );
+
   // (re)subscribe + full invalidation on connect / reconnect.
   useEffect(() => {
     if (!isConnected) {
@@ -56,27 +79,27 @@ export function TeamsEventsProvider({ children }: { children: React.ReactNode })
     if (wasConnectedRef.current === false) {
       // Reconnect path: refetch everything because Paperclip's WS has no
       // replay cursor and we may have missed events while disconnected.
-      for (const key of ALL_KEYS) mutate(key);
+      for (const key of ALL_KEYS) mutateKeyPrefix(key);
     }
     wasConnectedRef.current = true;
-  }, [isConnected, send, mutate]);
+  }, [isConnected, send, mutateKeyPrefix]);
 
   // Wire event listener.
   useEffect(() => {
     const unsub = onEvent((event, _data) => {
       if (!event.startsWith("teams.")) return;
       if (event === "teams.stream.resumed") {
-        for (const key of ALL_KEYS) mutate(key);
+        for (const key of ALL_KEYS) mutateKeyPrefix(key);
         return;
       }
       const keys = EVENT_KEY_MAP[event];
       if (!keys || keys.length === 0) return;
-      for (const key of keys) mutate(key);
+      for (const key of keys) mutateKeyPrefix(key);
     });
     return () => {
       unsub();
     };
-  }, [onEvent, mutate]);
+  }, [onEvent, mutateKeyPrefix]);
 
   // Best-effort unsubscribe on unmount.
   useEffect(() => {
