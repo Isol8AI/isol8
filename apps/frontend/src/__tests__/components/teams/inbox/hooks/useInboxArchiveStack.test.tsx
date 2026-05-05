@@ -43,15 +43,16 @@ describe("useInboxArchiveStack", () => {
     expect(result.current.hasUndoableArchive).toBe(false);
   });
 
-  test("archive(id) optimistically removes from all 3 inbox keys + posts to BFF", async () => {
+  test("archive(id) optimistically removes from all 3 inbox keys + posts to BFF (no settle on success)", async () => {
     mockPost.mockResolvedValue({ ok: true });
     const { result } = renderHook(() => useInboxArchiveStack());
     await act(async () => {
       await result.current.archive("iss_1");
     });
     expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/archive", {});
-    // 3 optimistic mutates + 3 settle revalidates = 6 calls
-    expect(mockMutate).toHaveBeenCalledTimes(6);
+    // Success path: 3 optimistic mutates only — no settle revalidate.
+    // Settle-on-success raced eventual consistency; reviewer (#3c) flagged this.
+    expect(mockMutate).toHaveBeenCalledTimes(3);
   });
 
   test("archive succeeds → pushes onto undo stack", async () => {
@@ -75,6 +76,30 @@ describe("useInboxArchiveStack", () => {
       );
     });
     expect(result.current.hasUndoableArchive).toBe(false);
+  });
+
+  test("archive error → rollback restores cache snapshots and settles", async () => {
+    const snapshot = { items: [{ id: "iss_1", title: "x", status: "todo" }] };
+    mockCacheGet.mockReturnValue({ data: snapshot });
+    mockPost.mockRejectedValue(new Error("server boom"));
+    const { result } = renderHook(() => useInboxArchiveStack());
+    await act(async () => {
+      await expect(result.current.archive("iss_1")).rejects.toThrow(
+        "server boom",
+      );
+    });
+    // Find the rollback calls — they pass the literal snapshot object as the
+    // second arg (not a function). Three rollbacks (one per inbox key).
+    const rollbackCalls = mockMutate.mock.calls.filter(
+      ([, value]) => value === snapshot,
+    );
+    expect(rollbackCalls).toHaveLength(3);
+    // And on the error path we settle with a single-arg mutate (revalidate)
+    // for each inbox key.
+    const settleCalls = mockMutate.mock.calls.filter(
+      ([, value]) => value === undefined,
+    );
+    expect(settleCalls).toHaveLength(3);
   });
 
   test("archivingIssueIds tracks in-flight ids during await", async () => {
@@ -144,23 +169,118 @@ describe("useInboxArchiveStack", () => {
     expect(result.current.hasUndoableArchive).toBe(true); // restored
   });
 
-  test("markRead posts + revalidates", async () => {
+  test("concurrent archives both land on the undo stack (functional updater preserves both ids)", async () => {
+    // Hold both posts open so the two archive() calls overlap. Without
+    // functional setState updaters, the second archive's setUndoStack would
+    // close over the pre-first-archive snapshot and clobber `iss_a`.
+    let resolveA: (v: unknown) => void = () => {};
+    let resolveB: (v: unknown) => void = () => {};
+    mockPost
+      .mockImplementationOnce(
+        () => new Promise((res) => (resolveA = res)),
+      )
+      .mockImplementationOnce(
+        () => new Promise((res) => (resolveB = res)),
+      );
+
+    const { result } = renderHook(() => useInboxArchiveStack());
+
+    let archiveAPromise: Promise<void>;
+    let archiveBPromise: Promise<void>;
+    act(() => {
+      archiveAPromise = result.current.archive("iss_a");
+      archiveBPromise = result.current.archive("iss_b");
+    });
+    // Both posts fired
+    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_a/archive", {});
+    expect(mockPost).toHaveBeenCalledWith("/inbox/iss_b/archive", {});
+
+    await act(async () => {
+      resolveA({});
+      resolveB({});
+      await archiveAPromise!;
+      await archiveBPromise!;
+    });
+    // Both ids end up on the undo stack — popping should yield iss_b first,
+    // then iss_a.
+    mockPost.mockClear();
     mockPost.mockResolvedValue({});
+    await act(async () => {
+      await result.current.undoArchive();
+    });
+    expect(mockPost).toHaveBeenLastCalledWith("/inbox/iss_b/unarchive", {});
+    await act(async () => {
+      await result.current.undoArchive();
+    });
+    expect(mockPost).toHaveBeenLastCalledWith("/inbox/iss_a/unarchive", {});
+    // Stack is now empty.
+    expect(result.current.hasUndoableArchive).toBe(false);
+  });
+
+  test("markRead optimistically flips unread → false in cache", async () => {
+    mockPost.mockResolvedValue({});
+    mockCacheGet.mockReturnValue({
+      data: { items: [{ id: "iss_1", title: "x", status: "todo", unread: true }] },
+    });
     const { result } = renderHook(() => useInboxArchiveStack());
     await act(async () => {
       await result.current.markRead("iss_1");
     });
     expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/mark-read", {});
-    expect(mockMutate).toHaveBeenCalledTimes(3); // 3 inbox keys
+    // Find the optimistic mutate calls — second arg is a function. Apply it
+    // to the cached snapshot and check that unread flipped to false.
+    const optimistic = mockMutate.mock.calls.filter(
+      ([, value]) => typeof value === "function",
+    );
+    expect(optimistic.length).toBeGreaterThanOrEqual(3);
+    const updater = optimistic[0][1] as (
+      d: { items: Array<{ id: string; unread: boolean }> } | undefined,
+    ) => { items: Array<{ id: string; unread: boolean }> };
+    const result2 = updater({
+      items: [{ id: "iss_1", unread: true }],
+    });
+    expect(result2.items[0].unread).toBe(false);
   });
 
-  test("markUnread posts + revalidates", async () => {
+  test("markRead error rolls back to original cache state", async () => {
+    const snapshot = {
+      items: [{ id: "iss_1", title: "x", status: "todo", unread: true }],
+    };
+    mockCacheGet.mockReturnValue({ data: snapshot });
+    mockPost.mockRejectedValue(new Error("mark-read boom"));
+    const { result } = renderHook(() => useInboxArchiveStack());
+    await act(async () => {
+      await expect(result.current.markRead("iss_1")).rejects.toThrow(
+        "mark-read boom",
+      );
+    });
+    // Three rollback calls passing the snapshot back into mutate.
+    const rollbackCalls = mockMutate.mock.calls.filter(
+      ([, value]) => value === snapshot,
+    );
+    expect(rollbackCalls).toHaveLength(3);
+  });
+
+  test("markUnread optimistically flips unread → true in cache", async () => {
     mockPost.mockResolvedValue({});
+    mockCacheGet.mockReturnValue({
+      data: { items: [{ id: "iss_1", title: "x", status: "todo", unread: false }] },
+    });
     const { result } = renderHook(() => useInboxArchiveStack());
     await act(async () => {
       await result.current.markUnread("iss_1");
     });
     expect(mockPost).toHaveBeenCalledWith("/inbox/iss_1/mark-unread", {});
-    expect(mockMutate).toHaveBeenCalledTimes(3);
+    const optimistic = mockMutate.mock.calls.filter(
+      ([, value]) => typeof value === "function",
+    );
+    expect(optimistic.length).toBeGreaterThanOrEqual(3);
+    const updater = optimistic[0][1] as (
+      d: { items: Array<{ id: string; unread: boolean }> } | undefined,
+    ) => { items: Array<{ id: string; unread: boolean }> };
+    const result2 = updater({
+      items: [{ id: "iss_1", unread: false }],
+    });
+    expect(result2.items[0].unread).toBe(true);
   });
 });

@@ -6,7 +6,8 @@
 // cache mutations via useSWRConfig().mutate. See spec at
 // docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback } from "react";
+import { flushSync } from "react-dom";
 import { useSWRConfig } from "swr";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
 import { teamsQueryKeys } from "@/components/teams/shared/queryKeys";
@@ -32,6 +33,23 @@ function withoutId(
   if (!data) return data;
   if (Array.isArray(data)) return data.filter((i) => i.id !== id);
   return { ...data, items: (data.items ?? []).filter((i) => i.id !== id) };
+}
+
+function setIssueReadFlag(
+  data: IssueListData | undefined,
+  issueId: string,
+  unread: boolean,
+): IssueListData | undefined {
+  if (!data) return data;
+  if (Array.isArray(data)) {
+    return data.map((i) => (i.id === issueId ? { ...i, unread } : i));
+  }
+  return {
+    ...data,
+    items: (data.items ?? []).map((i) =>
+      i.id === issueId ? { ...i, unread } : i,
+    ),
+  };
 }
 
 export interface UseInboxArchiveStackResult {
@@ -64,13 +82,6 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
     new Set(),
   );
   const [undoStack, setUndoStack] = useState<string[]>([]);
-  // Mirror undoStack into a ref so async paths (undoArchive) can read the
-  // current value synchronously without depending on a stale closure capture
-  // and without racing the React state-update commit.
-  const undoStackRef = useRef<string[]>(undoStack);
-  useEffect(() => {
-    undoStackRef.current = undoStack;
-  }, [undoStack]);
 
   const archive = useCallback(
     async (issueId: string) => {
@@ -103,14 +114,16 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
       try {
         // BFF: POST /teams/inbox/{id}/archive (path here without "/teams" prefix; useTeamsApi adds it)
         await post(`/inbox/${issueId}/archive`, {});
-        // Success: push onto undo stack
-        const pushed = [...undoStackRef.current, issueId];
-        undoStackRef.current = pushed;
-        setUndoStack(pushed);
+        // Success: push onto undo stack via functional updater (avoids stale closure).
+        setUndoStack((prev) => [...prev, issueId]);
       } catch (err) {
-        // Rollback the cache snapshots
+        // Rollback the cache snapshots.
         for (const { key, prev } of snapshots) {
           mutate(swrKey(key), prev, { revalidate: false });
+        }
+        // Settle on error: pull fresh server state to converge after rollback.
+        for (const key of INBOX_KEYS) {
+          mutate(swrKey(key));
         }
         throw err;
       } finally {
@@ -120,54 +133,112 @@ export function useInboxArchiveStack(): UseInboxArchiveStackResult {
           next.delete(issueId);
           return next;
         });
-        // Settle: revalidate to pull fresh server state
-        for (const key of INBOX_KEYS) {
-          mutate(swrKey(key));
-        }
       }
     },
     [cache, mutate, post],
   );
 
   const undoArchive = useCallback(async () => {
-    const stack = undoStackRef.current;
-    if (stack.length === 0) return;
-    const issueId = stack[stack.length - 1];
-    // Pop optimistically. On error we restore.
-    const nextStack = stack.slice(0, -1);
-    undoStackRef.current = nextStack;
-    setUndoStack(nextStack);
+    // Pop the top of the stack via a functional updater so we read the
+    // latest committed state without keeping a ref mirror. We wrap the
+    // setter in flushSync to force the updater to run during the dispatch
+    // call (vs being queued for the next commit phase) — this is the
+    // canonical pattern for "read latest state synchronously inside an
+    // async callback" once a ref mirror is off the table. The popped id
+    // is captured via `issueId` closure inside the updater.
+    let issueId: string | undefined;
+    flushSync(() => {
+      setUndoStack((prev) => {
+        if (prev.length === 0) return prev;
+        issueId = prev[prev.length - 1];
+        return prev.slice(0, -1);
+      });
+    });
+    if (!issueId) return;
 
     try {
       await post(`/inbox/${issueId}/unarchive`, {});
     } catch (err) {
-      // Restore the popped id back onto the stack
-      const restored = [...undoStackRef.current, issueId];
-      undoStackRef.current = restored;
-      setUndoStack(restored);
-      throw err;
-    } finally {
-      // Settle
+      // Restore the popped id back onto the stack.
+      setUndoStack((prev) => [...prev, issueId!]);
+      // Settle on error: pull fresh server state to converge.
       for (const key of INBOX_KEYS) {
         mutate(swrKey(key));
       }
+      throw err;
     }
   }, [mutate, post]);
 
   const markRead = useCallback(
     async (issueId: string) => {
-      await post(`/inbox/${issueId}/mark-read`, {});
-      for (const key of INBOX_KEYS) mutate(swrKey(key));
+      // Snapshot for rollback on error.
+      const snapshots = INBOX_KEYS.map((key) => {
+        const fullKey = swrKey(key);
+        return {
+          key,
+          fullKey,
+          prev: cache.get(fullKey)?.data as IssueListData | undefined,
+        };
+      });
+      // Optimistic: flip unread → false in cache.
+      for (const { key } of snapshots) {
+        mutate(
+          swrKey(key),
+          (prev?: IssueListData) => setIssueReadFlag(prev, issueId, false),
+          { revalidate: false },
+        );
+      }
+      try {
+        await post(`/inbox/${issueId}/mark-read`, {});
+      } catch (err) {
+        // Rollback.
+        for (const { key, prev } of snapshots) {
+          mutate(swrKey(key), prev, { revalidate: false });
+        }
+        // Settle on error.
+        for (const key of INBOX_KEYS) {
+          mutate(swrKey(key));
+        }
+        throw err;
+      }
     },
-    [mutate, post],
+    [cache, mutate, post],
   );
 
   const markUnread = useCallback(
     async (issueId: string) => {
-      await post(`/inbox/${issueId}/mark-unread`, {});
-      for (const key of INBOX_KEYS) mutate(swrKey(key));
+      // Snapshot for rollback on error.
+      const snapshots = INBOX_KEYS.map((key) => {
+        const fullKey = swrKey(key);
+        return {
+          key,
+          fullKey,
+          prev: cache.get(fullKey)?.data as IssueListData | undefined,
+        };
+      });
+      // Optimistic: flip unread → true in cache.
+      for (const { key } of snapshots) {
+        mutate(
+          swrKey(key),
+          (prev?: IssueListData) => setIssueReadFlag(prev, issueId, true),
+          { revalidate: false },
+        );
+      }
+      try {
+        await post(`/inbox/${issueId}/mark-unread`, {});
+      } catch (err) {
+        // Rollback.
+        for (const { key, prev } of snapshots) {
+          mutate(swrKey(key), prev, { revalidate: false });
+        }
+        // Settle on error.
+        for (const key of INBOX_KEYS) {
+          mutate(swrKey(key));
+        }
+        throw err;
+      }
     },
-    [mutate, post],
+    [cache, mutate, post],
   );
 
   return {
