@@ -4,7 +4,7 @@
 // boundary so we don't drag SWR/cache wiring into the page-level test.
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("@/components/teams/inbox/hooks/useInboxData", () => ({
   useInboxData: vi.fn(),
@@ -18,11 +18,31 @@ vi.mock("@/components/teams/inbox/hooks/useInboxArchiveStack", () => ({
 vi.mock("@/components/teams/inbox/hooks/useReadInboxItems", () => ({
   useReadInboxItems: vi.fn(),
 }));
+vi.mock("@/components/teams/issues/hooks/useIssueMutations", () => ({
+  useIssueMutations: vi.fn(),
+}));
+
+// Override the global next/navigation mock so we can capture router.push calls.
+const { mockRouterPush, mockRouterReplace } = vi.hoisted(() => ({
+  mockRouterPush: vi.fn(),
+  mockRouterReplace: vi.fn(),
+}));
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: mockRouterPush,
+    replace: mockRouterReplace,
+    prefetch: vi.fn(),
+    back: vi.fn(),
+  }),
+  usePathname: () => "/",
+  useSearchParams: () => new URLSearchParams(),
+}));
 
 import { InboxPage } from "@/components/teams/inbox/InboxPage";
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxArchiveStack } from "@/components/teams/inbox/hooks/useInboxArchiveStack";
 import { useReadInboxItems } from "@/components/teams/inbox/hooks/useReadInboxItems";
+import { useIssueMutations } from "@/components/teams/issues/hooks/useIssueMutations";
 import type { Issue } from "@/components/teams/shared/types";
 
 function makeIssue(overrides: Partial<Issue> = {}): Issue {
@@ -66,6 +86,13 @@ beforeEach(() => {
     markManyRead: vi.fn(),
     clearAll: vi.fn(),
   });
+  vi.mocked(useIssueMutations).mockReturnValue({
+    create: vi.fn().mockResolvedValue({ id: "iss_new", title: "x" } as Issue),
+    update: vi.fn().mockResolvedValue(undefined),
+    remove: vi.fn().mockResolvedValue(undefined),
+  } as unknown as ReturnType<typeof useIssueMutations>);
+  mockRouterPush.mockReset();
+  mockRouterReplace.mockReset();
 });
 
 describe("InboxPage", () => {
@@ -210,5 +237,42 @@ describe("InboxPage", () => {
     const confirm = await screen.findByRole("button", { name: /confirm/i });
     fireEvent.click(confirm);
     expect(markManyRead).toHaveBeenCalledWith(["iss_1"]);
+  });
+
+  test("clicking 'New issue' opens NewIssueDialog", async () => {
+    render(<InboxPage {...baseProps} />);
+    // Dialog title isn't in the document until opened.
+    expect(
+      screen.queryByRole("alertdialog", { name: /new issue/i }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    expect(
+      await screen.findByRole("alertdialog", { name: /new issue/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("creating a new issue navigates to /teams/issues/<id>", async () => {
+    const create = vi
+      .fn()
+      .mockResolvedValue({ id: "iss_new_42", title: "Hello" } as Issue);
+    vi.mocked(useIssueMutations).mockReturnValue({
+      create,
+      update: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn().mockResolvedValue(undefined),
+    } as unknown as ReturnType<typeof useIssueMutations>);
+
+    render(<InboxPage {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    // Fill the title — the dialog blocks submission on empty title.
+    const titleInput = await screen.findByLabelText(/title/i);
+    fireEvent.change(titleInput, { target: { value: "Hello" } });
+    fireEvent.click(screen.getByRole("button", { name: /^create issue$/i }));
+
+    await waitFor(() => {
+      expect(create).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(mockRouterPush).toHaveBeenCalledWith("/teams/issues/iss_new_42");
+    });
   });
 });

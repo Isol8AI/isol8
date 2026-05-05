@@ -13,6 +13,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { InboxToolbar } from "@/components/teams/inbox/InboxToolbar";
 import { InboxList } from "@/components/teams/inbox/InboxList";
 import { PageSkeleton } from "@/components/teams/shared/components/PageSkeleton";
+import { NewIssueDialog } from "@/components/teams/issues/NewIssueDialog";
 
 import { useInboxData } from "@/components/teams/inbox/hooks/useInboxData";
 import { useInboxKeyboardNav } from "@/components/teams/inbox/hooks/useInboxKeyboardNav";
@@ -112,6 +113,9 @@ export function InboxPage({
 
   // 3. Selection state (single id; null = no selection).
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
+
+  // 3b. NewIssueDialog open state.
+  const [newIssueOpen, setNewIssueOpen] = useState(false);
 
   // 4. Data + side-effect hooks.
   const { mineIssues, touchedIssues, allIssues, isLoading, isError } =
@@ -234,6 +238,7 @@ export function InboxPage({
         currentUserId={currentUserId}
         unreadCount={unreadCount}
         onMarkAllRead={handleMarkAllRead}
+        onNewIssue={() => setNewIssueOpen(true)}
       />
       {isError && (
         <div
@@ -265,6 +270,17 @@ export function InboxPage({
           searchQuery={searchQuery}
         />
       )}
+
+      <NewIssueDialog
+        open={newIssueOpen}
+        onOpenChange={setNewIssueOpen}
+        agents={agents}
+        projects={projects}
+        onCreated={(issueId) => {
+          setNewIssueOpen(false);
+          router.push(`/teams/issues/${issueId}`);
+        }}
+      />
     </div>
   );
 }

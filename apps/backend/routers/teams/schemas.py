@@ -41,7 +41,7 @@ class CreateIssueBody(_Strict):
     description: Optional[str] = Field(default=None, max_length=20000)
     project_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
-    priority: Optional[str] = Field(default=None, pattern=r"^(low|medium|high|urgent)$")
+    priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
 
 
 class PatchIssueBody(_Strict):
@@ -49,9 +49,23 @@ class PatchIssueBody(_Strict):
     description: Optional[str] = Field(default=None, max_length=20000)
     project_id: Optional[str] = None
     assignee_agent_id: Optional[str] = None
-    priority: Optional[str] = Field(default=None, pattern=r"^(low|medium|high|urgent)$")
+    priority: Optional[str] = Field(default=None, pattern=r"^(critical|high|medium|low)$")
     status: Optional[str] = None
     column_id: Optional[str] = None
+
+
+class AddIssueCommentBody(_Strict):
+    """Body for ``POST /teams/issues/{id}/comments``.
+
+    Whitelisted to ``body`` (the comment text) only — same defense-in-depth
+    as ``CreateIssueBody`` to prevent ``adapterType``/``adapterConfig``
+    smuggling through the comment payload. Upstream's
+    ``addIssueCommentSchema`` also accepts ``reopen`` / ``resume`` /
+    ``interrupt`` boolean action flags; we defer those until the
+    IssueDetail comment composer wires the corresponding controls.
+    """
+
+    body: str = Field(min_length=1, max_length=20000)
 
 
 class CreateRoutineBody(_Strict):
@@ -107,14 +121,3 @@ class PatchCompanySettingsBody(_Strict):
 
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=80)
     description: Optional[str] = Field(default=None, max_length=4000)
-
-
-class AddCommentBody(_Strict):
-    """Body for ``POST /teams/issues/{id}/comments``.
-
-    Whitelisted to ``body`` (the comment text) only — same defense-in-depth
-    as ``CreateIssueBody`` to prevent ``adapterType``/``adapterConfig``
-    smuggling through the comment payload.
-    """
-
-    body: str = Field(min_length=1, max_length=20000)
