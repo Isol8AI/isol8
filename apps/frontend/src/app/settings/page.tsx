@@ -3,8 +3,9 @@
 import "./settings.css";
 import React, { Suspense, useState, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
-import { usePostHog } from "posthog-js/react";
 import Link from "next/link";
+
+import { capture } from "@/lib/analytics";
 import { useUser, UserButton, useOrganization } from "@clerk/nextjs";
 import { useBilling } from "@/hooks/useBilling";
 import { MyChannelsSection } from "@/components/settings/MyChannelsSection";
@@ -113,7 +114,6 @@ function ProfilePanel() {
 // =============================================================================
 
 function BillingPanel() {
-  const posthog = usePostHog();
   const {
     account,
     isLoading,
@@ -126,14 +126,14 @@ function BillingPanel() {
   const [portalLoading, setPortalLoading] = useState(false);
 
   const handlePortal = useCallback(async () => {
-    posthog?.capture("billing_portal_opened");
+    capture("billing_portal_opened");
     setPortalLoading(true);
     try {
       await openPortal();
     } catch {
       setPortalLoading(false);
     }
-  }, [openPortal, posthog]);
+  }, [openPortal]);
 
   if (isLoading) {
     return (

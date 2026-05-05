@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useEffect } from "react";
-import { usePostHog } from "posthog-js/react";
+
+import { capture } from "@/lib/analytics";
 
 export function Hero() {
-  const posthog = usePostHog();
   useEffect(() => {
     const seq = document.getElementById("wfSeq");
     if (!seq || window.matchMedia("(prefers-reduced-motion: reduce)").matches)
@@ -165,7 +165,7 @@ export function Hero() {
           workflow autonomously.
         </p>
         <div className="hero-ctas">
-          <Link href="/chat" className="btn-large" onClick={() => posthog?.capture("landing_cta_clicked")}>
+          <Link href="/chat" className="btn-large" onClick={() => capture("landing_cta_clicked")}>
             Start your pod
           </Link>
           <Link href="#features" className="btn-secondary">
@@ -179,7 +179,7 @@ export function Hero() {
             target="_blank"
             rel="noopener noreferrer"
             className="hero-download-link"
-            onClick={() => posthog?.capture("landing_download_clicked")}
+            onClick={() => capture("landing_download_clicked")}
           >
             Download for Mac
           </a>

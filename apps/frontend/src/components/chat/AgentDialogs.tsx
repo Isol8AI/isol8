@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { usePostHog } from "posthog-js/react";
 import { Loader2 } from "lucide-react";
+
+import { capture } from "@/lib/analytics";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -146,7 +147,6 @@ interface RenameProps {
 }
 
 export function AgentRenameDialog({ agent, onCancel, onRename }: RenameProps) {
-  const posthog = usePostHog();
   const [name, setName] = useState(agent?.identity?.name || agent?.name || agent?.id || "");
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -161,7 +161,7 @@ export function AgentRenameDialog({ agent, onCancel, onRename }: RenameProps) {
     setError(null);
     try {
       await onRename(name.trim());
-      posthog?.capture("agent_renamed", { agent_id: agent?.id });
+      capture("agent_renamed", { agent_id: agent?.id });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       submittingRef.current = false;
@@ -216,7 +216,6 @@ interface DeleteProps {
 }
 
 export function AgentDeleteDialog({ agent, onCancel, onDelete }: DeleteProps) {
-  const posthog = usePostHog();
   const [submitting, setSubmitting] = useState(false);
   const submittingRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -227,7 +226,7 @@ export function AgentDeleteDialog({ agent, onCancel, onDelete }: DeleteProps) {
     setError(null);
     try {
       await onDelete();
-      posthog?.capture("agent_deleted", { agent_id: agent?.id });
+      capture("agent_deleted", { agent_id: agent?.id });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       submittingRef.current = false;

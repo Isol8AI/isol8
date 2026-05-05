@@ -2,8 +2,9 @@
 
 import "./ChatLayout.css";
 import { useEffect, useRef, useState } from "react";
-import { usePostHog } from "posthog-js/react";
 import { useAuth, useOrganization, useOrganizationList, useUser, UserButton } from "@clerk/nextjs";
+
+import { capture } from "@/lib/analytics";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Settings, Plus, Bot, CheckCircle, CreditCard, Menu, X, FolderOpen, Pencil, Trash2, Users } from "lucide-react";
 import Link from "next/link";
@@ -50,7 +51,6 @@ export function ChatLayout({
   onOpenFile,
   onCloseFileViewer,
 }: ChatLayoutProps): React.ReactElement {
-  const posthog = usePostHog();
   const { isSignedIn } = useAuth();
   const { user, isLoaded: userLoaded } = useUser();
   const { organization, isLoaded: orgLoaded } = useOrganization();
@@ -234,7 +234,7 @@ export function ChatLayout({
   }, [pollingForWebhook, isSubscribed, refreshBilling]);
 
   function handleSelectAgent(agentId: string): void {
-    posthog?.capture("agent_selected", { agent_id: agentId });
+    capture("agent_selected", { agent_id: agentId });
     setUserSelectedId(agentId);
     dispatchSelectAgentEvent(agentId);
     setSidebarOpen(false);
@@ -327,7 +327,7 @@ export function ChatLayout({
             </button>
             <button
               className={`tab-btn${activeView === "control" ? " active" : ""}`}
-              onClick={() => { posthog?.capture("control_panel_opened"); onViewChange("control"); setSidebarOpen(false); }}
+              onClick={() => { capture("control_panel_opened"); onViewChange("control"); setSidebarOpen(false); }}
             >
               Control
             </button>
@@ -437,7 +437,7 @@ export function ChatLayout({
             </button>
             {onOpenFile && (
               <button
-                onClick={() => { posthog?.capture("file_browser_opened"); onOpenFile?.(""); }}
+                onClick={() => { capture("file_browser_opened"); onOpenFile?.(""); }}
                 className="flex items-center justify-center text-[#8a8578] hover:text-[#1a1a1a] transition-colors p-1"
                 title="Browse workspace files"
               >

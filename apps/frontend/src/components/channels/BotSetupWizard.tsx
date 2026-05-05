@@ -1,7 +1,8 @@
 "use client";
 
 import { useRef, useState } from "react";
-import { usePostHog } from "posthog-js/react";
+
+import { capture } from "@/lib/analytics";
 import {
   AlertCircle,
   ArrowLeft,
@@ -14,7 +15,6 @@ import {
 import { Button } from "@/components/ui/button";
 import { useApi } from "@/lib/api";
 import { useGatewayRpcMutation } from "@/hooks/useGatewayRpc";
-import { capture } from "@/lib/analytics";
 
 type Provider = "telegram" | "discord" | "slack";
 type Mode = "create" | "link-only";
@@ -223,7 +223,6 @@ export function BotSetupWizard({
   onComplete,
   onCancel,
 }: BotSetupWizardProps) {
-  const posthog = usePostHog();
   const api = useApi();
   const callRpc = useGatewayRpcMutation();
 
@@ -461,7 +460,7 @@ export function BotSetupWizard({
         agent_id: agentId,
         code: trimmed,
       })) as { status: string; peer_id: string };
-      posthog?.capture("channel_connected", { provider });
+      capture("channel_connected", { provider });
       setStepIndex(steps.indexOf("done"));
       onComplete({ peer_id: result.peer_id });
     } catch (e) {

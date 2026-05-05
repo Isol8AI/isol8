@@ -10,7 +10,7 @@ import {
   useUser,
 } from "@clerk/nextjs";
 import { useApi } from "@/lib/api";
-import { usePostHog } from "posthog-js/react";
+import { capture } from "@/lib/analytics";
 import { Button } from "@/components/ui/button";
 import { User, Users, Mail } from "lucide-react";
 import { InviteTeammatesStep } from "@/components/onboarding/InviteTeammatesStep";
@@ -25,7 +25,6 @@ export default function OnboardingPage() {
     userInvitations: true,
   });
   const api = useApi();
-  const posthog = usePostHog();
   const [loading, setLoading] = useState(false);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
 
@@ -101,7 +100,7 @@ export default function OnboardingPage() {
   async function handleAcceptInvitation(invitationId: string) {
     setAcceptingId(invitationId);
     try {
-      posthog?.capture("org_invitation_accepted", { org_id: invitationId });
+      capture("org_invitation_accepted", { org_id: invitationId });
       const inv = pendingInvitations.find((i) => i.id === invitationId);
       if (inv && typeof (inv as unknown as { accept?: () => Promise<void> }).accept === "function") {
         await (inv as unknown as { accept: () => Promise<void> }).accept();
@@ -120,7 +119,7 @@ export default function OnboardingPage() {
 
   async function handlePersonal() {
     setLoading(true);
-    posthog?.capture("workspace_type_selected", { type: "personal" });
+    capture("workspace_type_selected", { type: "personal" });
     try {
       // Mark onboarding complete and sync user
       await user?.update({ unsafeMetadata: { onboarded: true } });
@@ -255,7 +254,7 @@ export default function OnboardingPage() {
         </button>
 
         <button
-          onClick={() => { posthog?.capture("workspace_type_selected", { type: "org" }); setMode("org"); }}
+          onClick={() => { capture("workspace_type_selected", { type: "org" }); setMode("org"); }}
           disabled={loading}
           className="flex flex-col items-center gap-3 p-6 rounded-lg border border-border hover:border-primary/50 hover:bg-accent transition-colors w-56"
         >

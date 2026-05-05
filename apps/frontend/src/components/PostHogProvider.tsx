@@ -3,10 +3,16 @@
 import { Suspense, useEffect, useRef } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import { useAuth, useUser } from "@clerk/nextjs";
-import posthog from "posthog-js";
-import { PostHogProvider as PHProvider } from "posthog-js/react";
 
-import { captureException } from "@/lib/analytics";
+import {
+  Provider as AnalyticsProvider,
+  captureException,
+  client as posthogClient,
+  identify,
+  init as initAnalytics,
+  pageview,
+  reset,
+} from "@/lib/analytics";
 
 const POSTHOG_KEY = process.env.NEXT_PUBLIC_POSTHOG_KEY;
 // Route PostHog through our own domain via the Next rewrite in
@@ -19,7 +25,7 @@ const POSTHOG_API_HOST = "/ingest";
 const POSTHOG_UI_HOST = "https://us.posthog.com";
 
 if (typeof window !== "undefined" && POSTHOG_KEY) {
-  posthog.init(POSTHOG_KEY, {
+  initAnalytics(POSTHOG_KEY, {
     api_host: POSTHOG_API_HOST,
     ui_host: POSTHOG_UI_HOST,
     person_profiles: "identified_only",
@@ -52,7 +58,7 @@ function PostHogPageview() {
   useEffect(() => {
     if (!POSTHOG_KEY) return;
     const url = pathname + (searchParams?.toString() ? `?${searchParams.toString()}` : "");
-    posthog.capture("$pageview", { $current_url: url });
+    pageview(url);
   }, [pathname, searchParams]);
 
   return null;
@@ -67,14 +73,14 @@ function PostHogIdentify() {
     if (!POSTHOG_KEY) return;
 
     if (isSignedIn && userId && identifiedRef.current !== userId) {
-      posthog.identify(userId, {
+      identify(userId, {
         email: user?.primaryEmailAddress?.emailAddress,
         firstName: user?.firstName,
         lastName: user?.lastName,
       });
       identifiedRef.current = userId;
     } else if (!isSignedIn && identifiedRef.current) {
-      posthog.reset();
+      reset();
       identifiedRef.current = null;
     }
   }, [isSignedIn, userId, user]);
@@ -118,7 +124,7 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <PHProvider client={posthog}>
+    <AnalyticsProvider client={posthogClient}>
       {/* Suspense required: PostHogPageview reads useSearchParams(), which
           forces the whole subtree out of static prerendering unless isolated
           in a Suspense boundary. Without this, pages like /_not-found fail
@@ -130,6 +136,6 @@ export function PostHogProvider({ children }: { children: React.ReactNode }) {
       <PostHogIdentify />
       <PostHogErrorForwarder />
       {children}
-    </PHProvider>
+    </AnalyticsProvider>
   );
 }
