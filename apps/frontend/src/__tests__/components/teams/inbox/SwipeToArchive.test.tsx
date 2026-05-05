@@ -1,3 +1,4 @@
+import { test, expect, vi } from "vitest";
 // Smoke tests for SwipeToArchive — confirms children render and that the
 // archive callback is not fired without a swipe gesture. Touch-event behavior
 // is intentionally not exercised in JSDOM.

@@ -1,3 +1,4 @@
+import { test, expect } from "vitest";
 // Test for StatusIcon — confirms one rendered icon per known IssueStatus
 // variant. The component is presentational; no popover interactions.
 

@@ -1,3 +1,4 @@
+import { test, expect, vi } from "vitest";
 // Smoke tests for IssueRow — rendering, mark-read, and archive callbacks.
 // Upstream's row uses `unreadState` to gate which trailing button shows:
 //   "visible" / "fading"  -> mark-as-read dot button (calls onMarkRead())

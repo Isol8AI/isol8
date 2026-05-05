@@ -68,7 +68,9 @@ const issueColumnDescriptions: Record<InboxIssueColumn, string> = {
 };
 
 export function issueActivityText(issue: Issue): string {
-  return `Updated ${timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt)}`;
+  const ts = issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt;
+  if (!ts) return "Updated recently";
+  return `Updated ${timeAgo(ts)}`;
 }
 
 function issueTrailingGridTemplate(columns: InboxIssueColumn[]): string {
@@ -270,9 +272,8 @@ export function InboxIssueTrailingColumns({
   assigneeContent?: ReactNode;
   onFilterWorkspace?: (workspaceId: string) => void;
 }) {
-  const activityText = timeAgo(
-    issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt,
-  );
+  const activityTs = issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt;
+  const activityText = activityTs ? timeAgo(activityTs) : "recently";
   const userLabel =
     assigneeUserName ??
     formatAssigneeUserLabel(issue.assigneeUserId, currentUserId) ??

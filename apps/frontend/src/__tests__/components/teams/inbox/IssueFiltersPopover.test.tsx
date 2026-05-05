@@ -1,3 +1,4 @@
+import { test, expect, vi } from "vitest";
 // Smoke tests for IssueFiltersPopover — trigger render + popover open.
 // Upstream prop surface: { state, onChange, activeFilterCount, agents?, projects?,
 // labels?, currentUserId?, enableRoutineVisibilityFilter?, buttonVariant?, iconOnly?,

@@ -7,6 +7,8 @@
 // (they're only used by IssuesList which is out of scope for this PR).
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
+import type { IssuePriority, IssueStatus } from "@/components/teams/shared/types";
+
 export type IssueFilterState = {
   statuses: string[];
   priorities: string[];
@@ -31,8 +33,16 @@ export const defaultIssueFilterState: IssueFilterState = {
   hideRoutineExecutions: false,
 };
 
-export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
-export const issuePriorityOrder = ["critical", "high", "medium", "low"];
+export const issueStatusOrder: IssueStatus[] = [
+  "in_progress",
+  "todo",
+  "backlog",
+  "in_review",
+  "blocked",
+  "done",
+  "cancelled",
+];
+export const issuePriorityOrder: IssuePriority[] = ["critical", "high", "medium", "low"];
 
 export const issueQuickFilterPresets = [
   { label: "All", statuses: [] as string[] },

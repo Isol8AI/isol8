@@ -1,3 +1,4 @@
+import { test, expect, vi } from "vitest";
 // Smoke tests for IssueColumns ports — the four exports:
 //   issueActivityText, IssueColumnPicker, InboxIssueMetaLeading,
 //   InboxIssueTrailingColumns. Verifies that the rethemed amber palette

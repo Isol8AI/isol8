@@ -1,3 +1,4 @@
+import { test, expect } from "vitest";
 import type { Issue, Approval, HeartbeatRun } from "@/components/teams/shared/types";
 import { ISSUE_STATUSES } from "@/components/teams/shared/types";
 

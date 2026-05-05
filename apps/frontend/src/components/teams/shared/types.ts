@@ -7,12 +7,14 @@
 // See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
 
 export type IssueStatus =
+  | "backlog"
   | "todo"
   | "in_progress"
   | "in_review"
   | "pending"
   | "review"
   | "done"
+  | "cancelled"
   | "won_t_do"
   | "blocked"
   | "duplicate"
