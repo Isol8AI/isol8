@@ -15,8 +15,13 @@ vi.mock("@clerk/nextjs", () => ({
   useOrganization: () => ({ organization: null, membership: null, isLoaded: true }),
 }));
 
+// ``lib/analytics`` re-exports PostHogProvider as ``Provider`` at module
+// load time, so the mock has to expose it (vitest is strict about
+// import-time destructuring against module mocks). Returning a passthrough
+// component is enough — these tests don't render through the real provider.
 vi.mock("posthog-js/react", () => ({
   usePostHog: () => null,
+  PostHogProvider: ({ children }: { children: React.ReactNode }) => children,
 }));
 
 vi.mock("next/navigation", () => ({

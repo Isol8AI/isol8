@@ -1,0 +1,162 @@
+// @vitest-environment jsdom
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { renderHook, waitFor } from "@testing-library/react";
+
+// ---------------------------------------------------------------------------
+// Per-test Clerk state. Mocks read from this module-level object so each
+// test can configure its own Clerk shape before calling renderHook.
+// ---------------------------------------------------------------------------
+
+const replaceMock = vi.fn();
+const setActiveMock = vi.fn().mockResolvedValue(undefined);
+
+interface ClerkState {
+  isSignedIn: boolean | null;
+  authLoaded: boolean;
+  user: { unsafeMetadata?: Record<string, unknown> } | null;
+  userLoaded: boolean;
+  organization: { id: string } | null;
+  orgLoaded: boolean;
+  memberships: Array<{ organization: { id: string } }>;
+  invitations: Array<{ id: string }>;
+  orgListLoaded: boolean;
+}
+
+const clerkState: ClerkState = {
+  isSignedIn: true,
+  authLoaded: true,
+  user: { unsafeMetadata: { onboarded: true } },
+  userLoaded: true,
+  organization: null,
+  orgLoaded: true,
+  memberships: [],
+  invitations: [],
+  orgListLoaded: true,
+};
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ replace: replaceMock, push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
+}));
+
+vi.mock("@clerk/nextjs", () => ({
+  useAuth: () => ({ isSignedIn: clerkState.isSignedIn, isLoaded: clerkState.authLoaded }),
+  useUser: () => ({ user: clerkState.user, isLoaded: clerkState.userLoaded }),
+  useOrganization: () => ({
+    organization: clerkState.organization,
+    isLoaded: clerkState.orgLoaded,
+  }),
+  useOrganizationList: () => ({
+    userMemberships: { data: clerkState.memberships },
+    userInvitations: { data: clerkState.invitations },
+    setActive: setActiveMock,
+    isLoaded: clerkState.orgListLoaded,
+  }),
+}));
+
+import { useOnboardingGate } from "../useOnboardingGate";
+
+function setClerk(partial: Partial<ClerkState>): void {
+  Object.assign(clerkState, partial);
+}
+
+describe("useOnboardingGate", () => {
+  beforeEach(() => {
+    replaceMock.mockReset();
+    setActiveMock.mockReset().mockResolvedValue(undefined);
+    // Reset to a known baseline: signed-in, fully loaded, personal user
+    // who completed onboarding, no orgs, no invitations.
+    setClerk({
+      isSignedIn: true,
+      authLoaded: true,
+      user: { unsafeMetadata: { onboarded: true } },
+      userLoaded: true,
+      organization: null,
+      orgLoaded: true,
+      memberships: [],
+      invitations: [],
+      orgListLoaded: true,
+    });
+  });
+
+  it("returns 'loading' while Clerk is hydrating", () => {
+    setClerk({ userLoaded: false });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("loading");
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(setActiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'loading' when not signed in", () => {
+    setClerk({ isSignedIn: false });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("loading");
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'ready' for an onboarded personal user with no orgs", () => {
+    // Baseline matches this — explicit re-set for readability.
+    setClerk({
+      user: { unsafeMetadata: { onboarded: true } },
+      organization: null,
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("ready");
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(setActiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'ready' when an organization is already active", () => {
+    setClerk({
+      organization: { id: "org_active" },
+      memberships: [{ organization: { id: "org_active" } }],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("ready");
+    expect(replaceMock).not.toHaveBeenCalled();
+    expect(setActiveMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 'redirecting' and replaces to /onboarding for a never-onboarded user with no orgs/invitations", async () => {
+    setClerk({
+      user: { unsafeMetadata: {} },
+      memberships: [],
+      invitations: [],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/onboarding"));
+  });
+
+  it("returns 'redirecting' and replaces to /onboarding when there are pending invitations", async () => {
+    // Tenancy invariant: pending org invitation beats a stale onboarded
+    // flag. The user must visit /onboarding to accept (or decline) before
+    // we can let them into /chat under any tenancy.
+    setClerk({
+      user: { unsafeMetadata: { onboarded: true } },
+      memberships: [],
+      invitations: [{ id: "inv_x" }],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("redirecting");
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith("/onboarding"));
+  });
+
+  it("returns 'auto-activating' and calls setActive on the first membership when no org is active", async () => {
+    setClerk({
+      organization: null,
+      memberships: [
+        { organization: { id: "org_first" } },
+        { organization: { id: "org_second" } },
+      ],
+    });
+    const { result } = renderHook(() => useOnboardingGate());
+    expect(result.current).toBe("auto-activating");
+    await waitFor(() =>
+      expect(setActiveMock).toHaveBeenCalledWith({ organization: "org_first" }),
+    );
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+});
