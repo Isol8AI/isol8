@@ -92,6 +92,39 @@ export interface IssueProductivityReview {
   noCommentStreak: number | null;
 }
 
+/** Single comment on an issue. Returned from GET /teams/issues/{id}/comments. */
+export interface IssueComment {
+  id: string;
+  body: string;
+  createdAt: string;
+  /** When the comment was authored by a human. Mutually exclusive with authorAgentId. */
+  authorUserId?: string | null;
+  /** When the comment was authored by an agent. */
+  authorAgentId?: string | null;
+  /** Display hint derived by callers from authorUserId/authorAgentId. */
+  authorKind?: "user" | "agent" | null;
+}
+
+/** Body for POST /teams/issues. Slim shape for v1 NewIssueDialog. */
+export interface IssueCreateInput {
+  title: string;
+  description?: string;
+  status?: IssueStatus;
+  priority?: IssuePriority;
+  projectId?: string;
+  assigneeAgentId?: string;
+}
+
+/** Body for PATCH /teams/issues/{id}. */
+export interface IssueUpdateInput {
+  title?: string;
+  description?: string;
+  status?: IssueStatus;
+  priority?: IssuePriority;
+  projectId?: string;
+  assigneeAgentId?: string;
+}
+
 export interface Issue {
   id: string;
   identifier?: string | null;
