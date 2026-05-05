@@ -167,4 +167,48 @@ describe("InboxPage", () => {
       screen.getByRole("button", { name: /mark all as read/i }),
     ).not.toBeDisabled();
   });
+
+  test("shows error banner when useInboxData errors", () => {
+    vi.mocked(useInboxData).mockReturnValue({
+      mineIssues: [],
+      touchedIssues: [],
+      allIssues: [],
+      isLoading: false,
+      isError: true,
+      error: new Error("boom"),
+    });
+    render(<InboxPage {...baseProps} />);
+    const alert = screen.getByRole("alert");
+    expect(alert).toBeInTheDocument();
+    expect(alert).toHaveTextContent(/failed to load inbox/i);
+  });
+
+  test("Mark all as read calls readItems.markManyRead with the unread ids", async () => {
+    const markManyRead = vi.fn();
+    vi.mocked(useReadInboxItems).mockReturnValue({
+      readItemKeys: new Set(),
+      isRead: () => false,
+      markRead: vi.fn(),
+      markUnread: vi.fn(),
+      markManyRead,
+      clearAll: vi.fn(),
+    });
+    vi.mocked(useInboxData).mockReturnValue({
+      mineIssues: [
+        makeIssue({ id: "iss_1", title: "Unread", unread: true }),
+        makeIssue({ id: "iss_2", title: "Read", unread: false }),
+      ],
+      touchedIssues: [],
+      allIssues: [],
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+
+    render(<InboxPage {...baseProps} />);
+    fireEvent.click(screen.getByRole("button", { name: /mark all as read/i }));
+    const confirm = await screen.findByRole("button", { name: /confirm/i });
+    fireEvent.click(confirm);
+    expect(markManyRead).toHaveBeenCalledWith(["iss_1"]);
+  });
 });

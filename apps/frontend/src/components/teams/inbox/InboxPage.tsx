@@ -114,7 +114,8 @@ export function InboxPage({
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
 
   // 4. Data + side-effect hooks.
-  const { mineIssues, touchedIssues, allIssues, isLoading } = useInboxData();
+  const { mineIssues, touchedIssues, allIssues, isLoading, isError } =
+    useInboxData();
   const archiveStack = useInboxArchiveStack();
   const readItems = useReadInboxItems(companyId);
 
@@ -167,10 +168,12 @@ export function InboxPage({
     setSelectedIssueId(null);
   }
 
-  // 10. Wire keyboard shortcuts. Upstream restricts archive shortcuts to the
-  //     "mine" tab — match that here.
+  // 10. Wire keyboard shortcuts. Upstream allows j/k/Arrow/Enter navigation
+  //     on every tab; only archive-class shortcuts (a/y/r/u) are restricted
+  //     to the "mine" tab.
   useInboxKeyboardNav({
-    enabled: tab === "mine",
+    enableNav: true,
+    enableArchive: tab === "mine",
     navItems,
     selectedIndex,
     onSelectIndex: (idx) => {
@@ -232,6 +235,14 @@ export function InboxPage({
         unreadCount={unreadCount}
         onMarkAllRead={handleMarkAllRead}
       />
+      {isError && (
+        <div
+          role="alert"
+          className="mt-4 rounded-md border border-destructive/20 bg-destructive/5 px-4 py-3 text-sm text-destructive"
+        >
+          Failed to load inbox. Try refreshing.
+        </div>
+      )}
       {isLoading && sections.length === 0 ? (
         <div className="mt-4">
           <PageSkeleton variant="inbox" />

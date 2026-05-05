@@ -12,7 +12,8 @@ const items: InboxKeyboardNavEntry[] = [
 
 function makeBaseProps() {
   return {
-    enabled: true,
+    enableNav: true,
+    enableArchive: true,
     navItems: items,
     selectedIndex: 0,
     onSelectIndex: vi.fn(),
@@ -147,15 +148,44 @@ describe("useInboxKeyboardNav", () => {
     expect(props.onUndoArchive).not.toHaveBeenCalled();
   });
 
-  test("disabled gate: enabled=false silences all shortcuts", () => {
-    const props = { ...makeBaseProps(), enabled: false };
+  test("enableNav=false silences nav keys (j/k/Arrow/Enter)", () => {
+    const props = { ...makeBaseProps(), enableNav: false };
     renderHook(() => useInboxKeyboardNav(props));
     fire("j");
+    fire("k");
+    fire("ArrowDown");
+    fire("ArrowUp");
     fire("Enter");
-    fire("a");
     expect(props.onSelectIndex).not.toHaveBeenCalled();
     expect(props.onOpen).not.toHaveBeenCalled();
+  });
+
+  test("enableArchive=false silences archive keys (a/y/r) but j still works", () => {
+    const props = {
+      ...makeBaseProps(),
+      enableArchive: false,
+      hasUndoableArchive: true,
+    };
+    renderHook(() => useInboxKeyboardNav(props));
+    fire("a");
+    fire("y");
+    fire("r");
+    fire("u");
     expect(props.onArchive).not.toHaveBeenCalled();
+    expect(props.onMarkRead).not.toHaveBeenCalled();
+    expect(props.onUndoArchive).not.toHaveBeenCalled();
+    // Nav keys still respond when only archive is gated.
+    fire("j");
+    expect(props.onSelectIndex).toHaveBeenCalledWith(1);
+  });
+
+  test("enableNav=true + enableArchive=false: a is silenced but j fires", () => {
+    const props = { ...makeBaseProps(), enableArchive: false };
+    renderHook(() => useInboxKeyboardNav(props));
+    fire("a");
+    expect(props.onArchive).not.toHaveBeenCalled();
+    fire("j");
+    expect(props.onSelectIndex).toHaveBeenCalledWith(1);
   });
 
   test("typing in an input is ignored", () => {

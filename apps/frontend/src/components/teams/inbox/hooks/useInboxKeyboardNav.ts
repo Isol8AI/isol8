@@ -17,8 +17,18 @@ import {
 } from "@/components/teams/shared/lib/keyboardShortcuts";
 
 export interface UseInboxKeyboardNavParams {
-  /** Master gate. When false, the listener is installed but no-ops. */
-  enabled: boolean;
+  /**
+   * Gates navigation shortcuts: j / k / ArrowDown / ArrowUp / Enter.
+   * Upstream Paperclip allows nav on every tab, so this should generally
+   * be true. When false, the listener is installed but nav keys no-op.
+   */
+  enableNav: boolean;
+  /**
+   * Gates archive-related shortcuts: a / y archive, r mark-read,
+   * u undo-archive. Upstream restricts these to the "mine" tab — match
+   * that here. When false, those keys no-op (nav is unaffected).
+   */
+  enableArchive: boolean;
   /** Flat list of entries the user navigates with j/k/ArrowDown/ArrowUp. */
   navItems: InboxKeyboardNavEntry[];
   /** Currently-selected index into `navItems`. -1 means no selection. */
@@ -48,13 +58,13 @@ export interface UseInboxKeyboardNavParams {
  * ref, mirroring upstream's `kbStateRef` / `kbActionsRef` pattern. Callers can
  * pass new closures each render without resubscribing.
  *
- * Scope:
- * - j / ArrowDown — move selection down (clamps at last item)
- * - k / ArrowUp — move selection up (clamps at first item)
- * - Enter — invoke `onOpen` with the selected item
- * - a / y — invoke `onArchive` with the selected item
- * - r — invoke `onMarkRead` with the selected item
- * - u — invoke `onUndoArchive` (gated by `hasUndoableArchive`)
+ * Scope (all gated by `enableNav` for nav keys / `enableArchive` for the rest):
+ * - j / ArrowDown — move selection down (clamps at last item) [enableNav]
+ * - k / ArrowUp — move selection up (clamps at first item) [enableNav]
+ * - Enter — invoke `onOpen` with the selected item [enableNav]
+ * - a / y — invoke `onArchive` with the selected item [enableArchive]
+ * - r — invoke `onMarkRead` with the selected item [enableArchive]
+ * - u — invoke `onUndoArchive` (gated by `hasUndoableArchive`) [enableArchive]
  *
  * Out of scope (intentionally NOT ported in v1):
  * - ArrowLeft / ArrowRight group-collapse (no nesting in v1)
@@ -72,7 +82,8 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
       const {
-        enabled,
+        enableNav,
+        enableArchive,
         navItems,
         selectedIndex,
         onSelectIndex,
@@ -84,7 +95,6 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
         hasOpenDialog,
       } = stateRef.current;
 
-      if (!enabled) return;
       if (event.defaultPrevented) return;
       if (isKeyboardShortcutTextInputTarget(event.target)) return;
 
@@ -93,21 +103,23 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
       // Undo-archive runs through the resolver helper, which does its own
       // gating (modifier check, dialog check, target check, etc.). We pass
       // `dialogOpen` so the resolver matches what the rest of this handler
-      // sees.
-      const undoAction = resolveInboxUndoArchiveKeyAction({
-        hasUndoableArchive,
-        defaultPrevented: event.defaultPrevented,
-        key: event.key,
-        metaKey: event.metaKey,
-        ctrlKey: event.ctrlKey,
-        altKey: event.altKey,
-        target: event.target,
-        hasOpenDialog: dialogOpen,
-      });
-      if (undoAction === "undo_archive") {
-        event.preventDefault();
-        onUndoArchive();
-        return;
+      // sees. Gated by `enableArchive` since it's an archive-class shortcut.
+      if (enableArchive) {
+        const undoAction = resolveInboxUndoArchiveKeyAction({
+          hasUndoableArchive,
+          defaultPrevented: event.defaultPrevented,
+          key: event.key,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          target: event.target,
+          hasOpenDialog: dialogOpen,
+        });
+        if (undoAction === "undo_archive") {
+          event.preventDefault();
+          onUndoArchive();
+          return;
+        }
       }
 
       // Every other shortcut: skip if a blocking dialog is open or modifier
@@ -120,6 +132,7 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
       switch (event.key) {
         case "j":
         case "ArrowDown": {
+          if (!enableNav) return;
           if (itemCount === 0) return;
           const next =
             selectedIndex < 0
@@ -131,6 +144,7 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
         }
         case "k":
         case "ArrowUp": {
+          if (!enableNav) return;
           if (itemCount === 0) return;
           const next =
             selectedIndex < 0 ? 0 : Math.max(selectedIndex - 1, 0);
@@ -139,6 +153,7 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
           return;
         }
         case "Enter": {
+          if (!enableNav) return;
           if (selectedIndex < 0 || selectedIndex >= itemCount) return;
           const item = navItems[selectedIndex];
           if (!item) return;
@@ -148,6 +163,7 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
         }
         case "a":
         case "y": {
+          if (!enableArchive) return;
           if (selectedIndex < 0 || selectedIndex >= itemCount) return;
           const item = navItems[selectedIndex];
           if (!item) return;
@@ -156,6 +172,7 @@ export function useInboxKeyboardNav(params: UseInboxKeyboardNavParams): void {
           return;
         }
         case "r": {
+          if (!enableArchive) return;
           if (selectedIndex < 0 || selectedIndex >= itemCount) return;
           const item = navItems[selectedIndex];
           if (!item) return;
