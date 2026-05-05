@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useTeamsApi } from "@/hooks/useTeamsApi";
+import type { IssuePriority } from "@/components/teams/shared/types";
 
 interface Issue {
   id: string;
@@ -11,8 +12,6 @@ interface Issue {
   project_id?: string;
   assignee_agent_id?: string;
 }
-
-type Priority = "low" | "medium" | "high" | "urgent";
 
 export function IssuesPanel() {
   const { read } = useTeamsApi();
@@ -87,7 +86,7 @@ function CreateIssueDialog({
   const [description, setDescription] = useState("");
   const [projectId, setProjectId] = useState("");
   const [assigneeAgentId, setAssigneeAgentId] = useState("");
-  const [priority, setPriority] = useState<Priority | "">("");
+  const [priority, setPriority] = useState<IssuePriority | "">("");
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -151,14 +150,14 @@ function CreateIssueDialog({
           <span className="text-sm">Priority</span>
           <select
             value={priority}
-            onChange={(e) => setPriority(e.target.value as Priority | "")}
+            onChange={(e) => setPriority(e.target.value as IssuePriority | "")}
             className="w-full border rounded px-3 py-2 mt-1"
           >
             <option value="">None</option>
             <option value="low">Low</option>
             <option value="medium">Medium</option>
             <option value="high">High</option>
-            <option value="urgent">Urgent</option>
+            <option value="critical">Critical</option>
           </select>
         </label>
         {err && <div className="text-red-600 text-sm mb-2">{err}</div>}

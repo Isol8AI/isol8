@@ -17,6 +17,7 @@ const baseProps = {
   currentUserId: "u1",
   unreadCount: 0,
   onMarkAllRead: vi.fn(),
+  onNewIssue: vi.fn(),
 };
 
 beforeEach(() => {
@@ -102,6 +103,20 @@ describe("InboxToolbar", () => {
     render(<InboxToolbar {...baseProps} />);
     // Filters button should be present (iconOnly variant uses aria-label/title 'Filter').
     expect(screen.getByRole("button", { name: /filter/i })).toBeInTheDocument();
+  });
+
+  test("renders the primary 'New issue' button", () => {
+    render(<InboxToolbar {...baseProps} />);
+    expect(
+      screen.getByRole("button", { name: /new issue/i }),
+    ).toBeInTheDocument();
+  });
+
+  test("clicking 'New issue' fires onNewIssue", () => {
+    const onNewIssue = vi.fn();
+    render(<InboxToolbar {...baseProps} onNewIssue={onNewIssue} />);
+    fireEvent.click(screen.getByRole("button", { name: /new issue/i }));
+    expect(onNewIssue).toHaveBeenCalledTimes(1);
   });
 
   test("filter trigger reflects active filter count badge", () => {
