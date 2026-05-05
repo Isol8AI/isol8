@@ -21,11 +21,9 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 const baseProps = {
   selectedIssueId: null,
   onSelect: vi.fn(),
-  onOpen: vi.fn(),
   onArchive: vi.fn(),
   onMarkRead: vi.fn(),
   archivingIds: new Set<string>(),
-  searchQuery: "",
 };
 
 beforeEach(() => {
@@ -49,14 +47,22 @@ describe("InboxList", () => {
     expect(screen.getByText("Earlier")).toBeInTheDocument();
   });
 
-  test("renders 'Search results' header for search section", () => {
+  test("renders 'Search results for \"<query>\"' header when searchQuery is set", () => {
     const sections: InboxGroupedSection[] = [
       { kind: "search", items: [{ kind: "issue", issue: makeIssue() }] },
     ];
     render(
       <InboxList {...baseProps} sections={sections} searchQuery="fix" />,
     );
-    expect(screen.getByText(/search/i)).toBeInTheDocument();
+    expect(screen.getByText(/Search results for "fix"/)).toBeInTheDocument();
+  });
+
+  test("renders bare 'Search results' header when searchQuery is empty", () => {
+    const sections: InboxGroupedSection[] = [
+      { kind: "search", items: [{ kind: "issue", issue: makeIssue() }] },
+    ];
+    render(<InboxList {...baseProps} sections={sections} />);
+    expect(screen.getByText("Search results")).toBeInTheDocument();
   });
 
   test("renders all rows across sections", () => {
