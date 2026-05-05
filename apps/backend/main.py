@@ -584,6 +584,26 @@ app.include_router(
     include_in_schema=False,
 )
 
+# Marketplace listings (Plan 2) — router carries its own /api/v1/marketplace prefix.
+from routers import marketplace_listings  # noqa: E402
+
+app.include_router(marketplace_listings.router)
+
+# Marketplace purchases (Plan 2) — checkout, Stripe webhook, refunds.
+from routers import marketplace_purchases  # noqa: E402
+
+app.include_router(marketplace_purchases.router)
+
+# Marketplace payouts (Plan 2) — Stripe Connect Express onboarding + dashboard.
+from routers import marketplace_payouts  # noqa: E402
+
+app.include_router(marketplace_payouts.router)
+
+# Marketplace admin (Plan 2) — moderation queue, approve/reject, takedown.
+from routers import marketplace_admin  # noqa: E402
+
+app.include_router(marketplace_admin.router)
+
 
 @app.get(
     "/",

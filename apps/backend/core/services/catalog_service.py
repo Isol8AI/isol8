@@ -204,6 +204,44 @@ class CatalogService:
         workspace_key = match["manifest_url"].replace("manifest.json", "workspace.tar.gz")
         tar_bytes = self._s3.get_bytes(workspace_key)
 
+        return await self.deploy_from_artifact(
+            owner_id=owner_id,
+            slug=slug,
+            manifest=manifest,
+            slice_=slice_,
+            tar_bytes=tar_bytes,
+        )
+
+    async def deploy_from_artifact(
+        self,
+        *,
+        owner_id: str,
+        slug: str,
+        manifest: dict,
+        slice_: dict,
+        tar_bytes: bytes,
+    ) -> dict[str, Any]:
+        """Deploy a pre-fetched artifact (tarball + slice + manifest).
+
+        Same flow as ``deploy()`` but skips the catalog.json lookup so
+        marketplace listings (which aren't in the admin catalog index)
+        can land via the same EFS extract + openclaw.json patch helpers.
+
+        If ``slice_`` is falsy / lacks an ``agent`` block (e.g. marketplace
+        artifacts published via ``agent_export.export_agent_from_efs`` —
+        which currently sets ``openclaw_slice={}``), we extract the
+        workspace files but skip the openclaw.json mutation. The buyer's
+        config doesn't auto-register the new agent; they must add the
+        agent entry manually until the publish-time slice synthesis lands.
+
+        TODO(cut-11-followup): synthesize an openclaw-slice during publish
+        (or here, by reading the source agent's identity out of the seller's
+        openclaw.json at export time) so marketplace deploys auto-register
+        in the buyer's config the same way admin-catalog deploys do. Until
+        then the buyer sees ``workspaces/{agent_uuid}/`` populated but must
+        add the corresponding ``agents.list[].id={agent_uuid}`` entry by
+        hand.
+        """
         new_agent_id = f"agent_{uuid.uuid4().hex[:12]}"
 
         self._workspace.extract_tarball_to_workspace(
@@ -212,30 +250,35 @@ class CatalogService:
             tar_bytes=tar_bytes,
         )
 
+        slice_ = slice_ or {}
+        slice_has_agent = bool(slice_.get("agent"))
+        agent_entry: dict[str, Any] = {}
+
         try:
-            # Build agent entry with new id + workspace path.
-            # Deep-copy the slice's agent dict so we don't mutate the caller's state
-            # (matters if s3 returns a cached/shared dict).
-            agent_entry = copy.deepcopy(slice_.get("agent") or {})
-            agent_entry["id"] = new_agent_id
-            agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
+            if slice_has_agent:
+                # Build agent entry with new id + workspace path.
+                # Deep-copy the slice's agent dict so we don't mutate the caller's state
+                # (matters if s3 returns a cached/shared dict).
+                agent_entry = copy.deepcopy(slice_.get("agent") or {})
+                agent_entry["id"] = new_agent_id
+                agent_entry["workspace"] = f".openclaw/workspaces/{new_agent_id}"
 
-            # Apply the mutation atomically inside the config file lock so two
-            # concurrent deploys cannot drop each other's agent entries.
-            plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
+                # Apply the mutation atomically inside the config file lock so two
+                # concurrent deploys cannot drop each other's agent entries.
+                plugins_patch = copy.deepcopy(slice_.get("plugins") or {})
 
-            await self._apply_deploy(
-                owner_id,
-                agent_entry,
-                plugins_patch,
-            )
+                await self._apply_deploy(
+                    owner_id,
+                    agent_entry,
+                    plugins_patch,
+                )
 
             self._workspace.write_template_sidecar(
                 user_id=owner_id,
                 agent_id=new_agent_id,
                 content={
                     "template_slug": slug,
-                    "template_version": manifest["version"],
+                    "template_version": manifest.get("version", 1),
                     "deployed_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -244,9 +287,11 @@ class CatalogService:
             # time) over to the deployer's cron/jobs.json with regenerated
             # ids and the new agent_id wired in. Done AFTER the agent entry
             # is in place so the runtime never sees a cron job pointing at a
-            # nonexistent agent.
+            # nonexistent agent. Skipped when there's no slice agent — a
+            # cron job pointing at an unregistered agent would just error at
+            # delivery time.
             template_cron_jobs = slice_.get("cron_jobs") or []
-            if template_cron_jobs:
+            if template_cron_jobs and slice_has_agent:
                 from core.services.config_patcher import append_cron_jobs
 
                 await append_cron_jobs(
@@ -270,18 +315,20 @@ class CatalogService:
             # would accumulate dangling agent entries that openclaw_id never
             # gets workspace files for. Best-effort remove from agents.list;
             # swallow secondary failures so the original exception surfaces.
-            try:
-                from core.services.config_patcher import (
-                    remove_from_openclaw_config_list,
-                )
+            # Only attempt the rollback if we actually called _apply_deploy.
+            if slice_has_agent:
+                try:
+                    from core.services.config_patcher import (
+                        remove_from_openclaw_config_list,
+                    )
 
-                await remove_from_openclaw_config_list(
-                    owner_id,
-                    ["agents", "list"],
-                    lambda a: isinstance(a, dict) and a.get("id") == new_agent_id,
-                )
-            except Exception:
-                pass
+                    await remove_from_openclaw_config_list(
+                        owner_id,
+                        ["agents", "list"],
+                        lambda a: isinstance(a, dict) and a.get("id") == new_agent_id,
+                    )
+                except Exception:
+                    pass
             # Known limitation (Codex P2): the plugins deep-merge from
             # apply_deploy_mutation isn't rolled back. Plugin code is
             # bundled in the OpenClaw image, so leaving extra plugins
@@ -296,7 +343,7 @@ class CatalogService:
 
         return {
             "slug": slug,
-            "version": manifest["version"],
+            "version": manifest.get("version", 1),
             "agent_id": new_agent_id,
             "name": manifest.get("name", slug),
             "skills_added": list(agent_entry.get("skills") or []),
@@ -304,7 +351,8 @@ class CatalogService:
             # the top-level keys (``slots``/``entries``) are structural
             # containers, not plugin names.
             "plugins_enabled": list(((slice_.get("plugins") or {}).get("entries") or {}).keys()),
-            "cron_jobs_added": len(slice_.get("cron_jobs") or []),
+            "cron_jobs_added": (len(slice_.get("cron_jobs") or []) if slice_has_agent else 0),
+            "config_registered": slice_has_agent,
         }
 
     # ---- deployed ----
