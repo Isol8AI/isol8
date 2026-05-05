@@ -1,0 +1,258 @@
+// Ported from upstream Paperclip's NewIssueDialog
+// (paperclip/ui/src/components/NewIssueDialog.tsx) (MIT, (c) 2025 Paperclip AI).
+// v1: title + description + status + priority + project + assignee. Drops
+// markdown editor, attachments, reviewer/approver, execution-workspace,
+// model overrides, labels, parent-issue picker, draft autosave.
+// See spec at docs/superpowers/specs/2026-05-04-teams-inbox-deep-port-design.md
+
+"use client";
+
+import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogFooter,
+  AlertDialogCancel,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { useIssueMutations } from "./hooks/useIssueMutations";
+import type {
+  CompanyAgent,
+  IssueProject,
+  IssueStatus,
+  IssuePriority,
+} from "@/components/teams/shared/types";
+
+const STATUS_OPTIONS: { value: IssueStatus; label: string }[] = [
+  { value: "todo", label: "Todo" },
+  { value: "in_progress", label: "In progress" },
+  { value: "in_review", label: "In review" },
+  { value: "blocked", label: "Blocked" },
+  { value: "done", label: "Done" },
+];
+
+const PRIORITY_OPTIONS: { value: IssuePriority; label: string }[] = [
+  { value: "critical", label: "Critical" },
+  { value: "high", label: "High" },
+  { value: "medium", label: "Medium" },
+  { value: "low", label: "Low" },
+];
+
+export interface NewIssueDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  agents?: CompanyAgent[];
+  projects?: IssueProject[];
+  /** Called with the created issue id on success. */
+  onCreated?: (issueId: string) => void;
+}
+
+export function NewIssueDialog({
+  open,
+  onOpenChange,
+  agents = [],
+  projects = [],
+  onCreated,
+}: NewIssueDialogProps) {
+  const { create } = useIssueMutations();
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [status, setStatus] = useState<IssueStatus>("todo");
+  const [priority, setPriority] = useState<IssuePriority>("medium");
+  const [projectId, setProjectId] = useState<string>("");
+  const [assigneeAgentId, setAssigneeAgentId] = useState<string>("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setTitle("");
+    setDescription("");
+    setStatus("todo");
+    setPriority("medium");
+    setProjectId("");
+    setAssigneeAgentId("");
+    setError(null);
+  };
+
+  const handleClose = (next: boolean) => {
+    if (!next) reset();
+    onOpenChange(next);
+  };
+
+  const submit = async () => {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const issue = await create({
+        title: trimmedTitle,
+        description: description.trim() || undefined,
+        status,
+        priority,
+        projectId: projectId || undefined,
+        assigneeAgentId: assigneeAgentId || undefined,
+      });
+      onCreated?.(issue.id);
+      reset();
+      onOpenChange(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create issue");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <AlertDialog open={open} onOpenChange={handleClose}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>New issue</AlertDialogTitle>
+        </AlertDialogHeader>
+        <div className="flex flex-col gap-3">
+          <div>
+            <label
+              htmlFor="new-issue-title"
+              className="text-xs uppercase text-muted-foreground tracking-wide"
+            >
+              Title
+            </label>
+            <Input
+              id="new-issue-title"
+              autoFocus
+              placeholder="Issue title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              disabled={submitting}
+              maxLength={200}
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="new-issue-description"
+              className="text-xs uppercase text-muted-foreground tracking-wide"
+            >
+              Description
+            </label>
+            <Textarea
+              id="new-issue-description"
+              placeholder="Optional details..."
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={4}
+              disabled={submitting}
+              maxLength={20000}
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label
+                htmlFor="new-issue-status"
+                className="text-xs uppercase text-muted-foreground tracking-wide"
+              >
+                Status
+              </label>
+              <select
+                id="new-issue-status"
+                value={status}
+                onChange={(e) => setStatus(e.target.value as IssueStatus)}
+                disabled={submitting}
+                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+              >
+                {STATUS_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="new-issue-priority"
+                className="text-xs uppercase text-muted-foreground tracking-wide"
+              >
+                Priority
+              </label>
+              <select
+                id="new-issue-priority"
+                value={priority}
+                onChange={(e) => setPriority(e.target.value as IssuePriority)}
+                disabled={submitting}
+                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+              >
+                {PRIORITY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {projects.length > 0 && (
+            <div>
+              <label
+                htmlFor="new-issue-project"
+                className="text-xs uppercase text-muted-foreground tracking-wide"
+              >
+                Project
+              </label>
+              <select
+                id="new-issue-project"
+                value={projectId}
+                onChange={(e) => setProjectId(e.target.value)}
+                disabled={submitting}
+                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">No project</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {agents.length > 0 && (
+            <div>
+              <label
+                htmlFor="new-issue-assignee"
+                className="text-xs uppercase text-muted-foreground tracking-wide"
+              >
+                Assign to agent
+              </label>
+              <select
+                id="new-issue-assignee"
+                value={assigneeAgentId}
+                onChange={(e) => setAssigneeAgentId(e.target.value)}
+                disabled={submitting}
+                className="w-full rounded border border-input bg-background px-3 py-2 text-sm"
+              >
+                <option value="">Unassigned</option>
+                {agents.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          {error && (
+            <p role="alert" className="text-sm text-destructive">
+              {error}
+            </p>
+          )}
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={submitting}>Cancel</AlertDialogCancel>
+          <Button onClick={submit} disabled={!title.trim() || submitting}>
+            {submitting ? "Creating…" : "Create issue"}
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
